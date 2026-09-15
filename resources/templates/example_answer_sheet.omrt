@@ -1,0 +1,136 @@
+{
+  "format": "omrflow-template",
+  "format_version": 1,
+  "template_id": "0f7d2b5e-6c2a-4c1d-9f3e-2b8a51c7d401",
+  "name": "Example A4 answer sheet",
+  "description": "Illustrative template used by the documentation and the test suite. It is not calibrated against a real printed sheet.",
+  "created_with": "0.1.0.dev0",
+  "created_at": "2026-01-01T00:00:00Z",
+  "modified_at": "2026-01-01T00:00:00Z",
+  "page": {
+    "width_mm": 210.0,
+    "height_mm": 297.0,
+    "canonical_width_px": 1240,
+    "canonical_height_px": 1754
+  },
+  "registration_markers": [
+    {
+      "role": "top_left",
+      "shape": "filled_square",
+      "center": { "x": 0.05, "y": 0.035 },
+      "size": { "width": 0.03, "height": 0.021 },
+      "search_radius": 0.05
+    },
+    {
+      "role": "top_right",
+      "shape": "filled_square",
+      "center": { "x": 0.95, "y": 0.035 },
+      "size": { "width": 0.03, "height": 0.021 },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_right",
+      "shape": "filled_square",
+      "center": { "x": 0.95, "y": 0.965 },
+      "size": { "width": 0.03, "height": 0.021 },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_left",
+      "shape": "filled_square",
+      "center": { "x": 0.05, "y": 0.965 },
+      "size": { "width": 0.03, "height": 0.021 },
+      "search_radius": 0.05
+    }
+  ],
+  "orientation_marker": {
+    "shape": "filled_rectangle",
+    "center": { "x": 0.14, "y": 0.035 },
+    "size": { "width": 0.05, "height": 0.012 },
+    "expected_near": "top_left",
+    "search_radius": 0.06
+  },
+  "zones": [
+    {
+      "id": "roll_number",
+      "label": "Roll number",
+      "bounds": { "x": 0.08, "y": 0.12, "width": 0.24, "height": 0.36 },
+      "field": {
+        "type": "numeric",
+        "symbols": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        "character_count": 5,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": { "x": 0.1, "y": 0.15 },
+        "row_pitch": 0.035,
+        "column_pitch": 0.05,
+        "bubble_size": { "width": 0.024, "height": 0.017 },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "set_code",
+      "label": "Question paper set",
+      "bounds": { "x": 0.4, "y": 0.12, "width": 0.1, "height": 0.2 },
+      "field": {
+        "type": "set_code",
+        "symbols": ["A", "B", "C", "D"],
+        "character_count": 1,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": { "x": 0.43, "y": 0.15 },
+        "row_pitch": 0.035,
+        "column_pitch": 0.0,
+        "bubble_size": { "width": 0.024, "height": 0.017 },
+        "overrides": []
+      },
+      "display_color": "#8E24AA",
+      "recognition": null
+    },
+    {
+      "id": "questions_1_20",
+      "label": "Questions 1-20",
+      "bounds": { "x": 0.08, "y": 0.55, "width": 0.3, "height": 0.4 },
+      "field": {
+        "type": "question_block",
+        "first_question": 1,
+        "question_count": 20,
+        "answer_labels": ["A", "B", "C", "D"],
+        "symbol_axis": "horizontal"
+      },
+      "grid": {
+        "origin": { "x": 0.11, "y": 0.575 },
+        "row_pitch": 0.018,
+        "column_pitch": 0.035,
+        "bubble_size": { "width": 0.022, "height": 0.015 },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": {
+        "fill_ratio_threshold": 0.5,
+        "blank_ratio_threshold": 0.2,
+        "ambiguity_margin": 0.12,
+        "min_confidence": 0.6
+      }
+    },
+    {
+      "id": "instructions",
+      "label": "Printed instructions (excluded)",
+      "bounds": { "x": 0.55, "y": 0.55, "width": 0.35, "height": 0.35 },
+      "field": { "type": "ignored" },
+      "grid": null,
+      "display_color": "#757575",
+      "recognition": null
+    }
+  ],
+  "recognition": {
+    "fill_ratio_threshold": 0.55,
+    "blank_ratio_threshold": 0.25,
+    "ambiguity_margin": 0.12,
+    "min_confidence": 0.6
+  }
+}

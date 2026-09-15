@@ -1,0 +1,160 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omrflow"
+version = "0.1.0.dev0"
+description = "Template-driven OMR examination processing and result management system"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+authors = [{ name = "OMRFlow contributors" }]
+keywords = ["omr", "optical-mark-recognition", "examination", "assessment", "pyside6"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Education",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Education :: Testing",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+# Runtime dependencies for the whole committed roadmap (see development/ROADMAP.md).
+# The phase that first *uses* each package is noted so that nothing looks accidental.
+dependencies = [
+    "PySide6>=6.7",        # Phase 0 - desktop GUI shell
+    "SQLAlchemy>=2.0",     # Phase 0 - project database access
+    "pydantic>=2.7",       # Phase 0 - configuration and template validation
+    # opencv-python-headless (not opencv-python) is deliberate: the non-headless
+    # wheel bundles its own Qt plugins, which can shadow the PySide6 plugins and
+    # break GUI startup. OMRFlow renders through Qt, never through cv2.imshow.
+    "opencv-python-headless>=4.9",  # Phase 1 - imaging pipeline
+    "numpy>=1.26",                  # Phase 1 - imaging / bubble metrics
+    "pandas>=2.2",                  # Phase 7 - candidate list import/export
+    "openpyxl>=3.1",                # Phase 9 - Excel reporting
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+omrflow = "omr_scanner.main:main"
+
+[project.gui-scripts]
+omrflow-gui = "omr_scanner.main:main"
+
+[project.urls]
+Homepage = "https://github.com/sajidbuet/OMRflow"
+Documentation = "https://github.com/sajidbuet/OMRflow/tree/main/docs"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+omr_scanner = ["py.typed"]
+
+# --------------------------------------------------------------------------
+# pytest
+# --------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "gui: tests that instantiate Qt widgets (require a usable Qt platform plugin)",
+]
+filterwarnings = ["error::DeprecationWarning:omr_scanner.*"]
+
+# --------------------------------------------------------------------------
+# Ruff
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "PTH",      # flake8-use-pathlib (project rule: no os.path string juggling)
+    "ARG",      # unused arguments
+    "RUF",      # ruff-specific
+    "D",        # pydocstyle - module/class/function docstrings are a project requirement
+    "ANN",      # flake8-annotations - type hints are a project requirement
+]
+ignore = [
+    "D206",  # conflicts with the formatter (indent-with-spaces)
+    "W191",  # conflicts with the formatter (tab-indentation)
+    "ANN401",  # `Any` is occasionally unavoidable at Qt/SQLAlchemy boundaries
+    # Constructor arguments are documented in the class docstring's Args section,
+    # as the Google style guide prescribes; a second docstring on __init__ would
+    # duplicate them and drift.
+    "D107",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.pep8-naming]
+# Qt method overrides must keep Qt's camelCase spelling.
+extend-ignore-names = ["closeEvent", "showEvent", "resizeEvent", "keyPressEvent", "paintEvent"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are self-describing through their names; module docstrings are still
+# required (D100 stays on) but per-test docstrings would be noise.
+# ARG001: a pytest fixture is frequently requested only for its side effect
+# (isolation, sandboxing), which ruff cannot distinguish from a dead parameter.
+"tests/*" = ["D103", "D101", "D102", "ANN201", "ANN001", "ARG001"]
+
+[tool.ruff.lint.flake8-bugbear]
+# Qt slots frequently take default arguments supplied by the signal.
+extend-immutable-calls = ["pathlib.Path"]
+
+# --------------------------------------------------------------------------
+# mypy
+# --------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+files = ["src/omr_scanner"]
+strict = true
+warn_unreachable = true
+pretty = true
+show_error_codes = true
+
+[[tool.mypy.overrides]]
+# PySide6 ships .pyi stubs, but they are generated and incomplete; Qt's
+# signal/slot machinery is not expressible in the type system. Untyped Qt
+# internals must not be allowed to weaken checking of our own code, so we only
+# relax the "subclassing Any" / "untyped import" errors at that boundary.
+module = ["PySide6.*"]
+ignore_missing_imports = true
+follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+module = ["omr_scanner.gui.*"]
+disallow_subclassing_any = false
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# This module intentionally branches on sys.platform. mypy analyses one platform
+# at a time and therefore reports the branches for the other platforms as
+# unreachable; the code is correct and must stay cross-platform.
+module = ["omr_scanner.config.paths"]
+warn_unreachable = false

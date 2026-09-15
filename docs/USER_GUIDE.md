@@ -1,0 +1,105 @@
+# User guide
+
+> **This guide describes only what OMRFlow can do today (version 0.1.0.dev0,
+> Phase 0).** The application can create and open projects. It cannot yet read
+> answer sheets, recognise marks, reconcile attendance, calculate results or
+> produce reports. Everything in `development/ROADMAP.md` beyond Phase 0 is not
+> available.
+>
+> Do not use this build for examination processing.
+
+## Installing
+
+1. Install Python 3.12 or newer.
+2. Open a terminal in the OMRFlow folder and run:
+
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
+   pip install -e .
+   ```
+
+## Starting OMRFlow
+
+```bash
+python -m omr_scanner
+```
+
+or, after installation, the `omrflow` command. You may pass a project folder to
+open it immediately:
+
+```bash
+omrflow "C:/Exams/Physics Midterm 2026"
+```
+
+## The main window
+
+The window has a workflow list on the left and a page for each stage on the
+right. Only **1. Project** does anything in this version. The other seven pages
+state which development phase will implement them and what that phase will
+provide - they are not broken, and they are not hiding a setting you need to
+find.
+
+The status bar shows the open project's name and folder, or "No project open".
+
+## Creating a project
+
+1. **File > New Project...**, or the *Create project...* button on the Project
+   page.
+2. Choose the folder that will *contain* the project. OMRFlow creates a
+   sub-folder inside it.
+3. Type a project name, for example `Physics Midterm 2026`.
+
+The name is also the folder name, so it cannot contain `< > : " / \ | ? *` or end
+with a period. Names with those characters are refused with an explanation.
+
+OMRFlow then creates:
+
+```text
+Physics Midterm 2026/
+├── project.json          project identity and metadata
+├── database.sqlite       working data store
+├── templates/            OMR sheet templates (.omrt)
+├── scans_original/       scanned sheets, never modified
+├── scans_aligned/        normalised sheets, regenerable
+├── answer_keys/          answer keys and solution sheets
+├── candidate_lists/      imported candidate and attendance files
+├── exports/              generated reports
+└── logs/                 log of this project's processing
+```
+
+Most of these folders stay empty until the phase that uses them.
+
+## Opening a project
+
+- **File > Open Project...** and select the project folder (the one containing
+  `project.json`), or
+- **File > Open Recent** and pick from the last projects you used.
+
+If the folder is not a project, or its files are damaged or were written by a
+newer version of OMRFlow, you get a short explanation and nothing is changed.
+A project that can no longer be opened is removed from the recent list.
+
+## Closing
+
+**File > Close Project** closes the project and releases its database file, so
+the folder can be moved, copied or backed up safely. Closing the window does the
+same.
+
+## Where OMRFlow keeps your settings
+
+Your preferences - log level, recent projects, the folder new projects start in -
+live in `omrflow.config.json` in your account's application data folder
+(`%APPDATA%\OMRFlow` on Windows). Deleting that file loses only preferences, not
+project data.
+
+The application log sits beside it under `%LOCALAPPDATA%\OMRFlow\logs`; each
+project also keeps its own log in `<project>/logs/project.log`. Attach the
+relevant log when reporting a problem - but check it first and remove anything
+you are not permitted to share.
+
+## Your data stays local
+
+OMRFlow runs entirely on your computer. Candidate data, scans, answer keys and
+results are not sent anywhere. Protecting that data according to your
+institution's policies remains your responsibility.
