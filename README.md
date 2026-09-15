@@ -17,9 +17,10 @@ human verification + reproducible result processing**
 
 ## Development status
 
-> **Pre-release. Phases 0 and 1 of 11 are complete.**
-> OMRFlow manages projects and can rectify a scanned sheet into its template's
-> canonical page. It cannot yet read the marks on that page.
+> **Pre-release. Phases 0, 1 and 2 of 11 are complete.**
+> OMRFlow manages projects, can rectify a scanned sheet into its template's
+> canonical page, and has an interactive designer for building that template.
+> It cannot yet read the marks on a filled-in sheet.
 > **Do not use it for examination processing.**
 
 **What works today**
@@ -35,13 +36,17 @@ human verification + reproducible result processing**
   Measured at 0.06 px mean and 0.39 px maximum control-point error across 40
   synthetic distortions; a sheet that cannot be aligned confidently is refused
   with a reason rather than guessed at. No real scan has been processed yet.
-- A PySide6 application shell with the eight workflow stages, seven of which
+- **Interactive template designer**: load a reference sheet image, detect and
+  adjust its registration markers, draw student ID / question-set / question /
+  custom-bubble regions with generated bubble grids, fine-tune individual
+  bubbles, undo/redo, validate and save. See `docs/template_designer.md`.
+- A PySide6 application shell with the eight workflow stages, six of which
   state which phase will implement them.
 
 **What does not exist yet**
 
-Bubble recognition, the template designer, batch processing, conflict
-resolution, attendance reconciliation, answer keys, scoring and reporting.
+Bubble recognition, batch processing, conflict resolution, attendance
+reconciliation, answer keys, scoring and reporting.
 
 Current detail: [`development/CURRENT_STATE.md`](development/CURRENT_STATE.md).
 Plan: [`development/ROADMAP.md`](development/ROADMAP.md).
@@ -72,7 +77,7 @@ omrflow "C:/Exams/Physics Midterm"     # open a project on start-up
 
 ```bash
 pip install -e ".[dev]"
-pytest                   # 583 tests
+pytest                   # 729 tests
 ruff check .
 mypy
 ```
@@ -104,10 +109,12 @@ OMRflow/
 │   ├── main.py               entry point: CLI, logging, start-up
 │   ├── errors.py             application exception hierarchy
 │   ├── config/               per-user settings and platform paths
-│   ├── domain/               pure models: project, geometry, template
+│   ├── domain/               pure models: project, geometry, template,
+│   │                         template_authoring (region generation, Phase 2)
 │   ├── database/             SQLite schema, migrations, sessions
 │   ├── services/             workflows the GUI calls
 │   ├── gui/                  PySide6 window and workflow pages
+│   │   └── template_designer/  interactive .omrt editor (Phase 2)
 │   ├── imaging/              pixel algorithms: alignment now, metrics Phase 3
 │   ├── tools/                developer command line utilities
 │   ├── recognition/          RESERVED - value interpretation (Phase 3/6)
@@ -124,6 +131,7 @@ OMRflow/
 │   ├── templates/            illustrative .omrt example
 │   └── icons/                RESERVED
 │
+├── examples/templates/       a larger worked .omrt example (Phase 2)
 ├── docs/                     architecture, data model, formats, ADRs
 └── development/              roadmap, current state, phase handoffs
 ```
@@ -136,6 +144,7 @@ OMRflow/
 | [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md) | Setup, commands, conventions, where each kind of setting belongs |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Entities across all phases and their relationships |
 | [`docs/TEMPLATE_FORMAT.md`](docs/TEMPLATE_FORMAT.md) | The `.omrt` format, with a worked example |
+| [`docs/template_designer.md`](docs/template_designer.md) | The interactive template designer: workflow, shortcuts, architecture |
 | [`docs/IMAGE_PROCESSING.md`](docs/IMAGE_PROCESSING.md) | The alignment engine: algorithm, accuracy, failure modes and limits |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |

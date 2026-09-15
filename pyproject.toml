@@ -8,13 +8,14 @@ version = "0.1.0.dev0"
 description = "Template-driven OMR examination processing and result management system"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { text = "Apache-2.0" }
-authors = [{ name = "OMRFlow contributors" }]
+license = { text = "MIT" }
+authors = [{ name = "Sajid Muhaimin Choudhury" }]
 keywords = ["omr", "optical-mark-recognition", "examination", "assessment", "pyside6"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Topic :: Education :: Testing",
     "Topic :: Scientific/Engineering :: Image Recognition",
@@ -61,7 +62,13 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-omr_scanner = ["py.typed"]
+# The `gui/resources/icons/lucide/*` glob bundles the toolbar icons (SVG files
+# plus their upstream LICENSE) inside the installable package, rather than the
+# top-level `resources/` directory - which is dev/test fixtures only and is
+# never packaged - so icons resolve correctly for an editable install, a
+# built wheel, and a future frozen executable alike. See
+# `src/omr_scanner/gui/icons.py`.
+omr_scanner = ["py.typed", "gui/resources/icons/lucide/*.svg", "gui/resources/icons/lucide/LICENSE"]
 
 # --------------------------------------------------------------------------
 # pytest
@@ -114,7 +121,14 @@ convention = "google"
 
 [tool.ruff.lint.pep8-naming]
 # Qt method overrides must keep Qt's camelCase spelling.
-extend-ignore-names = ["closeEvent", "showEvent", "resizeEvent", "keyPressEvent", "paintEvent"]
+extend-ignore-names = [
+    "closeEvent", "showEvent", "resizeEvent", "keyPressEvent", "paintEvent",
+    "mousePressEvent", "mouseMoveEvent", "mouseReleaseEvent", "mouseDoubleClickEvent",
+    "hoverEnterEvent", "hoverMoveEvent", "hoverLeaveEvent", "wheelEvent",
+    "keyReleaseEvent", "drawBackground", "drawForeground",
+    "dragEnterEvent", "dragMoveEvent", "dragLeaveEvent", "dropEvent",
+    "contextMenuEvent", "itemChange", "boundingRect", "sceneEvent", "eventFilter",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests are self-describing through their names; module docstrings are still

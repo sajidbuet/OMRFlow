@@ -1,9 +1,11 @@
 # The `.omrt` template format
 
 Version 1 - implemented in Phase 0 by `omr_scanner.domain.template`, loaded and
-saved by `omr_scanner.services.template_service`. The visual designer that will
-*produce* these documents is Phase 2; for now they are written by hand or by
-code.
+saved by `omr_scanner.services.template_service`. Phase 2 added the interactive
+designer that *produces* these documents
+(`omr_scanner.gui.template_designer`, `docs/template_designer.md`) plus one
+additive field (`reference_image`, below); everything else on this page is
+unchanged since Phase 0.
 
 A template is a single UTF-8 JSON document with the extension `.omrt`. JSON was
 chosen over a binary format so that templates diff cleanly in version control and
@@ -44,8 +46,26 @@ OmrTemplate
 │   ├── grid                BubbleGrid (absent only for `ignored`)
 │   ├── display_color       "#RRGGBB"
 │   └── recognition         RecognitionSettings override, or null
-└── recognition             RecognitionSettings (template defaults)
+├── recognition             RecognitionSettings (template defaults)
+└── reference_image         path to the source sheet image, or null (Phase 2)
 ```
+
+### `reference_image` - *added in Phase 2*
+
+| Field | Type | Meaning |
+|---|---|---|
+| `reference_image` | string \| null | Path to the reference sheet image the template was designed against, **relative to the directory containing the `.omrt` file** - the same convention a project uses for scans (ADR-0002). `null` when no image is associated (a hand-written template, or one whose source image has since moved). |
+
+This is what lets the designer reopen a template for further editing without
+asking the user to relocate the source image. It is purely a designer
+convenience: no code downstream of Phase 1 alignment reads it, and the image
+itself is never embedded - a `.omrt` document stays small, diffable JSON.
+Written by `omr_scanner.gui.template_designer.page.TemplateDesignerPage` on
+every save; recomputed relative to the new location, so moving a template and
+its image together (in the same relative arrangement) keeps the link intact.
+
+Additive and optional, per the versioning rule below: a document written
+before Phase 2 has no `reference_image` key and loads with the field `None`.
 
 ### `page` - PageGeometry
 
@@ -187,6 +207,13 @@ A complete, valid document is shipped at
 suite, so it cannot drift from the implementation. It describes an A4 sheet with
 a 5-digit roll number, a 4-option set code, questions 1-20 and one ignored
 region. Abridged:
+
+A second example, `examples/templates/100_question_4_choice_example.omrt`
+(Phase 2), demonstrates a larger, more typical sheet - a 7-digit student ID, an
+A-D question set and questions 1-100 in four columns of A-D choices (474
+bubbles total) - built and validated by
+`omr_scanner.domain.template_authoring`, with its `reference_image` pointing at
+the synthetic sheet shipped alongside it.
 
 ```json
 {

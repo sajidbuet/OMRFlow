@@ -479,6 +479,22 @@ class OmrTemplate(BaseModel):
     orientation_marker: OrientationMarker
     zones: tuple[Zone, ...] = ()
     recognition: RecognitionSettings = RecognitionSettings()
+    reference_image: str | None = Field(default=None)
+    """Path to the reference sheet image the template was designed against,
+    relative to the directory containing the ``.omrt`` file (the same
+    relative-path convention a project uses for scans - see ADR-0002).
+
+    Phase 2 (the template designer) writes this so a template can be reopened
+    for further editing without asking the user to relocate the source image.
+    It is never required: a template produced by hand, or one whose source
+    image has since moved, simply has ``None`` here, and nothing downstream of
+    Phase 1 alignment reads it. The image itself is never embedded - a `.omrt`
+    document stays small, diffable JSON.
+
+    Added in Phase 2 as an additive, optional field; per the versioning rule in
+    ``docs/TEMPLATE_FORMAT.md`` this does not bump ``format_version``, and a
+    document written before Phase 2 loads unchanged with this field ``None``.
+    """
 
     @field_validator("registration_markers")
     @classmethod

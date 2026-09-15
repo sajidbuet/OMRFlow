@@ -29,11 +29,21 @@ class WorkflowPage(QWidget):
     Args:
         spec: The workflow stage this page represents.
         parent: Optional Qt parent.
+        expand: When ``True``, :attr:`body` is given all the page's remaining
+            vertical space instead of shrinking to its contents' size hint with
+            a trailing spacer below. Every page before Phase 2 was a short
+            column of labels and buttons, for which the spacer reads as
+            "aligned to the top"; a page whose body *is* a full-size editor
+            (the template designer's canvas) needs the opposite, or the canvas
+            renders squeezed into a sliver with empty space beneath it.
     """
 
-    def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, spec: WorkflowPageSpec, parent: QWidget | None = None, *, expand: bool = False
+    ) -> None:
         super().__init__(parent)
         self.spec = spec
+        self._expand = expand
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -61,8 +71,11 @@ class WorkflowPage(QWidget):
 
         self.body = QVBoxLayout()
         self.body.setSpacing(CONTENT_SPACING_PX)
-        layout.addLayout(self.body)
-        layout.addStretch(1)
+        if expand:
+            layout.addLayout(self.body, 1)
+        else:
+            layout.addLayout(self.body)
+            layout.addStretch(1)
 
         self._layout = layout
 

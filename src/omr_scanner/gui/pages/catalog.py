@@ -25,10 +25,16 @@ class WorkflowPageSpec:
         key: Stable identifier, used by the main window to look up a page.
         title: Navigation label.
         summary: One line describing what the stage is for.
-        phase: Roadmap phase implementing it; ``0`` marks a stage that already
-            has real functionality.
+        phase: Roadmap phase that introduced this stage's functionality - shown
+            to the user on a placeholder page. Distinct from
+            :attr:`implemented`: Phase 2's Template stage keeps ``phase=2`` as a
+            historical record even after it stops being a placeholder.
         details: Bullet points describing the intended behaviour, shown on
             placeholder pages so the interface documents the plan honestly.
+        implemented: Whether this stage has real functionality in the current
+            build. Defaults to whether ``phase`` is the foundation phase (``0``);
+            a stage implemented in a later phase sets this explicitly once it
+            stops being a placeholder.
     """
 
     key: str
@@ -36,11 +42,12 @@ class WorkflowPageSpec:
     summary: str
     phase: int
     details: tuple[str, ...] = ()
+    implemented: bool | None = None
 
     @property
     def is_implemented(self) -> bool:
         """Whether this stage has real functionality in the current build."""
-        return self.phase == 0
+        return self.implemented if self.implemented is not None else self.phase == 0
 
 
 WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
@@ -55,6 +62,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Template",
         summary="Design and calibrate the OMR sheet template.",
         phase=2,
+        implemented=True,
         details=(
             "Load a reference sheet image and draw recognition zones.",
             "Define four registration markers and the orientation marker.",

@@ -31,6 +31,14 @@ from omr_scanner.services.alignment_service import (
     load_scan_image,
     save_image,
 )
+from omr_scanner.services.marker_detection_service import (
+    DecodedImage,
+    DetectedMarker,
+    MarkerDetectionOutcome,
+    MarkerSearchConfig,
+    decode_image_file,
+    detect_registration_markers,
+)
 from omr_scanner.services.project_service import (
     ProjectSession,
     create_project,
@@ -45,9 +53,15 @@ from omr_scanner.services.template_service import (
 )
 
 __all__ = [
+    "DecodedImage",
+    "DetectedMarker",
+    "MarkerDetectionOutcome",
+    "MarkerSearchConfig",
     "ProjectSession",
     "alignment_config_from_template",
     "create_project",
+    "decode_image_file",
+    "detect_registration_markers",
     "is_project_directory",
     "list_templates",
     "load_scan_image",

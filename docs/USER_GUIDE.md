@@ -1,10 +1,10 @@
 # User guide
 
 > **This guide describes only what OMRFlow can do today (version 0.1.0.dev0,
-> Phase 0).** The application can create and open projects. It cannot yet read
-> answer sheets, recognise marks, reconcile attendance, calculate results or
-> produce reports. Everything in `development/ROADMAP.md` beyond Phase 0 is not
-> available.
+> Phases 0-2).** The application can create and open projects, and design
+> `.omrt` sheet templates visually. It cannot yet read filled-in answer sheets,
+> recognise marks, reconcile attendance, calculate results or produce reports.
+> Everything in `development/ROADMAP.md` beyond Phase 2 is not available.
 >
 > Do not use this build for examination processing.
 
@@ -35,12 +35,36 @@ omrflow "C:/Exams/Physics Midterm 2026"
 ## The main window
 
 The window has a workflow list on the left and a page for each stage on the
-right. Only **1. Project** does anything in this version. The other seven pages
-state which development phase will implement them and what that phase will
-provide - they are not broken, and they are not hiding a setting you need to
-find.
+right. **1. Project** and **2. Template** do something in this version; the
+other six pages state which development phase will implement them and what
+that phase will provide - they are not broken, and they are not hiding a
+setting you need to find.
 
 The status bar shows the open project's name and folder, or "No project open".
+
+## Designing a template
+
+Select **2. Template** to open the designer. It works with or without an open
+project (templates saved while no project is open must be placed manually);
+with a project open, its `templates/` folder is offered by default.
+
+1. **New from Image...**, choose a scanned or photographed reference sheet
+   (PNG, JPEG, TIFF) and a name.
+2. **Detect** to locate the four corner squares automatically, then drag any
+   that were not found (or that need correcting) into place by hand. Confirm
+   the automatically found ones with **Confirm**.
+3. Drag the orientation mark (the short dash near the top-left) into place.
+4. Use **Student ID**, **Set**, **Questions** or **Custom** to draw a region
+   and configure it - each opens a small dialog for the details
+   (digit count, answer choices, number of columns, and so on).
+5. Adjust anything by dragging, resizing, or typing exact numbers in the
+   properties panel; **Ctrl+Z**/**Ctrl+Y** undo and redo.
+6. **Validate** checks the template for common problems before you save it.
+7. **Save** (or **Save As**) writes the `.omrt` file. **Open...** reopens it
+   later, restoring the reference image alongside your regions.
+
+Full detail, including every keyboard shortcut, is in
+`docs/template_designer.md`.
 
 ## Creating a project
 

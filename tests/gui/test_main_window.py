@@ -60,12 +60,57 @@ def test_navigation_switches_the_visible_page(window: MainWindow):
 
 
 def test_unimplemented_pages_say_so(window: MainWindow):
-    template_page = window.stack.widget(1)
-    texts = [label.text() for label in template_page.findChildren(QLabel)]
+    # Index 2 ("Scan") rather than 1 ("Template"): Phase 2 replaced the
+    # Template placeholder with a real page, so it no longer belongs in this
+    # "still honestly unimplemented" check.
+    scan_page = window.stack.widget(2)
+    texts = [label.text() for label in scan_page.findChildren(QLabel)]
 
-    assert template_page.spec.phase > 0
+    assert scan_page.spec.key == "scan"
+    assert scan_page.spec.phase > 0
     assert any("Not implemented yet" in text for text in texts)
-    assert any(f"phase {template_page.spec.phase}" in text for text in texts)
+    assert any(f"phase {scan_page.spec.phase}" in text for text in texts)
+
+
+def test_template_page_is_no_longer_a_placeholder(window: MainWindow):
+    template_page = window.stack.widget(1)
+
+    assert template_page.spec.key == "template"
+    assert template_page.spec.is_implemented
+
+
+class TestAboutMenuAction:
+    """The Help > About action.
+
+    The dialog's own content is tested in `tests/gui/test_about_dialog.py`.
+    """
+
+    def test_the_about_action_exists_under_help(self, window: MainWindow):
+        from PySide6.QtWidgets import QMenu
+
+        help_menu = next(
+            menu
+            for menu in window.menuBar().findChildren(QMenu)
+            if menu.title() == "&Help"
+        )
+        assert window.about_action in help_menu.actions()
+        assert APPLICATION_NAME in window.about_action.text()
+
+    def test_triggering_about_opens_the_about_dialog(
+        self, window: MainWindow, monkeypatch: pytest.MonkeyPatch
+    ):
+        from omr_scanner.gui.about_dialog import AboutDialog
+
+        opened: list[AboutDialog] = []
+        monkeypatch.setattr(
+            "omr_scanner.gui.main_window.AboutDialog.exec",
+            lambda self: opened.append(self) or None,
+        )
+
+        window.about_action.trigger()
+
+        assert len(opened) == 1
+        assert isinstance(opened[0], AboutDialog)
 
 
 def test_creating_a_project_updates_the_window(window: MainWindow, workspace: Path):

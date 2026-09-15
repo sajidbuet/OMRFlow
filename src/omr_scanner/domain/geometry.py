@@ -104,6 +104,20 @@ class NormalizedRect(BaseModel):
         """Return whether ``point`` lies inside the rectangle (edges included)."""
         return self.x <= point.x <= self.right and self.y <= point.y <= self.bottom
 
+    def overlaps(self, other: NormalizedRect) -> bool:
+        """Return whether this rectangle and ``other`` share any area.
+
+        Touching edges (a shared boundary with zero-area intersection) do not
+        count as overlapping - two regions drawn edge-to-edge on a sheet are a
+        normal layout, not a conflict the template designer should flag.
+        """
+        return (
+            self.x < other.right
+            and other.x < self.right
+            and self.y < other.bottom
+            and other.y < self.bottom
+        )
+
     def is_within_page(self) -> bool:
         """Return whether the rectangle lies entirely on the page.
 

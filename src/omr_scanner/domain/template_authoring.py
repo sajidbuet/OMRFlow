@@ -1,0 +1,594 @@
+"""Pure geometry for turning a designer's high-level intent into template zones.
+
+Purpose:
+    Bridge the gap between what a template-designer *user* specifies ("7 digit
+    student ID", "questions 1-100 in 4 columns of A/B/C/D") and what the
+    ``.omrt`` format actually stores (a :class:`~omr_scanner.domain.template.Zone`
+    with an explicit :class:`~omr_scanner.domain.template.BubbleGrid` pitch).
+
+Responsibilities:
+    * Fit a regular bubble grid inside a rectangle the user drew, computing the
+      pitch so the first and last bubble sit symmetrically inside it.
+    * Generate the four region kinds the Phase 2 brief describes (student ID,
+      question set, question-answer columns, custom bubble group) as ordinary
+      :class:`Zone` objects - no new domain types are introduced, because the
+      existing field/grid model already stores "the location of every expected
+      bubble" rather than one rectangle per region.
+    * Layer designer-facing validation (overlaps, question-number gaps and
+      duplicates) on top of what :class:`~omr_scanner.domain.template.OmrTemplate`
+      already enforces at construction time.
+
+What does NOT belong here:
+    * Any Qt or file I/O. This module is exercised the same way the rest of
+      ``domain`` is: with plain values, no display required.
+    * Deciding *where* on the canvas a region goes - that is the GUI's job; this
+      module only turns a chosen rectangle and a chosen count/label scheme into
+      valid geometry.
+
+Design note - one zone per question column:
+    ``docs/TEMPLATE_FORMAT.md`` already specifies that a long question block is
+    described as several zones, one per printed column, because a single
+    :class:`~omr_scanner.domain.template.BubbleGrid` can only express one pitch
+    pair. :func:`generate_question_columns` therefore returns a tuple of zones,
+    never a single one, even when ``columns == 1``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect, NormalizedSize
+from omr_scanner.domain.template import (
+    BubbleGrid,
+    BubbleOverride,
+    FieldType,
+    GridFieldDefinition,
+    IgnoredFieldDefinition,
+    MarkerRole,
+    OmrTemplate,
+    OrientationMarker,
+    PageGeometry,
+    QuestionBlockFieldDefinition,
+    RegistrationMarker,
+    SymbolAxis,
+    Zone,
+)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Sequence
+
+DEFAULT_DISPLAY_COLORS: dict[FieldType, str] = {
+    FieldType.NUMERIC: "#1E88E5",
+    FieldType.ALPHANUMERIC: "#6D4C41",
+    FieldType.SET_CODE: "#8E24AA",
+    FieldType.QUESTION_BLOCK: "#2E7D32",
+    FieldType.IGNORED: "#757575",
+}
+"""One default colour per field kind, so a freshly generated region is never
+the same indistinguishable blue as everything else on the canvas."""
+
+_MIN_BUBBLES_PER_AXIS = 1
+"""A grid must have at least one row and one column to mean anything."""
+
+DEFAULT_MARKER_INSET = 0.05
+"""Default normalised distance from each page edge to a corner marker's centre,
+used only to seed a brand new template. Kept as a local literal rather than
+importing :data:`omr_scanner.imaging.config.DEFAULT_MARKER_TARGETS` - which
+uses the same value - because ``domain`` must never import ``imaging``
+(``docs/ARCHITECTURE.md``); the two are independent defaults that merely agree
+by convention today."""
+
+DEFAULT_MARKER_SIZE = NormalizedSize(width=0.03, height=0.021)
+"""Default printed marker size for a brand new template."""
+
+DEFAULT_ORIENTATION_CENTER = NormalizedPoint(x=0.14, y=0.035)
+"""Default orientation-mark centre for a brand new template."""
+
+DEFAULT_ORIENTATION_SIZE = NormalizedSize(width=0.05, height=0.012)
+"""Default orientation-mark size for a brand new template."""
+
+
+def build_blank_template(
+    *,
+    name: str,
+    canonical_width_px: int,
+    canonical_height_px: int,
+    width_mm: float = 210.0,
+    height_mm: float = 297.0,
+) -> OmrTemplate:
+    """Construct a new template with placeholder markers and no regions.
+
+    ``OmrTemplate`` requires exactly four registration markers and an
+    orientation marker to exist at all - there is no "markers not yet decided"
+    state in the persisted format - so a brand new template starts with them
+    at reasonable default positions. The designer marks these as *unconfirmed*
+    session state (see
+    :class:`~omr_scanner.gui.template_designer.state.MarkerStatus`) so the
+    canvas draws them as needing attention until the user runs detection or
+    drags them into place.
+
+    Args:
+        name: Template display name.
+        canonical_width_px: Canonical page width - typically the reference
+            image's own width, since the designer works directly on it.
+        canonical_height_px: Canonical page height.
+        width_mm: Physical page width, for reference; A4 by default.
+        height_mm: Physical page height; A4 by default.
+
+    Returns:
+        A valid, saveable (if incomplete-looking) template.
+    """
+    inset = DEFAULT_MARKER_INSET
+    corner_positions = {
+        MarkerRole.TOP_LEFT: (inset, inset),
+        MarkerRole.TOP_RIGHT: (1.0 - inset, inset),
+        MarkerRole.BOTTOM_RIGHT: (1.0 - inset, 1.0 - inset),
+        MarkerRole.BOTTOM_LEFT: (inset, 1.0 - inset),
+    }
+    markers = tuple(
+        RegistrationMarker(
+            role=role, center=NormalizedPoint(x=x, y=y), size=DEFAULT_MARKER_SIZE
+        )
+        for role, (x, y) in corner_positions.items()
+    )
+    orientation = OrientationMarker(
+        center=DEFAULT_ORIENTATION_CENTER,
+        size=DEFAULT_ORIENTATION_SIZE,
+        expected_near=MarkerRole.TOP_LEFT,
+    )
+    return OmrTemplate(
+        name=name,
+        page=PageGeometry(
+            width_mm=width_mm,
+            height_mm=height_mm,
+            canonical_width_px=canonical_width_px,
+            canonical_height_px=canonical_height_px,
+        ),
+        registration_markers=markers,
+        orientation_marker=orientation,
+    )
+
+
+def fit_grid_to_bounds(
+    *, bounds: NormalizedRect, rows: int, columns: int, bubble_size: NormalizedSize
+) -> BubbleGrid:
+    """Compute a pitch that spreads ``rows`` x ``columns`` bubbles evenly in ``bounds``.
+
+    The first bubble is centred half a bubble-size in from the top-left corner
+    of ``bounds`` and the last is the same distance in from the bottom-right, so
+    the grid reads as evenly inset rather than flush against the region's edge.
+    With only one row (or column), that axis's pitch is zero and every bubble
+    on it shares the same coordinate - centred in the bounds.
+
+    Args:
+        bounds: The region the grid must fit inside. Every bubble centre this
+            function computes lies within it, by construction.
+        rows: Number of bubble rows, at least 1.
+        columns: Number of bubble columns, at least 1.
+        bubble_size: Bounding size of one bubble.
+
+    Returns:
+        A grid with no overrides.
+
+    Raises:
+        ValueError: ``rows`` or ``columns`` is less than 1, or ``bounds`` is too
+            small to hold even one bubble at the requested size.
+    """
+    if rows < _MIN_BUBBLES_PER_AXIS or columns < _MIN_BUBBLES_PER_AXIS:
+        raise ValueError("A grid needs at least one row and one column")
+
+    half_width = bubble_size.width / 2.0
+    half_height = bubble_size.height / 2.0
+    if bubble_size.width > bounds.width or bubble_size.height > bounds.height:
+        raise ValueError(
+            f"A {bubble_size.width:.4f}x{bubble_size.height:.4f} bubble does not fit "
+            f"inside a {bounds.width:.4f}x{bounds.height:.4f} region"
+        )
+
+    origin_x = bounds.x + half_width
+    origin_y = bounds.y + half_height
+    column_pitch = (
+        (bounds.width - bubble_size.width) / (columns - 1) if columns > 1 else 0.0
+    )
+    row_pitch = (bounds.height - bubble_size.height) / (rows - 1) if rows > 1 else 0.0
+
+    # A single-axis grid is centred rather than pinned to the top-left corner,
+    # which is what "one row" (a set-code strip) or "one column" (a single
+    # digit) should look like on the page.
+    if columns == 1:
+        origin_x = bounds.center.x
+    if rows == 1:
+        origin_y = bounds.center.y
+
+    return BubbleGrid(
+        origin=NormalizedPoint(x=origin_x, y=origin_y),
+        row_pitch=row_pitch,
+        column_pitch=column_pitch,
+        bubble_size=bubble_size,
+    )
+
+
+def generate_character_grid_zone(
+    *,
+    zone_id: str,
+    label: str,
+    field_type: FieldType,
+    symbols: Sequence[str],
+    character_count: int,
+    bounds: NormalizedRect,
+    bubble_size: NormalizedSize,
+    symbol_axis: SymbolAxis = SymbolAxis.VERTICAL,
+    display_color: str | None = None,
+) -> Zone:
+    """Build a Student ID, Question Set or custom character-per-column region.
+
+    Args:
+        zone_id: Stable identifier for the new zone.
+        label: Human readable name.
+        field_type: One of ``NUMERIC``, ``ALPHANUMERIC`` or ``SET_CODE``. A
+            ``QUESTION_BLOCK`` or ``IGNORED`` region is built by the dedicated
+            functions below instead.
+        symbols: Permitted symbols in printed order (e.g. ``"0".."9"``).
+        character_count: Number of character positions.
+        bounds: Region on the canonical page the bubble grid is fitted into.
+        bubble_size: Bounding size of one bubble.
+        symbol_axis: Whether symbols run down the page or across it.
+        display_color: Overlay colour; a sensible per-field-kind default is
+            used when omitted.
+
+    Returns:
+        A fully valid :class:`Zone`.
+
+    Raises:
+        ValueError: ``field_type`` is not a character-grid field kind.
+    """
+    if field_type not in (FieldType.NUMERIC, FieldType.ALPHANUMERIC, FieldType.SET_CODE):
+        raise ValueError(f"{field_type} is not a character-grid field kind")
+
+    field = GridFieldDefinition(
+        type=field_type,
+        symbols=tuple(symbols),
+        character_count=character_count,
+        symbol_axis=symbol_axis,
+    )
+    grid = fit_grid_to_bounds(
+        bounds=bounds, rows=field.rows, columns=field.columns, bubble_size=bubble_size
+    )
+    return Zone(
+        id=zone_id,
+        label=label,
+        bounds=bounds,
+        field=field,
+        grid=grid,
+        display_color=display_color or DEFAULT_DISPLAY_COLORS[field_type],
+    )
+
+
+def generate_question_columns(
+    *,
+    id_prefix: str,
+    label_prefix: str,
+    first_question: int,
+    question_count: int,
+    answer_labels: Sequence[str],
+    columns: int,
+    questions_per_column: int,
+    bounds: NormalizedRect,
+    bubble_size: NormalizedSize,
+    symbol_axis: SymbolAxis = SymbolAxis.HORIZONTAL,
+    column_gap: float = 0.0,
+    display_color: str | None = None,
+) -> tuple[Zone, ...]:
+    """Build one :class:`Zone` per printed column of a question-answer block.
+
+    Splitting ``bounds`` into ``columns`` equal vertical strips (separated by
+    ``column_gap``) and generating one zone per strip is what lets the
+    persistent template describe every one of, say, 400 bubbles individually
+    rather than as a single rectangle a recognition pass would have to
+    subdivide by guesswork later.
+
+    Args:
+        id_prefix: Zone ids are ``f"{id_prefix}_{n}"`` for column index ``n``
+            (0-based), guaranteed unique among the returned zones.
+        label_prefix: Human readable label prefix, e.g. ``"Questions"`` becomes
+            ``"Questions 1-25"``.
+        first_question: Number of the first question overall (1-based).
+        question_count: Total questions across every column.
+        answer_labels: Option labels in printed order, e.g. ``("A","B","C","D")``.
+        columns: Number of printed columns.
+        questions_per_column: How many questions each column holds, except
+            possibly the last, which holds the remainder.
+        bounds: Region the whole block occupies; split evenly among columns.
+        bubble_size: Bounding size of one bubble.
+        symbol_axis: ``HORIZONTAL`` (options run across, one row per question)
+            or ``VERTICAL``.
+        column_gap: Normalised horizontal gap left between adjacent column
+            strips, subtracted from each strip's width.
+        display_color: Overlay colour; defaults to the question-block colour.
+
+    Returns:
+        One zone per column that actually holds at least one question. A
+        block of 100 questions in columns of 25 with ``columns=5`` therefore
+        returns 4 zones, not 5, because the fifth would be empty.
+
+    Raises:
+        ValueError: ``columns`` or ``questions_per_column`` is less than 1, or
+            the gap leaves no room for the strips.
+    """
+    if columns < 1:
+        raise ValueError("columns must be at least 1")
+    if questions_per_column < 1:
+        raise ValueError("questions_per_column must be at least 1")
+
+    strip_width = (bounds.width - column_gap * (columns - 1)) / columns
+    if strip_width <= 0.0:
+        raise ValueError("column_gap leaves no room for the question columns")
+
+    color = display_color or DEFAULT_DISPLAY_COLORS[FieldType.QUESTION_BLOCK]
+    zones: list[Zone] = []
+    remaining = question_count
+    question_cursor = first_question
+
+    for column_index in range(columns):
+        if remaining <= 0:
+            break
+        count_here = min(questions_per_column, remaining)
+        strip_x = bounds.x + column_index * (strip_width + column_gap)
+        strip_bounds = NormalizedRect(
+            x=strip_x, y=bounds.y, width=strip_width, height=bounds.height
+        )
+
+        field = QuestionBlockFieldDefinition(
+            type=FieldType.QUESTION_BLOCK,
+            first_question=question_cursor,
+            question_count=count_here,
+            answer_labels=tuple(answer_labels),
+            symbol_axis=symbol_axis,
+        )
+        grid = fit_grid_to_bounds(
+            bounds=strip_bounds, rows=field.rows, columns=field.columns, bubble_size=bubble_size
+        )
+        zones.append(
+            Zone(
+                id=f"{id_prefix}_{column_index}",
+                label=f"{label_prefix} {question_cursor}-{field.last_question}",
+                bounds=strip_bounds,
+                field=field,
+                grid=grid,
+                display_color=color,
+            )
+        )
+
+        question_cursor += count_here
+        remaining -= count_here
+
+    return tuple(zones)
+
+
+def translate_zone(zone: Zone, *, dx: float, dy: float) -> Zone:
+    """Return ``zone`` shifted by ``(dx, dy)`` in normalised coordinates.
+
+    Used for a whole-region drag. The shift is clamped so the zone's bounds
+    never leave the page (`0 <= x`, `x + width <= 1`, and likewise for `y`);
+    every bubble centre and override, if any, is shifted by the *same, clamped*
+    amount, so the grid stays exactly where it was relative to the region -
+    only the region's position on the page changes, not its internal layout.
+
+    Args:
+        zone: The zone to move.
+        dx: Requested horizontal shift, in normalised units.
+        dy: Requested vertical shift, in normalised units.
+
+    Returns:
+        A new zone. When the requested shift is already within bounds, the
+        result moves by exactly ``(dx, dy)``; otherwise it moves as far as it
+        can in that direction before hitting the page edge.
+    """
+    new_x = _clamp_position(zone.bounds.x + dx, zone.bounds.width)
+    new_y = _clamp_position(zone.bounds.y + dy, zone.bounds.height)
+    actual_dx = new_x - zone.bounds.x
+    actual_dy = new_y - zone.bounds.y
+
+    new_bounds = NormalizedRect(
+        x=new_x, y=new_y, width=zone.bounds.width, height=zone.bounds.height
+    )
+    if zone.grid is None:
+        return zone.model_copy(update={"bounds": new_bounds})
+
+    new_grid = BubbleGrid(
+        origin=NormalizedPoint(
+            x=zone.grid.origin.x + actual_dx, y=zone.grid.origin.y + actual_dy
+        ),
+        row_pitch=zone.grid.row_pitch,
+        column_pitch=zone.grid.column_pitch,
+        bubble_size=zone.grid.bubble_size,
+        overrides=tuple(
+            BubbleOverride(
+                row=override.row,
+                column=override.column,
+                center=NormalizedPoint(
+                    x=override.center.x + actual_dx, y=override.center.y + actual_dy
+                ),
+            )
+            for override in zone.grid.overrides
+        ),
+    )
+    return zone.model_copy(update={"bounds": new_bounds, "grid": new_grid})
+
+
+def resize_zone(zone: Zone, *, bounds: NormalizedRect) -> Zone:
+    """Return ``zone`` with its bounds changed and its grid re-fitted to them.
+
+    Bubble size is preserved; the pitch is recomputed so the same number of
+    rows and columns spread evenly across the new bounds (see
+    :func:`fit_grid_to_bounds`). Any :class:`BubbleOverride` entries are
+    dropped: they were positioned for the old layout, and silently stretching
+    a hand-placed override along with a pitch it was specifically created to
+    deviate from would move it somewhere the user never chose.
+
+    Args:
+        zone: The zone to resize.
+        bounds: The new bounds. Must be large enough to hold the zone's
+            existing bubble size (see :func:`fit_grid_to_bounds`).
+
+    Returns:
+        A new zone. Zones with no grid (``ignored`` regions) simply take the
+        new bounds.
+    """
+    if zone.grid is None:
+        return zone.model_copy(update={"bounds": bounds})
+
+    # A zone with a grid is never `ignored` (Zone's own validator forbids the
+    # combination), so `.rows`/`.columns` are always available here.
+    assert not isinstance(zone.field, IgnoredFieldDefinition)
+    new_grid = fit_grid_to_bounds(
+        bounds=bounds,
+        rows=zone.field.rows,
+        columns=zone.field.columns,
+        bubble_size=zone.grid.bubble_size,
+    )
+    return zone.model_copy(update={"bounds": bounds, "grid": new_grid})
+
+
+def _clamp_position(value: float, extent: float) -> float:
+    """Clamp a rectangle's origin so ``[value, value + extent]`` stays in ``[0, 1]``."""
+    return max(0.0, min(value, 1.0 - extent))
+
+
+def generate_ignored_zone(
+    *, zone_id: str, label: str, bounds: NormalizedRect, display_color: str | None = None
+) -> Zone:
+    """Build a region deliberately excluded from recognition (a logo, instructions)."""
+    return Zone(
+        id=zone_id,
+        label=label,
+        bounds=bounds,
+        field=IgnoredFieldDefinition(type=FieldType.IGNORED),
+        grid=None,
+        display_color=display_color or DEFAULT_DISPLAY_COLORS[FieldType.IGNORED],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DesignerValidationReport:
+    """Errors and warnings surfaced to a user before saving a template.
+
+    Attributes:
+        errors: Problems severe enough that the template should not be relied
+            on - a duplicate question number, for instance. Saving is still
+            permitted (a half-finished template is a normal thing to save and
+            resume), but the designer must show these prominently.
+        warnings: Unusual but possibly intentional situations - an empty
+            template, a region overlapping a marker.
+    """
+
+    errors: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def is_clean(self) -> bool:
+        """Whether there is nothing at all to show the user."""
+        return not self.errors and not self.warnings
+
+
+def validate_template_for_designer(template: OmrTemplate) -> DesignerValidationReport:
+    """Check ``template`` for designer-relevant problems beyond schema validity.
+
+    Everything :class:`~omr_scanner.domain.template.OmrTemplate` itself already
+    enforces (four distinct marker roles, unique zone ids, grids that fit their
+    bounds, threshold ordering) cannot appear here, because a template that
+    violates any of it cannot exist as a Python object in the first place. This
+    function catches the problems Pydantic construction *cannot* see: geometry
+    that is merely inadvisable, and cross-zone relationships like duplicate or
+    missing question numbers.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not template.zones:
+        warnings.append("The template has no regions defined yet.")
+
+    marker_boxes = {
+        marker.role: NormalizedRect(
+            x=marker.center.x - marker.size.width / 2.0,
+            y=marker.center.y - marker.size.height / 2.0,
+            width=marker.size.width,
+            height=marker.size.height,
+        )
+        for marker in template.registration_markers
+    }
+    orientation_box = NormalizedRect(
+        x=template.orientation_marker.center.x - template.orientation_marker.size.width / 2.0,
+        y=template.orientation_marker.center.y - template.orientation_marker.size.height / 2.0,
+        width=template.orientation_marker.size.width,
+        height=template.orientation_marker.size.height,
+    )
+
+    for zone in template.zones:
+        for role, box in marker_boxes.items():
+            if zone.bounds.overlaps(box):
+                warnings.append(
+                    f"Region '{zone.label}' overlaps the {role.value.replace('_', ' ')} "
+                    "registration marker."
+                )
+        if zone.bounds.overlaps(orientation_box):
+            warnings.append(f"Region '{zone.label}' overlaps the orientation marker.")
+
+    for i, first in enumerate(template.zones):
+        for second in template.zones[i + 1 :]:
+            if first.bounds.overlaps(second.bounds):
+                warnings.append(f"Region '{first.label}' overlaps region '{second.label}'.")
+
+    question_owners: dict[int, str] = {}
+    for zone in template.zones:
+        if not isinstance(zone.field, QuestionBlockFieldDefinition):
+            continue
+        for question in range(zone.field.first_question, zone.field.last_question + 1):
+            if question in question_owners:
+                errors.append(
+                    f"Question {question} is defined in both '{question_owners[question]}' "
+                    f"and '{zone.label}'."
+                )
+            else:
+                question_owners[question] = zone.label
+
+    if question_owners:
+        covered = sorted(question_owners)
+        expected = set(range(covered[0], covered[-1] + 1))
+        missing = expected - set(covered)
+        if missing:
+            ranges = _format_ranges(sorted(missing))
+            warnings.append(f"Question(s) {ranges} are not covered by any region.")
+
+    return DesignerValidationReport(errors=tuple(errors), warnings=tuple(warnings))
+
+
+def _format_ranges(numbers: Sequence[int]) -> str:
+    """Format a sorted sequence of integers as compact ranges, e.g. ``"3-5, 9"``."""
+    if not numbers:
+        return ""
+    ranges: list[str] = []
+    start = previous = numbers[0]
+    for number in numbers[1:]:
+        if number == previous + 1:
+            previous = number
+            continue
+        ranges.append(f"{start}-{previous}" if start != previous else str(start))
+        start = previous = number
+    ranges.append(f"{start}-{previous}" if start != previous else str(start))
+    return ", ".join(ranges)
+
+
+__all__ = [
+    "DEFAULT_DISPLAY_COLORS",
+    "DesignerValidationReport",
+    "build_blank_template",
+    "fit_grid_to_bounds",
+    "generate_character_grid_zone",
+    "generate_ignored_zone",
+    "generate_question_columns",
+    "resize_zone",
+    "translate_zone",
+    "validate_template_for_designer",
+]

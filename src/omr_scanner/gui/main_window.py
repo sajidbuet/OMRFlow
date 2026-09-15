@@ -38,7 +38,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QMessageBox,
     QStackedWidget,
     QWidget,
 )
@@ -46,9 +45,11 @@ from PySide6.QtWidgets import (
 from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, load_app_config, save_app_config
 from omr_scanner.errors import ConfigurationError, OMRScannerError
+from omr_scanner.gui.about_dialog import AboutDialog
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 from omr_scanner.services import ProjectSession, create_project, open_project
 
 logger = logging.getLogger(__name__)
@@ -60,13 +61,6 @@ NAVIGATION_WIDTH = 190
 NO_PROJECT_STATUS = "No project open"
 STATUS_MESSAGE_MS = 5000
 """How long transient status bar messages stay visible."""
-
-ABOUT_TEXT = (
-    f"<b>{APPLICATION_NAME}</b> {__version__}<br><br>"
-    "Template-driven OMR examination processing and result management.<br><br>"
-    "Development status: Phase 0 - architecture and repository foundation. "
-    "Recognition, reconciliation, scoring and reporting are not implemented yet."
-)
 
 
 class MainWindow(QMainWindow):
@@ -124,6 +118,8 @@ class MainWindow(QMainWindow):
                 project_page.create_requested.connect(self._prompt_create_project)
                 project_page.open_requested.connect(self._prompt_open_project)
                 page = project_page
+            elif spec.key == "template":
+                page = TemplateDesignerPage(spec)
             else:
                 page = PlaceholderPage(spec)
 
@@ -270,8 +266,8 @@ class MainWindow(QMainWindow):
         self.open_project_at(Path(directory))
 
     def _show_about(self) -> None:
-        """Show the About box."""
-        QMessageBox.about(self, f"About {APPLICATION_NAME}", ABOUT_TEXT)
+        """Show the About dialog: identity, authorship and licence."""
+        AboutDialog(self).exec()
 
     # ------------------------------------------------------------------
     # Internal state propagation

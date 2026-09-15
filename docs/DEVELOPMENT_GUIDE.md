@@ -78,7 +78,7 @@ Nothing is silenced in bulk. The complete list of exceptions:
 |---|---|---|
 | `D107` (missing `__init__` docstring) | project-wide | Constructor arguments are documented in the class docstring's `Args:` section, per the Google style. A second docstring would duplicate and drift. |
 | `ANN401` (`Any` disallowed) | project-wide | Unavoidable at the Qt and SQLAlchemy DBAPI boundaries. |
-| `N802` for `closeEvent` and friends | `pep8-naming` config | Qt method overrides must keep Qt's camelCase spelling. |
+| `N802` for `closeEvent` and friends | `pep8-naming` config | Qt method overrides must keep Qt's camelCase spelling. The list was extended in Phase 2 to cover the mouse/hover/wheel/key/drag event overrides the template designer's canvas and graphics items implement (`mousePressEvent`, `wheelEvent`, `drawBackground`, `itemChange`, and similar). |
 | `D101/D102/D103`, `ANN001/ANN201`, `ARG001` | `tests/*` | Test names describe the test; fixtures are often requested only for their side effect. Module docstrings are still required. |
 | `warn_unreachable` off | `omr_scanner.config.paths` | The module branches on `sys.platform`; mypy analyses one platform at a time and reports the other branches as unreachable. |
 | `ignore_missing_imports`, `follow_imports = silent` | `PySide6.*` | PySide6's generated stubs are incomplete and Qt's signal/slot machinery is not expressible in the type system. Our own code stays strictly checked. |

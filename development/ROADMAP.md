@@ -13,7 +13,7 @@ that cannot be tested.
 |---|---|---|
 | 0 | Architecture & Repository Foundation | **Complete** |
 | 1 | OMR Geometry & Alignment Engine | **Complete** |
-| 2 | Template Data Model & Template Designer Core | Not started |
+| 2 | Template Data Model & Template Designer Core | **Complete** |
 | 3 | Bubble Mapping & Recognition Engine | Not started |
 | 4 | Template Calibration & Validation | Not started |
 | 5 | Batch Scan Processing Pipeline | Not started |
@@ -80,19 +80,30 @@ exists anywhere in `imaging`, enforced by test.
 
 **Purpose.** Let a user create and edit a template visually instead of by hand.
 
-**Deliverables.** Template designer canvas: load a reference sheet, draw and
-resize zones, place markers, configure field types, edit bubble grids with live
-overlay; template save/load through the existing service; template management
-inside a project.
+**Deliverables.** Delivered as `gui.template_designer` (canvas, region list,
+properties panel, dialogs, undo/redo history, session state) plus
+`domain.template_authoring` (region generation and designer-facing validation)
+and `services.marker_detection_service` (the Qt/imaging seam). The template
+data model itself needed only one additive field (`reference_image`); Phase 0
+already built the rest (`Zone`, `BubbleGrid`, `FieldDefinition`).
 
-**Major tests.** Round trip designer -> `.omrt` -> designer; zone geometry edits
-produce valid documents; invalid geometry is refused at the point of editing, not
-at save; GUI tests for the canvas interactions that are testable without pixel
-comparison.
+**Major tests.** Round trip designer -> `.omrt` -> designer (129 automated
+tests, plus a scripted 12-step functional demonstration,
+`docs/testing/phase_02_demo.md`); zone geometry edits produce valid documents by
+construction (`model_copy` on an already-validated `Zone`); invalid geometry is
+refused at the point of dialog entry; 34 GUI smoke tests covering marker
+detection, region creation/editing/deletion, fine-tune bubble mode, undo/redo,
+validation and save/reload.
 
-**Exit criteria.** A complete template for a real sheet can be produced entirely
-in the GUI and reloaded unchanged; the `.omrt` specification and its
-documentation still agree.
+**Exit criteria - met.** A complete template (7-digit student ID, A-D question
+set, 100 questions in 4 columns, 474 bubbles) is produced entirely by the
+designer's own code path and reloaded unchanged
+(`examples/templates/100_question_4_choice_example.omrt`); `docs/TEMPLATE_FORMAT.md`
+and the implementation agree (one additive field, documented).
+
+**Not done.** No real printed sheet has been used with the designer; no
+snap-to-grid or align/distribute tools. See
+`development/PHASE_02_HANDOFF.md`.
 
 ---
 

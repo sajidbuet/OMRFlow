@@ -8,6 +8,84 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+Phase 2 - interactive template designer. A user can build a complete `.omrt`
+template visually: load a reference sheet, detect and adjust registration
+markers, draw and configure regions, fine-tune individual bubbles, undo/redo,
+validate and save. Bubble recognition still does not exist; this build must
+not be used for examination processing.
+
+### Added
+
+- `omr_scanner.gui.template_designer`: the interactive template designer.
+  - `page.py` - the workflow page: file actions with dirty tracking, marker
+    detection, region creation, undo/redo, keyboard shortcuts, validation.
+  - `canvas.py` - zoomable/pannable `QGraphicsView` canvas: wheel zoom, pan,
+    an alignment grid overlay, rubber-band region drawing, per-bubble
+    fine-tune dots.
+  - `items.py` - draggable/resizable region overlays with four visual states
+    (normal, auto-detected, manually overridden, missing) and individually
+    draggable bubble dots.
+  - `state.py` - `DesignerState`: the template plus its undo/redo history plus
+    session-only marker detection provenance (never persisted).
+  - `history.py` - `SnapshotHistory`, a generic undo/redo stack over immutable
+    snapshots.
+  - `coordinates.py` - `CoordinateMapper` and `snap`, the one place
+    pixel/normalised arithmetic happens.
+  - `region_list.py`, `properties_panel.py`, `dialogs.py` - the region list,
+    the numeric geometry editor, and one dialog per region kind plus New
+    Template and the validation report.
+- `omr_scanner.domain.template_authoring`: pure region-generation and
+  designer-validation functions - `generate_character_grid_zone`,
+  `generate_question_columns` (one zone per printed column),
+  `generate_ignored_zone`, `translate_zone`, `resize_zone`,
+  `build_blank_template`, `validate_template_for_designer`.
+- `omr_scanner.services.marker_detection_service`: the seam that lets the
+  designer decode images and run Phase 1's marker detector without the `gui`
+  layer ever importing `cv2`/`numpy`. Detection is scored per corner
+  independently (never Phase 1's stricter all-or-nothing four-corner
+  assignment), so a sheet with three good corners and one damaged one is
+  reported accurately rather than rejected outright.
+- `OmrTemplate.reference_image`: one additive, optional field recording the
+  reference sheet's path relative to the `.omrt` file, so a template can be
+  reopened for further editing. Does not bump `format_version`; documents
+  written before Phase 2 load unchanged.
+- `examples/templates/100_question_4_choice_example.omrt`: a 7-digit student
+  ID, A-D question set and 100 questions in 4 columns (474 bubbles total),
+  built and validated through the real generator functions, with its
+  reference image shipped alongside it.
+- 146 new tests (729 total): region generation and validation, coordinate
+  conversion, undo/redo, designer state mutations, the marker detection
+  service against synthetic sheets, and GUI smoke tests covering the full
+  create-detect-draw-adjust-undo-validate-save-reload workflow.
+
+### Changed
+
+- `omr_scanner.gui.pages.base_page.WorkflowPage` gained an `expand: bool`
+  constructor flag so a page's body can fill all available vertical space
+  instead of shrinking to its content with a trailing spacer - needed for the
+  designer's full-size canvas. Default behaviour for every other page is
+  unchanged.
+- `omr_scanner.gui.pages.catalog.WorkflowPageSpec` gained an explicit
+  `implemented` field, decoupling "is this a working page" from "which phase's
+  number is shown to the user" - the Template stage keeps `phase=2` for
+  documentation purposes while `implemented=True`.
+- The Template workflow stage is a real page instead of a placeholder.
+- `docs/TEMPLATE_FORMAT.md`, `docs/ARCHITECTURE.md`, `docs/DEVELOPMENT_GUIDE.md`
+  updated for the above.
+- `pyproject.toml`: the Ruff `pep8-naming` Qt-override allowlist extended to
+  cover the mouse/hover/wheel/key/drag event handlers the designer's canvas
+  and graphics items implement.
+
+### Known limitations
+
+- No snap-to-grid while dragging yet (the pure function exists and is tested;
+  wiring it into interactive dragging is deferred).
+- No align/distribute tools for multi-selected regions.
+- Individual-bubble override reset is per-region, not per-bubble.
+- The designer has not been used against a real printed sheet.
+
+---
+
 Phase 1 - OMR geometry and alignment engine. An arbitrary scan of a sheet can
 now be normalised into the canonical page its template describes. Bubble
 recognition still does not exist; this build must not be used for examination

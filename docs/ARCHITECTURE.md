@@ -53,7 +53,7 @@ above it.
 | `omr_scanner.database` | Schema, migrations, engine and session lifetime. | Workflow logic, Qt, OpenCV. |
 | `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results. Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
 | `omr_scanner.reporting` | CSV/XLSX/PDF generation. *(reserved - Phase 9)* | Result calculation, Qt. |
-| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
+| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
 | `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
 | `omr_scanner.config` | Per-user application settings and platform directory resolution. | Project or template settings. |
 | `omr_scanner.utils` | Dependency-light helpers (atomic JSON, logging setup). | Domain vocabulary, any other OMRFlow layer. |
@@ -177,6 +177,41 @@ Each arrow is a function boundary that can be tested with synthetic data. The
 canonical page image is the contract between geometry (Phase 1) and recognition
 (Phase 3): everything after it works in normalised template coordinates, so a
 recognition change can never silently depend on scanner resolution.
+
+## The template designer (Phase 2)
+
+`omr_scanner.gui.template_designer` produces the `.omrt` documents the
+pipeline above consumes. It sits entirely inside the `gui` layer's rules -
+no `cv2`/`numpy` import anywhere in the package - by keeping pixel work behind
+one more service seam:
+
+```text
+reference image file
+  -> services.marker_detection_service.decode_image_file    plain bytes, not an array
+  -> gui.template_designer.canvas                           QImage from those bytes
+  -> services.marker_detection_service.detect_registration_markers
+  -> gui.template_designer.state.DesignerState               marker geometry (session)
+  -> domain.template_authoring                               region generation, validation
+  -> gui.template_designer.state.DesignerState               OmrTemplate.model_copy(...)
+  -> services.template_service.save_template                 unchanged since Phase 0
+```
+
+`marker_detection_service` reuses Phase 1's `imaging.preprocessing` and
+`imaging.marker_detection` directly rather than re-detecting markers by other
+means - it only replaces Phase 1's *all-or-nothing* four-corner assignment
+(correct when there is no human to ask) with an independent per-corner result
+(correct when there is): see the module's own docstring for why, and
+`docs/phase_02_plan.md` §5 for the layering reasoning.
+
+`domain.template_authoring` holds the region-generation and designer-facing
+validation logic in `domain`, not `gui`, because it is pure computation over
+the existing `Zone`/`BubbleGrid` model with no Qt or file dependency - the same
+placement rule `domain.geometry` and `domain.template` already follow.
+
+The designer edits by producing a new `OmrTemplate` via `model_copy(update=...)`
+and pushing it onto `gui.template_designer.history.SnapshotHistory`; there is
+no second, mutable template representation to keep in sync with the persisted
+format. See `docs/template_designer.md` for the user-facing description.
 
 ## Concurrency
 

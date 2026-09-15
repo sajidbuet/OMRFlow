@@ -1,0 +1,318 @@
+{
+  "format": "omrflow-template",
+  "format_version": 1,
+  "template_id": "634fd843-2544-49c8-a044-913184040847",
+  "name": "100-question, 4-choice example",
+  "description": "Illustrative Phase 2 example: 7-digit student ID, A-D question set, questions 1-100 in four columns of A-D choices. Coordinates are generated, not calibrated against a real printed sheet.",
+  "created_with": "0.1.0.dev0",
+  "created_at": "2026-09-15T15:56:59.460755Z",
+  "modified_at": "2026-09-15T15:56:59.460755Z",
+  "page": {
+    "width_mm": 210.0,
+    "height_mm": 297.0,
+    "canonical_width_px": 1240,
+    "canonical_height_px": 1754
+  },
+  "registration_markers": [
+    {
+      "role": "top_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.05,
+        "y": 0.05
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "top_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.95,
+        "y": 0.05
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.95,
+        "y": 0.95
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.05,
+        "y": 0.95
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    }
+  ],
+  "orientation_marker": {
+    "shape": "filled_rectangle",
+    "center": {
+      "x": 0.14,
+      "y": 0.035
+    },
+    "size": {
+      "width": 0.05,
+      "height": 0.012
+    },
+    "expected_near": "top_left",
+    "search_radius": 0.05
+  },
+  "zones": [
+    {
+      "id": "student_id",
+      "label": "Student ID",
+      "bounds": {
+        "x": 0.08,
+        "y": 0.12,
+        "width": 0.3,
+        "height": 0.42
+      },
+      "field": {
+        "type": "numeric",
+        "symbols": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "character_count": 7,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.091,
+          "y": 0.128
+        },
+        "row_pitch": 0.04488888888888889,
+        "column_pitch": 0.04633333333333333,
+        "bubble_size": {
+          "width": 0.022,
+          "height": 0.016
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "question_set",
+      "label": "Question set",
+      "bounds": {
+        "x": 0.45,
+        "y": 0.12,
+        "width": 0.1,
+        "height": 0.2
+      },
+      "field": {
+        "type": "set_code",
+        "symbols": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "character_count": 1,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.5,
+          "y": 0.128
+        },
+        "row_pitch": 0.06133333333333333,
+        "column_pitch": 0.0,
+        "bubble_size": {
+          "width": 0.022,
+          "height": 0.016
+        },
+        "overrides": []
+      },
+      "display_color": "#8E24AA",
+      "recognition": null
+    },
+    {
+      "id": "questions_0",
+      "label": "Questions 1-25",
+      "bounds": {
+        "x": 0.08,
+        "y": 0.58,
+        "width": 0.19874999999999998,
+        "height": 0.35
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 1,
+        "question_count": 25,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.088,
+          "y": 0.586
+        },
+        "row_pitch": 0.014083333333333331,
+        "column_pitch": 0.060916666666666654,
+        "bubble_size": {
+          "width": 0.016,
+          "height": 0.012
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_1",
+      "label": "Questions 26-50",
+      "bounds": {
+        "x": 0.29375,
+        "y": 0.58,
+        "width": 0.19874999999999998,
+        "height": 0.35
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 26,
+        "question_count": 25,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.30175,
+          "y": 0.586
+        },
+        "row_pitch": 0.014083333333333331,
+        "column_pitch": 0.060916666666666654,
+        "bubble_size": {
+          "width": 0.016,
+          "height": 0.012
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_2",
+      "label": "Questions 51-75",
+      "bounds": {
+        "x": 0.5075,
+        "y": 0.58,
+        "width": 0.19874999999999998,
+        "height": 0.35
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 51,
+        "question_count": 25,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.5155,
+          "y": 0.586
+        },
+        "row_pitch": 0.014083333333333331,
+        "column_pitch": 0.060916666666666654,
+        "bubble_size": {
+          "width": 0.016,
+          "height": 0.012
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_3",
+      "label": "Questions 76-100",
+      "bounds": {
+        "x": 0.72125,
+        "y": 0.58,
+        "width": 0.19874999999999998,
+        "height": 0.35
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 76,
+        "question_count": 25,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.72925,
+          "y": 0.586
+        },
+        "row_pitch": 0.014083333333333331,
+        "column_pitch": 0.060916666666666654,
+        "bubble_size": {
+          "width": 0.016,
+          "height": 0.012
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    }
+  ],
+  "recognition": {
+    "fill_ratio_threshold": 0.55,
+    "blank_ratio_threshold": 0.25,
+    "ambiguity_margin": 0.12,
+    "min_confidence": 0.6
+  },
+  "reference_image": "100_question_4_choice_example.png"
+}
