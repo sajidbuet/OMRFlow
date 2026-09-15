@@ -9,6 +9,11 @@ Key fixture:
     ``isolated_user_environment`` is autouse: it redirects the per-user
     configuration and log directories into a temporary folder for *every* test,
     including ones that never mention configuration.
+
+Imaging fixtures:
+    ``canonical_sheet`` renders the default synthetic page once per session -
+    the geometry tests all start from the same ground truth, and rendering it per
+    test would cost more than every alignment in the suite put together.
 """
 
 from __future__ import annotations
@@ -20,6 +25,8 @@ from pathlib import Path
 import pytest
 
 from omr_scanner.config.paths import ENV_CONFIG_DIR, ENV_LOG_DIR
+from omr_scanner.imaging import AlignmentConfig
+from omr_scanner.imaging.synthetic import SyntheticSheet, SyntheticSheetSpec, render_sheet
 from omr_scanner.services import ProjectSession, create_project
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -84,3 +91,24 @@ def logging_sandbox() -> Iterator[None]:
 def example_template_path() -> Path:
     """Path of the illustrative template shipped in ``resources/templates``."""
     return EXAMPLE_TEMPLATE
+
+
+@pytest.fixture(scope="session")
+def canonical_sheet() -> SyntheticSheet:
+    """The default synthetic canonical page, with its ground-truth coordinates.
+
+    Session scoped and never mutated: every alignment test warps a *copy* of it
+    through a distortion, so sharing the rendered page is safe and saves the
+    suite several hundred renders.
+    """
+    return render_sheet(SyntheticSheetSpec())
+
+
+@pytest.fixture(scope="session")
+def canonical_config() -> AlignmentConfig:
+    """The alignment configuration matching :func:`canonical_sheet`.
+
+    Frozen dataclasses all the way down, so sharing one instance across tests
+    cannot leak state between them.
+    """
+    return AlignmentConfig()

@@ -12,7 +12,7 @@ that cannot be tested.
 | Phase | Title | Status |
 |---|---|---|
 | 0 | Architecture & Repository Foundation | **Complete** |
-| 1 | OMR Geometry & Alignment Engine | Not started |
+| 1 | OMR Geometry & Alignment Engine | **Complete** |
 | 2 | Template Data Model & Template Designer Core | Not started |
 | 3 | Bubble Mapping & Recognition Engine | Not started |
 | 4 | Template Calibration & Validation | Not started |
@@ -53,21 +53,26 @@ visibly marked as such.
 **Purpose.** Turn an arbitrary scan into the canonical page the template
 describes. This is the contract every later phase depends on.
 
-**Deliverables.** `imaging.preprocess` (grayscale, denoise, adaptive threshold);
-`imaging.markers` (registration and orientation marker detection);
-`imaging.normalize` (corner ordering, perspective transform, scale
-normalisation); a synthetic sheet generator for tests; `ImagingError` failure
-reporting; a diagnostic dump of intermediate stages.
+**Deliverables.** Delivered as `imaging.preprocessing`,
+`imaging.marker_detection`, `imaging.orientation`, `imaging.geometry`,
+`imaging.alignment`, `imaging.diagnostics`, `imaging.config`, `imaging.models`
+and `imaging.synthetic`, plus `services.alignment_service` and the developer
+tools in `omr_scanner.tools`. (The module names differ from those planned in
+Phase 0; the responsibilities are the same, split one concern per file.)
 
 **Major tests.** Synthetic round trip: apply a known rotation, scale,
-translation and perspective, then assert the recovered marker positions are
-within tolerance. Degradation sweeps over blur, noise, brightness and damaged
-markers. Upside-down sheets are detected and corrected. Missing or duplicate
-markers raise rather than guess.
+translation and perspective, then measure nine interior control points that took
+no part in the fit. Degradation sweeps over blur, noise, brightness, illumination
+gradient, JPEG compression, cropping and damaged markers. All four page
+orientations. Missing markers raise rather than guess.
 
-**Exit criteria.** Alignment accuracy is a measured number with a regression
-threshold; the failure boundary (how much degradation is survivable) is
-documented; no Qt import exists anywhere in `imaging`.
+**Exit criteria - met.** Accuracy is measured (0.062 px mean, 0.394 px maximum
+over 360 control-point measurements) with a 1.5 px regression threshold; the
+degradation boundary is documented in `docs/IMAGE_PROCESSING.md`; no Qt import
+exists anywhere in `imaging`, enforced by test.
+
+**Not done.** No real-world validation - every number is synthetic. See
+`development/PHASE_01_HANDOFF.md`.
 
 ---
 

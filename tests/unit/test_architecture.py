@@ -32,6 +32,10 @@ FORBIDDEN_IMPORTS: dict[str, tuple[str, ...]] = {
     "reporting": ("PySide6", "omr_scanner.gui", "cv2"),
     "database": ("PySide6", "cv2", "omr_scanner.gui", "omr_scanner.services"),
     "services": ("PySide6", "omr_scanner.gui"),
+    # Developer command line tools sit beside the GUI, not below it: they may
+    # call any service or algorithm, but importing a widget would make them
+    # depend on a display.
+    "tools": ("PySide6", "omr_scanner.gui"),
     "gui": ("cv2", "sqlalchemy", "numpy", "omr_scanner.database", "omr_scanner.imaging",
             "omr_scanner.recognition"),
     "utils": ("PySide6", "cv2", "sqlalchemy", "omr_scanner.gui", "omr_scanner.services",

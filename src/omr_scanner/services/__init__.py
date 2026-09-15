@@ -19,11 +19,18 @@ What does NOT belong here:
 
 Phase status:
     Phase 0 implements :mod:`omr_scanner.services.project_service` and
-    :mod:`omr_scanner.services.template_service`. Scan, recognition, conflict,
-    attendance, scoring and reporting services arrive with their own phases
-    (see ``development/ROADMAP.md``).
+    :mod:`omr_scanner.services.template_service`; Phase 1 adds
+    :mod:`omr_scanner.services.alignment_service`, the boundary that hands a
+    template's geometry to the imaging layer. Recognition, conflict, attendance,
+    scoring and reporting services arrive with their own phases (see
+    ``development/ROADMAP.md``).
 """
 
+from omr_scanner.services.alignment_service import (
+    alignment_config_from_template,
+    load_scan_image,
+    save_image,
+)
 from omr_scanner.services.project_service import (
     ProjectSession,
     create_project,
@@ -39,11 +46,14 @@ from omr_scanner.services.template_service import (
 
 __all__ = [
     "ProjectSession",
+    "alignment_config_from_template",
     "create_project",
     "is_project_directory",
     "list_templates",
+    "load_scan_image",
     "load_template",
     "open_project",
     "read_project_metadata",
+    "save_image",
     "save_template",
 ]

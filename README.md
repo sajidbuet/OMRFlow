@@ -17,8 +17,9 @@ human verification + reproducible result processing**
 
 ## Development status
 
-> **Pre-release. Phase 0 of 11 is complete.**
-> OMRFlow currently manages projects. It cannot yet read answer sheets.
+> **Pre-release. Phases 0 and 1 of 11 are complete.**
+> OMRFlow manages projects and can rectify a scanned sheet into its template's
+> canonical page. It cannot yet read the marks on that page.
 > **Do not use it for examination processing.**
 
 **What works today**
@@ -28,13 +29,18 @@ human verification + reproducible result processing**
 - Close and reopen a project; invalid or damaged projects are refused with a
   readable message.
 - Load, validate and save versioned `.omrt` template documents.
+- **Geometric normalisation**: detect the four printed registration markers on a
+  scan, resolve which way up the page is, and correct rotation, translation,
+  scale, skew and perspective into the canonical page the template declares.
+  Measured at 0.06 px mean and 0.39 px maximum control-point error across 40
+  synthetic distortions; a sheet that cannot be aligned confidently is refused
+  with a reason rather than guessed at. No real scan has been processed yet.
 - A PySide6 application shell with the eight workflow stages, seven of which
   state which phase will implement them.
 
 **What does not exist yet**
 
-Image processing, marker detection, orientation and perspective correction,
-bubble recognition, the template designer, batch processing, conflict
+Bubble recognition, the template designer, batch processing, conflict
 resolution, attendance reconciliation, answer keys, scoring and reporting.
 
 Current detail: [`development/CURRENT_STATE.md`](development/CURRENT_STATE.md).
@@ -66,12 +72,24 @@ omrflow "C:/Exams/Physics Midterm"     # open a project on start-up
 
 ```bash
 pip install -e ".[dev]"
-pytest                   # 128 tests
+pytest                   # 583 tests
 ruff check .
 mypy
 ```
 
 All three must pass before a development phase is considered complete.
+
+## Developer tools
+
+Not user-facing, but the quickest way to see the alignment engine work:
+
+```bash
+# Render a synthetic sheet, distorted by a known transform
+python -m omr_scanner.tools.make_test_sheet scan.png --rotate 6 --perspective 0.02 --seed 7
+
+# Align it, print what was measured, and write diagnostic overlays
+python -m omr_scanner.tools.align_image scan.png --output aligned.png --debug debug/
+```
 
 ---
 
@@ -90,7 +108,8 @@ OMRflow/
 │   ├── database/             SQLite schema, migrations, sessions
 │   ├── services/             workflows the GUI calls
 │   ├── gui/                  PySide6 window and workflow pages
-│   ├── imaging/              RESERVED - pixel algorithms (Phase 1/3)
+│   ├── imaging/              pixel algorithms: alignment now, metrics Phase 3
+│   ├── tools/                developer command line utilities
 │   ├── recognition/          RESERVED - value interpretation (Phase 3/6)
 │   ├── reporting/            RESERVED - CSV/XLSX/PDF export (Phase 9)
 │   └── utils/                logging setup, atomic JSON
@@ -117,7 +136,7 @@ OMRflow/
 | [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md) | Setup, commands, conventions, where each kind of setting belongs |
 | [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md) | Entities across all phases and their relationships |
 | [`docs/TEMPLATE_FORMAT.md`](docs/TEMPLATE_FORMAT.md) | The `.omrt` format, with a worked example |
-| [`docs/IMAGE_PROCESSING.md`](docs/IMAGE_PROCESSING.md) | The planned recognition pipeline (not implemented) |
+| [`docs/IMAGE_PROCESSING.md`](docs/IMAGE_PROCESSING.md) | The alignment engine: algorithm, accuracy, failure modes and limits |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |

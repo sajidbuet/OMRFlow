@@ -16,14 +16,23 @@
    `docs/ARCHITECTURE.md` - the GUI imports no OpenCV or SQLAlchemy, `imaging`
    imports no Qt, `domain` imports nothing above it, and every module has a
    docstring.
+5. **A measurement, not an assertion that something happened.** `assert result
+   is not None` is not a test of an alignment engine. Every geometric test
+   compares a recovered position against a known one and reports the distance,
+   and every tolerance is derived from measurement with its magnitude justified
+   where it is defined.
 
 ## Layout
 
 ```text
 tests/
-├── conftest.py        shared fixtures (isolation, workspace, project session)
-├── unit/              pure logic: config, geometry, template model, domain, layering
-├── integration/       service + database + file system working together
+├── conftest.py        shared fixtures (isolation, workspace, project session,
+│                      synthetic canonical sheet and its alignment configuration)
+├── unit/              pure logic: config, geometry, template model, domain,
+│                      imaging geometry/config/preprocessing, the synthetic
+│                      generator, layering
+├── integration/       service + database + file system working together;
+│                      the whole alignment engine end to end
 ├── gui/               pytest-qt smoke tests of the PySide6 shell
 └── fixtures/          test data (see the fixture policy below)
 ```
@@ -41,7 +50,11 @@ GUI tests require a Qt platform plugin; on a headless runner the offscreen
 plugin is selected automatically (`tests/gui/conftest.py`), and can be forced
 with `QT_QPA_PLATFORM=offscreen`.
 
-## What is covered today (Phase 0)
+## What is covered today (Phases 0-1)
+
+583 tests, all passing. The Phase 1 additions are listed under "Testing the
+alignment engine" below; this table covers the Phase 0 foundation.
+
 
 | Area | Examples |
 |---|---|
@@ -104,20 +117,162 @@ If step 1 is not possible, the scan does not go into the repository. Keep it in 
 private local fixture directory instead and mark the test that uses it as
 skipped when the file is absent.
 
-## Testing the alignment engine (Phase 1 onward)
+## Testing the alignment engine (Phase 1)
 
 The synthetic round trip is the reason the pipeline is designed the way it is:
 
 ```text
-canonical sheet
-   -> apply a KNOWN rotation / perspective / scale / translation / blur / noise
+canonical sheet with known interior control points
+   -> apply a KNOWN rotation / scale / translation / perspective / blur / noise
    -> synthetic scan
    -> OMRFlow alignment
-   -> recovered sheet
-   -> compare against the canonical sheet and the known transform
+   -> map the control points through the recovered transform
+   -> compare with where they were drawn
 ```
 
 Because the applied transform is known, alignment accuracy is a measured number
-(marker position error in pixels) with a threshold that can regress. Extend the
-sweep until the pipeline fails, and record that boundary as a documented limit
-rather than discovering it mid-examination.
+with a threshold that can regress.
+
+### The synthetic sheet generator
+
+`omr_scanner.imaging.synthetic` renders a canonical page and distorts it
+reproducibly. It lives in the package rather than under `tests/` so the
+developer tools can use it too, but it is a test and development utility.
+
+`render_sheet(SyntheticSheetSpec(...))` produces a page carrying:
+
+- four solid registration squares at the configured normalised centres;
+- an orientation dash;
+- nine interior control points, whose exact canonical positions come back with
+  the sheet;
+- **competing graphics on purpose**: hollow answer frames the same size as a
+  marker, a grid of unfilled bubbles, text-like bars, and optional solid decoy
+  squares placed inside the corner search regions.
+
+The clutter is not decoration. A page that is white paper plus four black
+squares makes any detector look good; the shapes above are the ones that defeat
+a detector relying on outline alone, and several tests exist only to confirm
+they are rejected for the right reason.
+
+Markers and the orientation mark can be omitted individually
+(`omit_markers`, `omit_orientation_marker`), which is how the failure paths are
+exercised without hand-editing pixels.
+
+### Why interior control points
+
+The homography is fitted through the four marker centres, so those four points
+map onto their targets to numerical precision no matter how wrong detection was.
+Reprojection error over them therefore measures arithmetic, not geometry.
+
+The control points take no part in the fit, so the distance between where one
+lands and where it was drawn is an honest measure of how much of the page was
+actually recovered. `synthetic.control_point_errors` computes it, using its own
+arithmetic rather than `imaging.geometry`, so the ground truth is never produced
+by the code under test.
+
+Two tests guard the metric itself: mapping through the exact inverse of the
+applied distortion must give ~0 error, and mapping through the identity must
+give a large one.
+
+### Deterministic distortions
+
+`DistortionSpec` describes a degradation physically rather than as OpenCV
+arguments, so a failing case reads as "10 degrees plus 6 per cent perspective":
+
+| Field | Effect |
+|---|---|
+| `rotation_degrees` | Clockwise rotation about the page centre; the canvas grows to fit, as a scanner's output does. |
+| `scale_x`, `scale_y` | Uniform or non-uniform scale. |
+| `translate_x_px`, `translate_y_px`, `margin_px` | Translation, platen margin; a negative margin crops into the page. |
+| `perspective_strength` | Each corner displaced by up to this fraction of the shorter page side. |
+| `brightness_gain`, `brightness_offset` | Uniform exposure change. |
+| `illumination_gradient` | A diagonal ramp - the degradation a global threshold is actually vulnerable to. |
+| `blur_kernel_px`, `noise_sigma`, `jpeg_quality` | Optical and sensor degradation. |
+| `seed` | Seeds every random choice. |
+
+**Every randomised distortion is seeded.** There are no flaky geometry tests:
+reproducibility is asserted directly, by applying the same spec twice and
+requiring byte-identical images and identical homographies.
+
+### The accuracy suite
+
+`tests/integration/test_alignment.py` runs 40 distortion cases - every class
+singly, plus four combined cases including an upside-down and a quarter-turn one
+- and measures nine control points in each.
+
+```text
+mean               0.062 px
+median             0.059 px
+95th percentile    0.145 px
+maximum            0.394 px
+failures           0
+```
+
+`CONTROL_POINT_TOLERANCE_PX = 1.5` is the regression threshold. It is derived
+from the measurement, not chosen for convenience: roughly a tenth of a printed
+marker's width and two orders of magnitude below a bubble pitch, with enough
+headroom that a regression tripling the error fails the suite rather than
+passing quietly.
+
+A second test re-detects each control point **in the rectified image** rather
+than through the matrix, at a looser 3 px tolerance that also absorbs bilinear
+interpolation. It exists so that a warp using the right matrix with the wrong
+output size or a flipped axis cannot pass unnoticed.
+
+### Orientation tests
+
+All four cardinal feed orientations are tested three ways: alone, with 4 degrees
+of skew and 1.5 per cent perspective on top, and for confidence and margin. The
+failure paths are tested as carefully: a sheet with no orientation mark must
+raise `ORIENTATION_NOT_FOUND`, and a sheet carrying a *second* mark where the
+inverted hypothesis would sample it must be refused for insufficient margin
+rather than decided by a coin toss.
+
+### Test layout
+
+| File | Tests | Covers |
+|---|---:|---|
+| `unit/test_imaging_geometry.py` | 53 | Point ordering (upright, rotated ±30°, translated, perspective, narrow, scrambled input), convexity, simplicity, area, aspect ratio, every quadrilateral validation rejection, homography and its inverse, reprojection. |
+| `unit/test_imaging_config.py` | 35 | Every configuration rejection, the derived area/aspect bounds, normalised-to-canonical conversion, canonical marker targets at three page sizes. |
+| `unit/test_imaging_preprocessing.py` | 39 | Validation of every malformed input shape, grayscale for all channel layouts, downscaling and the realised scale factor, all three threshold strategies, the adaptive block-size constraint, source immutability. |
+| `unit/test_synthetic_sheets.py` | 43 | The generator's own ground truth, determinism, each distortion's effect, and the two guards on the accuracy metric itself. |
+| `integration/test_marker_detection.py` | 40 | Clean pages, eight degradations, decoys inside the corner regions, a large logo, noise specks, three resolutions, three threshold strategies, scoring, search regions, centroid stability under damage, and the selection failures. |
+| `integration/test_orientation.py` | 29 | 0/90/180/270 plain, skewed and by confidence; mark reporting; hypothesis pruning; missing and ambiguous marks; the fallback and its warning. |
+| `integration/test_alignment.py` | 113 | The 40-case accuracy suite (error and output size), determinism, three resolutions, image-space recovery, colour and BGRA input, transforms and their inverse, the result structure, every metric, every warning. |
+| `integration/test_alignment_failures.py` | 41 | Each missing corner, two missing, blank and cluttered pages, heavy cropping, invalid quadrilaterals, every malformed input, the failure contract (code, user message, no sentinel), damaged and outline-only markers. |
+| `integration/test_alignment_diagnostics.py` | 23 | That diagnostics change nothing, their content, overlay and preview rendering, the textual summary. |
+| `integration/test_alignment_service.py` | 20 | Template-to-configuration conversion field by field, an end-to-end alignment driven by a template, image I/O including non-ASCII paths and overwrite refusal. |
+| `integration/test_imaging_tools.py` | 17 | Both developer tools: arguments, exit codes, diagnostics output, reproducibility. |
+
+### Shared fixtures
+
+`canonical_sheet` and `canonical_config` in `tests/conftest.py` are session
+scoped. Both are immutable - the sheet is only ever warped into a new array, and
+the configuration is frozen dataclasses all the way down - so sharing them
+cannot leak state between tests, and it saves the suite several hundred renders.
+
+### Files
+
+No test writes into the repository. The tools tests and the diagnostics tests
+write into pytest's `tmp_path`; everything else works in memory.
+
+### Adding anonymised real-world scans later
+
+`tests/fixtures/images/anonymized/` is reserved and empty. Real-world regression
+testing is **deferred**: no anonymised sample sheets exist yet, and Phase 1's
+accuracy numbers are therefore entirely synthetic. That is the largest open risk
+in the alignment engine.
+
+To add one, follow the anonymisation procedure above, then:
+
+1. Put the file in `tests/fixtures/images/anonymized/` and index it in that
+   directory's `README.md` with the property it is there for.
+2. Add a test that aligns it and asserts what can be asserted without ground
+   truth: that it succeeds, which warnings it carries, and that the metrics stay
+   within recorded bounds. Pin those bounds to the values measured when the
+   fixture is added, so a regression is visible.
+3. If the sheet's true marker positions can be measured by hand, record them
+   beside the fixture and assert the detected centres against them; that turns
+   the fixture into a real accuracy measurement rather than a smoke test.
+4. Mark the test skipped when the file is absent, so a developer without the
+   fixture can still run the suite.

@@ -48,12 +48,13 @@ above it.
 | Package | Owns | Must never contain |
 |---|---|---|
 | `omr_scanner.domain` | Data shapes and their validity rules; pure computations (e.g. bubble centre from a grid). | I/O, SQL, Qt, OpenCV, workflow logic. |
-| `omr_scanner.imaging` | Pixel algorithms: preprocessing, marker detection, orientation, perspective rectification, bubble metrics. *(reserved - Phase 1/3)* | Qt, database, project layout knowledge, value interpretation. |
+| `omr_scanner.imaging` | Pixel algorithms: preprocessing, marker detection, orientation, perspective rectification *(Phase 1)*, bubble metrics *(Phase 3)*. | Qt, database, project layout knowledge, value interpretation, file I/O, `.omrt` knowledge. |
 | `omr_scanner.recognition` | Turning measurements into logical values with confidence, missing/multiple-mark handling. *(reserved - Phase 3/6)* | Pixel access, OpenCV, persistence, Qt. |
 | `omr_scanner.database` | Schema, migrations, engine and session lifetime. | Workflow logic, Qt, OpenCV. |
 | `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results. Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
 | `omr_scanner.reporting` | CSV/XLSX/PDF generation. *(reserved - Phase 9)* | Result calculation, Qt. |
 | `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
+| `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
 | `omr_scanner.config` | Per-user application settings and platform directory resolution. | Project or template settings. |
 | `omr_scanner.utils` | Dependency-light helpers (atomic JSON, logging setup). | Domain vocabulary, any other OMRFlow layer. |
 | `omr_scanner.errors` | The exception hierarchy. | Logging, presentation. |
@@ -95,7 +96,14 @@ OMRScannerError
 ├── DatabaseError
 │   └── SchemaVersionError
 ├── TemplateError
-├── ImagingError        (reserved - Phase 1)
+├── ImagingError                      code = "IMAGING_ERROR"
+│   ├── ImageValidationError          code = "INVALID_IMAGE"
+│   ├── MarkerDetectionError          code = "MARKER_DETECTION_FAILED"
+│   │   ├── InsufficientMarkersError  code = "INSUFFICIENT_MARKERS"
+│   │   └── AmbiguousMarkerError      code = "AMBIGUOUS_MARKERS"
+│   ├── OrientationDetectionError     code = "ORIENTATION_NOT_FOUND"
+│   ├── InvalidPageGeometryError      code = "INVALID_PAGE_GEOMETRY"
+│   └── AlignmentTransformError       code = "ALIGNMENT_TRANSFORM_FAILED"
 ├── RecognitionError    (reserved - Phase 3)
 └── ReportingError      (reserved - Phase 9)
 ```
@@ -104,6 +112,12 @@ Each carries two messages: `str(exc)` is technical and goes to the log;
 `exc.user_message` is plain language and is what a dialog shows. Services raise
 them; `omr_scanner.gui.error_reporting.report_error` is the single place that
 turns one into a dialog. The GUI never shows a traceback.
+
+Every `ImagingError` additionally carries a stable, machine-readable `code`.
+Callers - the future conflict queue, the batch pipeline, tests - branch on the
+code without parsing English, and the code is what gets recorded against a sheet
+that failed to align. It is deliberately not derived from the class name, so
+renaming a class cannot silently change a persisted status.
 
 ## Logging and privacy
 
@@ -130,21 +144,34 @@ they are only meaningful for the sheet design and print quality they were tuned
 against. A module-level threshold constant anywhere in `recognition` or
 `imaging` is a bug.
 
-## Future recognition pipeline
+Alignment tuning is the one qualified case, and the qualification is explicit:
+`omr_scanner.imaging.config` holds the engine's tolerances, score weights and
+acceptance limits as named, documented, validated fields with defaults. Every
+value that describes the *sheet* - canonical page size, marker centres, marker
+size, the orientation mark - comes from the template, and
+`services.alignment_config_from_template` is where they cross over.
 
-None of this is implemented yet. It is recorded here so that the boundaries
-above make sense; the detail is in `docs/IMAGE_PROCESSING.md`.
+## The recognition pipeline
+
+Everything up to the canonical page image exists (Phase 1); everything after it
+does not. The detail is in `docs/IMAGE_PROCESSING.md`.
 
 ```text
 raw scan
-  -> imaging.preprocess      grayscale, denoise, threshold
-  -> imaging.markers         four registration markers + orientation marker
-  -> imaging.normalize       corner ordering, perspective transform, scaling
-  -> canonical page image    (matches the template's canonical geometry)
-  -> imaging.metrics         per-bubble fill measurements from template geometry
-  -> recognition.fields      values with confidence, missing/multiple marks
-  -> services.scan_service   persistence, conflict queueing, progress reporting
+  -> imaging.preprocessing      grayscale, downscale, denoise, threshold
+  -> imaging.marker_detection   candidate measurement, filtering, corner choice
+  -> imaging.orientation        which scan corner is the sheet's top-left
+  -> imaging.geometry           ordering, validation, homography
+  -> imaging.alignment          warp; the align_sheet entry point
+  -> canonical page image       (matches the template's canonical geometry)
+  -> imaging.metrics            per-bubble fill measurements       (Phase 3)
+  -> recognition.fields         values with confidence             (Phase 3)
+  -> services.scan_service      persistence, conflicts, progress   (Phase 5)
 ```
+
+`omr_scanner.services.alignment_service` is the seam between the template and
+the engine: it turns an `OmrTemplate` into an `AlignmentConfig` and reads scans
+from disk, so that `imaging` depends on neither `.omrt` nor the file system.
 
 Each arrow is a function boundary that can be tested with synthetic data. The
 canonical page image is the contract between geometry (Phase 1) and recognition
