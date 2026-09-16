@@ -142,6 +142,179 @@ Navigate to the **Template** stage.
     readable message (Phase 0 behaviour, unchanged)
 ```
 
+## Template Designer correction pass (GUI fix pass)
+
+These checks exist because each one was a reported bug. The root cause of every
+one is recorded in `docs/development/template_gui_fix_diagnosis.md`; the
+automated equivalents are named beside each block.
+
+Use the repository's own real OMR page for all of them:
+
+```text
+examples/ECE-0000.png
+```
+
+It is 2480 x 3508, with four magenta corner squares, an 86 x 44 orientation dash
+near the top-left, and five printed answer columns of 20 (Q1-100). Never modify
+it.
+
+### Question region geometry
+
+The rectangle you drag is the *container*. Nothing you change inside the dialog
+may move or resize it.
+
+```text
+[ ] Load examples/ECE-0000.png
+[ ] Drag a Question Region over the five printed answer columns
+[ ] Note the region's outer position and size (the properties panel, or the
+    left/right edges against the printed columns)
+[ ] The dialog opens showing 4 columns
+[ ] Change it to 1 column
+[ ] The outer rectangle is visually UNCHANGED - same left edge, same right
+    edge, same top, same bottom
+[ ] Change it to 5 columns
+[ ] The outer rectangle is still unchanged
+[ ] Only the internal layout changed: 1 column spreads its bubbles over the
+    whole width; 5 columns divides it into five strips
+[ ] The same holds when you change questions per column, the choice labels,
+    the column gap and the bubble radius
+```
+
+Automated: `tests/unit/test_question_region_container.py`,
+`tests/gui/test_template_designer_bubble_and_layout.py`.
+
+### Bubble radius
+
+```text
+[ ] The toolbar's second row shows "Bubble radius" in reference-image pixels
+[ ] Set it to 5 px - the preview bubbles become small dots
+[ ] Set it to 10 px - they become visibly twice the diameter
+[ ] The bubble CENTRES do not move; only the circles grow around them
+[ ] The parent region does not move or resize
+[ ] Zoom to 50%, 100% and 200% - the radius reading and the geometry are
+    unchanged; only the rendering scales
+[ ] Select a region: the properties panel shows its own radius and a
+    "Use template bubble size" checkbox, ticked
+[ ] Clear the checkbox, set that region's radius to something distinct
+[ ] Change the toolbar radius again - the overridden region keeps its own size
+    and every other region follows the new default
+[ ] Ctrl+Z undoes a radius change in ONE step, however many regions it touched
+```
+
+Automated: `tests/gui/test_template_designer_bubble_and_layout.py::TestBubbleRadius`,
+`tests/unit/test_question_region_container.py::TestSetZoneBubbleSize`.
+
+### Region resize
+
+Place the region well away from the top-left corner first; a region at the
+origin cannot show this bug.
+
+```text
+[ ] Select a region away from (0, 0)
+[ ] Note its X and Y in the properties panel
+[ ] Drag the bottom-right handle
+[ ] X and Y are UNCHANGED; width and height changed
+[ ] The region does not jump towards the top-left corner
+[ ] Drag the right edge only: X, Y and Height unchanged, Width changed
+[ ] Drag the bottom edge only: X, Y and Width unchanged, Height changed
+[ ] Drag the top-left handle: the position changes by exactly the drag, and
+    the bottom-right corner stays put
+[ ] Type a new Width in the properties panel: X, Y, Height unchanged
+[ ] Type a new Height: X, Y, Width unchanged
+[ ] Ctrl+Z restores the previous geometry in one step, on screen and in the
+    panel
+```
+
+Automated: `tests/gui/test_template_designer_region_geometry.py`.
+
+### Orientation marker
+
+```text
+[ ] Drag the ORIENT rectangle so it contains the printed dash near the sheet's
+    top-left corner (it need not be tight or centred)
+[ ] Press Orientation on the toolbar's first row
+[ ] The mark is found; the status row reports its position and a score
+[ ] The ORIENT overlay now sits exactly on the printed dash
+[ ] The properties panel reports roughly x=157, y=308, w=86, h=44
+[ ] A mark wholly inside the rectangle is never rejected for being inside it
+[ ] Move the rectangle over blank paper and press Orientation: it reports that
+    nothing was found, with a reason, and changes nothing
+[ ] Move it over a corner registration square alone: also not found (the
+    squares are 1:1; the orientation mark is not)
+```
+
+To see what the detector saw, set `OMRFLOW_ORIENTATION_DEBUG_DIR` to a
+directory before launching; each attempt writes
+`orientation_detection_latest.png` there with the search region, every
+candidate and each rejection reason.
+
+Automated: `tests/integration/test_orientation_marker_detection.py`.
+
+### Page layout
+
+```text
+[ ] The sentence "Design and calibrate the OMR sheet template." no longer
+    occupies a full-width row (it is the Template title's tooltip instead)
+[ ] The toolbar is two compact rows: file/undo/detection/validation above,
+    region tools/bubble radius/zoom/grid below
+[ ] More vertical space is available for the canvas than before
+[ ] Narrow the window to about 1000 px: controls overflow into Qt's own "»"
+    menu rather than overlapping or clipping their labels
+[ ] Widen it again: everything returns
+[ ] Repeat at Windows display scaling 100%, 125% and 150% - icons stay
+    visible, labels stay legible, nothing overlaps
+```
+
+Automated: `tests/gui/test_template_designer_toolbar.py`,
+`tests/gui/test_template_designer_bubble_and_layout.py::TestPageHeaderIsCompact`.
+
+### Canvas panning on the real sheet
+
+```text
+[ ] Zoom to about 200%
+[ ] Middle-button drag pans the viewport smoothly
+[ ] Right-button drag pans the viewport
+[ ] A plain right-click (no movement) does not pan
+[ ] No region is selected or moved by either
+[ ] Left-drag still moves the selected region
+[ ] Region geometry in the properties panel is identical before and after
+```
+
+Automated: `tests/gui/test_template_designer_canvas_panning.py`,
+`tests/gui/test_template_designer_bubble_and_layout.py::TestPanningDoesNotAlterTheDocument`.
+
+### Real question-column layout
+
+```text
+[ ] Draw a Question Region over the sample's answer area
+[ ] Configure Q1-100, choices a,b,c,d, 5 columns of 20
+[ ] Five regions appear, labelled Questions 1-20 ... 81-100
+[ ] Together they hold 400 bubbles
+[ ] Adjust the column gap and watch the columns move while the outer
+    rectangle stays put
+[ ] Drag one column sideways; the other four do not move
+[ ] Save, reload, and confirm every offset came back
+```
+
+Automated: `tests/unit/test_template_authoring.py`,
+`tests/integration/test_template_service.py`.
+
+### Screenshots and geometry dumps
+
+Rather than reading these by eye alone, generate the evidence:
+
+```bash
+python .claude/skills/qtguitesting/scripts/run_gui_smoke_tests.py
+python .claude/skills/qtguitesting/scripts/capture_gui_states.py
+python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario columns
+python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario resize
+```
+
+Screenshots land in `test-output/gui/`; the geometry dumps check the container
+and resize-anchor invariants for you and exit non-zero if either is violated.
+
+---
+
 ## A note on how this checklist was actually exercised for Phase 2
 
 The development environment used for this phase runs Qt through the

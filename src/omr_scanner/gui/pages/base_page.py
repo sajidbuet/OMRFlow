@@ -19,6 +19,13 @@ from omr_scanner.services import ProjectSession
 CONTENT_MARGIN_PX = 24
 CONTENT_SPACING_PX = 12
 
+COMPACT_MARGIN_PX = 8
+COMPACT_SPACING_PX = 6
+"""Margins for a page whose body is a full-size editor rather than a short
+column of explanatory text. The generous defaults above frame a paragraph; on the
+template designer they were spending roughly a sixth of the window's height
+before the canvas began."""
+
 
 class WorkflowPage(QWidget):
     """Base class for every page in the main window's stacked view.
@@ -36,20 +43,36 @@ class WorkflowPage(QWidget):
             "aligned to the top"; a page whose body *is* a full-size editor
             (the template designer's canvas) needs the opposite, or the canvas
             renders squeezed into a sliver with empty space beneath it.
+        show_summary: When ``True`` (the default), :attr:`WorkflowPageSpec.summary`
+            gets its own word-wrapped, full-width row under the title. That row is
+            the *content* of a placeholder page and belongs there; on a page whose
+            body is a full-size editor it is a permanent band of text the user
+            reads once and then works around forever. Passing ``False`` keeps the
+            sentence - as the title's tooltip and status tip, so it is still
+            discoverable - without spending a row on it.
+        compact: Use :data:`COMPACT_MARGIN_PX`/:data:`COMPACT_SPACING_PX` instead
+            of the generous defaults, for the same reason.
     """
 
     def __init__(
-        self, spec: WorkflowPageSpec, parent: QWidget | None = None, *, expand: bool = False
+        self,
+        spec: WorkflowPageSpec,
+        parent: QWidget | None = None,
+        *,
+        expand: bool = False,
+        show_summary: bool = True,
+        compact: bool = False,
     ) -> None:
         super().__init__(parent)
         self.spec = spec
         self._expand = expand
 
+        margin = COMPACT_MARGIN_PX if compact else CONTENT_MARGIN_PX
+        spacing = COMPACT_SPACING_PX if compact else CONTENT_SPACING_PX
+
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            CONTENT_MARGIN_PX, CONTENT_MARGIN_PX, CONTENT_MARGIN_PX, CONTENT_MARGIN_PX
-        )
-        layout.setSpacing(CONTENT_SPACING_PX)
+        layout.setContentsMargins(margin, margin, margin, margin)
+        layout.setSpacing(spacing)
 
         title = QLabel(spec.title)
         title.setObjectName("pageTitle")
@@ -58,11 +81,18 @@ class WorkflowPage(QWidget):
         title_font.setBold(True)
         title.setFont(title_font)
         layout.addWidget(title)
+        self.title_widget = title
 
-        summary = QLabel(spec.summary)
-        summary.setObjectName("pageSummary")
-        summary.setWordWrap(True)
-        layout.addWidget(summary)
+        self.summary_widget: QLabel | None = None
+        if show_summary:
+            summary = QLabel(spec.summary)
+            summary.setObjectName("pageSummary")
+            summary.setWordWrap(True)
+            layout.addWidget(summary)
+            self.summary_widget = summary
+        else:
+            title.setToolTip(spec.summary)
+            title.setStatusTip(spec.summary)
 
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)

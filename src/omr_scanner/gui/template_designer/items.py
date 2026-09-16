@@ -16,6 +16,21 @@ Coordinate convention:
     conversion to/from *normalised* template coordinates is needed anywhere
     else.
 
+    Within that, :class:`RegionHandleItem` keeps one further invariant, enforced
+    by its constructor and by :meth:`RegionHandleItem.set_scene_rect` and relied
+    on by every other method here::
+
+        item.pos()               == (x, y)        scene
+        item.rect()              == (0, 0, w, h)  item-local
+        item.sceneBoundingRect() == (x, y, w, h)  scene
+
+    Position is stored in ``pos()`` and *only* there; the local rectangle carries
+    size and *only* size. Storing the position in both - which is what a
+    ``setRect(x, y, w, h)`` on a positioned item does - is what previously let a
+    resize gesture mix an item-local rectangle with a scene-space mouse delta and
+    teleport the region to the scene origin (see
+    ``docs/development/template_gui_fix_diagnosis.md`` §3).
+
 Responsibilities:
     * `RegionHandleItem` - a resizable, draggable rectangle shared by markers
       and zones, coloured and labelled by the caller.
@@ -33,7 +48,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from PySide6.QtCore import QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QObject, QPointF, QRectF, QSizeF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QCursor, QPainter, QPen
 from PySide6.QtWidgets import (
     QGraphicsItem,
@@ -54,6 +69,11 @@ MIN_SIZE_PX = 4.0
 pixels on a side - small enough to never constrain a real bubble, large enough
 that a rectangle can never accidentally collapse to nothing and become
 impossible to grab again."""
+
+FALLBACK_BUBBLE_RADIUS_PX = 3.0
+"""Preview-dot radius used only when a :class:`RegionHandleItem` was given
+bubble centres but no bubble size - a preview overlay, or a test constructing
+the item directly. Every real zone passes its own size."""
 
 
 class HandleState(StrEnum):
@@ -139,6 +159,13 @@ class RegionHandleItem(QGraphicsRectItem):
             region rather than a real one - drawn with a dashed outline
             regardless of :attr:`state`, so it reads as "about to exist"
             rather than "missing/needs attention".
+        bubble_size: Size of one preview bubble, in scene (image) pixels. The
+            zone's real
+            :attr:`~omr_scanner.domain.template.BubbleGrid.bubble_size`
+            converted to pixels, so what the canvas draws is the geometry the
+            template actually stores - not an arbitrary fixed dot. Defined in
+            scene pixels rather than view pixels, so zooming rescales the
+            *rendering* and never the geometry.
     """
 
     def __init__(
@@ -153,8 +180,16 @@ class RegionHandleItem(QGraphicsRectItem):
         locked: bool = False,
         selectable: bool = True,
         preview: bool = False,
+        bubble_size: QSizeF | None = None,
     ) -> None:
-        super().__init__(rect)
+        # Normalised to the class invariant (see the module docstring): whatever
+        # rectangle the caller passes, position lives in `pos()` and size lives
+        # in `rect()`. A caller that passes an already-positioned rectangle and
+        # a caller that passes an origin rectangle plus `setPos` therefore end
+        # up in exactly the same state, which is what makes the resize
+        # arithmetic below unambiguous.
+        super().__init__(QRectF(0.0, 0.0, rect.width(), rect.height()))
+        self.setPos(rect.topLeft())
         self.item_id = item_id
         self.kind = kind
         self.label = label
@@ -163,6 +198,7 @@ class RegionHandleItem(QGraphicsRectItem):
         self.resizable = resizable
         self.locked = locked
         self.preview = preview
+        self.bubble_size = QSizeF(bubble_size) if bubble_size is not None else None
         self.signals = _EditSignals()
 
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, selectable)
@@ -216,22 +252,43 @@ class RegionHandleItem(QGraphicsRectItem):
         if self.bubble_points:
             dot_pen = QPen(color)
             dot_pen.setWidth(1)
+            dot_pen.setCosmetic(True)
             painter.setPen(dot_pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            radius = 3.0
+            # The template's own bubble size, in scene pixels - so a radius
+            # change is visible immediately and at the size recognition will
+            # actually measure. `FALLBACK_BUBBLE_RADIUS_PX` only applies to a
+            # spec built without one (a preview overlay, or a test).
+            half_width = (
+                self.bubble_size.width() / 2.0
+                if self.bubble_size is not None
+                else FALLBACK_BUBBLE_RADIUS_PX
+            )
+            half_height = (
+                self.bubble_size.height() / 2.0
+                if self.bubble_size is not None
+                else FALLBACK_BUBBLE_RADIUS_PX
+            )
             for point in self.bubble_points:
-                painter.drawEllipse(point, radius, radius)
+                painter.drawEllipse(point, half_width, half_height)
 
     # ------------------------------------------------------------------
     # Mouse interaction: drag to move, drag near an edge to resize
     # ------------------------------------------------------------------
     def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
-        """Start a move or, near an edge, a resize gesture."""
+        """Start a move or, near an edge, a resize gesture.
+
+        The press rectangle is captured in **scene** coordinates, matching
+        ``event.scenePos()`` below, so the whole gesture is computed in one
+        frame. Capturing the *item-local* ``rect()`` here instead - which the
+        item-local rectangle's own zero origin makes look harmless - is what
+        used to throw the region to the scene origin on the first mouse-move.
+        """
         self.signals.selected.emit(self)
         if self.locked:
             event.ignore()
             return
-        self._press_rect = QRectF(self.rect())
+        self._press_rect = self.scene_rect()
         self._press_pos = event.scenePos()
         self._resize_edge = (
             self._edge_at(event.pos()) if self.resizable else None
@@ -266,19 +323,26 @@ class RegionHandleItem(QGraphicsRectItem):
     def scene_rect(self) -> QRectF:
         """Return this item's rectangle in scene coordinates.
 
-        `QGraphicsRectItem.rect()` is in the item's own local coordinates,
-        which differ from scene coordinates once the item has been moved by a
-        Qt-handled drag (`pos()` shifts, `rect()` stays put at the origin);
-        this is the one place that combines the two, so every caller gets an
-        answer already in scene space.
+        `QGraphicsRectItem.rect()` is in the item's own local coordinates, which
+        differ from scene coordinates as soon as the item has a position; this is
+        the one place that combines the two, so every caller gets an answer
+        already in scene space. Equivalent to ``sceneBoundingRect()`` minus the
+        pen width Qt adds to that, which is why this - and not the Qt method - is
+        what the canvas reports geometry from.
         """
         return self.rect().translated(self.pos())
 
     def set_scene_rect(self, rect: QRectF) -> None:
-        """Set this item's geometry from a scene-coordinate rectangle."""
+        """Set this item's geometry from a **scene-coordinate** rectangle.
+
+        Re-establishes the class invariant: position into ``pos()``, size into
+        ``rect()``. Passing an item-local rectangle here is a coordinate-frame
+        error, not a shortcut - it would silently reinterpret the item's
+        position.
+        """
         self.prepareGeometryChange()
         self.setPos(rect.topLeft())
-        self.setRect(QRectF(0, 0, rect.width(), rect.height()))
+        self.setRect(QRectF(0.0, 0.0, rect.width(), rect.height()))
 
     def set_state(self, state: HandleState) -> None:
         """Change the visual state and repaint."""
@@ -324,7 +388,16 @@ class RegionHandleItem(QGraphicsRectItem):
         return HANDLE_MARGIN_PX / max(scale, 0.01)
 
     def _apply_resize(self, event: QGraphicsSceneMouseEvent) -> None:
-        """Grow or shrink the item according to which edge is being dragged."""
+        """Grow or shrink the item according to which edge is being dragged.
+
+        Entirely in scene coordinates: ``self._press_rect`` is the scene
+        rectangle at mouse-down and ``delta`` is a scene-space displacement, so
+        only the edges named by ``self._resize_edge`` move. That is where the
+        anchoring semantics come from, with no special cases - dragging
+        ``right`` touches only ``setRight``, leaving ``x``, ``y`` and ``height``
+        exactly as they were, and only the ``top``/``left`` edges (which *are*
+        the top-left boundary) change the item's position.
+        """
         if self._press_rect is None or self._press_pos is None or self._resize_edge is None:
             return
         delta = event.scenePos() - self._press_pos

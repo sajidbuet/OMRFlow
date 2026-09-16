@@ -47,7 +47,8 @@ OmrTemplate
 │   ├── display_color       "#RRGGBB"
 │   └── recognition         RecognitionSettings override, or null
 ├── recognition             RecognitionSettings (template defaults)
-└── reference_image         path to the source sheet image, or null (Phase 2)
+├── reference_image         path to the source sheet image, or null (Phase 2)
+└── default_bubble_radius   default bubble radius, or null (Phase 2)
 ```
 
 ### `reference_image` - *added in Phase 2*
@@ -66,6 +67,49 @@ its image together (in the same relative arrangement) keeps the link intact.
 
 Additive and optional, per the versioning rule below: a document written
 before Phase 2 has no `reference_image` key and loads with the field `None`.
+
+### `default_bubble_radius` - *added in Phase 2*
+
+| Field | Type | Meaning |
+|---|---|---|
+| `default_bubble_radius` | number \| null | Default bubble radius for regions generated in the designer, normalised to the **page width**. Must be in `(0, 0.5]`. `null` means "unspecified"; readers fall back to `0.011`. |
+
+One number rather than a default width and a default height, because that is how
+a person describes a circular OMR bubble - and because two independent defaults
+are two things that can disagree. The bounding size a `grid` actually stores is
+derived from it:
+
+```text
+bubble_width  = 2 x default_bubble_radius
+bubble_height = 2 x default_bubble_radius x (canonical_width_px / canonical_height_px)
+```
+
+The aspect-ratio factor is what keeps a bubble that is circular **in pixels**
+circular: the normalised page is anisotropic, so equal physical extents are
+*different* normalised numbers on the two axes. A 27 px radius on a 2480 x 3508
+page therefore stores `0.0218 x 0.0154` - an ellipse in normalised coordinates
+describing a circle on paper.
+
+Normalised to the width specifically (rather than to the shorter side or the
+diagonal) so that the horizontal half-axis is simply the radius - the axis a
+person reads off a scan when measuring a printed bubble.
+
+**A region may carry its own size.** There is no per-zone "inherits" flag: a
+region inherits this default for exactly as long as its stored
+`grid.bubble_size` is within 2% of what this radius produces. Giving a region its
+own radius makes it differ, and later changes to the template default then leave
+it alone. Expressing inheritance as a property of the geometry rather than as a
+stored flag means it survives save and reload, and cannot drift out of sync with
+the geometry it describes. The tolerance is 2% because the value makes an
+unavoidable round trip - normalised here, pixels in a one-decimal spin box in the
+designer, normalised again - which exact equality would read as a deliberate
+override.
+
+Additive and optional, under the same versioning rule as `reference_image`
+above: a document written before this field existed has no
+`default_bubble_radius` key, loads with the field `None`, and keeps exactly the
+geometry it was saved with - the fallback matches the bubble width every Phase 2
+region dialog originally hard-coded.
 
 ### `page` - PageGeometry
 

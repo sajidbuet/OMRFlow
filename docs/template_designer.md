@@ -29,9 +29,13 @@ location.
 
 ```text
 +--------------------------------------------------------------+
-| [New][Open][Save][Save As] | [Undo][Redo] | Detect | Confirm  |
-| Student ID Set Questions Array Distribute Custom Reference    |
-| Edit Bubbles Reset | Validate | [Zoom-][Zoom+][Fit][100%][Grid]|
+| Template                                                     |
++--------------------------------------------------------------+
+| [New][Open][Save][Save As] | [Undo][Redo] |                  |
+|   Detect  Confirm  Orientation | Validate                    |
+| Student ID Set Questions Array Distribute Custom Reference   |
+|   | Edit Bubbles Reset | Bubble radius: [ 8.0 px ]           |
+|                    [Zoom-][Zoom+][Fit][100%][Grid]           |
 +----------------------+---------------------------------------+
 |                      |                                       |
 | Registration markers |                                       |
@@ -54,6 +58,17 @@ Three panels, left to right: the region list, the canvas, the numeric
 properties panel - matching the brief's layout with the properties panel
 docked to the canvas's right rather than spanning the full width at the
 bottom, so it stays visible regardless of window height.
+
+The toolbar is **two rows**, split by what the user is doing: row 1 manages the
+document (file, undo/redo, marker detection, validation), row 2 draws and looks
+at it (region tools, bubble editing, bubble radius, zoom, grid). One row holding
+all of this pushed most of it into Qt's overflow menu on any window narrower than
+about 1400 px - which hid exactly the region tools a designer uses constantly.
+
+The page header is deliberately compact: the stage's one-line description is the
+"Template" title's tooltip rather than a permanent full-width row, because this
+page's body is a full-size editor and every row above it is canvas the user does
+not get.
 
 ## Workflow
 
@@ -93,11 +108,28 @@ once you have eyeballed the overlay against the page.
 
 ### 3. Place the orientation mark
 
-The orientation dash (orange) works exactly like a registration marker for
-editing purposes: drag it into place over the printed mark, or leave it at its
-default position and adjust numerically in the properties panel. Phase 2 does
-not run automatic orientation detection (that is Phase 1's job, at scan time,
-against a *finished* template); here it is placed by hand.
+The orientation dash (orange) works like a registration marker for editing
+purposes: drag it into place over the printed mark, or adjust it numerically in
+the properties panel.
+
+It can also be found automatically. Drag the rectangle so that it *contains* the
+printed mark - it need not be tight or centred - and press **Orientation**. The
+detector searches inside that rectangle and replaces it with the mark's measured
+geometry, or reports why it found nothing and changes nothing.
+
+This is a different question from the one Phase 1 answers at scan time.
+`omr_scanner.imaging.orientation` decides *which way up* a scan was fed, from
+four already-detected corner markers and a homography. Here there is no
+homography and no canonical page - just a reference image and a rectangle - so
+`omr_scanner.imaging.orientation_marker` answers *where* instead, scoring each
+dark shape in the rectangle on darkness, solidity, aspect ratio, size and
+position. The defaults describe a dash (about 2:1, accepted between 1.2:1 and
+6:1, either orientation), not the near-square criteria the registration-marker
+detector uses - which would reject a dash on aspect ratio alone.
+
+To see what the detector saw, set `OMRFLOW_ORIENTATION_DEBUG_DIR` to a directory
+before launching. Each attempt writes `orientation_detection_latest.png` there,
+showing the search region, every candidate and the reason each was rejected.
 
 ### 4. Add regions
 
@@ -168,6 +200,54 @@ never optional in the format; move them instead.
 
 The region list's checkbox toggles a region's visibility on the canvas without
 deleting it, useful for decluttering a busy sheet while working on one area.
+
+#### The rectangle you drew is a container
+
+For a Question region, the rectangle you dragged out *is* the region: changing
+the column count, the questions per column, the choice labels, the column gap or
+the bubble radius reflows the layout **inside** it and never moves or resizes it.
+Going from 4 columns to 1 gives you one column spread across the same rectangle,
+not a rectangle a quarter as wide.
+
+The generated columns tile the container exactly:
+
+```text
+strip_width = (container_width - column_gap x (columns - 1)) / columns
+```
+
+so their union always reproduces what you drew. Only an explicit gesture -
+dragging the region, dragging a resize handle, or typing into the properties
+panel - changes the outer geometry.
+
+**Array** is the deliberate exception: "make N more columns like this calibrated
+one" extends past the reference rectangle, because that is the point of the
+gesture. See `ColumnLayoutMode` in
+`omr_scanner.domain.template_authoring`, which names the two behaviours so
+neither can happen by accident.
+
+#### Bubble radius
+
+Toolbar row 2 carries **Bubble radius**, in reference-image pixels: the default
+size for bubbles in regions generated in this template. It is one number, not a
+width and a height, because that is how a person describes a circular OMR bubble;
+the aspect-ratio conversion to the normalised width and height a template stores
+happens for you, so a bubble that is circular on paper stays circular.
+
+Changing it resizes bubbles **around their existing centres**. Nothing moves:
+not a centre, not a hand-placed override, not the parent region. That is what
+makes calibrating against a printed sheet predictable - you grow or shrink the
+measurement window around marks you have already aligned. (Resizing a *region*
+is the opposite operation: there the grid is re-fitted to the new rectangle.)
+
+A region can carry its own radius. Select it and use the properties panel's
+**Bubble geometry** group: clear "Use template bubble size" and type a radius.
+A region with its own radius is then left alone when the template default
+changes; re-tick the box to put it back under the default. There is no stored
+flag - a region inherits for as long as its size matches what the default
+produces - so the relationship survives save and reload.
+
+Radius is defined in image pixels, so zoom cannot affect it: at 50%, 100% or
+200% the stored geometry is identical and only the rendering scales.
 
 #### Question columns are independent regions
 

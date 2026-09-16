@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QImage,
@@ -67,6 +67,10 @@ GRID_COLOR_ALPHA = 60
 """Faint enough that the grid never competes visually with the sheet or the
 region overlays it is meant to help align."""
 
+DEFAULT_BUBBLE_DOT_RADIUS_PX = 6.0
+"""Fallback fine-tune dot radius, in image pixels, for a caller that has no
+bubble size to offer."""
+
 
 @dataclass(frozen=True, slots=True)
 class RegionSpec:
@@ -89,6 +93,12 @@ class RegionSpec:
         locked: Whether the item can be selected but not moved/resized.
         bubble_points: Bubble centres to preview inside the rectangle, in image
             pixels, or ``None`` for a marker (which has no bubbles).
+        bubble_size: ``(width, height)`` of one preview bubble, in image pixels -
+            the zone's own
+            :attr:`~omr_scanner.domain.template.BubbleGrid.bubble_size`, so the
+            overlay shows the geometry the template stores rather than a fixed
+            dot. ``None`` for a region with no bubbles, and for a preview
+            overlay that has no size to show yet.
     """
 
     item_id: str
@@ -103,6 +113,7 @@ class RegionSpec:
     resizable: bool = True
     locked: bool = False
     bubble_points: tuple[tuple[float, float], ...] = ()
+    bubble_size: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +132,10 @@ class BubbleDotSpec:
     x: float
     y: float
     overridden: bool = False
+    radius: float = DEFAULT_BUBBLE_DOT_RADIUS_PX
+    """Half the dot's size, in image pixels. Defaults to a small fixed dot; the
+    page passes half the zone's own bubble size so a fine-tune dot matches the
+    bubble it is moving."""
 
 
 class TemplateCanvasScene(QGraphicsScene):
@@ -163,6 +178,7 @@ class TemplateCanvasScene(QGraphicsScene):
                 label=spec.label,
                 resizable=spec.resizable,
                 locked=spec.locked,
+                bubble_size=_bubble_size_of(spec),
             )
             handle.setPos(QPointF(spec.x, spec.y))
             handle.set_state(spec.state)
@@ -210,7 +226,11 @@ class TemplateCanvasScene(QGraphicsScene):
                 locked=True,
                 selectable=False,
                 preview=True,
+                bubble_size=_bubble_size_of(spec),
             )
+            item.bubble_points = [
+                QPointF(px - spec.x, py - spec.y) for px, py in spec.bubble_points
+            ]
             item.setPos(QPointF(spec.x, spec.y))
             item.setOpacity(0.65)
             item.setZValue(500)
@@ -223,7 +243,11 @@ class TemplateCanvasScene(QGraphicsScene):
         self.clear_bubble_dots()
         for dot in dots:
             item = BubbleDotItem(
-                dot.row, dot.column, QPointF(dot.x, dot.y), overridden=dot.overridden
+                dot.row,
+                dot.column,
+                QPointF(dot.x, dot.y),
+                radius=dot.radius,
+                overridden=dot.overridden,
             )
             item.setZValue(30)
             self.addItem(item)
@@ -650,4 +674,17 @@ class TemplateCanvasView(QGraphicsView):
         return item.kind
 
 
-__all__ = ["BubbleDotSpec", "RegionSpec", "TemplateCanvasScene", "TemplateCanvasView"]
+def _bubble_size_of(spec: RegionSpec) -> QSizeF | None:
+    """Convert a spec's plain ``(width, height)`` tuple into a `QSizeF`, if any."""
+    if spec.bubble_size is None:
+        return None
+    return QSizeF(spec.bubble_size[0], spec.bubble_size[1])
+
+
+__all__ = [
+    "DEFAULT_BUBBLE_DOT_RADIUS_PX",
+    "BubbleDotSpec",
+    "RegionSpec",
+    "TemplateCanvasScene",
+    "TemplateCanvasView",
+]

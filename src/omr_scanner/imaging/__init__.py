@@ -12,6 +12,8 @@ Modules:
     * ``preprocessing.py``    - validation, grayscale, downscale, threshold.
     * ``marker_detection.py`` - candidate measurement, filtering, corner choice.
     * ``orientation.py``      - which corner of the scan is the sheet's top-left.
+    * ``orientation_marker.py`` - where the orientation mark is inside a region
+      the designer's user drew around it.
     * ``geometry.py``         - point ordering, quadrilateral checks, homography.
     * ``alignment.py``        - the orchestrator; :func:`align_sheet`.
     * ``diagnostics.py``      - optional overlays and textual reports.
@@ -83,6 +85,12 @@ from omr_scanner.imaging.models import (
     RejectedCandidate,
     ScoredCandidate,
 )
+from omr_scanner.imaging.orientation_marker import (
+    OrientationCandidate,
+    OrientationMarkerConfig,
+    OrientationMarkerDetection,
+    detect_orientation_marker,
+)
 
 __all__ = [
     "CANONICAL_CORNER_ORDER",
@@ -100,8 +108,11 @@ __all__ = [
     "ImageCorner",
     "MarkerCandidate",
     "MarkerDetectionConfig",
+    "OrientationCandidate",
     "OrientationConfig",
     "OrientationHypothesis",
+    "OrientationMarkerConfig",
+    "OrientationMarkerDetection",
     "OrientationResult",
     "Point",
     "PreprocessingConfig",
@@ -111,4 +122,5 @@ __all__ = [
     "ThresholdStrategy",
     "align_sheet",
     "canonical_target_for",
+    "detect_orientation_marker",
 ]

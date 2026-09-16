@@ -79,6 +79,19 @@ Keep GUI tests to a smoke layer: that widgets exist, that state propagates, that
 failures do not escape into the event loop. Logic worth testing thoroughly does
 not belong in a widget in the first place.
 
+One exception earns its keep: **geometry**. A `QGraphicsItem` position or resize
+bug lives nowhere but the widget layer, and cannot be moved out of it, so
+`tests/gui/test_template_designer_region_geometry.py` drives real Qt mouse events
+and asserts invariants (dragging the right edge changes only the width; a region
+never lands near the scene origin). Those tests use Qt-native interaction at
+*viewport-relative* points derived from an item's own scene rectangle - never
+absolute screen coordinates, which depend on DPI, window placement and the
+operating system.
+
+The workflow, the coordinate-system reference and the diagnostic scripts for this
+live in the repository-local `qtguitesting` skill
+(`.claude/skills/qtguitesting/`); see `docs/DEVELOPMENT_GUIDE.md`.
+
 ## Fixture policy
 
 `tests/fixtures/` is reserved and currently almost empty. Three categories, kept

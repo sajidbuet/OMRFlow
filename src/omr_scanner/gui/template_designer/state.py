@@ -157,6 +157,20 @@ class DesignerState:
         """Push one completed edit."""
         self.history.push(updated)
 
+    def apply_template(self, updated: OmrTemplate) -> None:
+        """Replace the whole document in one history entry.
+
+        The most general primitive here, for an edit that changes a
+        template-level setting *and* the zones that follow from it in a single
+        user gesture - changing the default bubble radius, which resizes every
+        inheriting region. Pushing the setting and each zone separately would let
+        one Undo leave the document half-converted.
+
+        Unlike :meth:`load`, history is kept: this is an edit to the *same*
+        document, not a different one.
+        """
+        self._apply(updated)
+
     # ------------------------------------------------------------------
     # Registration and orientation markers
     # ------------------------------------------------------------------

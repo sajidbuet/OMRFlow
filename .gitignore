@@ -35,3 +35,9 @@ desktop.ini
 *.log
 /projects/
 /scratch/
+
+# Generated GUI test artefacts: screenshots, geometry dumps and failure
+# diagnostics written by the `qtguitesting` skill's scripts. Regenerated on
+# demand and never a committed baseline - see
+# `.claude/skills/qtguitesting/SKILL.md`.
+/test-output/

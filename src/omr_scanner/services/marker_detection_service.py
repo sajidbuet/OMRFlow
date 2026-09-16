@@ -51,7 +51,11 @@ from omr_scanner.imaging.marker_detection import (
     detect_marker_candidates,
     score_candidate,
 )
-from omr_scanner.imaging.models import IMAGE_CORNER_ORDER
+from omr_scanner.imaging.models import IMAGE_CORNER_ORDER, BoundingBox
+from omr_scanner.imaging.orientation_marker import (
+    OrientationMarkerConfig,
+    detect_orientation_marker,
+)
 from omr_scanner.imaging.preprocessing import prepare_for_detection
 from omr_scanner.services.alignment_service import load_scan_image
 
@@ -66,6 +70,12 @@ DEFAULT_CORNER_SEARCH_FRACTION = 0.32
 
 DEFAULT_MIN_CANDIDATE_SCORE = 0.45
 """Default acceptance floor for a corner candidate; matches Phase 1's default."""
+
+ORIENTATION_DEBUG_IMAGE_NAME = "orientation_detection_latest.png"
+"""File name of the orientation detector's diagnostic overlay, written inside
+whatever directory the caller passes as ``debug_dir``. A fixed name, overwritten
+each run: the useful artefact is "what did the last attempt see", and a growing
+pile of timestamped overlays is a directory nobody reads."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +152,68 @@ class DetectedMarker:
 
 
 @dataclass(frozen=True, slots=True)
+class OrientationSearchConfig:
+    """Plain-value tuning for :func:`detect_orientation_marker_in_region`.
+
+    The subset of
+    :class:`~omr_scanner.imaging.orientation_marker.OrientationMarkerConfig` a
+    designer user might reasonably need - the shape of the mark their sheet
+    actually prints - expressed without any dependency on the imaging layer's
+    types, so this dataclass can be constructed inside ``gui`` freely (the same
+    reason :class:`MarkerSearchConfig` exists).
+
+    Attributes:
+        expected_aspect_ratio: The mark's long side divided by its short side.
+            ``2.0`` describes the conventional dash.
+        min_aspect_ratio: Narrowest accepted ratio; ``1.2`` still admits a nearly
+            square mark.
+        max_aspect_ratio: Widest accepted ratio.
+        min_score: Acceptance floor in ``[0, 1]``.
+    """
+
+    expected_aspect_ratio: float = 2.0
+    min_aspect_ratio: float = 1.2
+    max_aspect_ratio: float = 6.0
+    min_score: float = 0.45
+
+
+@dataclass(frozen=True, slots=True)
+class OrientationDetectionOutcome:
+    """The result of one orientation-mark search inside a user-drawn rectangle.
+
+    Attributes:
+        found: Whether an acceptable mark was located.
+        x, y: Top-left of the mark's bounding box, in reference-image pixels.
+            ``0.0`` when not found.
+        width, height: Bounding box size, in reference-image pixels.
+        center_x, center_y: The mark's centroid, in reference-image pixels - what
+            the template's
+            :attr:`~omr_scanner.domain.template.OrientationMarker.center` stores,
+            supplied separately because a centroid is not the centre of a
+            bounding box for anything but a perfectly symmetric shape.
+        score: Combined score in ``[0, 1]`` - of the accepted mark, or of the best
+            rejected candidate, or ``0.0`` when the rectangle held nothing.
+        reason: Empty when found; otherwise why nothing was accepted.
+        candidate_count: How many dark shapes were measured inside the rectangle,
+            for display ("6 shapes found, none dash-like enough").
+        debug_image_path: Where the diagnostic overlay was written, when one was
+            requested.
+    """
+
+    found: bool
+    x: float = 0.0
+    y: float = 0.0
+    width: float = 0.0
+    height: float = 0.0
+    center_x: float = 0.0
+    center_y: float = 0.0
+    score: float = 0.0
+    reason: str = ""
+    candidate_count: int = 0
+    debug_image_path: Path | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class MarkerDetectionOutcome:
     """The result of one detection pass over a reference image.
 
@@ -183,6 +255,82 @@ def decode_image_file(path: Path, *, color: bool = True) -> DecodedImage:
         channels=channels,
         stride=width * channels,
         data=contiguous.tobytes(),
+    )
+
+
+def detect_orientation_marker_in_region(
+    path: Path,
+    *,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    config: OrientationSearchConfig | None = None,
+    debug_dir: Path | None = None,
+) -> OrientationDetectionOutcome:
+    """Locate the printed orientation mark inside a user-drawn search rectangle.
+
+    The designer's counterpart to :func:`detect_registration_markers`: the user
+    draws a rectangle around the orientation dash and this finds exactly where it
+    is, so the template records the printed mark rather than an approximation
+    dragged into place by eye.
+
+    The rectangle is taken in **reference-image pixels** and every returned
+    coordinate is in reference-image pixels; the ROI-local frame the detector
+    works in never escapes :mod:`omr_scanner.imaging.orientation_marker`.
+
+    A mark lying wholly inside the rectangle is the expected result and is never
+    rejected for that - the rectangle's whole purpose is to say "search here".
+
+    Args:
+        path: Reference image file.
+        x: Left edge of the search rectangle, in reference-image pixels.
+        y: Top edge, in reference-image pixels.
+        width: Rectangle width, in reference-image pixels.
+        height: Rectangle height, in reference-image pixels.
+        config: Shape and acceptance tuning; dash-shaped defaults when omitted.
+        debug_dir: When given, an annotated overlay is written there as
+            :data:`ORIENTATION_DEBUG_IMAGE_NAME`, showing the ROI, every
+            candidate and why each was rejected.
+
+    Returns:
+        The outcome, with ``found=False`` and a readable ``reason`` rather than an
+        exception when nothing qualified - a designer session always has a person
+        present who can place the mark by hand.
+
+    Raises:
+        ImageValidationError: The file could not be decoded.
+        ValueError: The rectangle does not overlap the image at all.
+    """
+    active = config if config is not None else OrientationSearchConfig()
+    image = load_scan_image(path, color=False)
+    detection = detect_orientation_marker(
+        image,
+        roi=BoundingBox(x=x, y=y, width=width, height=height),
+        config=OrientationMarkerConfig(
+            expected_aspect_ratio=active.expected_aspect_ratio,
+            min_aspect_ratio=active.min_aspect_ratio,
+            max_aspect_ratio=active.max_aspect_ratio,
+            min_score=active.min_score,
+        ),
+        debug_path=(
+            debug_dir / ORIENTATION_DEBUG_IMAGE_NAME if debug_dir is not None else None
+        ),
+    )
+    box = detection.box
+    center = detection.center
+    return OrientationDetectionOutcome(
+        found=detection.found,
+        x=box.x if box is not None else 0.0,
+        y=box.y if box is not None else 0.0,
+        width=box.width if box is not None else 0.0,
+        height=box.height if box is not None else 0.0,
+        center_x=center.x if center is not None else 0.0,
+        center_y=center.y if center is not None else 0.0,
+        score=detection.score,
+        reason=detection.reason,
+        candidate_count=len(detection.candidates),
+        debug_image_path=detection.debug_image_path,
     )
 
 
@@ -309,10 +457,14 @@ __all__ = [
     "DEFAULT_EXPECTED_MARKER_HEIGHT",
     "DEFAULT_EXPECTED_MARKER_WIDTH",
     "DEFAULT_MIN_CANDIDATE_SCORE",
+    "ORIENTATION_DEBUG_IMAGE_NAME",
     "DecodedImage",
     "DetectedMarker",
     "MarkerDetectionOutcome",
     "MarkerSearchConfig",
+    "OrientationDetectionOutcome",
+    "OrientationSearchConfig",
     "decode_image_file",
+    "detect_orientation_marker_in_region",
     "detect_registration_markers",
 ]

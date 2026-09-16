@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect, NormalizedSize
 from omr_scanner.domain.template import FieldType, MarkerRole, OmrTemplate, SymbolAxis, Zone
 from omr_scanner.domain.template_authoring import (
+    ColumnLayoutMode,
     ColumnSpacingInfo,
     build_blank_template,
     distribute_columns_evenly,
@@ -276,6 +277,7 @@ class TestGenerateQuestionColumnsExplicitPitch:
             row_pitch=0.02,
             column_pitch=0.03,
             column_gap=0.02,
+            layout_mode=ColumnLayoutMode.FROM_PITCH,
         )
         assert len(zones) == 5
         assert sum(zone.bubble_count for zone in zones) == 400
@@ -297,6 +299,7 @@ class TestGenerateQuestionColumnsExplicitPitch:
             row_pitch=0.015,
             column_pitch=0.02,
             column_gap=gap,
+            layout_mode=ColumnLayoutMode.FROM_PITCH,
         )
         for first, second in itertools.pairwise(zones):
             assert second.bounds.x == pytest.approx(first.bounds.x + first.bounds.width + gap)
@@ -456,6 +459,7 @@ class TestDistributeColumnsEvenly:
             bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
             bubble_size=NormalizedSize(width=0.01, height=0.01),
             row_pitch=0.02, column_pitch=0.03, column_gap=0.02,
+            layout_mode=ColumnLayoutMode.FROM_PITCH,
         )
 
     def test_the_first_and_last_column_do_not_move(self):

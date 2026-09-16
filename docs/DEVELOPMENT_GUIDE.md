@@ -60,6 +60,57 @@ configuration and log directories into the test's temporary folder through the
 
 See `docs/TESTING.md` for the strategy and the fixture policy.
 
+## Working on the Qt GUI: the `qtguitesting` skill
+
+`.claude/skills/qtguitesting/` is a repository-local Claude Code skill covering
+every Qt surface in OMRFlow - the graphics canvas, region geometry, mouse
+interaction, zoom and pan, resize handles, property panels, dialogs, toolbar
+layout and visual rendering. It is committed with the project and applies to the
+Scan, Resolve and Results pages as they arrive, not only to the Template page.
+
+**What it is.** A workflow (identify the invariants, test at the lowest level
+that can reach the bug, fix the model rather than the symptom, verify against the
+real sheet, look at the evidence), plus four runnable scripts and two reference
+documents. Claude loads it automatically when a task touches the GUI; a human
+reads `SKILL.md` and runs the same commands.
+
+**When it is worth reaching for.** Any position, resize, drag or overlay
+alignment problem - those are almost always one Qt coordinate system mistaken for
+another, and
+`.claude/skills/qtguitesting/references/qt_coordinate_systems.md` lays out the
+six of them, which OMRFlow uses where, and the invariants to assert.
+
+**The same commands a human runs:**
+
+```bash
+# Fast sanity check: app starts, page builds, sample loads, controls exist.
+python .claude/skills/qtguitesting/scripts/run_gui_smoke_tests.py
+
+# Deterministic screenshots of the states worth looking at.
+python .claude/skills/qtguitesting/scripts/capture_gui_states.py
+
+# Model / item.pos() / boundingRect() / sceneBoundingRect(), side by side.
+python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario columns
+python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario resize
+
+# Compare two captures with tolerances rather than byte equality.
+python .claude/skills/qtguitesting/scripts/compare_gui_images.py a.png b.png
+```
+
+**Where the diagnostics go.** `test-output/gui/` - screenshots at the top level,
+JSON geometry dumps under `geometry/`, and failure artefacts under `failures/`.
+The whole directory is git-ignored: it is regenerated on demand and is never a
+committed baseline.
+
+**The real sample.** `examples/ECE-0000.png` is a real scanned OMR page and the
+project's standard GUI regression image. Never modify it, and never hard-code its
+coordinates into `src/` - `tests/unit/test_qtguitesting_skill.py` asserts both.
+
+**One rule worth repeating here:** screenshot similarity is not proof of GUI
+correctness. Position invariants, model synchronisation, signal emission and
+serialisation are asserted through program state; screenshots catch clipping,
+spacing, overlay alignment and obvious layout regressions, and nothing else.
+
 ## Linting and type checking
 
 ```bash

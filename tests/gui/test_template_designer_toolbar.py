@@ -15,8 +15,9 @@ Scope:
 from __future__ import annotations
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QToolBar
+from PySide6.QtWidgets import QApplication, QToolBar, QWidget
 
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 
@@ -27,17 +28,48 @@ pytestmark = pytest.mark.gui
 # that each one was actually given an icon and a tooltip - the two properties
 # the brief's automated-test section calls out explicitly.
 TOOLBAR_ACTION_NAMES = [
+    # Row 1 - file, editing, detection, validation.
     "new_action", "open_action", "save_action", "save_as_action",
     "undo_action", "redo_action",
-    "detect_action", "confirm_markers_action",
+    "detect_action", "confirm_markers_action", "detect_orientation_action",
+    "validate_action",
+    # Row 2 - region tools, bubble editing, view.
     "add_student_id_action", "add_question_set_action", "add_question_block_action",
     "create_array_action", "distribute_columns_action",
     "add_custom_action", "add_ignored_action",
     "fine_tune_action", "clear_overrides_action",
-    "validate_action",
     "zoom_out_action", "zoom_in_action", "fit_action", "actual_size_action",
     "grid_action",
 ]
+
+
+def _lay_out(page: TemplateDesignerPage, *, width: int, height: int) -> None:
+    """Give ``page`` real laid-out geometry at this size, without a visible window.
+
+    Geometry is only propagated to children on a show/resize cycle - a splitter
+    keeps its default sizes otherwise - so a test that reads a child's height has
+    to ask for one. ``WA_DontShowOnScreen`` runs the whole polish and layout path
+    without mapping a window onto the developer's desktop.
+    """
+    page.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    page.show()
+    page.resize(width, height)
+    for _ in range(3):
+        QApplication.processEvents()
+
+
+def _button_for(page: TemplateDesignerPage, action: QAction) -> QWidget | None:
+    """The `QToolButton` Qt built for ``action``, from whichever row holds it."""
+    for toolbar in (page.toolbar, page.toolbar_view):
+        button = toolbar.widgetForAction(action)
+        if button is not None:
+            return button
+    return None
+
+
+TOOLBAR_TEST_WIDTHS = [2000, 1600, 1280, 1024, 900]
+"""Window widths to exercise the toolbar at, from a wide desktop down to a small
+laptop - the range over which Qt's own overflow handling has to do its work."""
 
 
 @pytest.fixture
@@ -54,9 +86,22 @@ class TestToolbarCanBeInstantiated:
     def test_the_page_builds_a_real_toolbar(self, page: TemplateDesignerPage):
         assert isinstance(page.toolbar, QToolBar)
 
-    def test_the_toolbar_is_part_of_the_page(self, page: TemplateDesignerPage):
-        assert page.toolbar.parentWidget() is not None
-        assert page.isAncestorOf(page.toolbar)
+    def test_the_page_builds_a_second_toolbar_row(self, page: TemplateDesignerPage):
+        assert isinstance(page.toolbar_view, QToolBar)
+
+    def test_the_two_rows_are_distinct_widgets(self, page: TemplateDesignerPage):
+        assert page.toolbar is not page.toolbar_view
+
+    def test_both_rows_are_part_of_the_page(self, page: TemplateDesignerPage):
+        for toolbar in (page.toolbar, page.toolbar_view):
+            assert toolbar.parentWidget() is not None
+            assert page.isAncestorOf(toolbar)
+
+    def test_each_row_actually_carries_actions(self, page: TemplateDesignerPage):
+        # Two *used* rows, not one row plus an empty one - the point of the
+        # split is that neither row has to hold everything.
+        assert len([a for a in page.toolbar.actions() if not a.isSeparator()]) >= 4
+        assert len([a for a in page.toolbar_view.actions() if not a.isSeparator()]) >= 4
 
 
 class TestEveryActionExists:
@@ -67,8 +112,9 @@ class TestEveryActionExists:
 
     @pytest.mark.parametrize("name", TOOLBAR_ACTION_NAMES)
     def test_the_action_is_actually_on_the_toolbar(self, page: TemplateDesignerPage, name: str):
-        action = getattr(page, name)
-        assert action in page.toolbar.actions()
+        # Either row: `toolbar_actions()` exists so that splitting the toolbar
+        # again later cannot silently make this check incomplete.
+        assert getattr(page, name) in page.toolbar_actions()
 
 
 class TestIconsAreNonNull:
@@ -146,14 +192,14 @@ class TestIconOnlyVersusIconWithText:
         from PySide6.QtWidgets import QToolButton
 
         action = getattr(page, name)
-        button = page.toolbar.widgetForAction(action)
+        button = _button_for(page, action)
         assert isinstance(button, QToolButton)
         assert button.toolButtonStyle() == button.toolButtonStyle().ToolButtonIconOnly
 
     @pytest.mark.parametrize(
         "name",
         [
-            "detect_action", "confirm_markers_action",
+            "detect_action", "confirm_markers_action", "detect_orientation_action",
             "add_student_id_action", "add_question_set_action",
             "add_question_block_action", "create_array_action", "distribute_columns_action",
             "add_custom_action", "add_ignored_action",
@@ -168,7 +214,7 @@ class TestIconOnlyVersusIconWithText:
         # `_build_toolbar`).
         from PySide6.QtWidgets import QToolButton
 
-        button = page.toolbar.widgetForAction(action)
+        button = _button_for(page, action)
         assert isinstance(button, QToolButton)
         assert button.toolButtonStyle() == button.toolButtonStyle().ToolButtonTextBesideIcon
 
@@ -380,3 +426,60 @@ class TestCheckableActionsShowAnObviousCheckedState:
     def test_non_toggle_actions_are_not_checkable(self, page: TemplateDesignerPage):
         for name in ("save_action", "validate_action", "detect_action", "zoom_in_action"):
             assert getattr(page, name).isCheckable() is False
+
+
+class TestToolbarSurvivesNarrowWindows:
+    """Two ordinary `QToolBar` rows, so Qt handles narrowing - not fixed positions.
+
+    The brief's requirement is that at any display scaling or window width the
+    controls must not overlap, labels must not clip, icons must stay visible and
+    the canvas must keep its space. What actually guarantees that is *using Qt
+    layouts*: a `QToolBar` moves what does not fit into its own overflow menu
+    rather than compressing buttons below their text width.
+
+    These assert the structural consequence - each row keeps its height and hands
+    surplus actions to the overflow - rather than pixel positions, which
+    `docs/TESTING.md` rules out for GUI tests.
+    """
+
+    @pytest.mark.parametrize("width", TOOLBAR_TEST_WIDTHS)
+    def test_neither_row_grows_taller_as_the_window_narrows(
+        self, page: TemplateDesignerPage, width: int
+    ):
+        page.resize(2000, 950)
+        reference = (page.toolbar.sizeHint().height(), page.toolbar_view.sizeHint().height())
+        page.resize(width, 950)
+        assert (
+            page.toolbar.sizeHint().height(),
+            page.toolbar_view.sizeHint().height(),
+        ) == reference
+
+    @pytest.mark.parametrize("width", TOOLBAR_TEST_WIDTHS)
+    def test_every_action_remains_reachable_at_any_width(
+        self, page: TemplateDesignerPage, width: int
+    ):
+        """Overflowed is not lost: an action in the "»" menu is still on the toolbar."""
+        page.resize(width, 950)
+        for name in TOOLBAR_ACTION_NAMES:
+            assert getattr(page, name) in page.toolbar_actions()
+
+    def test_the_first_row_still_fits_at_a_small_laptop_width(
+        self, page: TemplateDesignerPage
+    ):
+        """Row 1 is the short one by design, so file and detection stay visible."""
+        _lay_out(page, width=1024, height=950)
+        hidden = [
+            action.text()
+            for action in page.toolbar.actions()
+            if not action.isSeparator()
+            and (button := page.toolbar.widgetForAction(action)) is not None
+            and not button.isVisible()
+        ]
+        assert not hidden, f"row 1 overflowed at 1024px: {hidden}"
+
+    def test_the_canvas_keeps_most_of_the_height(self, page: TemplateDesignerPage):
+        """The point of the compact header and the two short toolbar rows."""
+        _lay_out(page, width=1600, height=950)
+        assert page.canvas.height() > 950 * 0.7, (
+            f"canvas got {page.canvas.height()}px of 950 - the header is eating the page"
+        )

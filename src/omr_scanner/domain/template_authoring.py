@@ -36,10 +36,12 @@ Design note - one zone per question column:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Literal
 
 from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect, NormalizedSize
 from omr_scanner.domain.template import (
+    _FALLBACK_DEFAULT_BUBBLE_RADIUS,
     BubbleGrid,
     BubbleOverride,
     FieldType,
@@ -71,6 +73,12 @@ the same indistinguishable blue as everything else on the canvas."""
 _MIN_BUBBLES_PER_AXIS = 1
 """A grid must have at least one row and one column to mean anything."""
 
+_GRID_FIT_TOLERANCE = 1e-9
+"""Slack allowed when checking that a lattice fits its rectangle. A pitch that
+was itself derived from that rectangle comes back a few ULPs over after the
+round trip; without this, feeding an auto-fitted pitch straight back in would be
+rejected as not fitting the rectangle it was measured from."""
+
 DEFAULT_MARKER_INSET = 0.05
 """Default normalised distance from each page edge to a corner marker's centre,
 used only to seed a brand new template. Kept as a local literal rather than
@@ -87,6 +95,51 @@ DEFAULT_ORIENTATION_CENTER = NormalizedPoint(x=0.14, y=0.035)
 
 DEFAULT_ORIENTATION_SIZE = NormalizedSize(width=0.05, height=0.012)
 """Default orientation-mark size for a brand new template."""
+
+DEFAULT_BUBBLE_RADIUS = _FALLBACK_DEFAULT_BUBBLE_RADIUS
+"""Default bubble radius for a brand new template, normalised to the **page
+width** - so a radius is one number, the way a user thinks about a circular OMR
+bubble, rather than an independent width and height.
+
+Half the ``0.022`` normalised bubble width every Phase 2 region dialog used as
+its hard-coded default, so a template created with the defaults keeps the
+horizontal geometry it always had. See
+:meth:`~omr_scanner.domain.template.OmrTemplate.default_bubble_size` for how the
+vertical half-axis is derived from the page aspect ratio, which is what keeps a
+bubble that is circular *in pixels* circular."""
+
+
+class ColumnLayoutMode(StrEnum):
+    """How :func:`generate_question_columns` decides each column strip's size.
+
+    The distinction exists because two different user gestures both produce
+    question columns and they want opposite things from the rectangle they are
+    given:
+
+    * The designer's "draw a Question Region, then configure it" flow hands over
+      a rectangle the user physically selected on the sheet. That rectangle is a
+      *container*: changing the column count, the questions per column, the
+      answer-choice count, the column gap or the bubble size must reflow what is
+      inside it and must never move or resize it.
+    * "Create Column Array" hands over one already-calibrated column and asks for
+      N more like it. There the reference column's own pitch defines the size and
+      the array is *expected* to extend past the reference rectangle.
+
+    Leaving this implicit is what let a container-shaped call silently behave like
+    an array-shaped one (see ``docs/development/template_gui_fix_diagnosis.md``
+    §1).
+    """
+
+    FIT_CONTAINER = "fit_container"
+    """``bounds`` is the user's container and is preserved exactly. The strips
+    tile it: ``strip_width = (bounds.width - column_gap * (columns - 1)) /
+    columns`` and ``strip_height = bounds.height``. An explicit pitch, if given,
+    positions the lattice *inside* its strip and must fit."""
+
+    FROM_PITCH = "from_pitch"
+    """``bounds`` anchors the top-left corner only; each strip's size is derived
+    from ``row_pitch``/``column_pitch`` and the bubble size, so the block's outer
+    extent grows with the column count. Requires both pitches."""
 
 
 def build_blank_template(
@@ -147,6 +200,7 @@ def build_blank_template(
         ),
         registration_markers=markers,
         orientation_marker=orientation,
+        default_bubble_radius=DEFAULT_BUBBLE_RADIUS,
     )
 
 
@@ -201,6 +255,85 @@ def fit_grid_to_bounds(
     if rows == 1:
         origin_y = bounds.center.y
 
+    return BubbleGrid(
+        origin=NormalizedPoint(x=origin_x, y=origin_y),
+        row_pitch=row_pitch,
+        column_pitch=column_pitch,
+        bubble_size=bubble_size,
+    )
+
+
+def place_grid_in_bounds(
+    *,
+    bounds: NormalizedRect,
+    rows: int,
+    columns: int,
+    bubble_size: NormalizedSize,
+    row_pitch: float,
+    column_pitch: float,
+) -> BubbleGrid:
+    """Place a grid of a **given** pitch inside ``bounds`` without resizing anything.
+
+    The counterpart to :func:`fit_grid_to_bounds`: that one derives the pitch from
+    the rectangle, this one takes the pitch as given and only decides where the
+    lattice sits. Together they are what lets a user-drawn container rectangle stay
+    fixed while its internal layout is re-generated (see :class:`ColumnLayoutMode`).
+
+    The lattice is anchored to the top-left of ``bounds``, half a bubble in, so
+    that changing the pitch keeps the first row and first column exactly where they
+    were - the behaviour that makes calibrating against a printed sheet
+    predictable. An axis holding a single bubble is centred instead, matching
+    :func:`fit_grid_to_bounds` exactly, so a caller that passes the auto-fitted
+    pitch back in gets the auto-fitted grid back out.
+
+    Args:
+        bounds: The rectangle the lattice must fit inside. Never modified - it is
+            the caller's fixed container.
+        rows: Number of bubble rows, at least 1.
+        columns: Number of bubble columns, at least 1.
+        bubble_size: Bounding size of one bubble.
+        row_pitch: Normalised vertical centre-to-centre distance.
+        column_pitch: Normalised horizontal centre-to-centre distance.
+
+    Returns:
+        A grid with no overrides, every centre inside ``bounds``.
+
+    Raises:
+        ValueError: ``rows``/``columns`` is less than 1, a pitch is negative, a
+            single bubble does not fit in ``bounds``, or the lattice at this pitch
+            would extend past ``bounds`` - which is the caller asking for a layout
+            that does not fit the region the user selected, and is reported rather
+            than silently enlarging the region.
+    """
+    if rows < _MIN_BUBBLES_PER_AXIS or columns < _MIN_BUBBLES_PER_AXIS:
+        raise ValueError("A grid needs at least one row and one column")
+    if row_pitch < 0.0 or column_pitch < 0.0:
+        raise ValueError("Bubble pitch must not be negative")
+    if bubble_size.width > bounds.width or bubble_size.height > bounds.height:
+        raise ValueError(
+            f"A {bubble_size.width:.4f}x{bubble_size.height:.4f} bubble does not fit "
+            f"inside a {bounds.width:.4f}x{bounds.height:.4f} region"
+        )
+
+    span_width = bubble_size.width + (columns - 1) * column_pitch
+    span_height = bubble_size.height + (rows - 1) * row_pitch
+    if span_width > bounds.width + _GRID_FIT_TOLERANCE:
+        raise ValueError(
+            f"{columns} bubbles at a {column_pitch:.4f} pitch span {span_width:.4f}, "
+            f"wider than the {bounds.width:.4f} region. Reduce the spacing, the "
+            f"bubble size or the number of columns, or draw a wider region."
+        )
+    if span_height > bounds.height + _GRID_FIT_TOLERANCE:
+        raise ValueError(
+            f"{rows} bubbles at a {row_pitch:.4f} pitch span {span_height:.4f}, "
+            f"taller than the {bounds.height:.4f} region. Reduce the spacing, the "
+            f"bubble size or the number of rows, or draw a taller region."
+        )
+
+    origin_x = (
+        bounds.center.x if columns == 1 else bounds.x + bubble_size.width / 2.0
+    )
+    origin_y = bounds.center.y if rows == 1 else bounds.y + bubble_size.height / 2.0
     return BubbleGrid(
         origin=NormalizedPoint(x=origin_x, y=origin_y),
         row_pitch=row_pitch,
@@ -280,6 +413,7 @@ def generate_question_columns(
     column_gap: float = 0.0,
     row_pitch: float | None = None,
     column_pitch: float | None = None,
+    layout_mode: ColumnLayoutMode = ColumnLayoutMode.FIT_CONTAINER,
     display_color: str | None = None,
     group_id: str | None = None,
 ) -> tuple[Zone, ...]:
@@ -291,25 +425,34 @@ def generate_question_columns(
     single rectangle a recognition pass would have to subdivide by guesswork
     later.
 
-    Two sizing modes:
+    ``layout_mode`` decides what ``bounds`` means; see :class:`ColumnLayoutMode`.
 
-    * ``row_pitch``/``column_pitch`` both omitted (the default): each strip's
-      width is ``bounds`` split evenly among ``columns`` (minus the gaps), and
-      each strip's bubble pitch is *auto-fitted* to its own height/width via
-      :func:`fit_grid_to_bounds` - this is the original Phase 2 behaviour,
-      unchanged, and every caller that omits these two arguments gets
-      byte-for-byte identical geometry to before they existed.
-    * Both given (normalised, matching :class:`~omr_scanner.domain.template.BubbleGrid`'s
-      own field names - not axis-aware "choice spacing"/"row spacing" labels,
-      which is the caller's job to map, exactly as
-      :attr:`QuestionBlockFieldDefinition.rows`/``.columns`` already do): each
-      strip's size is *derived* from the requested pitch, ``bubble_size`` and
-      a full (``questions_per_column``-sized) column, so a real column with
-      the full question count reproduces the requested pitch exactly; a
-      shorter remainder column (when ``question_count`` does not divide evenly
-      by ``questions_per_column``) is fitted into the same, uniformly-sized
-      strip, matching how the original auto-fit mode already treated a
-      remainder column identically to every other one.
+    Under :attr:`ColumnLayoutMode.FIT_CONTAINER` (the default), ``bounds`` is the
+    container and is preserved exactly:
+
+    * ``strip_width = (bounds.width - column_gap * (columns - 1)) / columns``,
+      ``strip_height = bounds.height``. The union of the returned zones' bounds
+      therefore reproduces ``bounds`` for **any** column count, gap, pitch or
+      bubble size - which is the invariant that keeps a user-drawn Question
+      Region rectangle where the user drew it.
+    * ``row_pitch``/``column_pitch`` omitted: each strip's pitch is auto-fitted
+      to the strip via :func:`fit_grid_to_bounds` - the original Phase 2
+      behaviour, byte-for-byte.
+    * ``row_pitch``/``column_pitch`` given (normalised, matching
+      :class:`~omr_scanner.domain.template.BubbleGrid`'s own field names - not
+      axis-aware "choice spacing"/"row spacing" labels, which is the caller's job
+      to map, exactly as :attr:`QuestionBlockFieldDefinition.rows`/``.columns``
+      already do): the lattice is *placed inside* the strip at that pitch, top-left
+      anchored, with a single-bubble axis centred exactly as
+      :func:`fit_grid_to_bounds` centres one. A pitch too large for the strip is
+      rejected rather than silently enlarging the region.
+
+    Under :attr:`ColumnLayoutMode.FROM_PITCH`, ``bounds`` anchors the top-left
+    corner only and each strip's size is *derived* from the requested pitch,
+    ``bubble_size`` and a full (``questions_per_column``-sized) column, so a real
+    column with the full question count reproduces the requested pitch exactly; a
+    shorter remainder column (when ``question_count`` does not divide evenly by
+    ``questions_per_column``) is fitted into the same, uniformly-sized strip.
 
     Column placement uses one formula regardless of sizing mode - the
     "empty space between adjacent bounding boxes" convention
@@ -330,9 +473,9 @@ def generate_question_columns(
         columns: Number of printed columns.
         questions_per_column: How many questions each column holds, except
             possibly the last, which holds the remainder.
-        bounds: Anchors the block's top-left corner (``bounds.x``,
-            ``bounds.y``); ``bounds.width``/``bounds.height`` additionally
-            size every strip when ``row_pitch``/``column_pitch`` are omitted.
+        bounds: The container under
+            :attr:`ColumnLayoutMode.FIT_CONTAINER`; the top-left anchor only
+            under :attr:`ColumnLayoutMode.FROM_PITCH`.
         bubble_size: Bounding size of one bubble.
         symbol_axis: ``HORIZONTAL`` (options run across, one row per question)
             or ``VERTICAL``.
@@ -341,6 +484,7 @@ def generate_question_columns(
         row_pitch: Explicit normalised vertical bubble pitch; must be given
             together with ``column_pitch`` or not at all.
         column_pitch: Explicit normalised horizontal bubble pitch.
+        layout_mode: What ``bounds`` means; see :class:`ColumnLayoutMode`.
         display_color: Overlay colour; defaults to the question-block colour.
         group_id: Shared identifier recorded on every returned zone's
             :attr:`QuestionBlockFieldDefinition.group_id`. Defaults to
@@ -355,8 +499,10 @@ def generate_question_columns(
 
     Raises:
         ValueError: ``columns`` or ``questions_per_column`` is less than 1,
-            exactly one of ``row_pitch``/``column_pitch`` is given, or the
-            resulting strip width leaves no room for the columns.
+            exactly one of ``row_pitch``/``column_pitch`` is given,
+            :attr:`ColumnLayoutMode.FROM_PITCH` was requested without a pitch,
+            the resulting strip width leaves no room for the columns, or an
+            explicit pitch does not fit the container's strips.
     """
     if columns < 1:
         raise ValueError("columns must be at least 1")
@@ -365,19 +511,24 @@ def generate_question_columns(
     if (row_pitch is None) != (column_pitch is None):
         raise ValueError("row_pitch and column_pitch must both be given, or neither")
 
-    if row_pitch is None or column_pitch is None:
-        strip_width = (bounds.width - column_gap * (columns - 1)) / columns
-        strip_height = bounds.height
-    else:
-        nominal_field = QuestionBlockFieldDefinition(
-            type=FieldType.QUESTION_BLOCK,
-            first_question=1,
-            question_count=questions_per_column,
-            answer_labels=tuple(answer_labels),
-            symbol_axis=symbol_axis,
-        )
+    nominal_field = QuestionBlockFieldDefinition(
+        type=FieldType.QUESTION_BLOCK,
+        first_question=1,
+        question_count=questions_per_column,
+        answer_labels=tuple(answer_labels),
+        symbol_axis=symbol_axis,
+    )
+    if layout_mode is ColumnLayoutMode.FROM_PITCH:
+        if row_pitch is None or column_pitch is None:
+            raise ValueError(
+                "ColumnLayoutMode.FROM_PITCH derives each column's size from the "
+                "pitch, so row_pitch and column_pitch are both required"
+            )
         strip_width = bubble_size.width + max(nominal_field.columns - 1, 0) * column_pitch
         strip_height = bubble_size.height + max(nominal_field.rows - 1, 0) * row_pitch
+    else:
+        strip_width = (bounds.width - column_gap * (columns - 1)) / columns
+        strip_height = bounds.height
     if strip_width <= 0.0:
         raise ValueError("column_gap leaves no room for the question columns")
 
@@ -404,9 +555,26 @@ def generate_question_columns(
             symbol_axis=symbol_axis,
             group_id=resolved_group_id,
         )
-        grid = fit_grid_to_bounds(
-            bounds=strip_bounds, rows=field.rows, columns=field.columns, bubble_size=bubble_size
-        )
+        if layout_mode is ColumnLayoutMode.FIT_CONTAINER and row_pitch is not None:
+            # An explicit pitch positions the lattice inside the container's
+            # strip; it never resizes the strip. `column_pitch` is non-None
+            # whenever `row_pitch` is - the paired check above guarantees it.
+            assert column_pitch is not None
+            grid = place_grid_in_bounds(
+                bounds=strip_bounds,
+                rows=field.rows,
+                columns=field.columns,
+                bubble_size=bubble_size,
+                row_pitch=row_pitch,
+                column_pitch=column_pitch,
+            )
+        else:
+            grid = fit_grid_to_bounds(
+                bounds=strip_bounds,
+                rows=field.rows,
+                columns=field.columns,
+                bubble_size=bubble_size,
+            )
         zones.append(
             Zone(
                 id=f"{id_prefix}_{column_index}",
@@ -518,6 +686,11 @@ def generate_column_array(
         column_gap=gap,
         row_pitch=reference.grid.row_pitch,
         column_pitch=reference.grid.column_pitch,
+        # "Array from this calibrated column" is the one gesture where growing
+        # past the reference rectangle is the whole point: every generated
+        # sibling must be the same size as the column the user positioned, not a
+        # slice of it. See `ColumnLayoutMode`.
+        layout_mode=ColumnLayoutMode.FROM_PITCH,
         display_color=reference.display_color,
     )
 
@@ -539,6 +712,21 @@ class ColumnSpacingInfo:
 
 
 _COLUMN_GAP_TOLERANCE = 1e-4
+
+BUBBLE_SIZE_RELATIVE_TOLERANCE = 0.02
+"""How close a zone's bubble size must be to the template default, relative to
+that default, to count as inheriting it.
+
+*Relative*, and this loose, because the size makes a round trip the designer
+cannot avoid: normalised in the document -> pixels in a one-decimal spin box ->
+normalised again. A ``0.011`` default on a 620 px-wide sheet is ``6.82 px``,
+displays as ``6.8``, and comes back as ``0.010968`` - a 0.3% difference that
+exact equality would read as "the user chose their own radius", silently
+detaching every region from the template default.
+
+Two per cent is far below any deliberate override: the smallest change a person
+can make with this spin box is 0.1 px on a single-digit radius, well over 1%,
+and a realistic adjustment is a whole pixel or more."""
 
 
 def measure_column_gap(
@@ -691,6 +879,115 @@ def resize_zone(zone: Zone, *, bounds: NormalizedRect) -> Zone:
     return zone.model_copy(update={"bounds": bounds, "grid": new_grid})
 
 
+def set_zone_bubble_size(zone: Zone, *, bubble_size: NormalizedSize) -> Zone:
+    """Return ``zone`` with a different bubble size and **nothing else changed**.
+
+    The grid's ``origin``, both pitches, every :class:`BubbleOverride` and the
+    zone's ``bounds`` are carried across untouched, so:
+
+    * every bubble centre stays exactly where it was;
+    * the parent region does not move or resize.
+
+    That is the property that makes bubble-size calibration predictable - the
+    user grows or shrinks the measurement window around marks they have already
+    aligned, rather than re-flowing the layout underneath themselves. Fitting
+    the grid to a *new region size* is the opposite operation and lives in
+    :func:`resize_zone`.
+
+    Args:
+        zone: The zone to restyle. A zone with no grid (an ignored region) is
+            returned unchanged - there is nothing to size.
+        bubble_size: The new bounding size of one bubble.
+
+    Returns:
+        A new zone.
+
+    Raises:
+        pydantic.ValidationError: The enlarged bubbles push the grid past the
+            zone's bounds. (Only the *centres* are checked by ``Zone``; a bubble
+            whose outline overhangs the region's edge is normal on a real sheet
+            and is deliberately allowed.)
+    """
+    if zone.grid is None:
+        return zone
+    new_grid = BubbleGrid(
+        origin=zone.grid.origin,
+        row_pitch=zone.grid.row_pitch,
+        column_pitch=zone.grid.column_pitch,
+        bubble_size=bubble_size,
+        overrides=zone.grid.overrides,
+    )
+    return zone.model_copy(update={"grid": new_grid})
+
+
+def zone_inherits_bubble_size(zone: Zone, *, default: NormalizedSize) -> bool:
+    """Whether ``zone``'s bubble size still matches the template default.
+
+    OMRFlow expresses "this region uses the template's bubble radius" without a
+    persisted flag: a region **inherits** for exactly as long as its stored size
+    is what the default produces. Giving a region its own radius makes it differ,
+    and :func:`apply_default_bubble_radius` then leaves it alone.
+
+    Choosing equality over a stored flag means the relationship survives save and
+    reload with no schema change, and cannot drift out of sync with the geometry
+    it describes.
+
+    Args:
+        zone: Any zone; one with no grid never inherits (it has no bubbles).
+        default: The size the template's current default radius produces.
+
+    Returns:
+        Whether the zone is currently inheriting.
+    """
+    if zone.grid is None:
+        return False
+    return _close_enough(zone.grid.bubble_size.width, default.width) and _close_enough(
+        zone.grid.bubble_size.height, default.height
+    )
+
+
+def _close_enough(value: float, expected: float) -> bool:
+    """Whether ``value`` is within :data:`BUBBLE_SIZE_RELATIVE_TOLERANCE` of ``expected``."""
+    if expected <= 0.0:
+        return value == expected
+    return abs(value - expected) <= expected * BUBBLE_SIZE_RELATIVE_TOLERANCE
+
+
+def apply_default_bubble_radius(
+    template: OmrTemplate, *, radius: float
+) -> OmrTemplate:
+    """Set the template's default bubble radius and push it into inheriting zones.
+
+    Every zone that :func:`zone_inherits_bubble_size` reports as inheriting the
+    *previous* default is resized to the new one via :func:`set_zone_bubble_size`,
+    so bubble centres and region rectangles are untouched. A zone with its own
+    radius keeps it.
+
+    Args:
+        template: The document to update.
+        radius: New default radius, normalised to the page width.
+
+    Returns:
+        A new template. One call, one document, so the designer's undo stack
+        records one step for the whole change.
+
+    Raises:
+        ValueError: ``radius`` is not positive.
+    """
+    if radius <= 0.0:
+        raise ValueError("Bubble radius must be positive")
+    previous = template.default_bubble_size
+    updated = template.model_copy(update={"default_bubble_radius": radius})
+    new_size = updated.default_bubble_size
+    zones = tuple(
+        set_zone_bubble_size(zone, bubble_size=new_size)
+        if zone_inherits_bubble_size(zone, default=previous)
+        else zone
+        for zone in updated.zones
+    )
+    return updated.model_copy(update={"zones": zones})
+
+
 def _clamp_position(value: float, extent: float) -> float:
     """Clamp a rectangle's origin so ``[value, value + extent]`` stays in ``[0, 1]``."""
     return max(0.0, min(value, 1.0 - extent))
@@ -821,9 +1118,13 @@ def _format_ranges(numbers: Sequence[int]) -> str:
 
 
 __all__ = [
+    "BUBBLE_SIZE_RELATIVE_TOLERANCE",
+    "DEFAULT_BUBBLE_RADIUS",
     "DEFAULT_DISPLAY_COLORS",
+    "ColumnLayoutMode",
     "ColumnSpacingInfo",
     "DesignerValidationReport",
+    "apply_default_bubble_radius",
     "build_blank_template",
     "distribute_columns_evenly",
     "fit_grid_to_bounds",
@@ -832,7 +1133,10 @@ __all__ = [
     "generate_ignored_zone",
     "generate_question_columns",
     "measure_column_gap",
+    "place_grid_in_bounds",
     "resize_zone",
+    "set_zone_bubble_size",
     "translate_zone",
     "validate_template_for_designer",
+    "zone_inherits_bubble_size",
 ]

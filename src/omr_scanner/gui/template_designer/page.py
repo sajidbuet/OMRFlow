@@ -35,10 +35,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -61,11 +63,15 @@ from omr_scanner.domain.template import (
     Zone,
 )
 from omr_scanner.domain.template_authoring import (
+    DEFAULT_BUBBLE_RADIUS,
     DesignerValidationReport,
+    apply_default_bubble_radius,
     build_blank_template,
     distribute_columns_evenly,
     measure_column_gap,
+    set_zone_bubble_size,
     validate_template_for_designer,
+    zone_inherits_bubble_size,
 )
 from omr_scanner.errors import ImageValidationError, TemplateError
 from omr_scanner.gui.error_reporting import report_error
@@ -74,6 +80,7 @@ from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.pages.catalog import WorkflowPageSpec
 from omr_scanner.gui.template_designer.canvas import BubbleDotSpec, RegionSpec, TemplateCanvasView
 from omr_scanner.gui.template_designer.dialogs import (
+    FALLBACK_IMAGE_WIDTH,
     CreateColumnArrayDialog,
     CustomBubbleDialog,
     IgnoredRegionDialog,
@@ -99,8 +106,10 @@ from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
 from omr_scanner.services import (
     DecodedImage,
     MarkerSearchConfig,
+    OrientationSearchConfig,
     ProjectSession,
     decode_image_file,
+    detect_orientation_marker_in_region,
     detect_registration_markers,
     load_template,
     save_template,
@@ -117,6 +126,32 @@ TOOLBAR_ICON_SIZE_PX = 20
 """Side length of a toolbar icon, in logical pixels. Qt scales the underlying
 SVG for the display's actual DPI, so one value serves 100/125/150% Windows
 scaling alike - see `docs/testing/ui_polish_manual_test.md`."""
+
+MIN_BUBBLE_RADIUS_PX = 1.0
+MAX_BUBBLE_RADIUS_PX = 200.0
+"""Bounds of the bubble radius spin box, in reference-image pixels. Wide enough
+for both a 150 dpi scan (bubbles a few pixels across) and a 600 dpi one, and
+narrow enough that a mistyped value cannot produce a grid the domain model has to
+reject."""
+
+ORIENTATION_DEBUG_ENV = "OMRFLOW_ORIENTATION_DEBUG_DIR"
+"""Environment variable naming a directory for the orientation detector's
+diagnostic overlay. Unset in an ordinary session, so nothing is written; a
+calibration session sets it and gets
+``<dir>/orientation_detection_latest.png`` after every attempt. An environment
+variable rather than a developer-mode menu because there is nothing to discover,
+nothing to leave switched on by accident, and no UI to maintain."""
+
+_RADIUS_EPSILON = 1e-9
+"""Below this the spin box's value and the document's stored radius are the same
+number, and re-applying it would push a pointless undo entry."""
+
+ORIENTATION_SEARCH_MARGIN = 1.6
+"""How much larger than the orientation region's current rectangle the automatic
+search area is. The rectangle a user drags around a mark tends to sit slightly
+off it; searching a little wider costs nothing (the ROI is still tiny next to the
+page) and means a mark just outside the drawn box is still found rather than
+reported missing."""
 
 
 def _marker_item_id(role: MarkerRole) -> str:
@@ -136,7 +171,11 @@ class TemplateDesignerPage(WorkflowPage):
     """
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
-        super().__init__(spec, parent, expand=True)
+        # `show_summary=False` / `compact=True`: this page's body is a full-size
+        # editor, so the base class's explanatory paragraph and generous margins
+        # would spend roughly a sixth of the window's height above the canvas. The
+        # sentence survives as the title's tooltip and status tip.
+        super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET)
 
         self._session: ProjectSession | None = None
@@ -164,6 +203,7 @@ class TemplateDesignerPage(WorkflowPage):
         callback: Callable[..., object],
         checkable: bool = False,
         icon_only: bool = False,
+        toolbar: QToolBar | None = None,
     ) -> QAction:
         """Create, wire and add one toolbar action - the toolbar's action factory.
 
@@ -190,35 +230,64 @@ class TemplateDesignerPage(WorkflowPage):
                 "universal" commands per §5 of the brief; otherwise icon and
                 text both show, for the OMR-specific actions whose meaning an
                 icon alone would not make obvious.
+            toolbar: Which of the two rows to add the action to; defaults to
+                row 1 (:attr:`toolbar`).
 
         Returns:
             The created, already-added `QAction`.
         """
+        target = toolbar if toolbar is not None else self.toolbar
         action = QAction(load_icon(icon_name), text, self)
+        action.setObjectName(f"action_{_object_name_of(text)}")
         action.setCheckable(checkable)
         full_tooltip = f"{tooltip} ({shortcut_hint})" if shortcut_hint else tooltip
         action.setToolTip(full_tooltip)
         action.setStatusTip(tooltip)
         (action.toggled if checkable else action.triggered).connect(callback)
-        self.toolbar.addAction(action)
+        target.addAction(action)
         if icon_only:
-            button = self.toolbar.widgetForAction(action)
+            button = target.widgetForAction(action)
             if isinstance(button, QToolButton):
                 button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         return action
 
-    def _build_toolbar(self) -> None:
-        self.toolbar = QToolBar("Template tools")
-        self.toolbar.setIconSize(QSize(TOOLBAR_ICON_SIZE_PX, TOOLBAR_ICON_SIZE_PX))
-        self.toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        # QToolBar lays out its own overflow ("»") when the window is too
-        # narrow for every action, instead of shrinking labels until they
-        # clip - the actual root cause of the reported clipped-text toolbar
-        # (a plain QHBoxLayout of full-text QPushButtons has no such
-        # mechanism and simply compresses every button below its own text
-        # width once the row no longer fits).
-        self.toolbar.setMovable(False)
+    def toolbar_actions(self) -> list[QAction]:
+        """Every action on either toolbar row, row 1 first.
 
+        The page's toolbar is two rows (see :meth:`_build_toolbar`), so "is this
+        action on the toolbar?" is a question about both of them. Exposed as a
+        method rather than leaving callers to concatenate
+        ``toolbar.actions() + toolbar_view.actions()`` themselves, so adding a
+        third row later would not silently make such a check incomplete.
+        """
+        return [*self.toolbar.actions(), *self.toolbar_view.actions()]
+
+    def _build_toolbar(self) -> None:
+        """Build the two toolbar rows.
+
+        Two rows rather than one because a single row holding this many controls
+        pushes most of them into Qt's overflow ("»") menu on any window narrower
+        than about 1400 px, which hides exactly the region tools a designer uses
+        constantly. Splitting them by *what the user is doing* - row 1 manages the
+        document, row 2 draws and looks at it - means each row fits at ordinary
+        window widths, and neither depends on the other's length.
+
+        Both rows are ordinary `QToolBar`s in an ordinary `QVBoxLayout`: no fixed
+        positioning anywhere, so Qt's own overflow handling, label eliding and DPI
+        scaling keep working at 100/125/150% Windows scaling alike.
+        """
+        rows = QVBoxLayout()
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(0)
+
+        self.toolbar = self._make_toolbar_row("Template tools", "template_toolbar_file")
+        self.toolbar_view = self._make_toolbar_row(
+            "Region and view tools", "template_toolbar_regions"
+        )
+        rows.addWidget(self.toolbar)
+        rows.addWidget(self.toolbar_view)
+
+        # ==== Row 1: file / editing / detection / validation ==============
         # -- File --------------------------------------------------------
         self.new_action = self._add_toolbar_action(
             icon_name="file-plus", text="New", icon_only=True,
@@ -263,56 +332,13 @@ class TemplateDesignerPage(WorkflowPage):
             tooltip="Accept every automatically detected marker",
             callback=self.confirm_detected_markers,
         )
-        self.toolbar.addSeparator()
-
-        # -- Add region ------------------------------------------------------
-        self.add_student_id_action = self._add_toolbar_action(
-            icon_name="id-card", text="Student ID",
-            tooltip="Add a student ID bubble region",
-            callback=lambda _checked=False: self._start_add_region("student_id"),
-        )
-        self.add_question_set_action = self._add_toolbar_action(
-            icon_name="list-checks", text="Set",
-            tooltip="Add the question-paper set selection region",
-            callback=lambda _checked=False: self._start_add_region("question_set"),
-        )
-        self.add_question_block_action = self._add_toolbar_action(
-            icon_name="circle-dot", text="Questions",
-            tooltip="Add a block of question-answer bubble regions",
-            callback=lambda _checked=False: self._start_add_region("question_block"),
-        )
-        self.create_array_action = self._add_toolbar_action(
-            icon_name="copy-plus", text="Array",
-            tooltip="Create a repeated array of question columns from the selected column",
-            callback=self._on_create_array_requested,
-        )
-        self.distribute_columns_action = self._add_toolbar_action(
-            icon_name="align-horizontal-distribute-center", text="Distribute",
-            tooltip="Space the selected question column's siblings evenly between first and last",
-            callback=self._on_distribute_columns_requested,
-        )
-        self.add_custom_action = self._add_toolbar_action(
-            icon_name="square-dashed", text="Custom",
-            tooltip="Add a custom bubble region",
-            callback=lambda _checked=False: self._start_add_region("custom"),
-        )
-        self.add_ignored_action = self._add_toolbar_action(
-            icon_name="file-text", text="Reference",
-            tooltip="Add a reference region excluded from recognition (a logo or instructions)",
-            callback=lambda _checked=False: self._start_add_region("ignored"),
-        )
-        self.toolbar.addSeparator()
-
-        # -- Bubble editing ---------------------------------------------------
-        self.fine_tune_action = self._add_toolbar_action(
-            icon_name="pencil", text="Edit Bubbles", checkable=True,
-            tooltip="Enable individual bubble position editing for the selected region",
-            callback=self._on_fine_tune_toggled,
-        )
-        self.clear_overrides_action = self._add_toolbar_action(
-            icon_name="rotate-ccw", text="Reset",
-            tooltip="Reset every fine-tuned bubble in the selected region",
-            callback=self._clear_selected_zone_overrides,
+        self.detect_orientation_action = self._add_toolbar_action(
+            icon_name="scan", text="Orientation",
+            tooltip=(
+                "Find the printed orientation mark inside the orientation "
+                "region's current rectangle"
+            ),
+            callback=self.detect_orientation_marker,
         )
         self.toolbar.addSeparator()
 
@@ -322,10 +348,65 @@ class TemplateDesignerPage(WorkflowPage):
             tooltip="Check the current template for errors and warnings",
             callback=self.show_validation,
         )
+        self.toolbar.addWidget(_expanding_spacer())
 
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.toolbar.addWidget(spacer)
+        # ==== Row 2: region tools / bubble geometry / view =================
+        # -- Add region ------------------------------------------------------
+        self.add_student_id_action = self._add_toolbar_action(
+            icon_name="id-card", text="Student ID", toolbar=self.toolbar_view,
+            tooltip="Add a student ID bubble region",
+            callback=lambda _checked=False: self._start_add_region("student_id"),
+        )
+        self.add_question_set_action = self._add_toolbar_action(
+            icon_name="list-checks", text="Set", toolbar=self.toolbar_view,
+            tooltip="Add the question-paper set selection region",
+            callback=lambda _checked=False: self._start_add_region("question_set"),
+        )
+        self.add_question_block_action = self._add_toolbar_action(
+            icon_name="circle-dot", text="Questions", toolbar=self.toolbar_view,
+            tooltip="Add a block of question-answer bubble regions",
+            callback=lambda _checked=False: self._start_add_region("question_block"),
+        )
+        self.create_array_action = self._add_toolbar_action(
+            icon_name="copy-plus", text="Array", toolbar=self.toolbar_view,
+            tooltip="Create a repeated array of question columns from the selected column",
+            callback=self._on_create_array_requested,
+        )
+        self.distribute_columns_action = self._add_toolbar_action(
+            icon_name="align-horizontal-distribute-center", text="Distribute",
+            toolbar=self.toolbar_view,
+            tooltip="Space the selected question column's siblings evenly between first and last",
+            callback=self._on_distribute_columns_requested,
+        )
+        self.add_custom_action = self._add_toolbar_action(
+            icon_name="square-dashed", text="Custom", toolbar=self.toolbar_view,
+            tooltip="Add a custom bubble region",
+            callback=lambda _checked=False: self._start_add_region("custom"),
+        )
+        self.add_ignored_action = self._add_toolbar_action(
+            icon_name="file-text", text="Reference", toolbar=self.toolbar_view,
+            tooltip="Add a reference region excluded from recognition (a logo or instructions)",
+            callback=lambda _checked=False: self._start_add_region("ignored"),
+        )
+        self.toolbar_view.addSeparator()
+
+        # -- Bubble editing ---------------------------------------------------
+        self.fine_tune_action = self._add_toolbar_action(
+            icon_name="pencil", text="Edit Bubbles", checkable=True,
+            toolbar=self.toolbar_view,
+            tooltip="Enable individual bubble position editing for the selected region",
+            callback=self._on_fine_tune_toggled,
+        )
+        self.clear_overrides_action = self._add_toolbar_action(
+            icon_name="rotate-ccw", text="Reset", toolbar=self.toolbar_view,
+            tooltip="Reset every fine-tuned bubble in the selected region",
+            callback=self._clear_selected_zone_overrides,
+        )
+        self.toolbar_view.addSeparator()
+
+        # -- Bubble geometry ---------------------------------------------------
+        self._build_bubble_radius_control()
+        self.toolbar_view.addWidget(_expanding_spacer())
 
         # -- View -----------------------------------------------------------
         # `self.canvas` does not exist yet - `_build_main_area()` runs after
@@ -334,40 +415,95 @@ class TemplateDesignerPage(WorkflowPage):
         # raise) right now.
         self.zoom_out_action = self._add_toolbar_action(
             icon_name="zoom-out", text="Zoom Out", icon_only=True,
+            toolbar=self.toolbar_view,
             tooltip="Zoom out", shortcut_hint="Ctrl+-",
             callback=lambda _checked=False: self.canvas.zoom_out(),
         )
         self.zoom_in_action = self._add_toolbar_action(
             icon_name="zoom-in", text="Zoom In", icon_only=True,
+            toolbar=self.toolbar_view,
             tooltip="Zoom in", shortcut_hint="Ctrl++",
             callback=lambda _checked=False: self.canvas.zoom_in(),
         )
         self.fit_action = self._add_toolbar_action(
             icon_name="maximize", text="Fit to Window", icon_only=True,
+            toolbar=self.toolbar_view,
             tooltip="Fit the entire sheet in the canvas", shortcut_hint="Ctrl+0",
             callback=lambda _checked=False: self.canvas.fit_to_window(),
         )
         self.actual_size_action = self._add_toolbar_action(
-            icon_name="scan", text="Actual Size", icon_only=True,
+            icon_name="scan-line", text="Actual Size", icon_only=True,
+            toolbar=self.toolbar_view,
             tooltip="Display the reference image at 100%",
             callback=lambda _checked=False: self.canvas.zoom_to_actual_size(),
         )
         self.grid_action = self._add_toolbar_action(
             icon_name="grid-3x3", text="Grid", icon_only=True, checkable=True,
+            toolbar=self.toolbar_view,
             tooltip="Show or hide the alignment grid", callback=self._on_grid_toggled,
         )
 
-        self.body.addWidget(self.toolbar)
+        self.body.addLayout(rows)
         self.create_array_action.setEnabled(False)
         self.distribute_columns_action.setEnabled(False)
 
         self._document_controls: list[QAction] = [
             self.save_action, self.save_as_action, self.detect_action,
-            self.confirm_markers_action, self.add_student_id_action,
+            self.confirm_markers_action, self.detect_orientation_action,
+            self.add_student_id_action,
             self.add_question_set_action, self.add_question_block_action,
             self.add_custom_action, self.add_ignored_action, self.fine_tune_action,
             self.clear_overrides_action, self.validate_action,
         ]
+
+    def _make_toolbar_row(self, title: str, object_name: str) -> QToolBar:
+        """Construct one toolbar row with the page's shared styling.
+
+        `QToolBar` lays out its own overflow ("»") when the window is too narrow
+        for every action, instead of shrinking labels until they clip - the actual
+        root cause of the originally reported clipped-text toolbar (a plain
+        `QHBoxLayout` of full-text `QPushButton`s has no such mechanism and simply
+        compresses every button below its own text width once the row no longer
+        fits).
+        """
+        toolbar = QToolBar(title)
+        toolbar.setObjectName(object_name)
+        toolbar.setIconSize(QSize(TOOLBAR_ICON_SIZE_PX, TOOLBAR_ICON_SIZE_PX))
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.setMovable(False)
+        return toolbar
+
+    def _build_bubble_radius_control(self) -> None:
+        """Add the template-wide bubble radius spin box to toolbar row 2.
+
+        On the toolbar rather than buried in a dialog because it is a *calibration*
+        control: the user changes it, looks at the canvas, changes it again. A
+        value that needs a dialog opened and accepted for every trial cannot be
+        used that way.
+
+        The value is in **reference-image pixels**, matching the properties panel
+        and every dialog - never display pixels, so zooming the canvas never
+        changes what the number means.
+        """
+        label = QLabel(" Bubble radius: ")
+        label.setObjectName("bubbleRadiusLabel")
+        self.toolbar_view.addWidget(label)
+
+        self.bubble_radius_box = QDoubleSpinBox()
+        self.bubble_radius_box.setObjectName("bubble_radius")
+        self.bubble_radius_box.setDecimals(1)
+        self.bubble_radius_box.setRange(MIN_BUBBLE_RADIUS_PX, MAX_BUBBLE_RADIUS_PX)
+        self.bubble_radius_box.setSingleStep(1.0)
+        self.bubble_radius_box.setSuffix(" px")
+        self.bubble_radius_box.setKeyboardTracking(False)
+        self.bubble_radius_box.setToolTip(
+            "Default bubble radius, in reference-image pixels, for regions "
+            "generated in this template. Regions using the default are resized "
+            "around their existing centres; a region given its own radius keeps it."
+        )
+        self.bubble_radius_box.setStatusTip("Template default bubble radius")
+        self.bubble_radius_box.valueChanged.connect(self._on_bubble_radius_changed)
+        self.toolbar_view.addWidget(self.bubble_radius_box)
 
     def _build_main_area(self) -> None:
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -400,6 +536,10 @@ class TemplateDesignerPage(WorkflowPage):
         properties_layout.setContentsMargins(0, 0, 0, 0)
         self.properties = PropertiesPanel()
         self.properties.geometry_edited.connect(self._on_properties_edited)
+        self.properties.bubble_radius_edited.connect(self._on_region_bubble_radius_edited)
+        self.properties.bubble_inherit_toggled.connect(
+            self._on_region_bubble_inherit_toggled
+        )
         properties_layout.addWidget(self.properties)
         splitter.addWidget(properties_container)
 
@@ -715,6 +855,115 @@ class TemplateDesignerPage(WorkflowPage):
                 self._designer_state.confirm_marker(role)
         self._refresh_all()
 
+    def detect_orientation_marker(self) -> None:
+        """Find the printed orientation mark inside the orientation region.
+
+        The orientation region's current rectangle *is* the search area: the user
+        drags it roughly around the printed mark (or leaves it where a loaded
+        template put it) and this replaces it with the mark's measured geometry.
+        A mark lying wholly inside that rectangle is exactly what is expected and
+        is never rejected for it.
+
+        The search area is widened by :data:`ORIENTATION_SEARCH_MARGIN` before the
+        call, because a hand-drawn box usually only approximately contains the
+        mark. Everything crossing this boundary is in reference-image pixels; the
+        service converts to and from the detector's ROI-local frame.
+        """
+        if self._designer_state is None or self._decoded_image is None:
+            QMessageBox.information(
+                self,
+                "Detect orientation mark",
+                "This template has no reference image to search.",
+            )
+            return
+        reference_path = self._designer_state.reference_image_path
+        if reference_path is None:
+            QMessageBox.information(
+                self,
+                "Detect orientation mark",
+                "This template has no reference image to search.",
+            )
+            return
+
+        search = self._orientation_search_region()
+        try:
+            outcome = detect_orientation_marker_in_region(
+                reference_path,
+                x=search[0],
+                y=search[1],
+                width=search[2],
+                height=search[3],
+                config=OrientationSearchConfig(),
+                debug_dir=self._orientation_debug_dir(),
+            )
+        except (ImageValidationError, ValueError) as exc:
+            report_error(self, exc, context="Detect orientation mark")
+            return
+
+        if not outcome.found:
+            QMessageBox.information(
+                self,
+                "Detect orientation mark",
+                "No orientation mark was found in the orientation region.\n\n"
+                f"{outcome.reason}\n\n"
+                "Move or enlarge the orientation rectangle over the printed mark "
+                "and try again, or drag it into place by hand.",
+            )
+            return
+
+        image_width, image_height = self._decoded_image.width, self._decoded_image.height
+        existing = self._designer_state.template.orientation_marker
+        marker = OrientationMarker(
+            shape=existing.shape,
+            center=NormalizedPoint(
+                x=_clamp_unit(outcome.center_x / image_width),
+                y=_clamp_unit(outcome.center_y / image_height),
+            ),
+            size=NormalizedSize(
+                width=max(1e-4, outcome.width / image_width),
+                height=max(1e-4, outcome.height / image_height),
+            ),
+            expected_near=existing.expected_near,
+            search_radius=existing.search_radius,
+        )
+        self._designer_state.set_orientation_marker(
+            marker,
+            status=MarkerStatus(
+                confirmed=False, method=DetectionMethod.AUTO, confidence=outcome.score
+            ),
+        )
+        self._refresh_all(keep_selection=ORIENTATION_ITEM_ID)
+        self.state_label.setText(
+            f"Orientation mark found at ({outcome.center_x:.0f}, {outcome.center_y:.0f}), "
+            f"score {outcome.score:.2f}"
+        )
+
+    def _orientation_search_region(self) -> tuple[float, float, float, float]:
+        """The pixel rectangle the orientation detector searches, widened by margin."""
+        assert self._designer_state is not None
+        assert self._decoded_image is not None
+        image_width, image_height = self._decoded_image.width, self._decoded_image.height
+        marker = self._designer_state.template.orientation_marker
+        width = marker.size.width * image_width * ORIENTATION_SEARCH_MARGIN
+        height = marker.size.height * image_height * ORIENTATION_SEARCH_MARGIN
+        return (
+            marker.center.x * image_width - width / 2.0,
+            marker.center.y * image_height - height / 2.0,
+            width,
+            height,
+        )
+
+    def _orientation_debug_dir(self) -> Path | None:
+        """Where the detector should write its diagnostic overlay, if anywhere.
+
+        Off unless :data:`ORIENTATION_DEBUG_ENV` names a directory, so an ordinary
+        session writes nothing and a calibration session gets the overlay by
+        setting one environment variable - no developer-mode UI to build, discover
+        or forget to turn off.
+        """
+        configured = os.environ.get(ORIENTATION_DEBUG_ENV)
+        return Path(configured) if configured else None
+
     # ------------------------------------------------------------------
     # Region creation
     # ------------------------------------------------------------------
@@ -754,19 +1003,24 @@ class TemplateDesignerPage(WorkflowPage):
             return
 
         existing_ids = [zone.id for zone in self._designer_state.template.zones]
+        # Every region dialog gets the image size and the template's own default
+        # bubble radius, so a new region inherits the template's bubble geometry
+        # by default and the user can override it per region in one place.
+        common = {
+            "bounds": bounds,
+            "existing_zone_ids": existing_ids,
+            "image_width": image_width,
+            "image_height": image_height,
+            "bubble_radius_px": self._default_bubble_radius_px(),
+            "parent": self,
+        }
         dialog: RegionDialogBase
         if dialog_cls is QuestionBlockDialog:
-            question_block_dialog = QuestionBlockDialog(
-                bounds=bounds,
-                existing_zone_ids=existing_ids,
-                image_width=image_width,
-                image_height=image_height,
-                parent=self,
-            )
+            question_block_dialog = QuestionBlockDialog(**common)  # type: ignore[arg-type]
             question_block_dialog.preview_requested.connect(self._on_question_block_preview)
             dialog = question_block_dialog
         else:
-            dialog = dialog_cls(bounds=bounds, existing_zone_ids=existing_ids, parent=self)
+            dialog = dialog_cls(**common)  # type: ignore[arg-type]
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 self._designer_state.add_zones(dialog.result_zones())
@@ -789,6 +1043,8 @@ class TemplateDesignerPage(WorkflowPage):
                 height=zone.bounds.height * height,
                 color=zone.display_color,
                 label=zone.label,
+                bubble_points=_bubble_preview_points(zone, width, height),
+                bubble_size=_bubble_pixel_size(zone, width, height),
             )
             for zone in zones
         ]
@@ -934,6 +1190,23 @@ class TemplateDesignerPage(WorkflowPage):
         zone = self._designer_state.template.zone_by_id(item_id) if kind == "zone" else None
         self._update_question_column_actions(zone)
         self.properties.set_question_column_info(self._question_column_info(zone))
+        self._show_bubble_geometry_for(zone)
+
+    def _show_bubble_geometry_for(self, zone: Zone | None) -> None:
+        """Populate the properties panel's bubble radius controls for ``zone``."""
+        if self._designer_state is None or self._decoded_image is None:
+            self.properties.set_bubble_geometry(None, inherits=True)
+            return
+        if zone is None or zone.grid is None:
+            self.properties.set_bubble_geometry(None, inherits=True)
+            return
+        radius_px = zone.grid.bubble_size.width * self._decoded_image.width / 2.0
+        self.properties.set_bubble_geometry(
+            radius_px,
+            inherits=zone_inherits_bubble_size(
+                zone, default=self._designer_state.template.default_bubble_size
+            ),
+        )
 
     def _question_column_info(self, zone: Zone | None) -> str | None:
         """Build the properties panel's one-line "which column, how spaced" summary."""
@@ -1111,6 +1384,9 @@ class TemplateDesignerPage(WorkflowPage):
             return
         width, height = self._decoded_image.width, self._decoded_image.height
         override_cells = {(o.row, o.column) for o in zone.grid.overrides}
+        # Half the zone's own bubble width, so a fine-tune dot is the size of the
+        # bubble it is moving rather than an arbitrary handle.
+        radius = max(2.0, zone.grid.bubble_size.width * width / 2.0)
         dots = []
         for row in range(zone.field.rows):
             for column in range(zone.field.columns):
@@ -1122,6 +1398,7 @@ class TemplateDesignerPage(WorkflowPage):
                         x=center.x * width,
                         y=center.y * height,
                         overridden=(row, column) in override_cells,
+                        radius=radius,
                     )
                 )
         self.canvas.show_bubble_dots(dots)
@@ -1174,6 +1451,102 @@ class TemplateDesignerPage(WorkflowPage):
     def _on_grid_toggled(self, checked: bool) -> None:
         self.canvas.set_grid_visible(checked)
 
+    # ------------------------------------------------------------------
+    # Bubble geometry
+    # ------------------------------------------------------------------
+    def _on_bubble_radius_changed(self, radius_px: float) -> None:
+        """Apply a new template-default bubble radius, in image pixels.
+
+        One `DesignerState` mutation, therefore one undo step for the whole
+        change however many regions inherit it. Bubble centres and region
+        rectangles are preserved by
+        :func:`~omr_scanner.domain.template_authoring.apply_default_bubble_radius`;
+        a region that carries its own radius is left alone.
+        """
+        if self._designer_state is None or self._decoded_image is None:
+            return
+        normalized = radius_px / self._decoded_image.width
+        template = self._designer_state.template
+        if (
+            template.default_bubble_radius is not None
+            and abs(template.default_bubble_radius - normalized) <= _RADIUS_EPSILON
+        ):
+            return
+        try:
+            updated = apply_default_bubble_radius(template, radius=normalized)
+        except (ValueError, ValidationError) as exc:
+            report_error(self, exc, context="Set bubble radius")
+            self._sync_bubble_radius_box()
+            return
+        self._designer_state.apply_template(updated)
+        self._refresh_all(keep_selection=self.canvas.selected_region_id())
+
+    def _on_region_bubble_radius_edited(self, radius_px: float) -> None:
+        """Apply a radius to the selected region only, leaving every other alone."""
+        if self._designer_state is None or self._decoded_image is None:
+            return
+        item_id = self.canvas.selected_region_id()
+        zone = (
+            self._designer_state.template.zone_by_id(item_id) if item_id is not None else None
+        )
+        if zone is None or zone.grid is None:
+            return
+        size = _bubble_size_for_radius(
+            radius_px,
+            image_width=self._decoded_image.width,
+            image_height=self._decoded_image.height,
+        )
+        try:
+            updated = set_zone_bubble_size(zone, bubble_size=size)
+        except ValidationError as exc:
+            report_error(self, exc, context="Set region bubble radius")
+            return
+        self._designer_state.replace_zone(zone.id, updated)
+        self._refresh_all(keep_selection=zone.id)
+
+    def _on_region_bubble_inherit_toggled(self, inherit: bool) -> None:
+        """Return the selected region to the template default, or leave it detached.
+
+        Unchecking does nothing to the geometry - the region already holds its own
+        size; it only stops :meth:`_on_bubble_radius_changed` from adopting it,
+        which is a property of the size itself rather than of a stored flag (see
+        :func:`~omr_scanner.domain.template_authoring.zone_inherits_bubble_size`).
+        """
+        if not inherit or self._designer_state is None or self._decoded_image is None:
+            return
+        item_id = self.canvas.selected_region_id()
+        zone = (
+            self._designer_state.template.zone_by_id(item_id) if item_id is not None else None
+        )
+        if zone is None or zone.grid is None:
+            return
+        default = self._designer_state.template.default_bubble_size
+        try:
+            updated = set_zone_bubble_size(zone, bubble_size=default)
+        except ValidationError as exc:
+            report_error(self, exc, context="Use template bubble size")
+            return
+        self._designer_state.replace_zone(zone.id, updated)
+        self._refresh_all(keep_selection=zone.id)
+
+    def _sync_bubble_radius_box(self) -> None:
+        """Show the open document's default radius without re-triggering a change."""
+        if self._designer_state is None or self._decoded_image is None:
+            self.bubble_radius_box.setEnabled(False)
+            return
+        radius = self._designer_state.template.default_bubble_radius or DEFAULT_BUBBLE_RADIUS
+        self.bubble_radius_box.setEnabled(True)
+        self.bubble_radius_box.blockSignals(True)
+        self.bubble_radius_box.setValue(radius * self._decoded_image.width)
+        self.bubble_radius_box.blockSignals(False)
+
+    def _default_bubble_radius_px(self) -> float:
+        """The open document's default bubble radius, in reference-image pixels."""
+        if self._designer_state is None or self._decoded_image is None:
+            return DEFAULT_BUBBLE_RADIUS * FALLBACK_IMAGE_WIDTH
+        radius = self._designer_state.template.default_bubble_radius or DEFAULT_BUBBLE_RADIUS
+        return radius * self._decoded_image.width
+
     def _on_cursor_moved(self, x: float, y: float) -> None:
         if x < 0:
             self.cursor_label.setText("Cursor: -")
@@ -1187,10 +1560,30 @@ class TemplateDesignerPage(WorkflowPage):
     # Refresh
     # ------------------------------------------------------------------
     def _refresh_all(self, *, keep_selection: str | None = None) -> None:
+        """The one refresh path: model -> canvas -> panels.
+
+        Every mutation ends here rather than updating whichever widget the caller
+        happened to be thinking about, which is what keeps "what is on screen" and
+        "what the document says" provably the same thing. See
+        ``docs/development/template_gui_fix_diagnosis.md`` for the update
+        direction this implements.
+        """
         self._refresh_canvas_regions(keep_selection=keep_selection)
         self._refresh_region_list()
+        self._sync_bubble_radius_box()
+        if keep_selection is not None:
+            self._refresh_selection_properties(keep_selection)
         self._update_status()
         self._update_undo_redo_buttons()
+
+    def _refresh_selection_properties(self, item_id: str) -> None:
+        """Re-read the properties panel's fields from the model after a mutation."""
+        kind = (
+            "marker"
+            if item_id.startswith(MARKER_ITEM_PREFIX)
+            else ("orientation" if item_id == ORIENTATION_ITEM_ID else "zone")
+        )
+        self._show_properties_for(item_id, kind)
 
     def _refresh_canvas_regions(self, *, keep_selection: str | None = None) -> None:
         if self._designer_state is None or self._decoded_image is None:
@@ -1244,6 +1637,7 @@ class TemplateDesignerPage(WorkflowPage):
                     color=zone.display_color,
                     label=zone.label,
                     bubble_points=bubble_points,
+                    bubble_size=_bubble_pixel_size(zone, width, height),
                 )
             )
 
@@ -1300,6 +1694,10 @@ class TemplateDesignerPage(WorkflowPage):
     def _set_document_controls_enabled(self, enabled: bool) -> None:
         for action in self._document_controls:
             action.setEnabled(enabled)
+        # The radius spin box is a document setting like any of the actions
+        # above, so it greys out with them rather than showing an editable
+        # number with nothing to apply it to.
+        self.bubble_radius_box.setEnabled(enabled)
 
 
 def _handle_state_for(status: MarkerStatus) -> HandleState:
@@ -1311,6 +1709,47 @@ def _handle_state_for(status: MarkerStatus) -> HandleState:
     if status.method is DetectionMethod.MANUAL and not status.confirmed:
         return HandleState.MISSING
     return HandleState.NORMAL
+
+
+def _bubble_pixel_size(
+    zone: Zone, width: float, height: float
+) -> tuple[float, float] | None:
+    """Return a zone's bubble size in image pixels, or ``None`` for one with no grid."""
+    if zone.grid is None:
+        return None
+    return (zone.grid.bubble_size.width * width, zone.grid.bubble_size.height * height)
+
+
+def _bubble_size_for_radius(
+    radius_px: float, *, image_width: float, image_height: float
+) -> NormalizedSize:
+    """Convert a pixel radius into the normalised bounding size the grid stores.
+
+    ``2 * radius`` on each axis in *pixels*, normalised per axis afterwards - so a
+    circle on paper stays a circle, and becomes an ellipse in normalised
+    coordinates exactly as the anisotropic normalised page requires.
+    """
+    return NormalizedSize(
+        width=min(1.0, max(1e-6, 2.0 * radius_px / image_width)),
+        height=min(1.0, max(1e-6, 2.0 * radius_px / image_height)),
+    )
+
+
+def _clamp_unit(value: float) -> float:
+    """Clamp a normalised coordinate into ``[0, 1]``."""
+    return max(0.0, min(1.0, value))
+
+
+def _expanding_spacer() -> QWidget:
+    """An invisible widget that pushes whatever follows it to the row's right end."""
+    spacer = QWidget()
+    spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+    return spacer
+
+
+def _object_name_of(text: str) -> str:
+    """Turn an action's label into a stable Qt object name for semantic test access."""
+    return "".join(char if char.isalnum() else "_" for char in text).strip("_").lower()
 
 
 def _bubble_preview_points(

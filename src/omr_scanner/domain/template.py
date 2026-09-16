@@ -47,6 +47,16 @@ TEMPLATE_FORMAT_VERSION = 1
 
 TEMPLATE_FILE_SUFFIX = ".omrt"
 
+_FALLBACK_DEFAULT_BUBBLE_RADIUS = 0.011
+"""Bubble radius assumed when a document predates
+:attr:`OmrTemplate.default_bubble_radius` - half the ``0.022`` normalised bubble
+width every Phase 2 region dialog hard-coded, so such a document's geometry is
+unchanged. Re-exported as
+:data:`omr_scanner.domain.template_authoring.DEFAULT_BUBBLE_RADIUS`, which is the
+name application code should use; it lives here because the model's own
+:meth:`OmrTemplate.default_bubble_size` needs it and ``template_authoring``
+imports this module, not the other way round."""
+
 _HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -503,6 +513,49 @@ class OmrTemplate(BaseModel):
     ``docs/TEMPLATE_FORMAT.md`` this does not bump ``format_version``, and a
     document written before Phase 2 loads unchanged with this field ``None``.
     """
+
+    default_bubble_radius: float | None = Field(default=None, gt=0.0, le=0.5)
+    """Default bubble radius for regions generated in the designer, normalised to
+    the **page width**.
+
+    One number rather than a width and a height, because that is how a person
+    describes a circular OMR bubble, and because two independent defaults are two
+    things that can disagree. :meth:`default_bubble_size` derives the
+    :class:`NormalizedSize` the grid model actually stores, using the page's own
+    aspect ratio so that a bubble which is circular in *pixels* stays circular.
+
+    Normalised to the width specifically (rather than to the shorter side or the
+    diagonal) so that the horizontal half-axis is simply ``radius`` - the axis a
+    user reads off a scan when measuring a printed bubble.
+
+    A *region* may carry its own size: a region inherits this default for exactly
+    as long as its stored bubble size matches what this radius produces (see
+    :func:`~omr_scanner.domain.template_authoring.zone_inherits_bubble_size`).
+
+    Additive and optional, like :attr:`reference_image` above and under the same
+    versioning rule: ``None`` in a document written before this field existed,
+    where :data:`~omr_scanner.domain.template_authoring.DEFAULT_BUBBLE_RADIUS`
+    stands in - the same value every Phase 2 region dialog already hard-coded, so
+    such a document's geometry is unaffected.
+    """
+
+    @property
+    def default_bubble_size(self) -> NormalizedSize:
+        """The default bubble bounding size implied by :attr:`default_bubble_radius`.
+
+        ``width = 2 * radius``; ``height`` is the same *physical* extent expressed
+        on the vertical axis, which on a normalised page means multiplying by the
+        page's aspect ratio. A 27 px radius on a 2480x3508 page therefore gives
+        ``0.0218 x 0.0154`` - an ellipse in normalised coordinates describing a
+        circle on paper.
+        """
+        radius = self.default_bubble_radius
+        if radius is None:
+            radius = _FALLBACK_DEFAULT_BUBBLE_RADIUS
+        return NormalizedSize(
+            width=min(2.0 * radius, 1.0),
+            height=min(2.0 * radius * self.page.aspect_ratio, 1.0),
+        )
 
     @field_validator("registration_markers")
     @classmethod

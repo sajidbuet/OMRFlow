@@ -101,6 +101,97 @@ not be used for examination processing.
   cover the mouse/hover/wheel/key/drag event handlers the designer's canvas
   and graphics items implement.
 
+### Fixed
+
+Template Designer correction pass. Root causes and the reasoning behind each
+correction are recorded in `docs/development/template_gui_fix_diagnosis.md`.
+
+- **A Question Region changed size when its column count changed.** The drawn
+  rectangle was never a container: `generate_question_columns`' explicit-pitch
+  branch read only `bounds.x`/`bounds.y` and derived each strip's size from the
+  pitch, so the block's outer extent was proportional to the column count.
+  `ColumnLayoutMode` now names the two behaviours - `FIT_CONTAINER` (the
+  default; the strips tile the user's rectangle exactly, for any column count,
+  gap, pitch or bubble size) and `FROM_PITCH` (which `generate_column_array`
+  opts into, because "make N more like this calibrated column" is meant to
+  extend past it).
+- **Resizing a region threw it to the scene's top-left corner.**
+  `RegionHandleItem` captured its press rectangle in *item-local* coordinates,
+  added a *scene-space* mouse delta to it, and passed the result to
+  `set_scene_rect`, which reads scene coordinates - so the first mouse-move set
+  the item's position to the drag delta alone. The gesture is now computed
+  entirely in scene coordinates, and the constructor enforces the class's
+  invariant (`pos()` holds the position, `rect()` holds the size, never both).
+  Resize anchoring falls out of the arithmetic with no special cases.
+- **Bubble size could not be adjusted, and changing it altered nothing.**
+  `RegionHandleItem.paint` drew every preview bubble at a hard-coded 3 px radius
+  and `RegionSpec` carried no size at all, so no value a user could type would
+  change what was drawn; separately, three of the four bubble region kinds had
+  no bubble-sizing control.
+- **The Template page spent a sixth of the window's height above the canvas.**
+  `WorkflowPage` unconditionally gave every page a word-wrapped summary row and
+  24 px margins - right for a placeholder page whose content *is* explanatory
+  text, wrong for one whose body is a full-size editor.
+
+### Added
+
+- **Orientation-mark detection inside a user-drawn region.**
+  `omr_scanner.imaging.orientation_marker` crops the rectangle, thresholds it on
+  its own statistics and scores each dark shape on darkness, solidity, aspect
+  ratio, size and position, with dash-shaped defaults rather than the
+  registration-square criteria (which reject a 2:1 dash on aspect ratio alone).
+  Reached from the designer through the toolbar's **Orientation** action and
+  `services.detect_orientation_marker_in_region`. Every reported coordinate is
+  in full-image pixels; a mark wholly inside the rectangle is never rejected for
+  being inside it. Previously there was no orientation detection in the designer
+  at all - `imaging.orientation` answers a different question (*which way up* a
+  scan was fed, from four detected corners and a homography) and cannot answer
+  this one. Setting `OMRFLOW_ORIENTATION_DEBUG_DIR` writes an annotated overlay
+  of the search region, every candidate and each rejection reason.
+- **A template-wide bubble radius.** `OmrTemplate.default_bubble_radius` -
+  additive and optional, normalised to the page width, no `format_version` bump
+  - with `default_bubble_size` deriving the width/height a grid stores from the
+  page aspect ratio, so a bubble circular in pixels stays circular. Edited from
+  toolbar row 2 in reference-image pixels, with a per-region override in the
+  properties panel. A region inherits while its stored size matches what the
+  default produces, so the relationship survives save and reload without a new
+  schema field. `set_zone_bubble_size` changes only `grid.bubble_size`: every
+  bubble centre, every hand-placed override and the parent rectangle are
+  preserved exactly.
+- `place_grid_in_bounds` - the counterpart to `fit_grid_to_bounds`: positions a
+  lattice of a *given* pitch inside a fixed rectangle, rejecting one that does
+  not fit rather than silently enlarging the region.
+- A "Fit bubble spacing to the region" option in the Question Block dialog (on
+  by default), so changing the column count reflows the bubbles across the
+  container instead of leaving them at a pitch a different count needed.
+- `.claude/skills/qtguitesting/` - a repository-local Claude Code skill for
+  OMRFlow's Qt GUI: the testing hierarchy and workflow, a Qt coordinate-system
+  reference, ten real-image scenarios, and four scripts
+  (`run_gui_smoke_tests.py`, `capture_gui_states.py`, `dump_gui_geometry.py`,
+  `compare_gui_images.py`). Documented in `docs/DEVELOPMENT_GUIDE.md`.
+- Regression tests for every bug above:
+  `tests/unit/test_question_region_container.py`,
+  `tests/gui/test_template_designer_region_geometry.py`,
+  `tests/gui/test_template_designer_bubble_and_layout.py`,
+  `tests/integration/test_orientation_marker_detection.py` (seven synthetic
+  scenarios plus six search-rectangle shapes on `examples/ECE-0000.png`), and
+  `tests/unit/test_qtguitesting_skill.py`.
+
+### Changed (correction pass)
+
+- The Template toolbar is two rows - file/undo/detection/validation above,
+  region tools/bubble radius/zoom/grid below. One row pushed most of the region
+  tools into Qt's overflow menu on any window narrower than about 1400 px.
+  `TemplateDesignerPage.toolbar_actions()` returns both rows' actions.
+- `WorkflowPage` gained `show_summary` and `compact`; the designer passes both,
+  keeping the stage description as the title's tooltip. Every other page is
+  unchanged.
+- `DesignerState.apply_template` replaces the whole document in one history
+  entry, so a template-level change that also touches zones (a radius change) is
+  one undo step.
+- `test-output/` is git-ignored - generated screenshots and geometry dumps, never
+  committed baselines.
+
 ### Known limitations
 
 - No snap-to-grid while dragging yet (the pure function exists and is tested;
@@ -108,7 +199,12 @@ not be used for examination processing.
 - Distribute is per Question-Region group only (Distribute Columns Evenly);
   no general align/distribute tool for arbitrary multi-selected regions.
 - Individual-bubble override reset is per-region, not per-bubble.
-- The designer has not been used against a real printed sheet.
+- The Question Block dialog exposes one bubble *radius* rather than independent
+  width and height, so a deliberately elliptical bubble cannot be authored from
+  that dialog. The `.omrt` model still stores the two axes independently and a
+  template authored elsewhere round-trips unchanged.
+- The designer has been exercised against the repository's real sample sheet
+  (`examples/ECE-0000.png`) but has not been used to process a real examination.
 
 ---
 

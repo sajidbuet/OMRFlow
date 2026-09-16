@@ -10,6 +10,7 @@ import pytest
 from omr_scanner.domain.geometry import NormalizedRect, NormalizedSize
 from omr_scanner.domain.template import TEMPLATE_FORMAT_VERSION
 from omr_scanner.domain.template_authoring import (
+    ColumnLayoutMode,
     build_blank_template,
     generate_question_columns,
     translate_zone,
@@ -117,6 +118,7 @@ def test_a_manually_adjusted_question_column_survives_save_and_reload(tmp_path: 
         row_pitch=0.02,
         column_pitch=0.03,
         column_gap=0.02,
+        layout_mode=ColumnLayoutMode.FROM_PITCH,
     )
     # Move column 4 (0-based index 3) independently, leaving the others alone -
     # the template must preserve this irregular offset exactly.
