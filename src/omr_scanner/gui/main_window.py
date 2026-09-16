@@ -28,8 +28,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
+from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -38,14 +39,17 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QSizePolicy,
     QStackedWidget,
+    QVBoxLayout,
     QWidget,
 )
 
 from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, load_app_config, save_app_config
 from omr_scanner.errors import ConfigurationError, OMRScannerError
-from omr_scanner.gui.about_dialog import AboutDialog
+from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
+from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
@@ -61,6 +65,17 @@ NAVIGATION_WIDTH = 190
 NO_PROJECT_STATUS = "No project open"
 STATUS_MESSAGE_MS = 5000
 """How long transient status bar messages stay visible."""
+
+LOGO_DISPLAY_WIDTH = 130
+"""Logo width in the sidebar, in logical (DPI-independent) pixels - within the
+110-150px range a small application-branding mark should occupy without
+crowding the fixed-width sidebar. Height follows from `LOGO_ASPECT_RATIO` so
+the original artwork is never stretched."""
+
+SIDEBAR_LOGO_BOTTOM_MARGIN = 20
+"""Gap between the logo and the bottom of the sidebar, in logical pixels."""
+
+DEVELOPER_URL = "https://www.sajid.bd"
 
 
 class MainWindow(QMainWindow):
@@ -88,6 +103,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(APPLICATION_NAME)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        # In addition to `QApplication.setWindowIcon()` (the taskbar/dock
+        # default), this window's own title bar reads its icon from here.
+        self.setWindowIcon(application_icon())
 
         self._build_central_widget()
         self._build_menus()
@@ -98,16 +116,30 @@ class MainWindow(QMainWindow):
     # Construction
     # ------------------------------------------------------------------
     def _build_central_widget(self) -> None:
-        """Create the navigation list and the stacked workflow pages."""
+        """Assemble the navigation/workflow area and the footer.
+
+        No separate header row: the logo lives inside the sidebar (see
+        `_build_sidebar`), so the workflow area starts directly below the
+        menu bar and the main page content starts near the top of the
+        window, not below a dedicated branding strip.
+        """
         central = QWidget(self)
-        layout = QHBoxLayout(central)
+        outer_layout = QVBoxLayout(central)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        outer_layout.addLayout(self._build_workflow_area(), stretch=1)
+        outer_layout.addWidget(self._build_footer())
+
+        self.setCentralWidget(central)
+
+    def _build_workflow_area(self) -> QHBoxLayout:
+        """Create the navigation sidebar and the stacked workflow pages."""
+        layout = QHBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.navigation = QListWidget()
-        self.navigation.setObjectName("workflowNavigation")
-        self.navigation.setFixedWidth(NAVIGATION_WIDTH)
-        self.navigation.setAlternatingRowColors(True)
+        layout.addWidget(self._build_sidebar())
 
         self.stack = QStackedWidget()
 
@@ -135,9 +167,86 @@ class MainWindow(QMainWindow):
         self.navigation.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.navigation.setCurrentRow(0)
 
-        layout.addWidget(self.navigation)
         layout.addWidget(self.stack, stretch=1)
-        self.setCentralWidget(central)
+        return layout
+
+    def _build_sidebar(self) -> QWidget:
+        """Build the fixed-width sidebar: the navigation list, then the logo.
+
+        ``navigation`` (unchanged - same widget, same object name, same row
+        content/behaviour, still `NAVIGATION_WIDTH` wide via the sidebar
+        container) is given the layout's whole stretch factor, so it claims
+        every bit of vertical space the fixed-size logo below it does not
+        need - equivalent to "navigation, then an expanding spacer, then the
+        logo" without an extra invisible widget. A `QSvgWidget` renders the
+        vector logo directly rather than a pre-rasterised bitmap, so it stays
+        crisp at any Windows display scaling (100/125/150/200%).
+        """
+        sidebar = QWidget()
+        sidebar.setObjectName("workflowSidebar")
+        sidebar.setFixedWidth(NAVIGATION_WIDTH)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(0, 0, 0, SIDEBAR_LOGO_BOTTOM_MARGIN)
+        layout.setSpacing(0)
+
+        self.navigation = QListWidget()
+        self.navigation.setObjectName("workflowNavigation")
+        self.navigation.setAlternatingRowColors(True)
+        layout.addWidget(self.navigation, stretch=1)
+
+        logo_height = round(LOGO_DISPLAY_WIDTH / LOGO_ASPECT_RATIO)
+        self.logo_widget = QSvgWidget(str(logo_svg_path()))
+        self.logo_widget.setObjectName("appLogo")
+        self.logo_widget.setFixedSize(LOGO_DISPLAY_WIDTH, logo_height)
+        # A transparent background lets the logo sit directly on the
+        # sidebar's own background rather than inside a coloured box.
+        self.logo_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        layout.addWidget(self.logo_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        return sidebar
+
+    def _build_footer(self) -> QWidget:
+        """Build the small, centred developer-credit footer.
+
+        A separate widget from `statusBar()` (which keeps showing transient
+        workflow messages and the permanent project indicator, untouched) -
+        this row sits just above it, inside the central widget, so it is
+        always the last thing before the native status bar rather than a
+        second competing status bar.
+        """
+        footer = QWidget()
+        footer.setObjectName("appFooter")
+        footer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(footer)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.addStretch(1)
+
+        self.footer_label = QLabel(
+            f'Developed by <a href="{DEVELOPER_URL}">{DEVELOPER_NAME}</a>'
+        )
+        self.footer_label.setObjectName("appFooterLabel")
+        self.footer_label.setTextFormat(Qt.TextFormat.RichText)
+        self.footer_label.setOpenExternalLinks(False)  # routed through the opener below instead
+        self.footer_label.linkActivated.connect(self._open_developer_site)
+        # `QLabel` already shows a pointing-hand cursor over an embedded `<a>`
+        # link by default (its `textInteractionFlags()` include
+        # `LinksAccessibleByMouse` out of the box) - nothing extra needed here.
+        small_font = self.footer_label.font()
+        small_font.setPointSizeF(max(small_font.pointSizeF() - 1.0, 7.0))
+        self.footer_label.setFont(small_font)
+        layout.addWidget(self.footer_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        layout.addStretch(1)
+        return footer
+
+    def _open_developer_site(self, url: str) -> None:
+        """Open the developer's site in the system's default browser.
+
+        Never navigates inside the application itself - `QDesktopServices`
+        hands the URL straight to the OS, exactly as clicking it in any other
+        desktop application would.
+        """
+        QDesktopServices.openUrl(QUrl(url))
 
     def _build_menus(self) -> None:
         """Create the File and Help menus."""

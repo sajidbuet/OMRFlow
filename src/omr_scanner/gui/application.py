@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QApplication
 
 from omr_scanner import APPLICATION_NAME, ORGANIZATION_NAME, __version__
 from omr_scanner.config import AppConfig
+from omr_scanner.gui.branding import application_icon
 from omr_scanner.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,10 @@ def run_gui(config: AppConfig, *, initial_project: Path | None = None) -> int:
     app.setApplicationDisplayName(APPLICATION_NAME)
     app.setOrganizationName(ORGANIZATION_NAME)
     app.setApplicationVersion(__version__)
+    # Sets the default icon for every top-level window and is what the
+    # platform (taskbar, dock, alt-tab switcher) reads, in addition to each
+    # window's own `setWindowIcon()` for its title bar.
+    app.setWindowIcon(application_icon())
 
     window = MainWindow(config=config)
     window.show()

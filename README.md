@@ -257,6 +257,10 @@ Intended to be released as open-source software under a permissive licence
 (Apache 2.0 or MIT). The final choice will be made before the first public
 release.
 
+## Developer
+
+OMRFlow is developed by [Dr. Sajid Muhaimin Choudhury](https://www.sajid.bd).
+
 ---
 
 ## OMRFlow

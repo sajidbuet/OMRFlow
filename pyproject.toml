@@ -67,8 +67,16 @@ where = ["src"]
 # top-level `resources/` directory - which is dev/test fixtures only and is
 # never packaged - so icons resolve correctly for an editable install, a
 # built wheel, and a future frozen executable alike. See
-# `src/omr_scanner/gui/icons.py`.
-omr_scanner = ["py.typed", "gui/resources/icons/lucide/*.svg", "gui/resources/icons/lucide/LICENSE"]
+# `src/omr_scanner/gui/icons.py`. `gui/resources/branding/*` bundles the logo
+# and application icon the same way - see `src/omr_scanner/gui/branding.py`.
+omr_scanner = [
+    "py.typed",
+    "gui/resources/icons/lucide/*.svg",
+    "gui/resources/icons/lucide/LICENSE",
+    "gui/resources/branding/*.svg",
+    "gui/resources/branding/*.ico",
+    "gui/resources/branding/*.png",
+]
 
 # --------------------------------------------------------------------------
 # pytest
