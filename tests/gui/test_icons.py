@@ -31,6 +31,7 @@ class TestLoadIcon:
         [
             "file-plus", "folder-open", "save", "save-all", "undo-2", "redo-2",
             "scan-line", "check-check", "id-card", "list-checks", "circle-dot",
+            "copy-plus", "align-horizontal-distribute-center",
             "square-dashed", "file-text", "pencil", "rotate-ccw", "circle-check",
             "zoom-in", "zoom-out", "maximize", "scan", "grid-3x3", "copy", "trash",
         ],

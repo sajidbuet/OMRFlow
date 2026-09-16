@@ -30,8 +30,8 @@ location.
 ```text
 +--------------------------------------------------------------+
 | [New][Open][Save][Save As] | [Undo][Redo] | Detect | Confirm  |
-| Student ID Set Questions Custom Reference | Edit Bubbles Reset|
-| Validate | [Zoom-][Zoom+][Fit][Actual Size][Grid]              |
+| Student ID Set Questions Array Distribute Custom Reference    |
+| Edit Bubbles Reset | Validate | [Zoom-][Zoom+][Fit][100%][Grid]|
 +----------------------+---------------------------------------+
 |                      |                                       |
 | Registration markers |                                       |
@@ -108,8 +108,8 @@ the specifics:
 | Button | Dialog | Produces |
 |---|---|---|
 | Student ID | digit count, layout | one `numeric` zone |
-| Set | set values (comma separated), layout | one `set_code` zone |
-| Questions | first question, count, choice labels, columns, questions per column, layout | **one `question_block` zone per column** |
+| Set | set code mode, values or code length, layout | one `set_code` zone |
+| Questions | first question, count, choice labels, columns, questions per column, bubble/spacing, layout | **one `question_block` zone per column** |
 | Custom | symbols, position count, layout | one `alphanumeric` zone |
 | Reference | name only | one `ignored` zone (logos, printed instructions) |
 
@@ -119,9 +119,37 @@ never one rectangle standing in for 400 bubbles. This mirrors what
 `docs/TEMPLATE_FORMAT.md` already specified for question blocks before Phase 2
 began.
 
-The generated bubble grid is fitted evenly inside the rectangle you drew (see
-`fit_grid_to_bounds`): the first and last bubble sit half a bubble-width in
-from the edges, and every bubble in between is spaced evenly.
+#### Set code: enumerated values or a positional code
+
+The **Set** dialog's **Set code mode** chooses between two ways real answer
+sheets print a booklet/set code:
+
+* **Enumerated values** (the original, and still the default) - a
+  comma-separated list of complete values, each becoming one bubble:
+  `A,B,C,D`, or `10,11,12` (three bubbles, never split into digits), or
+  `01,02,03` (kept as the strings `"01"`/`"02"`/`"03"`, never read as the
+  numbers 1/2/3).
+* **Positional code** - **Code length** (1 and up) columns of bubbles, each
+  offering the same **Symbols per position** (`0,1,2,...,9` by default);
+  selecting `1` in position 1 and `0` in position 2 represents the code
+  `"10"`. A 2- or 3-digit code is the common case, but any length works.
+
+Both modes produce the same `set_code` field - see `docs/TEMPLATE_FORMAT.md`
+- so an existing `A,B,C,D` template opens unaffected; there is nothing to
+migrate.
+
+#### Question columns: explicit spacing and Column Gap
+
+The **Questions** dialog exposes the block's geometry as independent,
+image-pixel values rather than one rectangle auto-divided into columns:
+**Bubble width/height**, **Choice spacing** (distance between adjacent
+answer-choice bubbles), **Question row spacing** (distance between adjacent
+question rows) and **Column gap**. Leaving them untouched reproduces exactly
+what dragging the rectangle alone used to produce; editing any of them - most
+usefully **Column Gap**, the empty space between adjacent columns' bounding
+boxes (`next_column_x = current_column_x + current_column_width +
+column_gap`) - updates a dashed preview overlay on the canvas immediately, so
+you can see the effect before accepting.
 
 ### 5. Adjust regions
 
@@ -140,6 +168,39 @@ never optional in the format; move them instead.
 
 The region list's checkbox toggles a region's visibility on the canvas without
 deleting it, useful for decluttering a busy sheet while working on one area.
+
+#### Question columns are independent regions
+
+A multi-column Question region is not one indivisible block: each printed
+column (`questions_0`, `questions_1`, ...) is its own zone, selectable and
+draggable exactly like any other region - click one column to select just it
+(a green outline appears around it alone), and drag it to reposition it
+without moving its siblings or renumbering its questions. This is what makes
+it possible to match a real scanned sheet whose printed columns are not
+perfectly, mathematically spaced: drag the columns that need correcting, one
+at a time, and every other column stays exactly where it was.
+
+**Array** and **Distribute** (enabled in the toolbar only when a question
+column is selected) speed up calibrating several columns at once:
+
+* **Array** opens **Create Question Column Array**: starting from one
+  correctly calibrated column, choose how many columns total, questions per
+  column, the starting question number, a horizontal gap, and a direction
+  (left-to-right or right-to-left). Every generated column inherits the
+  reference's bubble size, spacing and choice labels exactly - only position
+  and question numbers change. This is the recommended workflow for a real
+  sheet: calibrate one column precisely against the printed page, then array
+  it, rather than fighting with five independent rectangles from the start.
+* **Distribute** applies **Distribute Columns Evenly** to the selected
+  column's whole group (every column produced by the same Questions/Array
+  action): the first and last column stay exactly where they are, and every
+  column between them is spaced evenly. Useful after manually aligning just
+  the two end columns against the printed sheet.
+
+Both actions apply as a single undo step, so one Ctrl+Z reverses the whole
+operation. The properties panel additionally shows, for a selected question
+column, which column it is within its group and whether the group's spacing
+is currently uniform (with the measured gap) or custom.
 
 ### 6. Fine-tune individual bubbles
 
@@ -211,7 +272,9 @@ keep in sync as the schema evolves.
 | Ctrl++ / Ctrl+- | Zoom in / out |
 | Ctrl+0 | Fit to window |
 | Mouse wheel | Zoom |
-| Space + drag | Pan |
+| Space + left-drag | Pan |
+| Middle-drag | Pan |
+| Right-drag (past a small threshold) | Pan |
 
 **New/Open use Ctrl+Shift+N/O, not Ctrl+N/O.** The main window already binds
 Ctrl+N/Ctrl+O to *project* actions with a window-wide shortcut context; reusing
@@ -219,6 +282,27 @@ them here for *template* actions would make Qt refuse both (an "ambiguous
 shortcut", where neither fires) whenever the Template page is visible. Every
 other shortcut in the Phase 2 brief was free at the window level and is bound
 exactly as specified.
+
+## Canvas navigation
+
+Three ways to pan, on top of the existing zoom (mouse wheel, Zoom In/Out, Fit,
+100%):
+
+* **Space + left-drag** - unchanged from before; holding Space switches the
+  canvas into Qt's own hand-drag mode for the duration of the key press.
+* **Middle-button drag** - always pans, from the moment the button is
+  pressed; the cursor becomes a closed hand for the duration of the drag.
+* **Right-button drag** - pans once the drag exceeds Qt's own standard
+  drag-distance threshold (`QApplication.startDragDistance()`, not a
+  hand-picked pixel count); a right button press and release with negligible
+  movement is a plain click, left free for a future context menu.
+
+All three only move the viewport - never a region's geometry. Middle- and
+right-button presses are intercepted before they ever reach the canvas's
+regions, so panning can never be mistaken for selecting or dragging a region,
+regardless of whether one is already selected. Left-click dragging a selected
+region (or a question column, or a fine-tune bubble dot) is completely
+unaffected and still moves that item, exactly as before.
 
 ## Grid and alignment
 

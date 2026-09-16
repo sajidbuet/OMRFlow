@@ -184,11 +184,22 @@ class DesignerState:
     # ------------------------------------------------------------------
     # Zones
     # ------------------------------------------------------------------
+    def apply_zones(self, zones: Sequence[Zone]) -> None:
+        """Replace the entire zones tuple in one history entry.
+
+        The batch primitive every other zone mutation below is a thin,
+        single-purpose wrapper around. Used directly when one user gesture
+        must touch multiple zones at once - Create Column Array (which both
+        re-tags the reference zone with a new ``group_id`` and appends its
+        generated siblings) and Distribute Columns Evenly (which moves every
+        intermediate column) - where pushing one history entry per touched
+        zone would let a single Undo only partially reverse the gesture.
+        """
+        self._apply(self.template.model_copy(update={"zones": tuple(zones)}))
+
     def add_zones(self, zones: Sequence[Zone]) -> None:
         """Append one or more new zones (a region generator may produce several)."""
-        self._apply(
-            self.template.model_copy(update={"zones": (*self.template.zones, *zones)})
-        )
+        self.apply_zones((*self.template.zones, *zones))
 
     def replace_zone(self, zone_id: str, updated: Zone) -> None:
         """Replace the zone identified by ``zone_id`` with ``updated``.
@@ -198,15 +209,13 @@ class DesignerState:
         """
         if self.template.zone_by_id(zone_id) is None:
             raise KeyError(f"No zone with id '{zone_id}'")
-        zones = tuple(
-            updated if zone.id == zone_id else zone for zone in self.template.zones
+        self.apply_zones(
+            tuple(updated if zone.id == zone_id else zone for zone in self.template.zones)
         )
-        self._apply(self.template.model_copy(update={"zones": zones}))
 
     def remove_zone(self, zone_id: str) -> None:
         """Delete the zone identified by ``zone_id``, if present."""
-        zones = tuple(zone for zone in self.template.zones if zone.id != zone_id)
-        self._apply(self.template.model_copy(update={"zones": zones}))
+        self.apply_zones(tuple(zone for zone in self.template.zones if zone.id != zone_id))
 
     def move_zone(self, zone_id: str, *, dx: float, dy: float) -> None:
         """Shift a zone by a normalised offset, clamped to the page."""
@@ -302,3 +311,4 @@ class DesignerState:
 
 
 __all__ = ["MANUAL_CONFIRMED", "MISSING", "DesignerState", "DetectionMethod", "MarkerStatus"]
+

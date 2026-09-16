@@ -22,6 +22,7 @@ from omr_scanner.domain.template_authoring import (
     build_blank_template,
     generate_character_grid_zone,
     generate_ignored_zone,
+    generate_question_columns,
 )
 from omr_scanner.gui.template_designer.state import (
     MANUAL_CONFIRMED,
@@ -148,6 +149,38 @@ class TestZoneMutations:
         state = DesignerState(_template())
         with pytest.raises(KeyError):
             state.duplicate_zone("missing", new_id="new")
+
+    def test_apply_zones_replaces_the_whole_tuple_in_one_history_entry(self):
+        state = DesignerState(_template())
+        state.add_zones((_zone("a", x=0.1), _zone("b", x=0.5)))
+        renamed_a = state.template.zone_by_id("a").model_copy(update={"label": "A"})
+        renamed_b = state.template.zone_by_id("b").model_copy(update={"label": "B"})
+        state.apply_zones((renamed_a, renamed_b))
+        assert state.template.zone_by_id("a").label == "A"
+        assert state.template.zone_by_id("b").label == "B"
+        state.undo()
+        # One undo reverts BOTH renames together - proof this was one entry,
+        # not two - which is exactly why Create Column Array and Distribute
+        # Columns Evenly use this instead of `replace_zone` in a loop.
+        assert state.template.zone_by_id("a").label != "A"
+        assert state.template.zone_by_id("b").label != "B"
+
+    def test_moving_one_question_column_leaves_its_siblings_untouched(self):
+        state = DesignerState(_template())
+        zones = generate_question_columns(
+            id_prefix="q", label_prefix="Questions", first_question=1, question_count=60,
+            answer_labels=("A", "B", "C", "D"), columns=3, questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+        )
+        state.add_zones(zones)
+        before_sibling_bounds = state.template.zone_by_id("q_2").bounds
+        state.move_zone("q_1", dx=0.017, dy=-0.003)
+        assert state.template.zone_by_id("q_0").bounds == zones[0].bounds
+        assert state.template.zone_by_id("q_2").bounds == before_sibling_bounds
+        moved = state.template.zone_by_id("q_1")
+        assert moved.field.first_question == 21
+        assert moved.field.last_question == 40
 
 
 class TestBubbleOverrides:

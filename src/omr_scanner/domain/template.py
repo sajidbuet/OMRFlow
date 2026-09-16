@@ -318,6 +318,13 @@ class QuestionBlockFieldDefinition(BaseModel):
         answer_labels: Option labels in printed order, e.g. ``("A","B","C","D")``.
         symbol_axis: ``HORIZONTAL`` when options run across the page (one row per
             question), ``VERTICAL`` when they run down it.
+        group_id: Ties sibling columns generated together as one logical,
+            multi-column Question Region, so the designer can offer
+            group-wide operations (Distribute Columns, measuring the common
+            column gap) without depending on zone-id naming conventions.
+            ``None`` for a standalone single column - including every
+            question-block column saved before this field existed, which
+            loads unaffected and behaves exactly as it always did.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -327,6 +334,7 @@ class QuestionBlockFieldDefinition(BaseModel):
     question_count: int = Field(ge=1)
     answer_labels: tuple[str, ...] = Field(min_length=2)
     symbol_axis: SymbolAxis = SymbolAxis.HORIZONTAL
+    group_id: str | None = None
 
     @field_validator("answer_labels")
     @classmethod

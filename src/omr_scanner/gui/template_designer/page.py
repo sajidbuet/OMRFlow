@@ -56,12 +56,15 @@ from omr_scanner.domain.template import (
     IgnoredFieldDefinition,
     MarkerRole,
     OrientationMarker,
+    QuestionBlockFieldDefinition,
     RegistrationMarker,
     Zone,
 )
 from omr_scanner.domain.template_authoring import (
     DesignerValidationReport,
     build_blank_template,
+    distribute_columns_evenly,
+    measure_column_gap,
     validate_template_for_designer,
 )
 from omr_scanner.errors import ImageValidationError, TemplateError
@@ -71,11 +74,13 @@ from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.pages.catalog import WorkflowPageSpec
 from omr_scanner.gui.template_designer.canvas import BubbleDotSpec, RegionSpec, TemplateCanvasView
 from omr_scanner.gui.template_designer.dialogs import (
+    CreateColumnArrayDialog,
     CustomBubbleDialog,
     IgnoredRegionDialog,
     NewTemplateDialog,
     QuestionBlockDialog,
     QuestionSetDialog,
+    RegionDialogBase,
     StudentIdDialog,
     ValidationReportDialog,
     _existing_ids,
@@ -276,6 +281,16 @@ class TemplateDesignerPage(WorkflowPage):
             tooltip="Add a block of question-answer bubble regions",
             callback=lambda _checked=False: self._start_add_region("question_block"),
         )
+        self.create_array_action = self._add_toolbar_action(
+            icon_name="copy-plus", text="Array",
+            tooltip="Create a repeated array of question columns from the selected column",
+            callback=self._on_create_array_requested,
+        )
+        self.distribute_columns_action = self._add_toolbar_action(
+            icon_name="align-horizontal-distribute-center", text="Distribute",
+            tooltip="Space the selected question column's siblings evenly between first and last",
+            callback=self._on_distribute_columns_requested,
+        )
         self.add_custom_action = self._add_toolbar_action(
             icon_name="square-dashed", text="Custom",
             tooltip="Add a custom bubble region",
@@ -343,6 +358,8 @@ class TemplateDesignerPage(WorkflowPage):
         )
 
         self.body.addWidget(self.toolbar)
+        self.create_array_action.setEnabled(False)
+        self.distribute_columns_action.setEnabled(False)
 
         self._document_controls: list[QAction] = [
             self.save_action, self.save_as_action, self.detect_action,
@@ -737,10 +754,91 @@ class TemplateDesignerPage(WorkflowPage):
             return
 
         existing_ids = [zone.id for zone in self._designer_state.template.zones]
-        dialog = dialog_cls(bounds=bounds, existing_zone_ids=existing_ids, parent=self)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._designer_state.add_zones(dialog.result_zones())
-            self._refresh_all()
+        dialog: RegionDialogBase
+        if dialog_cls is QuestionBlockDialog:
+            question_block_dialog = QuestionBlockDialog(
+                bounds=bounds,
+                existing_zone_ids=existing_ids,
+                image_width=image_width,
+                image_height=image_height,
+                parent=self,
+            )
+            question_block_dialog.preview_requested.connect(self._on_question_block_preview)
+            dialog = question_block_dialog
+        else:
+            dialog = dialog_cls(bounds=bounds, existing_zone_ids=existing_ids, parent=self)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                self._designer_state.add_zones(dialog.result_zones())
+                self._refresh_all()
+        finally:
+            self.canvas.clear_preview_regions()
+
+    def _on_question_block_preview(self, zones: tuple[Zone, ...]) -> None:
+        """Show the question-block dialog's live, not-yet-created preview overlay."""
+        if self._decoded_image is None:
+            return
+        width, height = self._decoded_image.width, self._decoded_image.height
+        specs = [
+            RegionSpec(
+                item_id=f"preview:{zone.id}",
+                kind="zone",
+                x=zone.bounds.x * width,
+                y=zone.bounds.y * height,
+                width=zone.bounds.width * width,
+                height=zone.bounds.height * height,
+                color=zone.display_color,
+                label=zone.label,
+            )
+            for zone in zones
+        ]
+        self.canvas.show_preview_regions(specs)
+
+    # ------------------------------------------------------------------
+    # Question column array / distribute
+    # ------------------------------------------------------------------
+    def _on_create_array_requested(self) -> None:
+        if self._designer_state is None or self._decoded_image is None:
+            return
+        item_id = self.canvas.selected_region_id()
+        reference = self._designer_state.template.zone_by_id(item_id) if item_id else None
+        if reference is None or not isinstance(reference.field, QuestionBlockFieldDefinition):
+            return
+        existing_ids = [
+            zone.id for zone in self._designer_state.template.zones if zone.id != reference.id
+        ]
+        dialog = CreateColumnArrayDialog(
+            reference=reference,
+            existing_zone_ids=existing_ids,
+            image_width=self._decoded_image.width,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_zones = tuple(
+            zone for zone in self._designer_state.template.zones if zone.id != reference.id
+        ) + dialog.result_zones()
+        self._designer_state.apply_zones(new_zones)
+        self._refresh_all()
+
+    def _on_distribute_columns_requested(self) -> None:
+        if self._designer_state is None:
+            return
+        item_id = self.canvas.selected_region_id()
+        zone = self._designer_state.template.zone_by_id(item_id) if item_id else None
+        if zone is None or not isinstance(zone.field, QuestionBlockFieldDefinition):
+            return
+        siblings = self._group_siblings(zone)
+        if len(siblings) < 3:
+            return
+        distributed = distribute_columns_evenly(siblings)
+        distributed_by_id = {result.id: result for result in distributed}
+        new_zones = tuple(
+            distributed_by_id.get(existing.id, existing)
+            for existing in self._designer_state.template.zones
+        )
+        self._designer_state.apply_zones(new_zones)
+        self._refresh_all(keep_selection=zone.id)
 
     # ------------------------------------------------------------------
     # Canvas <-> state wiring
@@ -749,6 +847,7 @@ class TemplateDesignerPage(WorkflowPage):
         self.region_list.select(item_id)
         if item_id is None:
             self.properties.clear_selection()
+            self._update_question_column_actions(None)
             return
         self._show_properties_for(item_id, kind)
 
@@ -827,9 +926,58 @@ class TemplateDesignerPage(WorkflowPage):
         rect = self._pixel_rect_for(item_id, kind)
         if rect is None:
             self.properties.clear_selection()
+            self._update_question_column_actions(None)
             return
         x, y, width, height = rect
         self.properties.set_geometry(title, x, y, width, height)
+
+        zone = self._designer_state.template.zone_by_id(item_id) if kind == "zone" else None
+        self._update_question_column_actions(zone)
+        self.properties.set_question_column_info(self._question_column_info(zone))
+
+    def _question_column_info(self, zone: Zone | None) -> str | None:
+        """Build the properties panel's one-line "which column, how spaced" summary."""
+        if (
+            self._designer_state is None
+            or self._decoded_image is None
+            or zone is None
+            or not isinstance(zone.field, QuestionBlockFieldDefinition)
+        ):
+            return None
+        siblings = self._group_siblings(zone)
+        ordered = sorted(siblings, key=lambda z: z.field.first_question)  # type: ignore[union-attr]
+        position = ordered.index(zone) + 1
+        info = f"Column {position} of {len(ordered)}"
+        if len(ordered) > 1:
+            spacing = measure_column_gap(ordered)
+            image_width = self._decoded_image.width
+            if spacing.uniform and spacing.column_gap is not None:
+                info += f" - gap {spacing.column_gap * image_width:.0f}px (uniform)"
+            else:
+                info += " - gap: custom"
+        return info
+
+    def _group_siblings(self, zone: Zone) -> list[Zone]:
+        """Every zone sharing ``zone``'s `group_id`, or just ``zone`` if it has none."""
+        if self._designer_state is None or not isinstance(zone.field, QuestionBlockFieldDefinition):
+            return [zone]
+        group_id = zone.field.group_id
+        if group_id is None:
+            return [zone]
+        return [
+            candidate
+            for candidate in self._designer_state.template.zones
+            if isinstance(candidate.field, QuestionBlockFieldDefinition)
+            and candidate.field.group_id == group_id
+        ]
+
+    def _update_question_column_actions(self, zone: Zone | None) -> None:
+        is_question_block = zone is not None and isinstance(
+            zone.field, QuestionBlockFieldDefinition
+        )
+        document_open = self._designer_state is not None
+        self.create_array_action.setEnabled(document_open and is_question_block)
+        self.distribute_columns_action.setEnabled(document_open and is_question_block)
 
     def _title_for(self, item_id: str, kind: str) -> str:
         if kind == "marker":

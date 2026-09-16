@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from omr_scanner.domain.geometry import NormalizedRect, NormalizedSize
 from omr_scanner.domain.template import TEMPLATE_FORMAT_VERSION
+from omr_scanner.domain.template_authoring import (
+    build_blank_template,
+    generate_question_columns,
+    translate_zone,
+)
 from omr_scanner.errors import TemplateError
 from omr_scanner.services import list_templates, load_template, save_template
 from omr_scanner.utils.json_io import read_json, write_json_atomic
@@ -93,3 +99,38 @@ def test_listing_templates_of_a_project(project_session, example_template_path: 
 
 def test_listing_a_missing_directory_returns_nothing(tmp_path: Path):
     assert list_templates(tmp_path / "absent") == ()
+
+
+def test_a_manually_adjusted_question_column_survives_save_and_reload(tmp_path: Path):
+    """Part D "custom spacing persistence": a non-uniformly-moved column round-trips exactly."""
+    template = build_blank_template(name="T", canonical_width_px=1240, canonical_height_px=1754)
+    zones = generate_question_columns(
+        id_prefix="q",
+        label_prefix="Questions",
+        first_question=1,
+        question_count=100,
+        answer_labels=("A", "B", "C", "D"),
+        columns=5,
+        questions_per_column=20,
+        bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+        bubble_size=NormalizedSize(width=0.01, height=0.01),
+        row_pitch=0.02,
+        column_pitch=0.03,
+        column_gap=0.02,
+    )
+    # Move column 4 (0-based index 3) independently, leaving the others alone -
+    # the template must preserve this irregular offset exactly.
+    moved_column = translate_zone(zones[3], dx=0.037, dy=-0.011)
+    zones = (*zones[:3], moved_column, zones[4])
+    template = template.model_copy(update={"zones": zones})
+
+    written = save_template(template, tmp_path / "custom_spacing.omrt")
+    reloaded = load_template(written)
+
+    # Exact equality, matching `test_save_then_load_round_trip` above - JSON
+    # round-trips these floats exactly, and every other column's zone must be
+    # completely unaffected by column 4's manual move.
+    assert reloaded.zone_by_id("q_3") == moved_column
+    for unmoved_id in ("q_0", "q_1", "q_2", "q_4"):
+        original = template.zone_by_id(unmoved_id)
+        assert reloaded.zone_by_id(unmoved_id) == original

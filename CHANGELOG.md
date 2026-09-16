@@ -57,6 +57,31 @@ not be used for examination processing.
   conversion, undo/redo, designer state mutations, the marker detection
   service against synthetic sheets, and GUI smoke tests covering the full
   create-detect-draw-adjust-undo-validate-save-reload workflow.
+- Set Code regions now support both **enumerated values** (arbitrary
+  multi-character tokens - `"10,11,12"`, `"01,02,03"` - never split into
+  digits or coerced to numbers) and a **positional code** mode (each code
+  position its own bubble column); both were already representable by the
+  existing `set_code` field, so this is a dialog-only addition with no schema
+  change.
+- Question Answer columns are independently positionable: the Questions
+  dialog exposes bubble width/height, choice spacing, question row spacing
+  and Column Gap as explicit image-pixel fields (defaulting to reproduce the
+  original auto-fit geometry exactly), with a live dashed preview on the
+  canvas; `QuestionBlockFieldDefinition.group_id` (additive, optional) ties
+  sibling columns of one Question Region together.
+- **Create Question Column Array** and **Distribute Columns Evenly** toolbar
+  actions (`omr_scanner.domain.template_authoring.generate_column_array`,
+  `.distribute_columns_evenly`, `.measure_column_gap`): generate a full set of
+  calibrated columns from one reference column, or re-space a group's
+  intermediate columns evenly between a fixed first and last - each applying
+  as one undo step (`DesignerState.apply_zones`).
+- Canvas panning via middle-button drag (always) and right-button drag (past
+  Qt's own standard drag-distance threshold, leaving a plain right-click free
+  for a future context menu), in addition to the existing space+left-drag;
+  neither ever reaches a region item, so it cannot be mistaken for selecting
+  or moving one.
+- `docs/testing/question_layout_manual_test.md`: manual verification steps
+  for the above.
 
 ### Changed
 
@@ -80,7 +105,8 @@ not be used for examination processing.
 
 - No snap-to-grid while dragging yet (the pure function exists and is tested;
   wiring it into interactive dragging is deferred).
-- No align/distribute tools for multi-selected regions.
+- Distribute is per Question-Region group only (Distribute Columns Evenly);
+  no general align/distribute tool for arbitrary multi-selected regions.
 - Individual-bubble override reset is per-region, not per-bubble.
 - The designer has not been used against a real printed sheet.
 

@@ -130,6 +130,15 @@ class RegionHandleItem(QGraphicsRectItem):
             :class:`BubbleDotItem` instead).
         locked: When true, the item can be selected but not moved or resized -
             the designer's "lock" feature (§10).
+        selectable: Whether the item can be clicked/selected at all. False for
+            a temporary preview overlay (see
+            :meth:`~omr_scanner.gui.template_designer.canvas.TemplateCanvasView.show_preview_regions`),
+            which is never part of the real document and must never be
+            confused with something the user can select or drag.
+        preview: Whether this item represents a not-yet-created preview
+            region rather than a real one - drawn with a dashed outline
+            regardless of :attr:`state`, so it reads as "about to exist"
+            rather than "missing/needs attention".
     """
 
     def __init__(
@@ -142,6 +151,8 @@ class RegionHandleItem(QGraphicsRectItem):
         label: str = "",
         resizable: bool = True,
         locked: bool = False,
+        selectable: bool = True,
+        preview: bool = False,
     ) -> None:
         super().__init__(rect)
         self.item_id = item_id
@@ -151,10 +162,11 @@ class RegionHandleItem(QGraphicsRectItem):
         self.state = HandleState.NORMAL
         self.resizable = resizable
         self.locked = locked
+        self.preview = preview
         self.signals = _EditSignals()
 
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not locked)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, selectable)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, selectable and not locked)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
         self.setAcceptHoverEvents(True)
         self._resize_edge: str | None = None
@@ -186,7 +198,7 @@ class RegionHandleItem(QGraphicsRectItem):
             self.state, self.base_color
         )
         pen = QPen(color, 2 if not self.isSelected() else 3)
-        if self.state is HandleState.MISSING:
+        if self.state is HandleState.MISSING or self.preview:
             pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen)
 

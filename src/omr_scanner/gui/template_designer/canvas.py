@@ -14,8 +14,10 @@ Responsibilities:
       "what's on screen" always provably in sync with "what the document says",
       which is worth far more here than the cost of a few dozen widget
       constructions.
-    * Zoom (wheel, in/out, fit, 100%), pan (space+drag or middle-button drag),
-      an optional grid overlay and snap-to-grid.
+    * Zoom (wheel, in/out, fit, 100%), pan (space+left-drag, middle-drag, or a
+      right-drag past Qt's own drag-distance threshold - a plain right-click
+      is left free for a future context menu), an optional grid overlay and
+      snap-to-grid.
     * Report cursor position and selection changes for the rest of the page.
 
 What does NOT belong here:
@@ -43,6 +45,7 @@ from PySide6.QtGui import (
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsScene,
@@ -132,6 +135,7 @@ class TemplateCanvasScene(QGraphicsScene):
         self.background_item: QGraphicsPixmapItem | None = None
         self.region_items: dict[str, RegionHandleItem] = {}
         self.bubble_items: list[BubbleDotItem] = []
+        self.preview_items: list[RegionHandleItem] = []
 
     def set_background(self, pixmap: QPixmap) -> None:
         """Replace the reference image."""
@@ -176,6 +180,43 @@ class TemplateCanvasScene(QGraphicsScene):
         for item in self.bubble_items:
             self.removeItem(item)
         self.bubble_items = []
+
+    def clear_preview(self) -> None:
+        """Remove every preview overlay item, leaving real regions untouched."""
+        for item in self.preview_items:
+            self.removeItem(item)
+        self.preview_items = []
+
+    def show_preview(self, specs: list[RegionSpec]) -> list[RegionHandleItem]:
+        """Replace the preview overlay with dashed, unselectable items from ``specs``.
+
+        Used to give a region-creation dialog (e.g. the Question Block
+        dialog's Column Gap field) an immediate canvas preview without
+        touching the real document or its undo history - these items are
+        kept in a separate list from :attr:`region_items` and are never
+        selectable, so they cannot be confused with, or interfere with,
+        anything the user can actually click.
+        """
+        self.clear_preview()
+        for spec in specs:
+            rect = QRectF(0, 0, spec.width, spec.height)
+            item = RegionHandleItem(
+                spec.item_id,
+                rect,
+                kind=spec.kind,
+                color=QColor(spec.color),
+                label=spec.label,
+                resizable=False,
+                locked=True,
+                selectable=False,
+                preview=True,
+            )
+            item.setPos(QPointF(spec.x, spec.y))
+            item.setOpacity(0.65)
+            item.setZValue(500)
+            self.addItem(item)
+            self.preview_items.append(item)
+        return self.preview_items
 
     def show_bubble_dots(self, dots: list[BubbleDotSpec]) -> list[BubbleDotItem]:
         """Replace the fine-tune dots with ones built from ``dots``."""
@@ -237,6 +278,11 @@ class TemplateCanvasView(QGraphicsView):
         self._draw_origin: QPoint | None = None
         self._rubber_band: QRubberBand | None = None
 
+        self._pan_active = False
+        self._pan_last_pos: QPoint | None = None
+        self._pan_button: Qt.MouseButton | None = None
+        self._right_press_start: QPoint | None = None
+
         self._scene.selectionChanged.connect(self._on_selection_changed)
 
     # ------------------------------------------------------------------
@@ -269,6 +315,14 @@ class TemplateCanvasView(QGraphicsView):
     def clear_bubble_dots(self) -> None:
         """Hide fine-tune dots (leaving region overlays alone)."""
         self._scene.clear_bubble_dots()
+
+    def show_preview_regions(self, specs: list[RegionSpec]) -> None:
+        """Show a dashed, unselectable preview overlay - see `TemplateCanvasScene.show_preview`."""
+        self._scene.show_preview(specs)
+
+    def clear_preview_regions(self) -> None:
+        """Remove the preview overlay, if any."""
+        self._scene.clear_preview()
 
     def selected_region_id(self) -> str | None:
         """Return the id of the single selected region, if exactly one is selected."""
@@ -430,9 +484,25 @@ class TemplateCanvasView(QGraphicsView):
         super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Start a rubber-band drag in draw mode; otherwise the default behaviour."""
+        """Start panning on the middle button; defer the right button's decision.
+
+        Neither branch calls ``super()`` - the press never reaches the scene
+        or any region item, so a middle- or right-button press can never
+        select or start moving a region (Part C6: panning must never be
+        confused with object dragging). The left button's existing behaviour
+        (draw-mode rubber band, or falling through to Qt's own
+        selection/drag/space-pan handling) is completely unchanged.
+        """
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._start_pan(event.position().toPoint(), event.button())
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            self._right_press_start = event.position().toPoint()
+            event.accept()
+            return
         if self._draw_mode and event.button() == Qt.MouseButton.LeftButton:
-            self._draw_origin = event.pos()
+            self._draw_origin = event.position().toPoint()
             if self._rubber_band is None:
                 self._rubber_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
             self._rubber_band.setGeometry(QRect(self._draw_origin, QSize()))
@@ -442,8 +512,9 @@ class TemplateCanvasView(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        """Report cursor position and, in draw mode, grow the rubber band."""
-        scene_pos = self.mapToScene(event.pos())
+        """Report cursor position; continue a pan, grow the rubber band, or the default."""
+        pos = event.position().toPoint()
+        scene_pos = self.mapToScene(pos)
         if self._image_size is not None and (
             0 <= scene_pos.x() <= self._image_size[0] and 0 <= scene_pos.y() <= self._image_size[1]
         ):
@@ -451,16 +522,46 @@ class TemplateCanvasView(QGraphicsView):
         else:
             self.cursor_moved.emit(-1.0, -1.0)
 
+        if self._pan_active:
+            self._update_pan(pos)
+            event.accept()
+            return
+
+        if self._right_press_start is not None:
+            # A right-button drag only becomes a pan once it clears Qt's own
+            # standard drag-distance threshold - short of that, releasing the
+            # button is a plain right-click, left free for a future context
+            # menu (Part C2).
+            moved = pos - self._right_press_start
+            if moved.manhattanLength() > QApplication.startDragDistance():
+                self._start_pan(self._right_press_start, Qt.MouseButton.RightButton)
+                self._update_pan(pos)
+            event.accept()
+            return
+
         if self._draw_mode and self._draw_origin is not None and self._rubber_band is not None:
-            self._rubber_band.setGeometry(QRect(self._draw_origin, event.pos()).normalized())
+            self._rubber_band.setGeometry(QRect(self._draw_origin, pos).normalized())
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        """Finish a rubber-band drag in draw mode; otherwise the default behaviour."""
+        """End a pan, finish a rubber-band drag in draw mode, or the default behaviour."""
+        if event.button() == Qt.MouseButton.MiddleButton:
+            if self._pan_active and self._pan_button == Qt.MouseButton.MiddleButton:
+                self._stop_pan()
+            event.accept()
+            return
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._pan_active and self._pan_button == Qt.MouseButton.RightButton:
+                self._stop_pan()
+            # Else: a plain right-click with negligible movement - nothing to
+            # show yet (no canvas context menu exists), so just consume it.
+            self._right_press_start = None
+            event.accept()
+            return
         if self._draw_mode and self._draw_origin is not None:
-            view_rect = QRect(self._draw_origin, event.pos()).normalized()
+            view_rect = QRect(self._draw_origin, event.position().toPoint()).normalized()
             if self._rubber_band is not None:
                 self._rubber_band.hide()
             top_left = self.mapToScene(view_rect.topLeft())
@@ -478,6 +579,31 @@ class TemplateCanvasView(QGraphicsView):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    # ------------------------------------------------------------------
+    # Middle/right-button panning
+    # ------------------------------------------------------------------
+    def _start_pan(self, pos: QPoint, button: Qt.MouseButton) -> None:
+        self._pan_active = True
+        self._pan_last_pos = pos
+        self._pan_button = button
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def _update_pan(self, pos: QPoint) -> None:
+        if self._pan_last_pos is None:
+            return
+        delta = pos - self._pan_last_pos
+        self._pan_last_pos = pos
+        horizontal = self.horizontalScrollBar()
+        vertical = self.verticalScrollBar()
+        horizontal.setValue(horizontal.value() - delta.x())
+        vertical.setValue(vertical.value() - delta.y())
+
+    def _stop_pan(self) -> None:
+        self._pan_active = False
+        self._pan_last_pos = None
+        self._pan_button = None
+        self.unsetCursor()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Keep the fit-to-window behaviour stable across a window resize."""

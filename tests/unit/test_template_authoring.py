@@ -8,17 +8,23 @@ designer-facing checks layered on top of what `OmrTemplate` already enforces.
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 from pydantic import ValidationError
 
 from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect, NormalizedSize
 from omr_scanner.domain.template import FieldType, MarkerRole, OmrTemplate, SymbolAxis, Zone
 from omr_scanner.domain.template_authoring import (
+    ColumnSpacingInfo,
     build_blank_template,
+    distribute_columns_evenly,
     fit_grid_to_bounds,
     generate_character_grid_zone,
+    generate_column_array,
     generate_ignored_zone,
     generate_question_columns,
+    measure_column_gap,
     resize_zone,
     translate_zone,
     validate_template_for_designer,
@@ -251,6 +257,237 @@ class TestGenerateQuestionColumns:
                 bubble_size=NormalizedSize(width=0.01, height=0.01),
                 column_gap=0.5,
             )
+
+
+class TestGenerateQuestionColumnsExplicitPitch:
+    """The Part D "five-column generation" and "uniform column gap" scenarios."""
+
+    def test_five_columns_of_twenty_questions_each(self):
+        zones = generate_question_columns(
+            id_prefix="q",
+            label_prefix="Questions",
+            first_question=1,
+            question_count=100,
+            answer_labels=LETTERS,
+            columns=5,
+            questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+            row_pitch=0.02,
+            column_pitch=0.03,
+            column_gap=0.02,
+        )
+        assert len(zones) == 5
+        assert sum(zone.bubble_count for zone in zones) == 400
+        ranges = [(zone.field.first_question, zone.field.last_question) for zone in zones]
+        assert ranges == [(1, 20), (21, 40), (41, 60), (61, 80), (81, 100)]
+
+    def test_column_gap_is_the_empty_space_between_bounding_boxes(self):
+        gap = 0.025
+        zones = generate_question_columns(
+            id_prefix="q",
+            label_prefix="Questions",
+            first_question=1,
+            question_count=60,
+            answer_labels=LETTERS,
+            columns=3,
+            questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+            row_pitch=0.015,
+            column_pitch=0.02,
+            column_gap=gap,
+        )
+        for first, second in itertools.pairwise(zones):
+            assert second.bounds.x == pytest.approx(first.bounds.x + first.bounds.width + gap)
+
+    def test_giving_only_one_of_row_pitch_or_column_pitch_is_rejected(self):
+        with pytest.raises(ValueError, match="row_pitch and column_pitch"):
+            generate_question_columns(
+                id_prefix="q",
+                label_prefix="Q",
+                first_question=1,
+                question_count=20,
+                answer_labels=LETTERS,
+                columns=1,
+                questions_per_column=20,
+                bounds=NormalizedRect(x=0.1, y=0.1, width=0.5, height=0.5),
+                bubble_size=NormalizedSize(width=0.01, height=0.01),
+                row_pitch=0.02,
+            )
+
+    def test_omitting_both_pitches_reproduces_the_original_auto_fit_geometry(self):
+        bounds = NormalizedRect(x=0.1, y=0.5, width=0.8, height=0.45)
+        bubble = NormalizedSize(width=0.02, height=0.015)
+        auto_fit = generate_question_columns(
+            id_prefix="q", label_prefix="Questions", first_question=1, question_count=100,
+            answer_labels=LETTERS, columns=4, questions_per_column=25,
+            bounds=bounds, bubble_size=bubble,
+        )
+        explicit_none = generate_question_columns(
+            id_prefix="q", label_prefix="Questions", first_question=1, question_count=100,
+            answer_labels=LETTERS, columns=4, questions_per_column=25,
+            bounds=bounds, bubble_size=bubble, row_pitch=None, column_pitch=None,
+        )
+        assert auto_fit == explicit_none
+
+    def test_every_zone_from_one_call_shares_a_group_id(self):
+        zones = generate_question_columns(
+            id_prefix="block", label_prefix="Questions", first_question=1, question_count=50,
+            answer_labels=LETTERS, columns=2, questions_per_column=25,
+            bounds=NormalizedRect(x=0.1, y=0.1, width=0.8, height=0.3),
+            bubble_size=NormalizedSize(width=0.02, height=0.015),
+        )
+        group_ids = {zone.field.group_id for zone in zones}
+        assert group_ids == {"block"}
+
+    def test_an_explicit_group_id_overrides_the_id_prefix_default(self):
+        zones = generate_question_columns(
+            id_prefix="block", label_prefix="Questions", first_question=1, question_count=25,
+            answer_labels=LETTERS, columns=1, questions_per_column=25,
+            bounds=NormalizedRect(x=0.1, y=0.1, width=0.4, height=0.3),
+            bubble_size=NormalizedSize(width=0.02, height=0.015),
+            group_id="custom-group",
+        )
+        assert zones[0].field.group_id == "custom-group"
+
+
+class TestGenerateColumnArray:
+    """The Part D "array generation" scenario."""
+
+    def _reference_column(self) -> Zone:
+        return generate_question_columns(
+            id_prefix="questions",
+            label_prefix="Questions",
+            first_question=1,
+            question_count=20,
+            answer_labels=LETTERS,
+            columns=1,
+            questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.15, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+        )[0]
+
+    def test_five_columns_of_twenty_from_one_calibrated_reference(self):
+        reference = self._reference_column()
+        zones = generate_column_array(
+            reference, columns=5, questions_per_column=20, first_question=1, gap=0.02
+        )
+        assert len(zones) == 5
+        assert sum(zone.bubble_count for zone in zones) == 400
+        ranges = [(zone.field.first_question, zone.field.last_question) for zone in zones]
+        assert ranges == [(1, 20), (21, 40), (41, 60), (61, 80), (81, 100)]
+
+    def test_generated_columns_inherit_the_reference_bubble_geometry(self):
+        reference = self._reference_column()
+        zones = generate_column_array(
+            reference, columns=3, questions_per_column=20, first_question=1, gap=0.02
+        )
+        for zone in zones:
+            assert zone.grid.bubble_size == reference.grid.bubble_size
+            assert zone.grid.row_pitch == pytest.approx(reference.grid.row_pitch)
+            assert zone.grid.column_pitch == pytest.approx(reference.grid.column_pitch)
+            assert zone.field.answer_labels == reference.field.answer_labels
+
+    def test_the_reference_position_is_preserved_as_the_leftmost_column(self):
+        reference = self._reference_column()
+        zones = generate_column_array(
+            reference, columns=3, questions_per_column=20, first_question=1, gap=0.02
+        )
+        assert zones[0].bounds.x == pytest.approx(reference.bounds.x)
+
+    def test_every_generated_column_shares_one_fresh_group_id(self):
+        reference = self._reference_column()
+        zones = generate_column_array(
+            reference, columns=4, questions_per_column=20, first_question=1, gap=0.02
+        )
+        group_ids = {zone.field.group_id for zone in zones}
+        assert len(group_ids) == 1
+        assert None not in group_ids
+
+    def test_a_non_question_block_reference_is_rejected(self):
+        reference = generate_character_grid_zone(
+            zone_id="sid", label="Student ID", field_type=FieldType.NUMERIC, symbols=DIGITS,
+            character_count=5, bounds=NormalizedRect(x=0.1, y=0.1, width=0.3, height=0.5),
+            bubble_size=NormalizedSize(width=0.02, height=0.015),
+        )
+        with pytest.raises(ValueError, match="question-answer block"):
+            generate_column_array(
+                reference, columns=3, questions_per_column=20, first_question=1, gap=0.02
+            )
+
+
+class TestMeasureColumnGap:
+    def test_uniformly_spaced_columns_report_the_common_gap(self):
+        zones = generate_question_columns(
+            id_prefix="q", label_prefix="Questions", first_question=1, question_count=60,
+            answer_labels=LETTERS, columns=3, questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+            row_pitch=0.015, column_pitch=0.02, column_gap=0.025,
+        )
+        info = measure_column_gap(zones)
+        assert info.uniform is True
+        assert info.column_gap == pytest.approx(0.025)
+
+    def test_a_manually_moved_column_reports_custom_spacing(self):
+        zones = generate_question_columns(
+            id_prefix="q", label_prefix="Questions", first_question=1, question_count=60,
+            answer_labels=LETTERS, columns=3, questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+            row_pitch=0.015, column_pitch=0.02, column_gap=0.025,
+        )
+        nudged = translate_zone(zones[1], dx=0.05, dy=0.0)
+        info = measure_column_gap((zones[0], nudged, zones[2]))
+        assert info.uniform is False
+        assert info.column_gap is None
+
+    def test_fewer_than_two_columns_is_trivially_uniform(self):
+        info = measure_column_gap(())
+        assert info == ColumnSpacingInfo(uniform=True, column_gap=None)
+
+
+class TestDistributeColumnsEvenly:
+    def _five_columns(self) -> tuple[Zone, ...]:
+        return generate_question_columns(
+            id_prefix="q", label_prefix="Questions", first_question=1, question_count=100,
+            answer_labels=LETTERS, columns=5, questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.9, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+            row_pitch=0.02, column_pitch=0.03, column_gap=0.02,
+        )
+
+    def test_the_first_and_last_column_do_not_move(self):
+        zones = self._five_columns()
+        nudged = tuple(
+            translate_zone(z, dx=0.1, dy=0.0) if i in (1, 3) else z for i, z in enumerate(zones)
+        )
+        distributed = distribute_columns_evenly(nudged)
+        assert distributed[0].bounds.x == pytest.approx(nudged[0].bounds.x)
+        assert distributed[-1].bounds.x == pytest.approx(nudged[-1].bounds.x)
+
+    def test_intermediate_columns_land_evenly_between_the_endpoints(self):
+        zones = self._five_columns()
+        nudged = tuple(
+            translate_zone(z, dx=0.03, dy=0.0) if i == 2 else z for i, z in enumerate(zones)
+        )
+        distributed = distribute_columns_evenly(nudged)
+        first_x, last_x = distributed[0].bounds.x, distributed[-1].bounds.x
+        step = (last_x - first_x) / 4
+        for index, zone in enumerate(distributed):
+            assert zone.bounds.x == pytest.approx(first_x + index * step)
+
+    def test_question_numbers_are_never_changed(self):
+        zones = self._five_columns()
+        distributed = distribute_columns_evenly(zones)
+        before = [(z.field.first_question, z.field.last_question) for z in zones]
+        after = [(z.field.first_question, z.field.last_question) for z in distributed]
+        assert before == after
+
+    def test_fewer_than_three_columns_is_a_no_op(self):
+        zones = self._five_columns()[:2]
+        assert distribute_columns_evenly(zones) == zones
 
 
 class TestGenerateIgnoredZone:

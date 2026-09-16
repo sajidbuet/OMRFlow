@@ -125,6 +125,20 @@ Discriminated by `type`.
 `rows = len(symbols)` and `columns = character_count`; the two swap for
 `horizontal`.
 
+`symbols` entries are arbitrary, non-empty strings, never coerced to a
+number - `"01"` stays `"01"`, and a symbol may hold more than one character
+(`"10"`, `"101"`, `"*"`). This is what lets a `set_code` field describe either
+of the two schemes real answer sheets use, with no extra format concept:
+
+* **Enumerated values** (`character_count: 1`): each `symbols` entry is one
+  complete printed choice, one bubble per entry - `symbols: ["A","B","C","D"]`
+  or `symbols: ["10","11","12"]` are both this case. Every `set_code` region
+  from before positional codes existed is already `character_count: 1`, so it
+  reads back as this case unchanged.
+* **Positional code** (`character_count > 1`): each character position is its
+  own bubble column, e.g. `character_count: 2, symbols: ["0"..."9"]` encodes
+  any two-digit code "00".."99" as two independently-marked digit columns.
+
 **`question_block`** - a run of consecutive MCQ questions:
 
 | Field | Meaning |
@@ -133,8 +147,37 @@ Discriminated by `type`.
 | `question_count` | How many consecutive questions the block holds. |
 | `answer_labels` | Option labels in printed order, e.g. `["A","B","C","D"]`. |
 | `symbol_axis` | `horizontal` (options run across, one row per question - the usual layout) or `vertical`. |
+| `group_id` | *(added after Phase 2)* String, or `null`. Ties sibling columns generated together as one logical, multi-column Question Region - see below. |
 
-Long papers are described as several blocks, one per printed column.
+Long papers are described as several blocks, one per printed column - this was
+already true from Phase 2 onward, and is what lets each printed column be
+selected, dragged and repositioned independently on the canvas without any
+extra machinery: a "question column" *is* a `question_block` zone, nothing
+more.
+
+`group_id` - *(additive, optional, does not bump `format_version`; a document
+written before it existed loads with `group_id: null` on every column,
+exactly as if each were generated on its own)* - lets the designer offer
+group-wide operations (Distribute Columns Evenly, measuring whether the
+columns are evenly spaced) without depending on zone-id naming conventions.
+Every column produced by one call to `generate_question_columns` or
+`generate_column_array` shares one `group_id`; a column with `group_id: null`
+is simply an ungrouped standalone column, still fully valid.
+
+`column_gap` (a template-authoring parameter, not a field stored per zone -
+each column's actual position is what `bounds`/`grid.origin` already record)
+is defined as the **empty horizontal distance between the bounding boxes of
+two adjacent columns**, never a centre-to-centre distance:
+
+```text
+next_column_x = current_column_x + current_column_width + column_gap
+```
+
+A template never stores `column_gap` itself; it stores the result - each
+column's own `bounds` and `grid`, which may be perfectly evenly spaced or may
+carry irregular, manually-adjusted offsets (from dragging one column by hand
+to match a real, imperfectly-printed sheet). Both cases are represented
+identically: independent zone geometry, nothing more.
 
 **`ignored`** - a region deliberately excluded from recognition (logos, printed
 instructions). Carries no grid.

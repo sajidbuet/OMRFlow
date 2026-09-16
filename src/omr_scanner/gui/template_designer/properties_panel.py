@@ -74,6 +74,13 @@ class PropertiesPanel(QWidget):
         form.addRow("Normalised:", self.normalized_label)
 
         layout.addWidget(group)
+
+        self.question_column_label = QLabel("")
+        self.question_column_label.setWordWrap(True)
+        self.question_column_label.setObjectName("questionColumnInfo")
+        self.question_column_label.hide()
+        layout.addWidget(self.question_column_label)
+
         layout.addStretch(1)
 
         self._image_size: tuple[float, float] | None = None
@@ -97,7 +104,19 @@ class PropertiesPanel(QWidget):
         """Show the "nothing selected" state."""
         self.title_label.setText("Nothing selected")
         self.normalized_label.setText("")
+        self.set_question_column_info(None)
         self.setEnabled(False)
+
+    def set_question_column_info(self, text: str | None) -> None:
+        """Show or hide a one-line info summary for a selected question column.
+
+        Args:
+            text: Summary such as ``"Column 2 of 5 - gap 118px (uniform)"``,
+                or ``None`` to hide the line entirely (every non-question-block
+                selection, and nothing selected).
+        """
+        self.question_column_label.setText(text or "")
+        self.question_column_label.setVisible(text is not None)
 
     def set_geometry(
         self, title: str, x: float, y: float, width: float, height: float

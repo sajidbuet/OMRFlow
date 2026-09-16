@@ -43,6 +43,8 @@ normal and disabled toolbar states without a second copy.
 | `id-card.svg` | Add Student ID region |
 | `list-checks.svg` | Add Question Set region |
 | `circle-dot.svg` | Add Questions region |
+| `copy-plus.svg` | Create Question Column Array |
+| `align-horizontal-distribute-center.svg` | Distribute Columns Evenly |
 | `square-dashed.svg` | Add Custom region |
 | `file-text.svg` | Add Reference/ignored region |
 | `pencil.svg` | Edit Individual Bubbles |

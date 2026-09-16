@@ -36,7 +36,7 @@ Design note - one zone per question column:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect, NormalizedSize
 from omr_scanner.domain.template import (
@@ -278,15 +278,46 @@ def generate_question_columns(
     bubble_size: NormalizedSize,
     symbol_axis: SymbolAxis = SymbolAxis.HORIZONTAL,
     column_gap: float = 0.0,
+    row_pitch: float | None = None,
+    column_pitch: float | None = None,
     display_color: str | None = None,
+    group_id: str | None = None,
 ) -> tuple[Zone, ...]:
     """Build one :class:`Zone` per printed column of a question-answer block.
 
-    Splitting ``bounds`` into ``columns`` equal vertical strips (separated by
-    ``column_gap``) and generating one zone per strip is what lets the
-    persistent template describe every one of, say, 400 bubbles individually
-    rather than as a single rectangle a recognition pass would have to
-    subdivide by guesswork later.
+    Splitting the block into ``columns`` strips (separated by ``column_gap``)
+    and generating one zone per strip is what lets the persistent template
+    describe every one of, say, 400 bubbles individually rather than as a
+    single rectangle a recognition pass would have to subdivide by guesswork
+    later.
+
+    Two sizing modes:
+
+    * ``row_pitch``/``column_pitch`` both omitted (the default): each strip's
+      width is ``bounds`` split evenly among ``columns`` (minus the gaps), and
+      each strip's bubble pitch is *auto-fitted* to its own height/width via
+      :func:`fit_grid_to_bounds` - this is the original Phase 2 behaviour,
+      unchanged, and every caller that omits these two arguments gets
+      byte-for-byte identical geometry to before they existed.
+    * Both given (normalised, matching :class:`~omr_scanner.domain.template.BubbleGrid`'s
+      own field names - not axis-aware "choice spacing"/"row spacing" labels,
+      which is the caller's job to map, exactly as
+      :attr:`QuestionBlockFieldDefinition.rows`/``.columns`` already do): each
+      strip's size is *derived* from the requested pitch, ``bubble_size`` and
+      a full (``questions_per_column``-sized) column, so a real column with
+      the full question count reproduces the requested pitch exactly; a
+      shorter remainder column (when ``question_count`` does not divide evenly
+      by ``questions_per_column``) is fitted into the same, uniformly-sized
+      strip, matching how the original auto-fit mode already treated a
+      remainder column identically to every other one.
+
+    Column placement uses one formula regardless of sizing mode - the
+    "empty space between adjacent bounding boxes" convention
+    ``docs/TEMPLATE_FORMAT.md`` documents for ``column_gap``:
+
+    ```
+    next_column_x = current_column_x + current_column_width + column_gap
+    ```
 
     Args:
         id_prefix: Zone ids are ``f"{id_prefix}_{n}"`` for column index ``n``
@@ -299,13 +330,23 @@ def generate_question_columns(
         columns: Number of printed columns.
         questions_per_column: How many questions each column holds, except
             possibly the last, which holds the remainder.
-        bounds: Region the whole block occupies; split evenly among columns.
+        bounds: Anchors the block's top-left corner (``bounds.x``,
+            ``bounds.y``); ``bounds.width``/``bounds.height`` additionally
+            size every strip when ``row_pitch``/``column_pitch`` are omitted.
         bubble_size: Bounding size of one bubble.
         symbol_axis: ``HORIZONTAL`` (options run across, one row per question)
             or ``VERTICAL``.
-        column_gap: Normalised horizontal gap left between adjacent column
-            strips, subtracted from each strip's width.
+        column_gap: Empty normalised horizontal gap between adjacent column
+            bounding boxes.
+        row_pitch: Explicit normalised vertical bubble pitch; must be given
+            together with ``column_pitch`` or not at all.
+        column_pitch: Explicit normalised horizontal bubble pitch.
         display_color: Overlay colour; defaults to the question-block colour.
+        group_id: Shared identifier recorded on every returned zone's
+            :attr:`QuestionBlockFieldDefinition.group_id`. Defaults to
+            ``id_prefix`` - one call to this function is always "one logical
+            Question Region", so reusing the already-unique id prefix needs no
+            separate identifier scheme.
 
     Returns:
         One zone per column that actually holds at least one question. A
@@ -313,19 +354,35 @@ def generate_question_columns(
         returns 4 zones, not 5, because the fifth would be empty.
 
     Raises:
-        ValueError: ``columns`` or ``questions_per_column`` is less than 1, or
-            the gap leaves no room for the strips.
+        ValueError: ``columns`` or ``questions_per_column`` is less than 1,
+            exactly one of ``row_pitch``/``column_pitch`` is given, or the
+            resulting strip width leaves no room for the columns.
     """
     if columns < 1:
         raise ValueError("columns must be at least 1")
     if questions_per_column < 1:
         raise ValueError("questions_per_column must be at least 1")
+    if (row_pitch is None) != (column_pitch is None):
+        raise ValueError("row_pitch and column_pitch must both be given, or neither")
 
-    strip_width = (bounds.width - column_gap * (columns - 1)) / columns
+    if row_pitch is None or column_pitch is None:
+        strip_width = (bounds.width - column_gap * (columns - 1)) / columns
+        strip_height = bounds.height
+    else:
+        nominal_field = QuestionBlockFieldDefinition(
+            type=FieldType.QUESTION_BLOCK,
+            first_question=1,
+            question_count=questions_per_column,
+            answer_labels=tuple(answer_labels),
+            symbol_axis=symbol_axis,
+        )
+        strip_width = bubble_size.width + max(nominal_field.columns - 1, 0) * column_pitch
+        strip_height = bubble_size.height + max(nominal_field.rows - 1, 0) * row_pitch
     if strip_width <= 0.0:
         raise ValueError("column_gap leaves no room for the question columns")
 
     color = display_color or DEFAULT_DISPLAY_COLORS[FieldType.QUESTION_BLOCK]
+    resolved_group_id = group_id if group_id is not None else id_prefix
     zones: list[Zone] = []
     remaining = question_count
     question_cursor = first_question
@@ -336,7 +393,7 @@ def generate_question_columns(
         count_here = min(questions_per_column, remaining)
         strip_x = bounds.x + column_index * (strip_width + column_gap)
         strip_bounds = NormalizedRect(
-            x=strip_x, y=bounds.y, width=strip_width, height=bounds.height
+            x=strip_x, y=bounds.y, width=strip_width, height=strip_height
         )
 
         field = QuestionBlockFieldDefinition(
@@ -345,6 +402,7 @@ def generate_question_columns(
             question_count=count_here,
             answer_labels=tuple(answer_labels),
             symbol_axis=symbol_axis,
+            group_id=resolved_group_id,
         )
         grid = fit_grid_to_bounds(
             bounds=strip_bounds, rows=field.rows, columns=field.columns, bubble_size=bubble_size
@@ -364,6 +422,188 @@ def generate_question_columns(
         remaining -= count_here
 
     return tuple(zones)
+
+
+def generate_column_array(
+    reference: Zone,
+    *,
+    columns: int,
+    questions_per_column: int,
+    first_question: int,
+    gap: float,
+    direction: Literal["left_to_right", "right_to_left"] = "left_to_right",
+    id_prefix: str | None = None,
+) -> tuple[Zone, ...]:
+    """Generate a full set of question columns from one calibrated reference.
+
+    Reads bubble size, pitch, answer labels and layout straight off
+    ``reference`` (so every generated sibling is visually identical to the
+    column the user already positioned by hand) and delegates the actual
+    layout to :func:`generate_question_columns` in its explicit-pitch mode,
+    anchored so that ``reference``'s own top-left corner is preserved as one
+    of the generated columns' positions.
+
+    Args:
+        reference: An existing, calibrated question-block zone to array from.
+        columns: Total number of columns to produce (including one at the
+            reference's own position).
+        questions_per_column: Questions each generated column holds.
+        first_question: Number printed beside the first question overall.
+        gap: Empty normalised horizontal gap between adjacent columns - the
+            same convention as :func:`generate_question_columns`'s
+            ``column_gap``.
+        direction: ``"left_to_right"`` extends the array to the right of
+            ``reference``'s position (which becomes the leftmost column);
+            ``"right_to_left"`` extends it to the left (``reference``'s
+            position becomes the rightmost column).
+        id_prefix: Overrides the generated zones' id prefix (default:
+            ``reference.id``) - needed when ``reference.id`` itself would
+            collide with another zone already in the template once the
+            reference zone is replaced by this array.
+
+    Returns:
+        ``columns`` zones, ids derived from ``id_prefix`` (default
+        ``reference.id``), sharing one fresh ``group_id``. Bubble overrides on
+        ``reference`` (fine-tuned positions) are carried into every generated
+        column, since they are part of the calibrated geometry a real,
+        imperfectly-printed sheet's repeated columns are expected to share.
+
+    Raises:
+        ValueError: ``reference`` is not a question-answer block, has no
+            bubble grid, or ``columns``/``questions_per_column`` is less
+            than 1.
+    """
+    if not isinstance(reference.field, QuestionBlockFieldDefinition):
+        raise ValueError("The reference region must be a question-answer block")
+    if reference.grid is None:
+        raise ValueError("The reference region has no bubble grid")
+    if columns < 1:
+        raise ValueError("columns must be at least 1")
+    if questions_per_column < 1:
+        raise ValueError("questions_per_column must be at least 1")
+
+    nominal_field = QuestionBlockFieldDefinition(
+        type=FieldType.QUESTION_BLOCK,
+        first_question=1,
+        question_count=questions_per_column,
+        answer_labels=reference.field.answer_labels,
+        symbol_axis=reference.field.symbol_axis,
+    )
+    strip_width = (
+        reference.grid.bubble_size.width
+        + max(nominal_field.columns - 1, 0) * reference.grid.column_pitch
+    )
+    if direction == "left_to_right":
+        origin_x = reference.bounds.x
+    else:
+        origin_x = reference.bounds.x - (columns - 1) * (strip_width + gap)
+
+    anchor_bounds = NormalizedRect(
+        x=origin_x,
+        y=reference.bounds.y,
+        width=reference.bounds.width,
+        height=reference.bounds.height,
+    )
+    return generate_question_columns(
+        id_prefix=id_prefix if id_prefix is not None else reference.id,
+        label_prefix="Questions",
+        first_question=first_question,
+        question_count=columns * questions_per_column,
+        answer_labels=reference.field.answer_labels,
+        columns=columns,
+        questions_per_column=questions_per_column,
+        bounds=anchor_bounds,
+        bubble_size=reference.grid.bubble_size,
+        symbol_axis=reference.field.symbol_axis,
+        column_gap=gap,
+        row_pitch=reference.grid.row_pitch,
+        column_pitch=reference.grid.column_pitch,
+        display_color=reference.display_color,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnSpacingInfo:
+    """Whether a set of question columns are evenly spaced, and by how much.
+
+    Attributes:
+        uniform: Whether every gap between adjacent column bounding boxes
+            matches (within a small floating-point tolerance).
+        column_gap: The common normalised gap, when ``uniform`` is true;
+            ``None`` otherwise (including when there are fewer than two
+            columns to compare).
+    """
+
+    uniform: bool
+    column_gap: float | None = None
+
+
+_COLUMN_GAP_TOLERANCE = 1e-4
+
+
+def measure_column_gap(
+    columns: Sequence[Zone], *, tolerance: float = _COLUMN_GAP_TOLERANCE
+) -> ColumnSpacingInfo:
+    """Measure whether ``columns`` are evenly spaced, per the ``column_gap`` convention above.
+
+    Args:
+        columns: The zones to measure (order does not matter - sorted here by
+            their own ``bounds.x``).
+        tolerance: Maximum normalised difference between the largest and
+            smallest gap still considered "uniform".
+
+    Returns:
+        A report naming the common gap when uniform, or flagging custom
+        spacing otherwise.
+    """
+    if len(columns) < 2:
+        return ColumnSpacingInfo(uniform=True, column_gap=None)
+    ordered = sorted(columns, key=lambda zone: zone.bounds.x)
+    gaps = [
+        ordered[index + 1].bounds.x - ordered[index].bounds.right
+        for index in range(len(ordered) - 1)
+    ]
+    average = sum(gaps) / len(gaps)
+    uniform = all(abs(gap - average) <= tolerance for gap in gaps)
+    return ColumnSpacingInfo(uniform=uniform, column_gap=average if uniform else None)
+
+
+def distribute_columns_evenly(columns: Sequence[Zone]) -> tuple[Zone, ...]:
+    """Redistribute intermediate columns evenly between a fixed first and last.
+
+    Orders ``columns`` by their field's ``first_question`` (their logical
+    reading order, independent of wherever they currently sit on the page),
+    keeps the first and last zone's horizontal position exactly as it was, and
+    moves every zone in between (via :func:`translate_zone`, which also shifts
+    its bubble grid and any overrides) to land at evenly-interpolated x
+    positions. Question numbers are never touched - only geometry moves.
+
+    Args:
+        columns: The sibling columns of one logical Question Region.
+
+    Returns:
+        The same zones (same ids, same order as the input was sorted into),
+        with only the intermediate ones' geometry changed. Fewer than three
+        columns has nothing to redistribute and is returned unchanged.
+    """
+    if len(columns) < 3:
+        return tuple(columns)
+    ordered = sorted(
+        columns,
+        key=lambda zone: (
+            zone.field.first_question if isinstance(zone.field, QuestionBlockFieldDefinition) else 0
+        ),
+    )
+    first_x = ordered[0].bounds.x
+    last_x = ordered[-1].bounds.x
+    step = (last_x - first_x) / (len(ordered) - 1)
+
+    result: list[Zone] = [ordered[0]]
+    for index, zone in enumerate(ordered[1:-1], start=1):
+        target_x = first_x + index * step
+        result.append(translate_zone(zone, dx=target_x - zone.bounds.x, dy=0.0))
+    result.append(ordered[-1])
+    return tuple(result)
 
 
 def translate_zone(zone: Zone, *, dx: float, dy: float) -> Zone:
@@ -582,12 +822,16 @@ def _format_ranges(numbers: Sequence[int]) -> str:
 
 __all__ = [
     "DEFAULT_DISPLAY_COLORS",
+    "ColumnSpacingInfo",
     "DesignerValidationReport",
     "build_blank_template",
+    "distribute_columns_evenly",
     "fit_grid_to_bounds",
     "generate_character_grid_zone",
+    "generate_column_array",
     "generate_ignored_zone",
     "generate_question_columns",
+    "measure_column_gap",
     "resize_zone",
     "translate_zone",
     "validate_template_for_designer",

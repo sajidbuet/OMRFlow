@@ -436,3 +436,108 @@ class TestStatusDisplay:
     def test_zoom_label_updates_on_zoom(self, opened_page: TemplateDesignerPage):
         opened_page.canvas.zoom_to_actual_size()
         assert "100" in opened_page.zoom_label.text()
+
+
+class TestQuestionColumnArrayAndDistribute:
+    """End-to-end coverage for Part B7/B9: Create Column Array and Distribute Columns."""
+
+    def _add_reference_column(self, page: TemplateDesignerPage) -> None:
+        from omr_scanner.domain.geometry import NormalizedRect, NormalizedSize
+        from omr_scanner.domain.template_authoring import generate_question_columns
+
+        zones = generate_question_columns(
+            id_prefix="questions", label_prefix="Questions", first_question=1,
+            question_count=20, answer_labels=("A", "B", "C", "D"), columns=1,
+            questions_per_column=20,
+            bounds=NormalizedRect(x=0.05, y=0.5, width=0.15, height=0.3),
+            bubble_size=NormalizedSize(width=0.01, height=0.01),
+        )
+        page._designer_state.add_zones(zones)
+        page._refresh_all()
+        page.canvas.select_region("questions_0")
+
+    def test_selecting_a_question_column_enables_array_and_distribute(
+        self, opened_page: TemplateDesignerPage
+    ):
+        self._add_reference_column(opened_page)
+        assert opened_page.create_array_action.isEnabled() is True
+        assert opened_page.distribute_columns_action.isEnabled() is True
+
+    def test_selecting_a_non_question_zone_disables_them(self, opened_page: TemplateDesignerPage):
+        self._add_reference_column(opened_page)
+        opened_page._designer_state.add_zones((_zone(),))
+        opened_page._refresh_all()
+        opened_page.canvas.select_region("sid")
+        assert opened_page.create_array_action.isEnabled() is False
+        assert opened_page.distribute_columns_action.isEnabled() is False
+
+    def test_create_array_generates_five_columns_in_one_undo_step(
+        self, opened_page: TemplateDesignerPage, monkeypatch: pytest.MonkeyPatch
+    ):
+        from PySide6.QtWidgets import QDialog
+
+        from omr_scanner.gui.template_designer import dialogs as dialogs_module
+
+        self._add_reference_column(opened_page)
+
+        def accept_with_five_columns(dialog: object) -> QDialog.DialogCode:
+            dialog.columns_box.setValue(5)  # type: ignore[attr-defined]
+            dialog._on_accept()  # type: ignore[attr-defined]
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            dialogs_module.CreateColumnArrayDialog, "exec", accept_with_five_columns
+        )
+
+        opened_page._on_create_array_requested()
+
+        question_columns = [
+            zone
+            for zone in opened_page._designer_state.template.zones
+            if zone.id.startswith("questions_0_")
+        ]
+        assert len(question_columns) == 5
+        assert sum(zone.bubble_count for zone in question_columns) == 400
+
+        opened_page.undo()
+        remaining = [
+            zone
+            for zone in opened_page._designer_state.template.zones
+            if zone.id.startswith("questions_0")
+        ]
+        assert len(remaining) == 1  # one undo reverses the whole array creation
+
+    def test_distribute_columns_evenly_spaces_a_manually_moved_middle_column(
+        self, opened_page: TemplateDesignerPage, monkeypatch: pytest.MonkeyPatch
+    ):
+        from PySide6.QtWidgets import QDialog
+
+        from omr_scanner.gui.template_designer import dialogs as dialogs_module
+
+        self._add_reference_column(opened_page)
+
+        def accept_with_five_columns(dialog: object) -> QDialog.DialogCode:
+            dialog.columns_box.setValue(5)  # type: ignore[attr-defined]
+            dialog._on_accept()  # type: ignore[attr-defined]
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(
+            dialogs_module.CreateColumnArrayDialog, "exec", accept_with_five_columns
+        )
+        opened_page._on_create_array_requested()
+
+        middle = opened_page._designer_state.template.zone_by_id("questions_0_2")
+        opened_page._designer_state.move_zone("questions_0_2", dx=0.05, dy=0.0)
+        before_first = opened_page._designer_state.template.zone_by_id("questions_0_0").bounds.x
+        before_last = opened_page._designer_state.template.zone_by_id("questions_0_4").bounds.x
+        opened_page.canvas.select_region("questions_0_2")
+
+        opened_page._on_distribute_columns_requested()
+
+        first = opened_page._designer_state.template.zone_by_id("questions_0_0")
+        last = opened_page._designer_state.template.zone_by_id("questions_0_4")
+        new_middle = opened_page._designer_state.template.zone_by_id("questions_0_2")
+        assert first.bounds.x == pytest.approx(before_first)
+        assert last.bounds.x == pytest.approx(before_last)
+        assert new_middle.bounds.x != pytest.approx(middle.bounds.x + 0.05)
+        assert new_middle.field.first_question == middle.field.first_question

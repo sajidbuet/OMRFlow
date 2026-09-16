@@ -31,6 +31,7 @@ TOOLBAR_ACTION_NAMES = [
     "undo_action", "redo_action",
     "detect_action", "confirm_markers_action",
     "add_student_id_action", "add_question_set_action", "add_question_block_action",
+    "create_array_action", "distribute_columns_action",
     "add_custom_action", "add_ignored_action",
     "fine_tune_action", "clear_overrides_action",
     "validate_action",
@@ -154,7 +155,8 @@ class TestIconOnlyVersusIconWithText:
         [
             "detect_action", "confirm_markers_action",
             "add_student_id_action", "add_question_set_action",
-            "add_question_block_action", "add_custom_action", "add_ignored_action",
+            "add_question_block_action", "create_array_action", "distribute_columns_action",
+            "add_custom_action", "add_ignored_action",
             "fine_tune_action", "clear_overrides_action", "validate_action",
         ],
     )
@@ -231,6 +233,44 @@ class TestEnabledStateFollowsApplicationState:
 
         assert page.save_action.isEnabled() is True
         assert page.validate_action.isEnabled() is True
+
+    def test_array_and_distribute_stay_disabled_until_a_question_column_is_selected(
+        self, page: TemplateDesignerPage
+    ):
+        from dataclasses import dataclass
+
+        from omr_scanner.domain.geometry import NormalizedRect, NormalizedSize
+        from omr_scanner.domain.template import FieldType
+        from omr_scanner.domain.template_authoring import (
+            build_blank_template,
+            generate_character_grid_zone,
+        )
+        from omr_scanner.gui.template_designer.state import DesignerState
+
+        @dataclass
+        class _FakeDecodedImage:
+            width: int
+            height: int
+
+        template = build_blank_template(name="T", canonical_width_px=200, canonical_height_px=200)
+        zone = generate_character_grid_zone(
+            zone_id="sid", label="Student ID", field_type=FieldType.NUMERIC, symbols=("0", "1"),
+            character_count=2, bounds=NormalizedRect(x=0.1, y=0.1, width=0.3, height=0.3),
+            bubble_size=NormalizedSize(width=0.02, height=0.02),
+        )
+        state = DesignerState(template, template_path=None, reference_image_path=None)
+        state.add_zones((zone,))
+        page._designer_state = state
+        page._decoded_image = _FakeDecodedImage(width=200, height=200)
+        page._set_document_controls_enabled(True)
+        page._refresh_all()
+
+        assert page.create_array_action.isEnabled() is False
+        assert page.distribute_columns_action.isEnabled() is False
+
+        page._show_properties_for("sid", "zone")
+        assert page.create_array_action.isEnabled() is False
+        assert page.distribute_columns_action.isEnabled() is False
 
 
 class TestActionsTriggerTheOriginalBehaviour:
