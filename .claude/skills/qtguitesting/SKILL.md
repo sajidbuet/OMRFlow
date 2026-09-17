@@ -12,9 +12,9 @@ description: Use when modifying or debugging OMRFlow's PySide6/Qt user interface
 > Screenshots are for the things state cannot show: clipping, spacing,
 > visibility, overlay alignment, icon presence, obvious layout regressions.
 
-Applies to every Qt surface in OMRFlow, not only the Template page. Scan,
-Resolve, Results and the rest arrive in later phases and will use the same
-canvas, the same coordinate systems and the same testing hierarchy.
+Applies to every Qt surface in OMRFlow. Template (Phase 2) and Scan (Phase 3)
+are both covered; Resolve, Results and the rest arrive in later phases and will
+use the same canvas, the same coordinate systems and the same testing hierarchy.
 
 ## Workflow
 
@@ -100,6 +100,15 @@ zones = dialog._build_zones()
 `qtbot.waitUntil(...)`, `qtbot.wait(...)` or `QApplication.processEvents()`.
 Never a long `sleep`.
 
+**Wait on the signal, not the clock.** The Scan page does its work in real
+`QThread`s, so "is it finished?" has an exact answer: `ScanPage.batch_finished`
+carries the `BatchReport`. Selecting a row starts a *second* worker for the
+preview - wait for `ScanPreviewView.has_page` (a property) before measuring or
+capturing it, or you will grab an empty canvas reading "Rendering preview...".
+A worker still running when the process exits makes Qt abort with a bare
+`0xC0000409` on Windows *after* the work succeeded; `ScanHarness.shutdown()`
+closes the page and is why the scripts end cleanly.
+
 ## Geometry debugging
 
 When something moves, resizes or lands in the wrong place, dump before and
@@ -127,6 +136,9 @@ python .claude/skills/qtguitesting/scripts/run_gui_smoke_tests.py
 # Deterministic screenshots into test-output/gui/.
 python .claude/skills/qtguitesting/scripts/capture_gui_states.py
 
+# Only the Scan page's states (template loaded, processed, duplicates, export).
+python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only scan-processed
+
 # Geometry of the template's regions, as JSON.
 python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario question-region
 
@@ -145,6 +157,7 @@ pytest                                            # everything
 pytest -m gui                                     # Qt tests only
 pytest -m "not gui"                               # headless logic only
 pytest tests/gui/test_template_designer_region_geometry.py -q     # focused
+pytest tests/gui/test_scan_page.py -q                             # Scan workflow A-J
 pytest tests/unit/test_question_region_container.py -q            # focused
 pytest tests/integration/test_orientation_marker_detection.py -q  # focused
 ruff check . && mypy                              # lint and types

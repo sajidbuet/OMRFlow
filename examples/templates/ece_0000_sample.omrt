@@ -1,0 +1,367 @@
+{
+  "format": "omrflow-template",
+  "format_version": 1,
+  "template_id": "6932f2d9-36af-49e0-85a8-84c1c80ace35",
+  "name": "ECE sample answer sheet",
+  "description": "Calibrated against examples/ECE-0000.png: an 8-digit roll number, a two-digit set code and 100 questions in five printed columns of a/b/c/d. Regenerate with scripts/build_ece0000_template.py.",
+  "created_with": "0.1.0.dev0",
+  "created_at": "2026-09-16T13:46:05.662759Z",
+  "modified_at": "2026-09-16T13:46:05.662759Z",
+  "page": {
+    "width_mm": 210.0,
+    "height_mm": 297.0,
+    "canonical_width_px": 2480,
+    "canonical_height_px": 3508
+  },
+  "registration_markers": [
+    {
+      "role": "top_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.04114112903225806,
+        "y": 0.07140535917901938
+      },
+      "size": {
+        "width": 0.017741935483870968,
+        "height": 0.012542759407069556
+      },
+      "search_radius": 0.06
+    },
+    {
+      "role": "top_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.9532540322580646,
+        "y": 0.073460661345496
+      },
+      "size": {
+        "width": 0.017741935483870968,
+        "height": 0.012542759407069556
+      },
+      "search_radius": 0.06
+    },
+    {
+      "role": "bottom_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.9491733870967741,
+        "y": 0.9132212086659065
+      },
+      "size": {
+        "width": 0.017741935483870968,
+        "height": 0.012542759407069556
+      },
+      "search_radius": 0.06
+    },
+    {
+      "role": "bottom_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.03707661290322581,
+        "y": 0.9092189281641961
+      },
+      "size": {
+        "width": 0.017741935483870968,
+        "height": 0.012542759407069556
+      },
+      "search_radius": 0.06
+    }
+  ],
+  "orientation_marker": {
+    "shape": "filled_rectangle",
+    "center": {
+      "x": 0.0810483870967742,
+      "y": 0.0943557582668187
+    },
+    "size": {
+      "width": 0.03467741935483871,
+      "height": 0.012542759407069556
+    },
+    "expected_near": "top_left",
+    "search_radius": 0.06
+  },
+  "zones": [
+    {
+      "id": "roll_number",
+      "label": "Roll number",
+      "bounds": {
+        "x": 0.08931451612903225,
+        "y": 0.26824401368301026,
+        "width": 0.1518467741935484,
+        "height": 0.13574743443557583
+      },
+      "field": {
+        "type": "numeric",
+        "symbols": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "character_count": 8,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.09899193548387097,
+          "y": 0.2750855188141391
+        },
+        "row_pitch": 0.013562713797035348,
+        "column_pitch": 0.018927419354838708,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "set_code",
+      "label": "Set code",
+      "bounds": {
+        "x": 0.27923387096774194,
+        "y": 0.2685290763968073,
+        "width": 0.038104838709677416,
+        "height": 0.1358757126567845
+      },
+      "field": {
+        "type": "set_code",
+        "symbols": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "character_count": 2,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.28891129032258067,
+          "y": 0.27537058152793614
+        },
+        "row_pitch": 0.0135769669327252,
+        "column_pitch": 0.01875,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#8E24AA",
+      "recognition": null
+    },
+    {
+      "id": "questions_0",
+      "label": "Questions 1-20",
+      "bounds": {
+        "x": 0.12489919354838709,
+        "y": 0.6217217787913341,
+        "width": 0.07629435483870968,
+        "height": 0.2688560433295325
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 1,
+        "question_count": 20,
+        "answer_labels": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.1345766129032258,
+          "y": 0.628563283922463
+        },
+        "row_pitch": 0.013430159635119726,
+        "column_pitch": 0.01897983870967742,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_1",
+      "label": "Questions 21-40",
+      "bounds": {
+        "x": 0.2955645161290323,
+        "y": 0.6221493728620296,
+        "width": 0.07639112903225806,
+        "height": 0.26912685290763966
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 21,
+        "question_count": 20,
+        "answer_labels": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.30524193548387096,
+          "y": 0.6289908779931584
+        },
+        "row_pitch": 0.013444412770809577,
+        "column_pitch": 0.01901209677419355,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_2",
+      "label": "Questions 41-60",
+      "bounds": {
+        "x": 0.4663306451612903,
+        "y": 0.6229332953249715,
+        "width": 0.07639112903225806,
+        "height": 0.26939766248574687
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 41,
+        "question_count": 20,
+        "answer_labels": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.47600806451612904,
+          "y": 0.6297748004561003
+        },
+        "row_pitch": 0.013458665906499431,
+        "column_pitch": 0.01901209677419355,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_3",
+      "label": "Questions 61-80",
+      "bounds": {
+        "x": 0.6368951612903225,
+        "y": 0.623645952109464,
+        "width": 0.07635483870967741,
+        "height": 0.26939766248574687
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 61,
+        "question_count": 20,
+        "answer_labels": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.6465725806451613,
+          "y": 0.630487457240593
+        },
+        "row_pitch": 0.013458665906499431,
+        "column_pitch": 0.019,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_4",
+      "label": "Questions 81-100",
+      "bounds": {
+        "x": 0.808266129032258,
+        "y": 0.6242873432155074,
+        "width": 0.0761491935483871,
+        "height": 0.269668472063854
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 81,
+        "question_count": 20,
+        "answer_labels": [
+          "a",
+          "b",
+          "c",
+          "d"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.8179435483870968,
+          "y": 0.6311288483466363
+        },
+        "row_pitch": 0.013472919042189281,
+        "column_pitch": 0.018931451612903227,
+        "bubble_size": {
+          "width": 0.014516129032258065,
+          "height": 0.010262257696693273
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    }
+  ],
+  "recognition": {
+    "fill_ratio_threshold": 0.55,
+    "blank_ratio_threshold": 0.25,
+    "ambiguity_margin": 0.12,
+    "min_confidence": 0.6
+  },
+  "reference_image": "../ECE-0000.png",
+  "default_bubble_radius": 0.007258064516129033
+}

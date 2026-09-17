@@ -74,12 +74,14 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         key="scan",
         title="Scan",
         summary="Import scanned sheets, normalise them and run recognition.",
-        phase=5,
+        phase=3,
+        implemented=True,
         details=(
-            "Import a folder of scans without copying large files unnecessarily.",
+            "Import individual scans or a whole folder, in natural order.",
             "Align each sheet to the template's canonical page (Phase 1).",
-            "Recognise field values with confidence scores (Phase 3).",
-            "Report per-sheet progress and isolate failures.",
+            "Recognise roll number, set code and answers, flagging what is unclear.",
+            "Rename recognised sheets by roll number without ever overwriting one.",
+            "Export the batch to CSV.",
         ),
     ),
     WorkflowPageSpec(

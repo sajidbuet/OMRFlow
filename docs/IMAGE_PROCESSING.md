@@ -1,9 +1,11 @@
 # Image processing
 
-> **Status.** The geometric normalisation engine (stages 1-6) is implemented in
-> `omr_scanner.imaging` and described below as it actually behaves. Bubble
-> measurement and recognition (stages 7-9) remain a plan; those sections are
-> marked *Phase 3* and nothing implements them.
+> **Status.** The whole pipeline is implemented and described below as it
+> actually behaves: geometric normalisation (stages 1-6) in
+> `omr_scanner.imaging` since Phase 1, and field extraction, bubble measurement
+> and recognition (stages 7-9, §§21-23) in `omr_scanner.imaging.metrics` and
+> `omr_scanner.recognition` since Phase 3. Conflict resolution between two
+> readings of one sheet remains Phase 6.
 
 ## Pipeline
 
@@ -18,9 +20,9 @@ raw scan
   -> geometry validation             convex, sized, correctly proportioned
   -> perspective transform           marker centres -> canonical targets
   -> canonical normalised sheet      the contract every later phase consumes
-  -> field extraction                (Phase 3)
-  -> bubble measurement              (Phase 3)
-  -> recognition                     (Phase 3)
+  -> field extraction                template coordinates -> canonical pixels
+  -> bubble measurement              per-bubble fill ratio, locally thresholded
+  -> recognition                     values with explicit blank/multiple/uncertain
 ```
 
 As a diagram of the implemented part:
@@ -714,33 +716,73 @@ Other limitations, stated plainly:
 
 ---
 
-## 21. Field extraction - *Phase 3*
+## 21. Field extraction - *Phase 3, implemented*
 
-For each zone, compute every bubble centre from its `BubbleGrid` (already
-implemented as pure geometry in `omr_scanner.domain.template`) and cut a
-measurement window of `bubble_size` around it.
+For each zone, every bubble centre comes from its `BubbleGrid.bubble_center`
+(pure geometry in `omr_scanner.domain.template`, unchanged since Phase 0) and is
+scaled from normalised template coordinates to canonical page pixels. No page
+coordinate is ever hard-coded: a template that moves a region moves the sampling
+with it, which is what
+`tests/integration/test_recognition_pipeline.py` asserts directly.
 
-## 22. Bubble measurement - *Phase 3*
+Because sampling happens on the *canonical* page, template coordinates need no
+correction for the scan's rotation, scale or resolution - the homography of
+stage 6 already removed all three.
 
-Produce a *measurement*, not a verdict. Intended metrics per bubble: mean
-intensity, dark-pixel ratio, filled-area ratio, local background intensity, and
-darkness relative to the other bubbles in the same group.
+## 22. Bubble measurement - *Phase 3, implemented*
 
-Relative comparison matters: a candidate who marks lightly in pencil throughout
-produces bubbles that are all faint, and an absolute threshold would read the
-sheet as blank.
+`omr_scanner.imaging.metrics` produces a *measurement*, never a verdict.
 
-## 23. Recognition - *Phase 3, conflicts in Phase 6*
+Per bubble:
 
-Turn measurements into values using the template's `RecognitionSettings`:
+| Quantity | How |
+|---|---|
+| Interior sample | An **ellipse** at `sample_radius_ratio` (0.62) of the bubble's half-axes - inside the printed ring, covering most of what a candidate actually shades. |
+| Local paper level | The `paper_percentile` (80th) of an **annulus** from 1.25 to 1.95 half-axes. A high percentile rather than a mean, because the annulus routinely catches a grid line, a neighbouring mark or the printed symbol beside the bubble; the brightest pixels of a small neighbourhood are the ones reliably paper. |
+| Page ink level | The `ink_percentile` (1st) of the whole page - the printed text, registration squares and marks. Not the single darkest pixel, which is noise. |
+| Ink threshold | Halfway (`ink_fraction` 0.5) between local paper and page ink, clamped to 35-130 grey levels. |
+| `fill_ratio` | Fraction of the interior sample darker than that threshold. |
+| Usability | `False` when fewer than `min_sample_pixels` (9) interior pixels are available - a bubble whose sample runs off the page edge is reported unusable, never guessed. |
+
+**Why the threshold is local and relative.** Two problems that an absolute
+threshold gets wrong in opposite directions:
+
+- Every empty bubble on the sample sheet contains a *printed option glyph*
+  (`a`, `b`, `c`, `d`). An absolute dark-pixel count reads that as a mark.
+- A candidate who marks lightly in pencil throughout produces bubbles that are
+  all faint, and an absolute threshold reads the whole sheet as blank.
+
+Halfway between local paper and page ink separates them: the printed glyph is
+light grey, well under halfway; a pencil mark is well over it. On the real
+sample this produces a **fill-ratio gap of more than 0.5** between the faintest
+mark and the darkest unmarked bubble - a wide, unambiguous separation rather
+than a threshold sitting between two touching populations. That margin is
+asserted as a regression test in
+`tests/integration/test_sample_sheet_recognition.py`.
+
+Every value in `BubbleMetricsConfig` is a ratio or a grey-level difference, not
+a pixel count, so one configuration serves 150 dpi and 300 dpi alike.
+
+## 23. Recognition - *Phase 3 implemented, conflicts in Phase 6*
+
+`omr_scanner.recognition.decide` turns one group of measured bubbles into one
+`Selection`, using the template's `RecognitionSettings` - never a constant in
+the recognition code:
 
 - above `fill_ratio_threshold` -> marked;
 - below `blank_ratio_threshold` -> empty;
 - in between, or a gap smaller than `ambiguity_margin` between the best and
-  second best candidate -> ambiguous.
+  second-best candidate -> ambiguous.
 
-Ambiguity is preserved, never resolved by guessing. A field value carries its
-confidence and its competing alternatives so Phase 6 can present them to a human.
+`recognition.fields` then assembles groups into fields. Each group's outcome is
+one of five explicit states - resolved, blank, multiple, uncertain, unreadable -
+and each survives all the way to the GUI and the CSV.
+
+**Ambiguity is preserved, never resolved by guessing.** Two marks are reported
+as `b-d`, with both retained; an uncertain one as `b?`; an unreadable group as
+`?`. A roll number is only offered as an identifier when every digit column
+resolved, so `21?3123` never becomes a file name. Phase 6 gets the competing
+alternatives to present to a human, because nothing discarded them.
 
 ---
 

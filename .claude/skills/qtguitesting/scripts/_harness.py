@@ -1,10 +1,15 @@
 """Shared plumbing for the qtguitesting helper scripts.
 
 Purpose:
-    Build a real, deterministic `TemplateDesignerPage` with a document open, so
-    the three scripts that need one (screenshots, geometry dumps, the smoke test)
-    agree on what "the Template page with the sample loaded" means instead of
-    each assembling it slightly differently.
+    Build real, deterministic OMRFlow pages with a document open, so the three
+    scripts that need one (screenshots, geometry dumps, the smoke test) agree on
+    what "the Template page with the sample loaded" - or "the Scan page with a
+    batch processed" - means instead of each assembling it slightly differently.
+
+    Two harnesses, because the two pages are driven differently:
+    :class:`DesignerHarness` (Phase 2) edits a template in place, while
+    :class:`ScanHarness` (Phase 3) runs a background `QThread` and must be
+    *waited on* rather than merely settled.
 
 What does NOT belong here:
     * Any behaviour the application does not have. These scripts drive the real
@@ -27,6 +32,13 @@ or the agent - happens to be."""
 
 SAMPLE_SHEET = REPOSITORY_ROOT / "examples" / "ECE-0000.png"
 """OMRFlow's standard real-image GUI regression sample. Read only."""
+
+SAMPLE_TEMPLATE = REPOSITORY_ROOT / "examples" / "templates" / "ece_0000_sample.omrt"
+"""The template that describes :data:`SAMPLE_SHEET`.
+
+Pairing the two is what makes the Scan scenarios *real*: the page is driven with
+an actual scan and the actual template it was printed from, not a synthetic
+render of the application's own idea of a sheet."""
 
 OUTPUT_ROOT = REPOSITORY_ROOT / "test-output" / "gui"
 """Where generated artefacts go. Git-ignored; never mixed with the hand-authored
@@ -225,6 +237,164 @@ def add_question_region(
     page._refresh_all()
     harness.process_events()
     return zones
+
+
+@dataclass(frozen=True, slots=True)
+class ScanHarness:
+    """A Scan page with a template loaded and scans imported, ready to drive.
+
+    Attributes:
+        page: The real `ScanPage`.
+        template_path: The ``.omrt`` it loaded.
+        output_dir: Where renamed copies go, when renaming is switched on.
+    """
+
+    page: object
+    template_path: Path
+    output_dir: Path
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting. See `DesignerHarness`."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def settle(self) -> None:
+        """Give the page real laid-out geometry without showing a window."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        widget: QWidget = self.page  # type: ignore[assignment]
+        widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        widget.show()
+        widget.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.process_events()
+
+    def run_batch(self, *, timeout_ms: int = 120_000) -> object:
+        """Process every imported scan and return the `BatchReport`.
+
+        Pumps the event loop until the page's own ``batch_finished`` signal
+        arrives, which is both the honest definition of "the run is over" and
+        the reason this is not a sleep: the worker is a real ``QThread``, and a
+        fixed delay would be simultaneously slower than necessary and unreliable
+        on a loaded machine.
+
+        Raises:
+            TimeoutError: The run did not finish inside ``timeout_ms``.
+        """
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        received: list[object] = []
+        self.page.batch_finished.connect(received.append)
+        try:
+            if not self.page.process_all():
+                raise RuntimeError(
+                    "the batch did not start - is a template loaded and a scan imported?"
+                )
+            clock = QElapsedTimer()
+            clock.start()
+            while not received:
+                QApplication.processEvents()
+                if clock.elapsed() > timeout_ms:
+                    raise TimeoutError(f"batch did not finish within {timeout_ms} ms")
+        finally:
+            self.page.batch_finished.disconnect(received.append)
+        self.process_events()
+        return received[0]
+
+    def shutdown(self) -> None:
+        """Stop the page's background threads before the process exits.
+
+        Selecting a row starts a `PreviewWorker`, and a batch finishing selects
+        one by itself. A ``QThread`` still running when the interpreter tears
+        down makes Qt abort the process - on Windows with a bare
+        ``0xC0000409`` and no traceback, which is a thoroughly confusing way for
+        a capture run to end after it has already written its files.
+
+        The application itself does this in ``ScanPage.closeEvent``; a script
+        that never closes the page has to do it explicitly.
+        """
+        self.page.close()
+        self.process_events()
+
+    def await_preview(self, *, timeout_ms: int = 120_000) -> bool:
+        """Pump events until the selected scan's preview has been rendered.
+
+        A batch deliberately discards previews, so selecting a row starts a
+        `PreviewWorker`; anything that captures or measures the preview must
+        wait for it rather than grabbing an empty view.
+        """
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        clock = QElapsedTimer()
+        clock.start()
+        while not self.page.preview.has_page:
+            QApplication.processEvents()
+            if clock.elapsed() > timeout_ms:
+                return False
+        self.process_events()
+        return True
+
+
+def build_scan_page(
+    scans: list[Path] | None = None,
+    *,
+    template_path: Path | None = None,
+    output_dir: Path | None = None,
+    rename: bool = False,
+) -> ScanHarness:
+    """Build a Scan page with a template loaded and ``scans`` imported.
+
+    Uses the page's own public commands - ``load_template_from``,
+    ``add_scan_paths``, ``set_output_directory`` - which are exactly what the
+    toolbar buttons call once their file dialog has returned. The dialogs
+    themselves are skipped because they cannot be driven offscreen and have
+    nothing to do with what is being checked (`docs/TESTING.md`).
+
+    Args:
+        scans: Images to import; the repository sample by default.
+        template_path: The ``.omrt`` to read them with; the sample's own by
+            default.
+        output_dir: Folder for renamed copies. Defaults to a fresh directory
+            under ``test-output/gui/``.
+        rename: Switch on roll-number renaming.
+
+    Returns:
+        The harness, already laid out.
+
+    Raises:
+        FileNotFoundError: The template or a scan does not exist.
+        RuntimeError: The template could not be loaded.
+    """
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.scan.page import ScanPage
+
+    template = template_path if template_path is not None else SAMPLE_TEMPLATE
+    if not template.is_file():
+        raise FileNotFoundError(f"Template not found: {template}")
+    selected = list(scans) if scans is not None else [SAMPLE_SHEET]
+    for path in selected:
+        if not path.is_file():
+            raise FileNotFoundError(f"Scan not found: {path}")
+
+    destination = output_dir if output_dir is not None else OUTPUT_ROOT / "scan_output"
+    destination.mkdir(parents=True, exist_ok=True)
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
+    page = ScanPage(spec)
+    page.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    if not page.load_template_from(template):
+        raise RuntimeError(f"Could not load the template: {template}")
+    page.add_scan_paths(selected)
+    page.set_output_directory(destination)
+    page.rename_checkbox.setChecked(rename)
+
+    harness = ScanHarness(page=page, template_path=template, output_dir=destination)
+    harness.settle()
+    return harness
 
 
 def orientation_search_rect() -> tuple[float, float, float, float]:

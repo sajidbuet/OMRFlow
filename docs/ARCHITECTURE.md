@@ -49,11 +49,11 @@ above it.
 |---|---|---|
 | `omr_scanner.domain` | Data shapes and their validity rules; pure computations (e.g. bubble centre from a grid). | I/O, SQL, Qt, OpenCV, workflow logic. |
 | `omr_scanner.imaging` | Pixel algorithms: preprocessing, marker detection, orientation, perspective rectification *(Phase 1)*, bubble metrics *(Phase 3)*. | Qt, database, project layout knowledge, value interpretation, file I/O, `.omrt` knowledge. |
-| `omr_scanner.recognition` | Turning measurements into logical values with confidence, missing/multiple-mark handling. *(reserved - Phase 3/6)* | Pixel access, OpenCV, persistence, Qt. |
+| `omr_scanner.recognition` | Turning measurements into logical values with confidence, missing/multiple-mark handling *(Phase 3)*. Conflict resolution is Phase 6. | Pixel access, OpenCV, persistence, Qt. |
 | `omr_scanner.database` | Schema, migrations, engine and session lifetime. | Workflow logic, Qt, OpenCV. |
 | `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results. Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
 | `omr_scanner.reporting` | CSV/XLSX/PDF generation. *(reserved - Phase 9)* | Result calculation, Qt. |
-| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
+| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.scan` (Phase 3) is the batch scanning workspace. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
 | `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
 | `omr_scanner.config` | Per-user application settings and platform directory resolution. | Project or template settings. |
 | `omr_scanner.utils` | Dependency-light helpers (atomic JSON, logging setup). | Domain vocabulary, any other OMRFlow layer. |
@@ -153,8 +153,9 @@ size, the orientation mark - comes from the template, and
 
 ## The recognition pipeline
 
-Everything up to the canonical page image exists (Phase 1); everything after it
-does not. The detail is in `docs/IMAGE_PROCESSING.md`.
+Complete from raw scan to CSV as of Phase 3; database persistence and conflict
+resolution remain Phases 5 and 6. The detail is in `docs/IMAGE_PROCESSING.md`,
+and the user-facing conventions in `docs/scan_workflow.md`.
 
 ```text
 raw scan
@@ -165,9 +166,50 @@ raw scan
   -> imaging.alignment          warp; the align_sheet entry point
   -> canonical page image       (matches the template's canonical geometry)
   -> imaging.metrics            per-bubble fill measurements       (Phase 3)
-  -> recognition.fields         values with confidence             (Phase 3)
+  -> recognition.decide         one group's marks -> a Selection   (Phase 3)
+  -> recognition.fields         values with explicit status        (Phase 3)
+  -> services.recognition_service   one sheet, end to end          (Phase 3)
+  -> services.filename_manager  a non-colliding output name        (Phase 3)
+  -> services.batch_processor    many sheets, errors isolated      (Phase 3)
+  -> services.scan_export       deterministic CSV                  (Phase 3)
   -> services.scan_service      persistence, conflicts, progress   (Phase 5)
 ```
+
+### Phase 3 in the brief's terms
+
+The sequence the Phase 3 brief asks to be documented, and the module that owns
+each step:
+
+| Step | Owner |
+|---|---|
+| Input scan | `services.scan_import.collect_scan_files` (formats, folders, natural sort) |
+| Load template | `services.template_service.load_template` |
+| Detect registration markers | `imaging.marker_detection` |
+| Determine orientation | `imaging.orientation`, `imaging.orientation_marker` |
+| Geometric correction | `imaging.geometry`, `imaging.alignment` |
+| Transform template coordinates | `services.recognition_service` (normalised -> canonical px) |
+| Extract answer regions | `domain.template` `Zone` / `BubbleGrid.bubble_center` |
+| Measure bubbles | `imaging.metrics` |
+| Interpret responses | `recognition.decide`, `recognition.fields` |
+| Validate roll / set / questions | `recognition.fields`, `recognition.models` |
+| Assign output filename | `services.filename_manager.FilenameAllocator` |
+| Preview / review | `gui.scan.preview`, `gui.scan.page` |
+| CSV export | `services.scan_export` |
+
+`gui.scan.worker` is the only piece that is neither: it exists solely to run
+`services.batch_processor` on a `QThread` and re-emit its callbacks as Qt
+signals, so that no widget is ever touched from a worker thread and no
+recognition code ever imports Qt.
+
+### Why the recognition modules are split three ways
+
+`recognition.models` holds the vocabulary (`MarkStatus`, `FieldStatus`,
+`Selection`), `recognition.decide` turns one group of measured bubbles into one
+`Selection`, and `recognition.fields` assembles groups into fields and a whole
+template's worth of values. The split is what makes "two marks were found"
+expressible at the bottom and still visible at the top: a blank, a double mark
+and an unreadable group are distinct values all the way out to the CSV, rather
+than being flattened into a single answer plus a boolean.
 
 `omr_scanner.services.alignment_service` is the seam between the template and
 the engine: it turns an `OmrTemplate` into an `AlignmentConfig` and reads scans
@@ -212,6 +254,46 @@ The designer edits by producing a new `OmrTemplate` via `model_copy(update=...)`
 and pushing it onto `gui.template_designer.history.SnapshotHistory`; there is
 no second, mutable template representation to keep in sync with the persisted
 format. See `docs/template_designer.md` for the user-facing description.
+
+## The Scan workspace (Phase 3)
+
+`omr_scanner.gui.scan` consumes those `.omrt` documents. It obeys the same
+layering rule by the same means - the services hand it plain strings, floats and
+bytes, so the package imports neither `cv2`, `numpy`, `imaging` nor
+`recognition`:
+
+```text
+ScanPage.load_template_from   -> services.template_service.load_template
+ScanPage.add_scan_paths       -> services.scan_import.collect_scan_files
+ScanPage.process_all          -> gui.scan.worker.BatchWorker  (a QThread)
+                                   -> services.batch_processor.process_batch
+                                        -> services.recognition_service.recognise_scan
+                                        -> services.filename_manager.FilenameAllocator
+                                   -> Qt signals back to the GUI thread
+ScanPage.select_scan          -> gui.scan.worker.PreviewWorker
+                                   -> gui.scan.preview.ScanPreviewView
+ScanPage.export_csv_to        -> services.scan_export.export_scan_results
+```
+
+Three decisions worth carrying forward:
+
+- **Naming is separated from copying.** `filename_manager` only *decides* a
+  name; `batch_processor` performs the file side effect. That is what makes the
+  duplicate rule (`2103123`, `_a`, `_b`, ...) unit-testable without a disk, and
+  what lets the GUI show an output name as a preview before anything is written.
+- **The allocator consults the output directory, not only its own history**, so
+  a second run over the same folder cannot replace the first run's output.
+- **A batch never keeps its previews.** A hundred rectified pages is most of a
+  gigabyte, so `BatchOptions.with_preview` is off for batch runs and the page
+  re-renders only the sheet being looked at, through `PreviewWorker`, caching a
+  handful.
+
+`ScanPage` follows the main window's testability split: a `_prompt_*` method
+owns each modal file dialog and contains no logic, while the command beside it
+(`load_template_from`, `add_scan_paths`, `export_csv_to`) does the work. GUI
+tests and the `qtguitesting` scripts drive the second group, so nothing has to
+interact with a native file dialog. See `docs/scan_workflow.md` for the
+user-facing description.
 
 ## Concurrency
 

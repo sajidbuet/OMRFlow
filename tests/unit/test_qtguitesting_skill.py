@@ -126,6 +126,10 @@ class TestReferencedPathsExist:
             "tests/integration/test_orientation_marker_detection.py",
             "tests/gui/test_template_designer_canvas_panning.py",
             "tests/integration/test_template_service.py",
+            "tests/gui/test_scan_page.py",
+            "tests/integration/test_sample_sheet_recognition.py",
+            "tests/unit/test_filename_manager.py",
+            "examples/templates/ece_0000_sample.omrt",
         ],
     )
     def test_a_path_the_skill_names_exists(self, relative: str):

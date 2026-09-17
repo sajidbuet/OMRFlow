@@ -8,13 +8,65 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
-Phase 2 - interactive template designer. A user can build a complete `.omrt`
-template visually: load a reference sheet, detect and adjust registration
-markers, draw and configure regions, fine-tune individual bubbles, undo/redo,
-validate and save. Bubble recognition still does not exist; this build must
-not be used for examination processing.
+Phase 3 - batch scanning and recognition. A user can now read filled answer
+sheets against a template: import one or many scans, have them rectified and
+recognised, review the result with an overlay, optionally file the images under
+their detected roll numbers, and export CSV. Recognition has been validated
+against one real scanned sheet and geometric variants of it, **not** against a
+corpus of independently filled papers; this build must not be used for
+examination processing.
 
-### Added
+### Added — Phase 3
+
+- `omr_scanner.imaging.metrics`: per-bubble measurement. An elliptical interior
+  sample, a local paper estimate from an annulus around each bubble, and an ink
+  threshold placed halfway between that and the page's own ink level - so a
+  printed option glyph inside an empty bubble is not read as a mark, and a
+  uniformly faint pencil sheet is not read as blank.
+- `omr_scanner.recognition`: `models.py` (the `MarkStatus`/`FieldStatus`
+  vocabulary), `decide.py` (`decide_group` - one group of bubbles to one
+  `Selection`), `fields.py` (`recognise_grid_zone`, `recognise_template`).
+  Blank, single, multiple, uncertain and unreadable are five distinct states
+  that survive to the CSV; every threshold comes from the template.
+- `omr_scanner.services.recognition_service`: `recognise_scan` - one file to a
+  `ScanResult` with registration status, field values, overlay geometry and an
+  optional bounded-size preview.
+- `omr_scanner.services.batch_processor`: `process_batch` with per-file error
+  isolation, progress callbacks and cooperative cancellation. One corrupt image
+  cannot end a batch.
+- `omr_scanner.services.filename_manager`: `FilenameAllocator` - decides output
+  names and never touches a file. Duplicates become `_a`, `_b`, ... `_z`,
+  `_aa` (bijective base-26); files already in the output directory count as
+  taken; an unreliable identifier gets `UNRESOLVED_001` rather than a
+  fabricated name. **No scan image is ever overwritten.**
+- `omr_scanner.services.scan_import`: `collect_scan_files` - PNG/JPEG/TIFF/BMP,
+  folder walking, unrelated files ignored, natural sort (`scan2` before
+  `scan10`).
+- `omr_scanner.services.scan_export`: deterministic UTF-8 CSV with stable base
+  columns and question columns ordered by the template.
+- `omr_scanner.gui.scan`: the Scan workflow stage - `page.py` (controls, scan
+  list, results panel), `preview.py` (zoom/pan/fit view with a non-destructive
+  recognition overlay), `worker.py` (`BatchWorker`, `PreviewWorker` - `QThread`s
+  that touch no widget). The package imports no `cv2`, `numpy`, `imaging` or
+  `recognition`.
+- `omr_scanner.imaging.synthetic`: `AnswerBubbleSpec` and marked-bubble
+  rendering, Phase 3's ground-truth generator.
+- `examples/templates/ece_0000_sample.omrt` and
+  `scripts/build_ece0000_template.py`: a template describing the repository's
+  real sample sheet, built through the real generators.
+- 883 tests, including `tests/gui/test_scan_page.py` (the ten Scan workflows)
+  and `tests/integration/test_sample_sheet_recognition.py` (the real scan).
+- The `qtguitesting` skill now covers the Scan page: a `ScanHarness`, five smoke
+  checks, five screenshot scenarios and three new documented scenarios.
+
+### Fixed — Phase 3
+
+- `ScanPage` no longer starts a second `PreviewWorker` for a scan already being
+  rendered. Finishing a batch re-selects the current row, so a user who also
+  clicked that row got two workers, and the late one re-applied the preview -
+  resetting a zoom they had just set.
+
+### Added — Phase 2
 
 - `omr_scanner.gui.template_designer`: the interactive template designer.
   - `page.py` - the workflow page: file actions with dirty tracking, marker

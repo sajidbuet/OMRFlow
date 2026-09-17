@@ -60,16 +60,17 @@ def test_navigation_switches_the_visible_page(window: MainWindow):
 
 
 def test_unimplemented_pages_say_so(window: MainWindow):
-    # Index 2 ("Scan") rather than 1 ("Template"): Phase 2 replaced the
-    # Template placeholder with a real page, so it no longer belongs in this
-    # "still honestly unimplemented" check.
-    scan_page = window.stack.widget(2)
-    texts = [label.text() for label in scan_page.findChildren(QLabel)]
+    # Index 3 ("Resolve"): Phase 2 replaced the Template placeholder and Phase 3
+    # replaced the Scan one, so this check walks forward to whichever stage is
+    # still honestly unimplemented.
+    resolve_page = window.stack.widget(3)
+    texts = [label.text() for label in resolve_page.findChildren(QLabel)]
 
-    assert scan_page.spec.key == "scan"
-    assert scan_page.spec.phase > 0
+    assert resolve_page.spec.key == "resolve"
+    assert resolve_page.spec.phase > 0
+    assert not resolve_page.spec.is_implemented
     assert any("Not implemented yet" in text for text in texts)
-    assert any(f"phase {scan_page.spec.phase}" in text for text in texts)
+    assert any(f"phase {resolve_page.spec.phase}" in text for text in texts)
 
 
 def test_template_page_is_no_longer_a_placeholder(window: MainWindow):
@@ -77,6 +78,14 @@ def test_template_page_is_no_longer_a_placeholder(window: MainWindow):
 
     assert template_page.spec.key == "template"
     assert template_page.spec.is_implemented
+
+
+def test_scan_page_is_no_longer_a_placeholder(window: MainWindow):
+    scan_page = window.stack.widget(2)
+
+    assert scan_page.spec.key == "scan"
+    assert scan_page.spec.is_implemented
+    assert scan_page.objectName() == "scanPage"
 
 
 class TestAboutMenuAction:

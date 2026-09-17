@@ -32,8 +32,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _harness import (
     SAMPLE_SHEET,
+    SAMPLE_TEMPLATE,
     build_designer,
     build_empty_designer,
+    build_scan_page,
     ensure_application,
     question_region_bounds,
 )
@@ -181,6 +183,117 @@ def _check_page_header_is_compact(image: Path) -> CheckResult:
     return ok, "Template header spends no row on the summary sentence"
 
 
+def _check_scan_page_constructs() -> CheckResult:
+    """The Scan page builds, and nothing that needs a template is enabled yet."""
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.scan.page import ScanPage
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
+    page = ScanPage(spec)
+    premature = [
+        name
+        for name, button in (
+            ("Add Scan(s)", page.add_scans_button),
+            ("Add Folder", page.add_folder_button),
+            ("Process All", page.process_all_button),
+            ("Export CSV", page.export_csv_button),
+        )
+        if button.isEnabled()
+    ]
+    return not premature, (
+        "Scan page constructs with everything template-dependent disabled"
+        if not premature
+        else f"enabled before a template was loaded: {', '.join(premature)}"
+    )
+
+
+def _check_scan_object_names() -> CheckResult:
+    """Every stable selector the scenario reference lists is present."""
+    from PySide6.QtWidgets import QCheckBox, QProgressBar, QPushButton, QTableWidget
+
+    from omr_scanner.gui.scan.preview import ScanPreviewView
+
+    harness = build_scan_page()
+    required = [
+        ("loadTemplateButton", QPushButton),
+        ("addScansButton", QPushButton),
+        ("addFolderButton", QPushButton),
+        ("clearScansButton", QPushButton),
+        ("processAllButton", QPushButton),
+        ("processSelectedButton", QPushButton),
+        ("reprocessButton", QPushButton),
+        ("cancelButton", QPushButton),
+        ("outputFolderButton", QPushButton),
+        ("exportCsvButton", QPushButton),
+        ("renameScansCheckBox", QCheckBox),
+        ("scanTable", QTableWidget),
+        ("resultFieldsTable", QTableWidget),
+        ("resultAnswersTable", QTableWidget),
+        ("scanPreview", ScanPreviewView),
+        ("progressBar", QProgressBar),
+    ]
+    missing = [
+        name for name, widget_type in required if harness.page.findChild(widget_type, name) is None
+    ]
+    harness.shutdown()
+    return not missing, (
+        f"{len(required)} stable objectNames present"
+        if not missing
+        else f"missing objectName(s): {', '.join(missing)}"
+    )
+
+
+def _check_scan_template_and_import(image: Path) -> CheckResult:
+    """The real template loads and the real sample reaches the scan list."""
+    harness = build_scan_page([image])
+    page = harness.page
+    ok = (
+        page.state.template is not None
+        and page.scan_table.rowCount() == 1
+        and page.process_all_button.isEnabled()
+    )
+    harness.shutdown()
+    return ok, (
+        f"template '{page.state.template.name}' loaded, "
+        f"{page.scan_table.rowCount()} scan(s) listed, Process All enabled"
+    )
+
+
+def _check_scan_recognises_the_real_sample(image: Path) -> CheckResult:
+    """The whole pipeline, end to end, on an actual scan of an actual sheet."""
+    harness = build_scan_page([image])
+    report = harness.run_batch()
+    result = harness.page.state.entries[0].processed.result
+    ok = (
+        report.total == 1
+        and result.registration.value != "failed"
+        and bool(result.identifier_value)
+        and len(result.answers) > 0
+    )
+    harness.shutdown()
+    return ok, (
+        f"roll '{result.identifier_value}', set '{result.set_code_value}', "
+        f"{len(result.answers)} answer(s), registration {result.registration.value}"
+    )
+
+
+def _check_scan_preview_renders(image: Path) -> CheckResult:
+    """Selecting a processed row produces a rectified page to look at."""
+    harness = build_scan_page([image])
+    harness.run_batch()
+    harness.page.select_scan(0)
+    if not harness.await_preview():
+        harness.shutdown()
+        return False, "the preview never finished rendering"
+    detail = (
+        f"preview rendered, zoom {harness.page.preview.zoom:.0%}, "
+        f"status '{harness.page.preview_status_label.text()}'"
+    )
+    ok = harness.page.preview.has_page
+    harness.shutdown()
+    return ok, detail
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run every check, print a report, and return a shell exit code."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -208,7 +321,29 @@ def main(argv: list[str] | None = None) -> int:
         ("region dialogs instantiate", lambda: _check_dialogs_instantiate(args.image)),
         ("orientation detection runs", lambda: _check_orientation_detection(args.image)),
         ("page header is compact", lambda: _check_page_header_is_compact(args.image)),
+        ("scan page constructs", _check_scan_page_constructs),
     ]
+
+    # The Scan checks drive the real template that describes the real sample.
+    # Without it there is nothing honest to check, so they are skipped aloud
+    # rather than quietly passing on a substitute.
+    if SAMPLE_TEMPLATE.is_file():
+        checks.extend(
+            [
+                ("scan page object names", _check_scan_object_names),
+                (
+                    "scan template loads and imports",
+                    lambda: _check_scan_template_and_import(args.image),
+                ),
+                (
+                    "scan recognises the real sample",
+                    lambda: _check_scan_recognises_the_real_sample(args.image),
+                ),
+                ("scan preview renders", lambda: _check_scan_preview_renders(args.image)),
+            ]
+        )
+    else:
+        print(f"[ skip ] scan checks: {SAMPLE_TEMPLATE} is not present", file=sys.stderr)
 
     failures = 0
     for name, check in checks:

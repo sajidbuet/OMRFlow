@@ -35,10 +35,10 @@ omrflow "C:/Exams/Physics Midterm 2026"
 ## The main window
 
 The window has a workflow list on the left and a page for each stage on the
-right. **1. Project** and **2. Template** do something in this version; the
-other six pages state which development phase will implement them and what
-that phase will provide - they are not broken, and they are not hiding a
-setting you need to find.
+right. **1. Project**, **2. Template** and **3. Scan** do something in this
+version; the other five pages state which development phase will implement them
+and what that phase will provide - they are not broken, and they are not hiding
+a setting you need to find.
 
 The status bar shows the open project's name and folder, or "No project open".
 
@@ -65,6 +65,38 @@ with a project open, its `templates/` folder is offered by default.
 
 Full detail, including every keyboard shortcut, is in
 `docs/template_designer.md`.
+
+## Scanning answer sheets
+
+Select **3. Scan** to read filled sheets against a template.
+
+1. **Load Template...** - the `.omrt` the sheets were printed from.
+2. **Add Scan(s)...** for individual images, or **Add Folder...** to take every
+   supported image in a folder (PNG, JPEG, TIFF, BMP; anything else is ignored).
+3. **Process All**, or select rows and **Process Selected**. The window stays
+   usable while it runs, and **Cancel** stops after the sheet in progress.
+4. Click a row to review it: the corrected sheet with the recognition overlay in
+   the middle, and every recognised field and answer on the right. Zoom, fit,
+   100% and pan all work, and the overlay layers toggle independently.
+5. Optionally tick **Rename processed scans using detected roll number** and
+   choose an **Output Folder**. Recognised sheets are then *copied* there under
+   their roll number - your originals are never moved or changed.
+6. **Export CSV...** writes one row per sheet.
+
+What to look for when reviewing:
+
+- A sheet whose status is **Registration failed** produces no answers at all,
+  by design; it is flagged rather than guessed at.
+- An answer shown as `B-D` means *two* bubbles were filled. Both are kept.
+- A `?` means the reading was too faint or too close to call.
+- A roll number that did not fully resolve is **not** used as a file name; the
+  sheet is filed as `UNRESOLVED_001` and the reason is stated in the list.
+- Two sheets with the same roll number become `2103123.png` and
+  `2103123_a.png`. **No scan is ever overwritten.**
+
+Full detail - supported formats, the recognition conventions, the duplicate
+naming rule, the CSV columns and the known limitations - is in
+`docs/scan_workflow.md`.
 
 ## Creating a project
 

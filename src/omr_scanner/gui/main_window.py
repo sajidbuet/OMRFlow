@@ -53,6 +53,7 @@ from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_s
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 from omr_scanner.services import ProjectSession, create_project, open_project
 
@@ -152,6 +153,8 @@ class MainWindow(QMainWindow):
                 page = project_page
             elif spec.key == "template":
                 page = TemplateDesignerPage(spec)
+            elif spec.key == "scan":
+                page = ScanPage(spec)
             else:
                 page = PlaceholderPage(spec)
 

@@ -1,0 +1,322 @@
+# The Scan workflow (Phase 3)
+
+Step 2 of OMRFlow: read a stack of scanned answer sheets against a template
+built in the Template designer, review what was read, optionally file the images
+under their roll numbers, and export the results as CSV.
+
+This document covers what the workflow does and the conventions it follows.
+For the algorithms underneath, see [`IMAGE_PROCESSING.md`](IMAGE_PROCESSING.md);
+for how the modules fit together, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+---
+
+## 1. The short version
+
+1. **Load Template** - the `.omrt` the sheets were printed from.
+2. **Add Scan(s)** or **Add Folder** - the images to read.
+3. **Process All** (or **Process Selected**).
+4. Click a row to review the sheet, its overlay and its recognised values.
+5. Optionally tick **Rename processed scans using detected roll number** and
+   choose an **Output Folder**.
+6. **Export CSV**.
+
+Nothing is written anywhere until step 5 or 6. Processing alone never touches a
+file on disk.
+
+---
+
+## 2. Supported input formats
+
+| Extension | Notes |
+| --- | --- |
+| `.png` | Lossless; what the sample sheet uses. |
+| `.jpg`, `.jpeg` | Fine at ordinary scanner quality. |
+| `.tif`, `.tiff` | Common from document scanners. |
+| `.bmp` | Supported, rarely useful. |
+
+Anything else in a folder is ignored rather than rejected: **Add Folder** picks
+up the supported images and silently skips `notes.txt`, `Thumbs.db` and the
+rest, so pointing it at a scanner's output directory works.
+
+**PDF is not supported.** The brief allowed keeping it if an existing dependency
+already provided it; none does, and adding one for Phase 3 was explicitly out of
+scope. Convert to TIFF or PNG first.
+
+Scans are sorted **naturally**, so `scan1, scan2, scan3, scan10` - not
+`scan1, scan10, scan2, scan3`. Sheets are read in the order they are listed,
+which is what makes duplicate-roll suffixes deterministic (§6).
+
+Adding the same file twice does not duplicate the row.
+
+---
+
+## 3. Registration, and what happens when it fails
+
+Every sheet is rectified onto the template's canonical page before anything is
+measured: the four printed registration squares are located, the orientation
+mark decides which way up the page is, and one homography corrects rotation,
+translation, scale, skew and perspective together. Quarter turns (90°, 180°,
+270°) are handled, as is modest arbitrary rotation.
+
+The orientation mark is found wherever the template says it is, **including
+inside another region**. It is not assumed to live in a margin.
+
+Each sheet gets one of three statuses, shown in the scan list, in the results
+panel and in the CSV:
+
+| Status | Meaning |
+| --- | --- |
+| `registered` | All four markers found and the page geometry is plausible. |
+| `registered_with_warning` | Rectified, but something is worth knowing - see below. |
+| `failed` | The page could not be rectified. **No answers are reported.** |
+
+A failure is never worked around. Three real corners and one invented one would
+produce a plausible-looking rectification and a complete set of wrong answers,
+so a missing marker is reported instead of extrapolated.
+
+### About `MULTIPLE_CORNER_CANDIDATES`
+
+Both the repository's real sample (`examples/ECE-0000.png`) and the synthetic
+test page report this warning. It means more than one marker-like shape fell
+inside a corner search region - which is normal, because printed sheets carry
+other dark rectangles near their corners. The detector still scores and chooses,
+and the chosen four rectify the page correctly. It is reported rather than
+hidden because "the corner was ambiguous" is exactly the thing worth knowing if
+a sheet later turns out to have been read wrongly.
+
+---
+
+## 4. What is recognised, and how uncertainty is expressed
+
+Recognition never reduces an uncertain reading to a confident one.
+
+### Questions
+
+| Reported | Meaning |
+| --- | --- |
+| `b` | One mark. |
+| `""` (empty) | No mark. |
+| `b-d` | **Two marks. Both are kept**, never reduced to one. |
+| `b?` | A mark too faint, or too close to its runner-up, to call. |
+| `?` | Something was there but nothing could be called an answer, or the bubbles could not be measured. |
+
+The GUI shows `?` as the status indicator and tints the row; the CSV carries the
+value (`b-d`) in the question column and the sheet-level judgement in
+`recognition_status`.
+
+A multiple mark is **not** an error to be discarded. `b-d` says what is on the
+paper; deciding what it is worth is the Resolve stage's job, in a later phase.
+
+### Roll / student ID (numeric fields)
+
+Each digit column is read independently. A field is only reported as a usable
+identifier when **every** position resolved:
+
+| Situation | Reported value | Used as a file name? |
+| --- | --- | --- |
+| All digits clear | `2103123` | Yes |
+| One column blank | `21_3123` | No |
+| One column double-marked | `21?3123` | No |
+| Could not be sampled | `21?3123` | No |
+
+Leading zeros are preserved - `00000000` is an eight-character string, never the
+integer zero.
+
+### Set code
+
+Read from the symbols the template declares, in the template's order. It is a
+**string of one or more printed positions**: `A`, `B`, `10`, `11`, `A1` are all
+valid. The sample sheet's set code is `10`, and it is never reduced to `1` or to
+the number ten.
+
+### Alphanumeric / custom fields
+
+Recognised against the symbols stored in the template. The alphabet is never
+hard-coded, and symbol order is preserved exactly as the template defines it.
+
+### How "uncertain" is decided
+
+From measured quantities, not invented percentages: each bubble's fill ratio and
+darkness, the relative darkness of the candidates in one group, the separation
+between the strongest and second-strongest candidate, and the registration
+quality. The thresholds live in the template's `RecognitionSettings`, never as
+constants in the recognition code.
+
+---
+
+## 5. Roll-based renaming
+
+Off by default. When **Rename processed scans using detected roll number** is
+ticked and an output folder is chosen, each successfully recognised sheet is
+**copied** into that folder under its roll number.
+
+* The original files are never moved, renamed or modified.
+* The original extension is preserved: `IMG_0034.jpg` → `2103123.jpg`.
+* Nothing is written at all if renaming is off.
+* Ticking it without choosing an output folder asks for one rather than
+  guessing.
+
+Copy-to-output-folder is the only mode implemented. Renaming originals in place
+was left out deliberately: it is the one variant that can lose a scan.
+
+---
+
+## 6. Duplicate roll numbers
+
+Two sheets can carry the same roll number - a candidate miscodes theirs, or a
+sheet is scanned twice. **No scan image is ever overwritten because of it.**
+
+| Occurrence | File name |
+| --- | --- |
+| 1st | `2103123.jpg` |
+| 2nd | `2103123_a.jpg` |
+| 3rd | `2103123_b.jpg` |
+| 4th | `2103123_c.jpg` |
+| ... | ... |
+| 27th | `2103123_aa.jpg` |
+| 28th | `2103123_ab.jpg` |
+
+The letter part is bijective base-26, so the sequence never repeats however many
+duplicates appear.
+
+A letter rather than a number because `2103123_2.jpg` is indistinguishable from
+a roll number that genuinely ends in `_2`, and from a "copy 2" produced by a
+file manager. A letter cannot be mistaken for part of an identifier, sorts next
+to the original, and makes "these three sheets all claimed one roll" obvious in
+a directory listing.
+
+### Files already in the output folder count too
+
+The rule applies to names already on disk, not only to names issued during this
+run. If the output folder already contains `2103123.jpg`, the next sheet with
+that roll becomes `2103123_a.jpg`. If `2103123.jpg`, `_a` and `_b` are all
+present, the next becomes `2103123_c.jpg`. A second run over the same folder, or
+a second batch appended to an earlier one, therefore cannot replace the first
+run's output.
+
+On Windows and macOS the comparison is case-insensitive, because `2103123.JPG`
+*would* overwrite `2103123.jpg` there.
+
+### Unreliable roll numbers are not used as file names
+
+A sheet whose roll number did not fully resolve (§4) is **not** filed under a
+guessed name. It gets a review name instead:
+
+```
+UNRESOLVED_001.jpg
+UNRESOLVED_002.jpg
+UNRESOLVED_003.jpg
+```
+
+The scan list says why, in plain language: *"Roll number could not be determined
+reliably. The scan was not renamed."* The image is still copied, so it remains
+available for manual review - it is simply not pretending to be a roll number.
+
+`UNRESOLVED` is deliberately shouty and unmistakably not an identifier: sorted
+by name, these are exactly the files a human has to look at.
+
+The naming rule is one reusable helper,
+`omr_scanner.services.filename_manager.FilenameAllocator`, with its own unit
+tests - it is not spread through the batch processor.
+
+---
+
+## 7. The scan list
+
+| Column | Contents |
+| --- | --- |
+| Original file | The source image's name; the full path is the tooltip. |
+| Roll | The recognised identifier, or blank. |
+| Set | The recognised set code. |
+| Status | `Pending`, `Complete`, `Review`, `Registration failed`, `Error`. |
+| Output file | The name the image will be, or was, written under. |
+
+The Output file column is a **preview**: it is filled in as soon as processing
+decides the name, whether or not a file was written, so the effect of ticking
+the rename box is visible before committing to it.
+
+Rows are tinted by status, but the tint is never the only signal - the Status
+column always says the same thing in words.
+
+**One bad file does not stop a batch.** A corrupt or unreadable image is caught,
+flagged on its own row, counted in the summary, and the run continues with the
+next file.
+
+---
+
+## 8. Reviewing a sheet
+
+Selecting a row shows the **rectified** page with an overlay:
+
+* region boundaries, labelled;
+* the bubbles that were read as marked;
+* optionally every measured bubble, marked or not (**All bubbles**);
+* uncertain and multiple marks distinguished.
+
+The three overlay layers toggle independently. Zoom, fit-to-window, 100% and
+pan (middle-drag, or space-drag) all work, and **the overlay is drawn over the
+image, never burned into it** - nothing the preview does alters a pixel of the
+source file.
+
+The right-hand panel lists the recognised fields and every question with its
+value and status, with rows needing attention tinted.
+
+Manual correction of recognised values is **not** in Phase 3. The data model
+already keeps the machine's reading separate from any correction, so it can be
+added without disturbing the recogniser - that is the Resolve stage.
+
+---
+
+## 9. CSV export
+
+UTF-8 with a byte-order mark (Excel on Windows otherwise reads a BOM-less UTF-8
+CSV as the local code page and mangles every non-ASCII label - the sample sheet
+is labelled in Bengali). Values are escaped by Python's `csv` module.
+
+```
+original_filename, output_filename, roll, set_code,
+registration_status, recognition_status, warning_count, Q1, Q2, ... QN
+```
+
+* Question columns come from the **template**, in ascending question number, so
+  two batches of the same examination always export the same columns - even if
+  one of them happens to contain no answer to Q57.
+* The base columns are stable; later phases and external tools read this file by
+  column name.
+* Export is deterministic: exporting the same batch twice produces
+  byte-identical files.
+* `output_filename` records the duplicate-suffixed name actually used, so the
+  CSV and the folder agree.
+
+---
+
+## 10. Performance and responsiveness
+
+Batches run on a worker thread; the window stays responsive and reports
+progress, the current file name and a completed/total count. **Cancel** stops
+after the sheet in progress - OpenCV will not be interrupted part-way through a
+warp, so "cancel" honestly means "finish this one, then stop".
+
+The template is parsed once per run, not per field. Batch runs discard the
+rectified preview images (a hundred rectified pages is most of a gigabyte); the
+preview for the sheet being *looked at* is recreated on demand and a handful are
+cached.
+
+---
+
+## 11. Known limitations
+
+* **PDF input is not supported** (§2).
+* **No manual correction** of recognised values yet (§8).
+* Renaming only ever *copies*; there is no move/rename-in-place mode (§5).
+* Arbitrary rotation is corrected to about ±15°, plus exact quarter turns.
+  Beyond that the markers leave the corner search regions.
+* Illumination gradients beyond roughly 0.45 defeat the default Otsu threshold.
+* Cropping more than about 5% of the page width into the margin fails, by
+  design.
+* Only square registration markers are exercised.
+* One sheet at a time within a batch; there is no parallelism across cores.
+* Validation rests on one real scanned sheet plus geometrically distorted
+  copies of it, and on synthetic pages. **A larger corpus of real, independently
+  filled sheets has not been processed**, so the accuracy numbers are not
+  population statistics.

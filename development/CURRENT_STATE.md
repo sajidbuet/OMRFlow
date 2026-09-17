@@ -1,8 +1,8 @@
 # Current state
 
-**Updated:** 2026-09-15
+**Updated:** 2026-09-16
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 2 complete. Phase 3 not started.
+**Current phase:** Phase 3 complete. Phase 4 not started.
 
 Update this file at the end of every phase.
 
@@ -97,18 +97,61 @@ Alignment takes 12 ms for A4 at 150 dpi and 39 ms at 300 dpi.
 bubbles total), built and validated through the real generator functions
 (`omr_scanner.domain.template_authoring`), not hand-typed JSON.
 
+### Bubble recognition and the Scan workflow (Phase 3)
+
+- `omr_scanner.imaging.metrics` measures each bubble against a **locally**
+  computed ink threshold - halfway between the paper level in an annulus around
+  the bubble and the page's own ink level - so a printed option glyph inside an
+  empty bubble does not read as a mark and a uniformly faint pencil sheet does
+  not read as blank.
+- `omr_scanner.recognition` turns those measurements into values with five
+  explicit states (resolved, blank, multiple, uncertain, unreadable). Two marks
+  are reported as `b-d` with both kept; an uncertain reading as `b?`; an
+  unreadable group as `?`. Every threshold comes from the template's
+  `RecognitionSettings`.
+- Numeric identifiers are read per digit column and only offered as an
+  identifier when *every* column resolved - `21?3123` is never silently turned
+  into a plausible roll number. Leading zeros survive.
+- Set codes are multi-position strings read from the template's own symbols:
+  `10` is `"10"`, never `1` or the integer ten.
+- `omr_scanner.services.recognition_service` reads one sheet end to end;
+  `batch_processor` runs many and isolates per-file errors so one corrupt image
+  cannot end a batch; `filename_manager` decides output names; `scan_export`
+  writes a deterministic UTF-8 CSV.
+- Roll-based renaming **copies** into an output folder, never moves or
+  overwrites. Duplicates become `_a`, `_b`, ... `_z`, `_aa` (bijective base-26),
+  counting files already in the output folder as taken. An unreliable roll
+  number gets `UNRESOLVED_001` instead of a fabricated name.
+- The "Scan" workflow stage is a real page (`omr_scanner.gui.scan`): template
+  loading, file/folder import with natural sort, background batch processing
+  with progress and cancel, a zoomable/pannable preview with a recognition
+  overlay, a results panel, and CSV export. It imports no `cv2`, `numpy`,
+  `imaging` or `recognition`, enforced by the same executable layering test as
+  the rest of the GUI.
+
+**Measured on the real sample** (`examples/ECE-0000.png`, an actual scan with
+handwritten marks, printed option glyphs and non-white paper): roll `00000000`,
+set code `10` and all 100 answers read correctly, with zero fields flagged for
+review. The gap between the faintest mark's fill ratio and the darkest unmarked
+bubble's exceeds **0.5**. The same sheet still reads correctly after ±3°
+rotation, exact 90/180/270° turns, 0.7x and 1.3x rescaling, translation,
+perspective distortion, JPEG compression, and all of those combined.
+
 ## What does not exist
 
-No bubble recognition, batch processing, conflict resolution, attendance
-reconciliation, answer-key handling, scoring, or Excel/PDF reporting.
+No conflict resolution, attendance reconciliation, answer-key handling, scoring,
+database-backed results, or Excel/PDF reporting. Recognised values cannot yet be
+corrected by hand in the GUI, and results are not written to the project
+database - a batch's output is the CSV and, optionally, the renamed image
+copies.
 
-`omr_scanner.recognition` and `omr_scanner.reporting` contain module
-documentation and no code. The corresponding GUI pages say which phase will
-implement them and do not simulate anything. The Scan page is still a
-placeholder: Phases 1 and 2 delivered the alignment engine and the template
-designer, not the batch scanning workflow.
+`omr_scanner.reporting` contains module documentation and no code. The Resolve,
+Results and later GUI pages say which phase will implement them and do not
+simulate anything.
 
-**This build must not be used for examination processing.**
+**This build must not be used for examination processing.** Its recognition has
+been validated against one real sheet and geometric variants of it, not against
+a corpus of independently filled papers.
 
 ## Known limitations
 
@@ -150,6 +193,27 @@ perspective, JPEG compression and cropping is tabulated in
   plugin, not of the application). See
   `docs/development/phase_02_implementation_notes.md`.
 
+### Scan and recognition
+
+- **Validation rests on one real sheet.** `examples/ECE-0000.png` plus
+  geometrically distorted copies of it, and synthetic pages. A corpus of
+  independently filled papers - light pencil, crossed-out answers, erasures,
+  smudges, different candidates' handwriting - has never been processed. This is
+  the largest open risk in Phase 3, and it is the same category of risk Phases 1
+  and 2 recorded.
+- **No manual correction.** Recognised values cannot be edited in the GUI. The
+  data model already keeps the machine's reading separate from a correction, so
+  this is additive, but it is not there yet.
+- **Results are not persisted.** A batch's output is the CSV and the optional
+  renamed copies; nothing is written to the project database (Phase 5).
+- **No PDF input.** Deliberate - the brief ruled out adding a dependency for it
+  in this phase.
+- **Renaming only copies.** There is no move/rename-in-place mode.
+- Recognition is single-threaded per sheet and sheets are processed in sequence;
+  there is no parallelism across cores.
+- "Cancel" stops after the sheet in progress, not instantly: OpenCV will not be
+  interrupted part-way through a warp.
+
 ### Elsewhere
 
 - The example template in `resources/templates` is illustrative. Its coordinates
@@ -166,17 +230,23 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-729 tests, all passing (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0, NumPy
-2.5.3, Windows 11).
+1612 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+NumPy 2.5.3, Windows 11).
 
 ```text
-pytest         729 passed in 12.9s
+pytest         1612 passed, 1 skipped in 45.6s
 ruff check .   All checks passed
-mypy           Success: no issues found in 58 source files
+mypy           Success: no issues found in 76 source files
 ```
 
-146 of those tests are new in Phase 2 (455 were new in Phase 1). Phase 2 added
-**one** new tool configuration change, not a suppressed check: the
+The skip is structural: `tests/unit/test_qtguitesting_skill.py` parametrises
+over the skill's scripts and skips `_harness.py`, which is shared plumbing
+rather than a command a user runs.
+
+883 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
+added **no** new mypy overrides, Ruff ignores or tool configuration changes.
+
+Phase 2 added **one** tool configuration change, not a suppressed check: the
 `pep8-naming` Qt-override allowlist in `pyproject.toml` was extended to cover
 the additional Qt event-handler names the designer's canvas and graphics items
 override (`mousePressEvent`, `wheelEvent`, `drawBackground`, and similar). The
@@ -213,6 +283,25 @@ relaxations, `warn_unreachable` off for the one module that branches on
   wrong answers.
 - The machine's recognised value is never overwritten by a correction; that
   constraint shapes the data model from the start.
+- A bubble's ink threshold is **local and relative**, not a page-wide constant:
+  halfway between the paper level measured in an annulus around that bubble and
+  the page's own ink level. An absolute threshold fails in both directions - it
+  reads a printed option glyph as a mark, and a uniformly faint pencil sheet as
+  blank.
+- Recognition reports five explicit states, never a value plus a boolean. A
+  blank, a double mark, an uncertain reading and an unmeasurable group stay
+  distinguishable all the way to the CSV, because flattening them is how a
+  double mark silently becomes one answer.
+- Naming is separated from copying: `filename_manager` only decides a name and
+  `batch_processor` performs the side effect. That makes the duplicate rule
+  testable without a disk and lets the GUI preview an output name before
+  anything is written.
+- The filename allocator treats files **already in the output directory** as
+  taken, not only the names it issued this session, so a second run cannot
+  replace the first run's output.
+- An unreliable identifier gets a review name, never a plausible one. A
+  fabricated file name is worse than an obviously-for-review one, because it is
+  indistinguishable from a correct result.
 - The template designer edits by producing a new `OmrTemplate` via
   `model_copy(update=...)` and pushing it onto a snapshot-stack undo history -
   there is no second, mutable template representation to keep in sync with the
@@ -226,13 +315,20 @@ relaxations, `warn_unreachable` off for the one module that branches on
 
 ## Next recommended action
 
-Begin **Phase 3 - Bubble Mapping & Recognition Engine**
-(`development/ROADMAP.md`). Entry conditions, constraints and the suggested
-starting prompt are in `development/PHASE_02_HANDOFF.md`.
+Consult `development/ROADMAP.md` for the next phase, and
+`development/PHASE_03_HANDOFF.md` for entry conditions and constraints.
 
-Independently of Phase 3, and worth doing as soon as a printed sheet can be
-obtained: scan one, anonymise it, build a template for it in the designer, and
-run `python -m omr_scanner.tools.align_image <scan> --debug <dir>` against
-that template. Neither the alignment engine nor the template designer has ever
-seen real paper - this is the largest open risk carried forward from both
-Phase 1 and Phase 2.
+Independently of whichever phase comes next, and now the single most valuable
+thing anyone can do for this project: **process a stack of genuinely filled
+sheets.** Phase 3 reads the one real sample perfectly, and geometric variants of
+it, but one sheet is not a corpus. What has never been seen: light pencil,
+erasures, crossed-out answers, marks that overflow the bubble, different
+candidates' handwriting, a scanner other than the one that produced the sample,
+and a sheet with a genuinely ambiguous double mark on it. Every accuracy claim
+in this document is bounded by that.
+
+Concretely: scan 20-30 filled sheets, anonymise them, build a template in the
+designer, run them through the Scan page, and compare the CSV against what the
+papers actually say. The measurement that matters is how many sheets needed
+review and how many were confidently *wrong* - the second number is the one that
+decides whether this is usable.

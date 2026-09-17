@@ -32,10 +32,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _harness import (
     OUTPUT_ROOT,
     SAMPLE_SHEET,
+    SAMPLE_TEMPLATE,
     DesignerHarness,
     add_question_region,
     build_designer,
     build_empty_designer,
+    build_scan_page,
     ensure_application,
     orientation_search_rect,
 )
@@ -191,6 +193,163 @@ def _zoom_to_top_left(harness: DesignerHarness) -> None:
     harness.process_events()
 
 
+def _duplicate_scan_copies(image: Path, count: int) -> list[Path]:
+    """Byte-identical copies of ``image``, which therefore recognise alike.
+
+    The point of copying rather than rendering variants: two sheets that read to
+    the *same* roll number is exactly the case the duplicate-naming rule exists
+    for, and identical bytes guarantee it without depending on the recogniser.
+    """
+    import shutil
+
+    folder = OUTPUT_ROOT / "scan_inputs"
+    folder.mkdir(parents=True, exist_ok=True)
+    copies: list[Path] = []
+    for index in range(count):
+        destination = folder / f"IMG_{index + 1:03d}{image.suffix}"
+        shutil.copyfile(image, destination)
+        copies.append(destination)
+    return copies
+
+
+def _capture_scan_empty(_image: Path) -> list[Path]:
+    """The Scan page before a template is loaded - the disabled state."""
+    from _harness import WINDOW_HEIGHT, WINDOW_WIDTH, ScanHarness
+
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.scan.page import ScanPage
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
+    page = ScanPage(spec)
+    page.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    harness = ScanHarness(page=page, template_path=SAMPLE_TEMPLATE, output_dir=OUTPUT_ROOT)
+    harness.settle()
+    written = [_save(page, "scan_empty")]
+    harness.shutdown()
+    return written
+
+
+def _capture_scan_template_loaded(image: Path) -> list[Path]:
+    """A template loaded and the sample imported, before any processing."""
+    harness = build_scan_page([image])
+    harness.process_events()
+    written = [_save(harness.page, "scan_template_loaded")]
+    harness.shutdown()
+    return written
+
+
+def _capture_scan_processed(image: Path) -> list[Path]:
+    """The sample recognised: results panel filled, overlay drawn, then zoomed.
+
+    Three images, because they answer different questions: whether the values
+    reached the right-hand panel, whether the overlay lands on the printed
+    bubbles, and whether it still lands on them at 1:1.
+    """
+    harness = build_scan_page([image])
+    harness.run_batch()
+    harness.page.select_scan(0)
+    if not harness.await_preview():
+        raise RuntimeError("the preview never finished rendering")
+
+    harness.page.preview.fit_to_window()
+    harness.process_events()
+    written = [_save(harness.page, "scan_processed")]
+
+    # Zoomed onto the answer area: at fit scale an overlay that is a few pixels
+    # out looks perfect, which is precisely the regression worth seeing. The
+    # view must also be *centred on bubbles* - zooming in place lands on
+    # whatever happened to be in the middle of the page, usually the rubric.
+    harness.page.preview.zoom_to_actual_size()
+    _centre_on_first_question_zone(harness)
+    written.append(_save(harness.page, "scan_overlay_zoom"))
+
+    # And the same view with every measured bubble outlined, not just the
+    # selected ones - the check that the grid maps where the template says.
+    harness.page.empty_checkbox.setChecked(True)
+    harness.process_events()
+    written.append(_save(harness.page, "scan_overlay_all_bubbles"))
+    harness.shutdown()
+    return written
+
+
+def _centre_on_first_question_zone(harness: object) -> None:
+    """Centre the preview on the first question block, in canonical pixels.
+
+    The preview's scene is the canonical page, so a zone's normalised bounds
+    scale straight onto it - no preview-scale correction, which is exactly why
+    ``set_page`` rescales the pixmap rather than the overlay.
+    """
+    from PySide6.QtCore import QPointF
+
+    from omr_scanner.domain.template import QuestionBlockFieldDefinition
+
+    page = harness.page
+    template = page.state.template
+    zone = next(
+        (
+            item
+            for item in template.zones
+            if isinstance(item.field, QuestionBlockFieldDefinition)
+        ),
+        None,
+    )
+    if zone is None:
+        return
+    bounds = zone.bounds
+    page.preview.centerOn(
+        QPointF(
+            (bounds.x + bounds.width / 2) * template.page.canonical_width_px,
+            (bounds.y + bounds.height / 2) * template.page.canonical_height_px,
+        )
+    )
+    harness.process_events()
+
+
+def _capture_scan_duplicates(image: Path) -> list[Path]:
+    """Three identical sheets renamed, so the _a/_b suffixes are visible."""
+    output = OUTPUT_ROOT / "scan_duplicate_output"
+    if output.is_dir():
+        # A previous run's files would otherwise push this run to _c, _d, _e -
+        # correct behaviour, but it would not show the sequence being captured.
+        for item in output.iterdir():
+            item.unlink()
+
+    harness = build_scan_page(
+        _duplicate_scan_copies(image, 3), output_dir=output, rename=True
+    )
+    harness.run_batch()
+    harness.page.select_scan(0)
+    # Without this the grab catches "Rendering preview..." and an empty canvas:
+    # the batch discards previews, so selecting a row starts a worker that has
+    # not finished by the time processEvents() returns.
+    if not harness.await_preview():
+        raise RuntimeError("the preview never finished rendering")
+    harness.page.preview.fit_to_window()
+    harness.process_events()
+
+    names = sorted(item.name for item in output.iterdir())
+    print(f"  output folder now holds: {', '.join(names)}")
+    written = [_save(harness.page, "scan_duplicate_rolls")]
+    harness.shutdown()
+    return written
+
+
+def _capture_scan_exported(image: Path) -> list[Path]:
+    """The page after a CSV export, showing the confirmation in the status line."""
+    harness = build_scan_page([image])
+    harness.run_batch()
+    # Finishing a batch re-selects the current row, which starts a preview
+    # worker; let it land so the capture shows the sheet rather than a
+    # half-rendered view (see _capture_scan_duplicates).
+    harness.await_preview()
+    destination = harness.page.export_csv_to(OUTPUT_ROOT / "scan_results.csv")
+    harness.process_events()
+    print(f"  CSV written to {destination}")
+    written = [_save(harness.page, "scan_exported")]
+    harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
     "loaded": _capture_loaded,
@@ -198,6 +357,11 @@ SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "bubble": _capture_bubble_radius,
     "resize": _capture_selection_and_resize,
     "orientation": _capture_orientation,
+    "scan-empty": _capture_scan_empty,
+    "scan-template": _capture_scan_template_loaded,
+    "scan-processed": _capture_scan_processed,
+    "scan-duplicates": _capture_scan_duplicates,
+    "scan-export": _capture_scan_exported,
 }
 
 

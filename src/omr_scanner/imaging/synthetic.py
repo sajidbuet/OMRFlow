@@ -27,9 +27,22 @@ Why the competing graphics matter:
     placed inside the corner search regions, because those are the shapes that
     defeat a detector relying on outline alone.
 
+Marked bubbles (Phase 3):
+    :attr:`SyntheticSheetSpec.answer_bubbles` renders bubbles at *given*
+    positions, optionally shaded and optionally with a symbol printed inside the
+    ring - the arrangement a real sheet uses, and the one that makes an empty
+    bubble contain ink. That is what lets a recognition test state its ground
+    truth ("Q7 is b, Q8 is blank, Q9 is b and d") and check it, with the same
+    controlled distortions the geometry tests already use.
+
+    The positions are plain normalised coordinates, not a template: this module
+    must not know that ``.omrt`` documents exist (``docs/ARCHITECTURE.md``).
+    Deriving the positions from a template is the caller's job - the test
+    fixtures in ``tests/conftest.py`` do it.
+
 What does NOT belong here:
-    * Bubble *marking*. These sheets carry empty bubbles as visual clutter for
-      the geometry tests; rendering filled answers is Phase 3's problem.
+    * Any knowledge of templates, fields or answers. This module draws circles
+      where it is told to.
     * File I/O.
 
 Status:
@@ -40,6 +53,7 @@ Status:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -53,6 +67,7 @@ from omr_scanner.imaging.config import (
     DEFAULT_CANONICAL_WIDTH_PX,
     DEFAULT_MARKER_TARGETS,
 )
+from omr_scanner.imaging.metrics import BubbleMetricsConfig
 from omr_scanner.imaging.models import CANONICAL_CORNER_ORDER, Point
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -93,6 +108,40 @@ _LINE_THICKNESS_PX = 2
 
 
 @dataclass(frozen=True, slots=True)
+class AnswerBubbleSpec:
+    """One printed answer bubble, optionally marked.
+
+    Attributes:
+        center: Normalised centre on the canonical page.
+        width: Bubble width as a fraction of page width.
+        height: Bubble height as a fraction of page height.
+        fill: How much of the bubble's *measurable interior* is inked, in
+            ``[0, 1]`` - the same quantity
+            :attr:`~omr_scanner.domain.template.RecognitionSettings.fill_ratio_threshold`
+            is expressed in, so a test can say ``("B", 0.35)`` and mean "a mark
+            that should land between the blank and fill thresholds". ``0.0``
+            leaves the bubble empty and ``1.0`` covers it completely.
+
+            Modelled as *partial coverage* rather than lighter grey because
+            that is what a half-hearted pencil mark physically is: a scribble
+            over part of the bubble, not a uniform wash. A uniform grey would
+            make every measurement either 0 or 1 depending on which side of the
+            ink threshold it fell, which would test nothing.
+        symbol: A character printed inside the ring, as real sheets do (ⓐ ⓑ ⓒ,
+            or the digit of a roll-number column). Empty for a plain ring.
+            Present because it is the *reason* an empty bubble contains ink, and
+            a measurement test that omits it is testing an easier problem than
+            the real one.
+    """
+
+    center: NormalizedPoint
+    width: float
+    height: float
+    fill: float = 0.0
+    symbol: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class SyntheticSheetSpec:
     """What a synthetic canonical page contains.
 
@@ -119,6 +168,9 @@ class SyntheticSheetSpec:
         omit_markers: Corner roles whose marker is not rendered, for the
             missing-marker failure tests.
         omit_orientation_marker: Render no orientation dash.
+        answer_bubbles: Printed answer bubbles at explicit positions, optionally
+            shaded - see :class:`AnswerBubbleSpec`. Empty by default, so every
+            existing geometry test renders exactly the page it did before.
     """
 
     width: int = DEFAULT_CANONICAL_WIDTH_PX
@@ -136,6 +188,7 @@ class SyntheticSheetSpec:
     decoy_markers: tuple[NormalizedPoint, ...] = ()
     omit_markers: frozenset[MarkerRole] = frozenset()
     omit_orientation_marker: bool = False
+    answer_bubbles: tuple[AnswerBubbleSpec, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject a specification that could not be rendered."""
@@ -277,6 +330,8 @@ def render_sheet(spec: SyntheticSheetSpec | None = None) -> SyntheticSheet:
         _draw_bubbles(image, active)
     if active.draw_answer_frames:
         _draw_answer_frames(image, active)
+    if active.answer_bubbles:
+        _draw_answer_bubbles(image, active)
 
     marker_size = (active.marker_width * active.width, active.marker_height * active.height)
     for role in CANONICAL_CORNER_ORDER:
@@ -505,6 +560,66 @@ def _draw_bubbles(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> None:
             x = round((0.12 + column * 0.035) * spec.width)
             y = round((0.58 + row * 0.018) * spec.height)
             cv2.circle(image, (x, y), radius, _INK, thickness=_LINE_THICKNESS_PX)
+
+
+_PRINTED_SYMBOL_GREY = 150
+"""Grey level of the symbol printed inside a bubble.
+
+Light, the way real sheets print an option letter - dark enough to be ink, far
+lighter than a pencil mark. The gap between the two is precisely what
+:func:`omr_scanner.imaging.metrics.estimate_ink_level` exists to find, so
+rendering it at solid black would make a measurement test pass for the wrong
+reason."""
+
+
+def _draw_answer_bubbles(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> None:
+    """Draw every configured answer bubble: ring, printed symbol, and any mark.
+
+    A mark is solid black over a concentric ellipse sized so that the fraction
+    of the *measured* interior it covers equals
+    :attr:`AnswerBubbleSpec.fill`. The sample's own radius comes from
+    :class:`~omr_scanner.imaging.metrics.BubbleMetricsConfig` rather than a
+    second copy of the number, so the renderer and the measurer cannot drift
+    apart and silently change what ``fill=0.35`` means.
+    """
+    sample_ratio = BubbleMetricsConfig().sample_radius_ratio
+
+    for bubble in spec.answer_bubbles:
+        center = spec.to_pixels(bubble.center)
+        half_x = bubble.width * spec.width / 2.0
+        half_y = bubble.height * spec.height / 2.0
+        axes = (max(2, round(half_x)), max(2, round(half_y)))
+        position = (round(center.x), round(center.y))
+
+        if bubble.fill > 0.0:
+            # Area scales with the square of the radius, so covering a fraction
+            # `fill` of the sample disc needs a radius of sqrt(fill) times it.
+            # A complete mark covers the whole printed bubble, ring included,
+            # exactly as a pen does.
+            scale = 1.0 if bubble.fill >= 1.0 else sample_ratio * math.sqrt(bubble.fill)
+            mark_axes = (
+                max(1, round(half_x * scale)),
+                max(1, round(half_y * scale)),
+            )
+            cv2.ellipse(image, position, mark_axes, 0, 0, 360, _INK, thickness=cv2.FILLED)
+        elif bubble.symbol:
+            # The symbol only matters on an *unmarked* bubble; a mark covers it.
+            scale = max(axes) / 14.0
+            (text_w, text_h), _baseline = cv2.getTextSize(
+                bubble.symbol, cv2.FONT_HERSHEY_SIMPLEX, scale, 1
+            )
+            cv2.putText(
+                image,
+                bubble.symbol,
+                (position[0] - text_w // 2, position[1] + text_h // 2),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                scale,
+                _PRINTED_SYMBOL_GREY,
+                thickness=1,
+                lineType=cv2.LINE_AA,
+            )
+
+        cv2.ellipse(image, position, axes, 0, 0, 360, _INK, thickness=_LINE_THICKNESS_PX)
 
 
 def _draw_answer_frames(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> None:

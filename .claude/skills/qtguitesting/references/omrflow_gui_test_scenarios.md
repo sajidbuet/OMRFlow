@@ -44,6 +44,32 @@ Prefer these over widget-tree walking or scene indices.
 Scene items are keyed by domain id: `canvas._scene.region_items["questions_0"]`,
 `"marker:top_left"`, `"orientation"`.
 
+### Scan page (Phase 3)
+
+| `objectName` | Widget |
+| --- | --- |
+| `scanPage` | The page itself |
+| `loadTemplateButton`, `templateNameLabel` | Template group |
+| `addScansButton`, `addFolderButton`, `clearScansButton` | Scans group |
+| `processAllButton`, `processSelectedButton`, `reprocessButton`, `cancelButton` | Processing group |
+| `progressBar`, `progressLabel` | Progress reporting |
+| `renameScansCheckBox`, `outputFolderButton`, `outputFolderLabel` | Output group |
+| `exportCsvButton` | CSV export |
+| `scanTable` | The scan list: Original file, Roll, Set, Status, Output file |
+| `scanPreview` | The `ScanPreviewView` (a `QGraphicsView`) |
+| `scanPreviewToolbar` | Zoom/overlay toolbar above the preview |
+| `previousScanButton`, `nextScanButton` | Step through the list |
+| `zoomInButton`, `zoomOutButton`, `fitButton`, `actualSizeButton` | Preview zoom |
+| `overlayZonesCheckBox`, `overlayBubblesCheckBox`, `overlayEmptyCheckBox` | Overlay layers |
+| `previewStatusLabel` | Page size and registration status |
+| `resultFieldsTable`, `resultAnswersTable`, `resultSummaryLabel` | Recognised values panel |
+
+**Never sleep waiting for a batch.** `ScanPage.batch_finished` carries the
+`BatchReport`; wait on it (`qtbot.waitSignal`, or `ScanHarness.run_batch()` in
+the scripts). Selecting a row starts a *separate* `PreviewWorker`, so anything
+that measures or captures the preview must also wait for
+`ScanPreviewView.has_page` - note it is a **property**, not a method.
+
 ---
 
 ## Scenario 1 - Load the sample
@@ -215,6 +241,53 @@ existed loads as `None` and falls back for.
 
 ---
 
+## Scenario 11 - Scan the sample end to end
+
+Load `examples/templates/ece_0000_sample.omrt`, import `examples/ECE-0000.png`,
+process it, then select the row.
+
+**Verify:** roll `00000000`, set code `10` (two printed positions - never
+reduced to `1` or to the integer ten), 100 answers reading
+`aaaabbbbccccdddd` then `abcd` repeating, and a registration status that is
+*named* rather than silently clean. Both this sample and the synthetic page
+report `registered_with_warning` / `MULTIPLE_CORNER_CANDIDATES`, because real
+sheets carry other dark rectangles near their corners; the reservation is
+reported, and the recognised values show the four chosen corners still
+rectified the page correctly.
+
+**Automated:** `tests/gui/test_scan_page.py`,
+`tests/integration/test_sample_sheet_recognition.py`.
+
+---
+
+## Scenario 12 - Duplicate roll numbers
+
+Import three sheets that recognise to the same roll number, choose an output
+folder, tick `renameScansCheckBox`, process.
+
+**Verify:** `00000000.png`, `00000000_a.png`, `00000000_b.png` all exist,
+`scanTable`'s "Output file" column shows all three, and **no earlier file was
+overwritten**. Repeat with one of those names pre-created in the output folder:
+the new scan must become the next free suffix, and the pre-existing file's bytes
+must be unchanged.
+
+**Automated:** `tests/gui/test_scan_page.py` (`TestHDuplicateRolls`,
+`TestIExistingFileCollision`), `tests/unit/test_filename_manager.py`.
+
+---
+
+## Scenario 13 - A batch survives one bad file
+
+Import two readable sheets with a corrupt image between them. Process all.
+
+**Verify:** both good sheets still recognise, the corrupt one is flagged
+`Error` or `Registration failed` in `scanTable`, and the run reports it in the
+summary rather than aborting.
+
+**Automated:** `tests/gui/test_scan_page.py` (`TestFBatch`).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -232,7 +305,18 @@ template_ece0000_region_before_resize.png
 template_ece0000_region_after_resize.png
 template_ece0000_orientation_roi.png
 template_ece0000_orientation_detected.png
+scan_empty.png
+scan_template_loaded.png
+scan_processed.png
+scan_overlay_zoom.png
+scan_overlay_all_bubbles.png
+scan_duplicate_rolls.png
+scan_exported.png
 ```
+
+`scan_overlay_zoom.png` is the one worth reading closely: it is the answer area
+at 1:1 with the recognition overlay on top, so a template-to-scan mapping that
+is a few pixels out is visible. At fit scale it never is.
 
 These are diagnostic evidence, not baselines. Fonts, anti-aliasing, Qt styles and
 DPI differ between machines, so an ordinary unit test must never fail because two
