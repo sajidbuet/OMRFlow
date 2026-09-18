@@ -195,6 +195,104 @@ claimed.
 
 Details: [`docs/recognition_engine.md`](docs/recognition_engine.md).
 
+### Developer testing tools (Phase 3)
+
+*Tools > Developer / Testing* puts the two things recognition work needs inside
+the application: a labelled dataset to test against, and a score for what the
+engine did with it. Both are also available from the command line, and both run
+entirely on the local machine — nothing is uploaded, and no analytics are
+collected.
+
+**Generate Synthetic Test Dataset** renders a dataset from a real `.omrt`
+template, at roughly **150 DPI derived from the template's physical page size**
+(A4 → 1240 × 1754 px), as PNG or JPEG:
+
+```text
+synthetic_dataset/
+├── images/            SYN_000001.png ...
+├── ground_truth/      SYN_000001.json ...   (what was actually marked)
+├── manifest.json      template, profile, seed, DPI, format — how to regenerate
+├── manifest.csv       one row per sheet, with its test-case tags
+└── dataset_summary.json  how many sheets of each kind
+```
+
+Nothing about the sheet is hard-coded: identifier length, symbol set, option
+labels, question count, bubble size and page dimensions all come from the
+template, so a nine-digit alphanumeric identifier with six options generates
+correctly without a code change. Identifiers are fictional by construction,
+derived from the sheet index.
+
+Sheets are **named test cases**, not random noise, and each carries tags that
+survive into the benchmark's category table — blank and multiple identifier
+columns, faint and erased marks, tick/cross/ring/dot/stroke/slash mark styles,
+a ten-step intensity sweep across the decision boundary, rotation, quarter
+turns, scale, translation, perspective, cropping, faint/damaged/missing/extra
+registration markers, blur, noise, speckle, exposure, JPEG artefacts, paper
+tint, scanner streaks, edge shadow, planted duplicate identifiers, and
+deliberate combinations. Profiles (Baseline, Recognition, Degradation, Batch,
+Stress, Mixed, Custom) choose which families are drawn on; **the interesting
+cases are emitted first**, so a twelve-sheet dataset is a spread of edge cases
+rather than a random sample that happens to omit the one that would fail.
+A seed makes a dataset byte-for-byte reproducible.
+
+**Run Recognition Benchmark** does *not* open a second processing window. It
+puts the existing Step 3 (Scan) page into **benchmark mode** — a banner, the
+dataset's scans in the ordinary list, and the same *Process All* button, the
+same settings and the same worker pool — because a benchmark of a different
+pipeline would measure nothing worth knowing. When the run ends it is scored
+automatically and reported:
+
+```text
+Dataset: synthetic · 120 scans · sheet accuracy 0.9397 · answer accuracy 0.9652
+
+By test case (least accurate first):
+  MARK_STYLE_DOT        1 sheet   sheet ok 0.0000   answers 0.0000   100 errors
+  MARK_STYLE_SLASH      1 sheet   sheet ok 0.0000   answers 0.0000   100 errors
+  ...
+  BASELINE             15 sheets  sheet ok 1.0000   answers 1.0000     0 errors
+```
+
+The report covers sheet, registration, student-ID, set-code and answer
+accuracy, blank and multiple-mark handling, borderline marks, accuracy by
+decision-score band, and every disagreement classified by kind
+(`FALSE_BLANK`, `FALSE_MARK`, `WRONG_OPTION`, `MISSED_MULTIPLE_MARK`,
+`ROLL_ERROR`, `ROLL_AMBIGUITY_MISSED`, `SET_ERROR`, `ALIGNMENT_ERROR`,
+`ORIENTATION_ERROR`, `PROCESSING_FAILURE`). **Per-test-case-category metrics**
+are the point of the tags: a dataset that is 94% correct overall is far more
+useful described as "perfect everywhere except dot-shaped marks". Failing
+scans are listed and open in the scan list with their overlay, and each run
+writes `summary.json`, `summary.csv`, `errors.csv`, `category_metrics.csv` and
+`run_config.json` beside the dataset, comparing itself with the previous run.
+
+Duplicate identifiers are benchmarked **separately** from recognition
+correctness: reading the same number on two sheets is *correct*, and whether
+the batch layer noticed is a different question from whether the engine read
+the digits.
+
+```bash
+# Generate a reproducible labelled dataset
+python -m omr_scanner.tools.make_dataset out/dataset --template sheet.omrt \
+    --count 250 --profile mixed --seed 20260918 --format png
+
+# Score it, printing the per-test-case table
+python -m omr_scanner.tools.benchmark_recognition out/dataset \
+    --template sheet.omrt --report out/benchmark --workers auto --categories 0
+```
+
+> **What synthetic numbers mean.** These datasets measure *regression
+> consistency* and *controlled edge-case handling*. They do **not** establish
+> real-world recognition accuracy — the pages have clean geometry, even paper
+> and marks drawn by arithmetic. Every report this tool writes says so in the
+> file itself.
+
+One finding already recorded rather than tuned away: on a 100-question
+template with the default 0.55 fill threshold, **dot-shaped marks measure a
+mean fill ratio of 0.16** and are read confidently as blank, while horizontal
+strokes and slashes measure 0.51–0.54 and land in the uncertainty band, where
+the engine flags them for review. Filled bubbles measure 0.93. Whether real
+candidates' marks behave this way is exactly what the real-dataset corpus is
+for.
+
 ### Phase 3 testing status
 
 Phase 3's functionality is implemented and exercised by an automated suite
@@ -222,9 +320,10 @@ Confirmed by the current automated suite:
   never overwritten)
 - [x] CSV export validation (column order, question ordering, Unicode,
   escaping, duplicate-name recording, determinism)
-- [x] Automated Qt GUI validation using `qtguitesting` (23/23 smoke checks,
-  including the real sample recognised end-to-end through the GUI; three real
-  defects were found this way and fixed)
+- [x] Automated Qt GUI validation using `qtguitesting` (27/27 smoke checks,
+  including the real sample recognised end-to-end through the GUI, and a
+  dataset generated from the real template and benchmarked through the Scan
+  page; three real defects were found this way and fixed)
 - [x] Multicore recognition validation (a batch read across worker processes
   produces the same results, in the same order, as one read on a single core;
   also checked through the GUI on the real sample)
@@ -247,9 +346,23 @@ Confirmed by the current automated suite:
 - [x] Recognition API and result contract (engine runs headlessly with no Qt
   imported; `ScanResult` serialises, round-trips and refuses a newer schema)
 - [x] Synthetic dataset generation (reproducible from a seed; labels verified
-  by recognising the generated sheets; clean profile scores 100%)
+  by recognising the generated sheets; baseline profile scores 100%; DPI
+  derived from the template's physical page size; PNG and JPEG output;
+  cancellable, one sheet in memory at a time)
+- [x] Template-independence of the generator (a nine-digit identifier, five
+  options and a template with no set code at all each generate correctly with
+  no code change)
+- [x] Named test cases and their tags (every profile's mandatory edge cases
+  present by construction, and still present when the dataset is too small to
+  hold them all)
 - [x] Benchmark harness and error categorisation (summary metrics, per-error
-  CSV, baseline comparison — all exercised by tests)
+  CSV, per-test-case-category metrics, baseline and per-category regression
+  comparison, run configuration — all exercised by tests)
+- [x] Duplicate-identifier benchmarking, scored apart from recognition
+  correctness (planted groups detected, missed, and unplanted collisions)
+- [x] Developer testing tools through the GUI (menu, generation dialog,
+  cancellable generation, benchmark mode in the Scan page, results dialog,
+  failing-case review, second-run comparison — 20 pytest-qt tests)
 - [x] Diagnostics (staged images and overlay produced on demand, nothing
   written by default, and generating them provably does not change a result)
 - [x] Stored result fixtures for Phases 4-5 (11 scenarios, loadable with no
@@ -280,10 +393,15 @@ Still open, and why Phase 3 is not marked complete:
 - [ ] **Confidence calibration.** What the engine reports is a bounded
   *decision score*, not a probability; the benchmark reports accuracy by band
   so it can be checked once there is data to check it against
-- [ ] Difficult handwriting and mark-shape analysis. A synthetic mixed dataset
-  already shows tick-shaped marks producing a ~33% false-blank rate against 0%
-  for crosses and scribbles, because the measurement is coverage-based; whether
-  real ticks behave the same way is exactly what the corpus is for
+- [ ] Difficult handwriting and mark-shape analysis. Synthetic datasets already
+  show the shape of the problem: on one template tick-shaped marks produced a
+  ~33% false-blank rate against 0% for crosses and scribbles, and on another
+  dot-shaped marks measured a mean fill ratio of 0.16 (read confidently as
+  blank) while strokes and slashes measured 0.51–0.54 (flagged as uncertain),
+  against 0.93 for a filled bubble — all because the measurement is
+  coverage-based. Whether real marks behave this way is exactly what the corpus
+  is for, and the thresholds are deliberately **not** being tuned against
+  synthetic pages
 - [ ] Recognition accuracy and performance optimisation, once there is real
   data to optimise against
 - [ ] Final Phase 3 regression sign-off once the above are addressed
@@ -371,16 +489,27 @@ python -m omr_scanner.tools.recognise scans/ --template sheet.omrt \
 
 # Generate a reproducible labelled test dataset from a real template
 python -m omr_scanner.tools.make_dataset out/dataset --template sheet.omrt \
-    --count 24 --profile mixed --seed 20260918
+    --count 250 --profile mixed --seed 20260918
+
+# ...or just the cases you are working on, as JPEG
+python -m omr_scanner.tools.make_dataset out/answers --template sheet.omrt \
+    --profile custom --families answers mark_styles intensity --format jpg
+
+# See what a template offers the generator before generating anything
+python -m omr_scanner.tools.make_dataset out/x --template sheet.omrt --describe
 
 # Score recognition against that dataset, classifying every disagreement
+# and reporting accuracy per kind of test case
 python -m omr_scanner.tools.benchmark_recognition out/dataset \
-    --template sheet.omrt --report out/benchmark
+    --template sheet.omrt --report out/benchmark --categories 0
 
 # ...and compare a change against the run before it
 python -m omr_scanner.tools.benchmark_recognition out/dataset \
     --template sheet.omrt --baseline out/benchmark/summary.json
 ```
+
+Both are in the application as well, under *Tools > Developer / Testing* — see
+[Developer testing tools](#developer-testing-tools-phase-3) above.
 
 Diagnostics (the corrected page, an annotated overlay, every bubble's
 measurement, and the result as JSON) come from `--diagnostics out/diagnostics`
@@ -411,17 +540,20 @@ OMRflow/
 │   │                         scan import/export (Phase 3)
 │   ├── gui/                  PySide6 window and workflow pages
 │   │   ├── template_designer/  interactive .omrt editor (Phase 2)
-│   │   └── scan/                scan/recognition workflow page (Phase 3,
-│   │                            testing in progress)
+│   │   ├── scan/                scan/recognition workflow page, incl.
+│   │   │                        benchmark mode (Phase 3, testing in progress)
+│   │   └── devtools/            Tools > Developer / Testing: dataset
+│   │                            generation and benchmark results (Phase 3)
 │   ├── imaging/              pixel algorithms: alignment, plus per-bubble
 │   │                         fill-metric measurement (Phase 3)
 │   ├── tools/                developer command line utilities
 │   ├── recognition/          value interpretation: decide, fields (Phase 3,
 │   │                         testing in progress; conflict resolution is
 │   │                         Phase 6)
-│   ├── evaluation/           QA above the engine: ground-truth schema,
-│   │                         synthetic dataset generator, benchmark and
-│   │                         error categories (Phase 3)
+│   ├── evaluation/           QA above the engine: ground-truth schema, named
+│   │                         test cases, dataset planner and renderer,
+│   │                         benchmark, error categories and the benchmark
+│   │                         session (Phase 3)
 │   ├── reporting/            RESERVED - XLSX/PDF export (Phase 9; CSV export
 │   │                         already exists in services/scan_export.py)
 │   └── utils/                logging setup, atomic JSON

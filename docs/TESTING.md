@@ -336,17 +336,23 @@ at is decided by what it is actually asserting.
 | Stored results | `unit/test_recognition_fixtures.py` | That `tests/fixtures/recognition/*.json` loads, round-trips, and still represents its scenario. |
 | The harness itself | `unit/test_evaluation_harness.py` | Ground-truth schema, error categorisation, summary arithmetic, baseline verdicts. A benchmark that is itself untested will eventually report an improvement that did not happen. |
 | The engine | `integration/test_recognition_engine.py` | The documented entry point, the quality metrics, the timings, diagnostics on and off, and determinism. |
-| The data | `integration/test_synthetic_dataset.py` | That generated labels match what was drawn - checked by *recognising* the generated sheets - and that a seed reproduces a dataset exactly. |
+| The data | `integration/test_synthetic_dataset.py` | That generated labels match what was drawn - checked by *recognising* the generated sheets - that a seed reproduces a dataset exactly, that each profile's edge cases are present by construction, and that nothing about the sheet is hard-coded. |
 | The tools | `integration/test_recognition_tools.py` | `recognise`, `make_dataset` and `benchmark_recognition` driven through `main(argv)`: arguments, exit codes, the files they write. |
+| The developer tools | `gui/test_developer_tools.py` | The Tools menu, the generation dialog and its validation, generation and its cancellation, benchmark mode in the Scan page, the results dialog, failing-case review, and the second-run comparison. |
 
-Three rules keep this suite meaningful:
+Four rules keep this suite meaningful:
 
-- **No accuracy assertion on synthetic data beyond the clean profile.** A clean
-  synthetic sheet must read perfectly, because anything else is a defect in the
-  generator or the engine. Degraded profiles are *measured* by
+- **No accuracy assertion on synthetic data beyond the baseline profile.** A
+  clean synthetic sheet must read perfectly, because anything else is a defect
+  in the generator or the engine. Degraded profiles are *measured* by
   `benchmark_recognition`, never asserted in a test: a threshold pinned to
   synthetic performance would be optimising for the wrong data and would fail
   the first time the generator improved.
+- **The generator must not assume a template.** Three tests build templates the
+  rest of the suite never uses - nine identifier digits, five options, no set
+  code at all - and assert that generation adapts rather than crashing or
+  quietly producing nonsense. Those are the tests that keep "one template
+  definition" true rather than aspirational.
 - **Headless means headless.** `test_recognition_engine.py` starts a fresh
   interpreter and asserts that a sheet can be read with no `PySide6` module
   loaded. Checking `sys.modules` in-process would prove nothing, because
@@ -361,21 +367,34 @@ Three rules keep this suite meaningful:
 ```bash
 # A small labelled dataset, reproducibly
 python -m omr_scanner.tools.make_dataset out/dataset \
-    --template examples/templates/ece_0000_sample.omrt --count 24 --seed 20260918
+    --template examples/templates/ece_0000_sample.omrt --count 250 --seed 20260918
 
-# Score the engine against it, and classify every disagreement
+# Score the engine against it, classify every disagreement, and report
+# accuracy per kind of test case
 python -m omr_scanner.tools.benchmark_recognition out/dataset \
-    --template examples/templates/ece_0000_sample.omrt --report out/benchmark
+    --template examples/templates/ece_0000_sample.omrt \
+    --report out/benchmark --categories 0
 
-# Compare a change against the run before it
+# Compare a change against the run before it, headline metrics and categories
 python -m omr_scanner.tools.benchmark_recognition out/dataset \
     --template examples/templates/ece_0000_sample.omrt \
     --baseline out/benchmark/summary.json
 ```
 
+Both are in the application too, under *Tools > Developer / Testing*; the
+benchmark runs inside the Scan page rather than in a window of its own, so it
+exercises the pipeline users actually get.
+
 Generated datasets, reports and diagnostics are git-ignored: the generator plus
 its seed reproduces them exactly, so the seed is worth committing and the
 gigabytes are not.
+
+**What a synthetic number is worth.** These datasets measure regression
+consistency and controlled edge-case handling. They are *not* evidence of
+real-world accuracy, and no report, changelog entry or commit message should
+present them as such. Every report the tools write carries that sentence in the
+file itself, because a `summary.json` with a 0.999 in it will eventually be
+pasted into a slide.
 
 ### Large-batch progress and the ETA estimator
 

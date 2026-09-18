@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
@@ -58,6 +59,10 @@ from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 from omr_scanner.services import ProjectSession, create_project, open_project
 
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from omr_scanner.evaluation.ground_truth import DatasetManifest
+    from omr_scanner.gui.devtools import GenerationRequest
+
 logger = logging.getLogger(__name__)
 
 WINDOW_MIN_WIDTH = 960
@@ -78,6 +83,13 @@ SIDEBAR_LOGO_BOTTOM_MARGIN = 20
 """Gap between the logo and the bottom of the sidebar, in logical pixels."""
 
 DEVELOPER_URL = "https://www.sajid.bd"
+
+GENERATION_SHUTDOWN_TIMEOUT_MS = 30_000
+"""How long the window waits for a cancelled dataset generation to finish.
+
+A cancel stops between sheets, not inside one, so the wait only ever covers the
+page currently being drawn. Generous because a 600-dpi page on a slow disk is
+still a fraction of a second, and a thread outliving its window is not."""
 
 
 class MainWindow(QMainWindow):
@@ -254,7 +266,7 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(url))
 
     def _build_menus(self) -> None:
-        """Create the File and Help menus."""
+        """Create the File, Tools and Help menus."""
         file_menu = self.menuBar().addMenu("&File")
 
         self.new_project_action = QAction("&New Project...", self)
@@ -294,6 +306,25 @@ class MainWindow(QMainWindow):
         self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         self.exit_action.triggered.connect(self.close)
         file_menu.addAction(self.exit_action)
+
+        tools_menu = self.menuBar().addMenu("&Tools")
+        developer_menu = tools_menu.addMenu("&Developer / Testing")
+
+        self.generate_dataset_action = QAction("&Generate Synthetic Test Dataset...", self)
+        self.generate_dataset_action.setObjectName("generateDatasetAction")
+        self.generate_dataset_action.setStatusTip(
+            "Render a labelled synthetic dataset from a template, for testing recognition"
+        )
+        self.generate_dataset_action.triggered.connect(self.generate_dataset)
+        developer_menu.addAction(self.generate_dataset_action)
+
+        self.run_benchmark_action = QAction("Run Recognition &Benchmark...", self)
+        self.run_benchmark_action.setObjectName("runBenchmarkAction")
+        self.run_benchmark_action.setStatusTip(
+            "Score recognition against a labelled dataset, in the Scan stage"
+        )
+        self.run_benchmark_action.triggered.connect(self._prompt_run_benchmark)
+        developer_menu.addAction(self.run_benchmark_action)
 
         help_menu = self.menuBar().addMenu("&Help")
         self.about_action = QAction(f"&About {APPLICATION_NAME}", self)
@@ -418,6 +449,141 @@ class MainWindow(QMainWindow):
         self._config = config
         self._persist_config()
         self._broadcast_config_change()
+
+    # ------------------------------------------------------------------
+    # Developer / testing tools
+    # ------------------------------------------------------------------
+    def show_page(self, key: str) -> bool:
+        """Bring one workflow stage to the front by its key.
+
+        Returns whether that stage exists. Driven through the navigation list
+        rather than the stack so the sidebar's highlight stays in step with
+        what is on screen.
+        """
+        for row in range(self.navigation.count()):
+            if self.navigation.item(row).data(Qt.ItemDataRole.UserRole) == key:
+                self.navigation.setCurrentRow(row)
+                return True
+        return False
+
+    def generate_dataset(self) -> None:
+        """Ask what synthetic dataset to make, then make it.
+
+        Split the same way every other command on this window is: the dialogs
+        live here, and everything they decide is carried out by
+        :meth:`generate_dataset_from`, which a test drives directly.
+        """
+        from omr_scanner.gui.devtools import GenerateDatasetDialog
+
+        scan_page = self._pages.get("scan")
+        template_path = (
+            scan_page.state.template_path if isinstance(scan_page, ScanPage) else None
+        )
+        dialog = GenerateDatasetDialog(
+            self,
+            template_path=template_path,
+            output_dir=self._config.default_projects_root,
+        )
+        if dialog.exec() != GenerateDatasetDialog.DialogCode.Accepted:
+            return
+        request = dialog.request()
+        if request is not None:
+            self.generate_dataset_from(request)
+
+    def generate_dataset_from(self, request: GenerationRequest) -> bool:
+        """Generate a dataset, showing progress and then a summary.
+
+        Args:
+            request: What to generate.
+
+        Returns:
+            ``True`` when a dataset was written - including a cancelled run,
+            which writes fewer sheets and a manifest that says so.
+        """
+        from omr_scanner.gui.devtools import (
+            DatasetWorker,
+            GenerationProgressDialog,
+            GenerationSummaryDialog,
+        )
+
+        produced: list[DatasetManifest] = []
+        worker = DatasetWorker(request, self)
+        worker.finished_dataset.connect(produced.append)
+        progress = GenerationProgressDialog(worker, request.count, self)
+        worker.start()
+        progress.exec()
+        # The thread owns file handles and a template; letting the window carry
+        # on while it is still writing would leave a half-written dataset behind
+        # a dialog that has already closed.
+        worker.wait(GENERATION_SHUTDOWN_TIMEOUT_MS)
+
+        if not produced:
+            return False
+
+        manifest = produced[0]
+        summary = GenerationSummaryDialog(manifest, request.output_dir, self)
+        wants_benchmark = [False]
+        summary.benchmark_requested.connect(lambda: wants_benchmark.__setitem__(0, True))
+        summary.exec()
+
+        self.statusBar().showMessage(
+            f"Generated {len(manifest.entries)} synthetic sheet(s)",
+            STATUS_MESSAGE_MS,
+        )
+        if wants_benchmark[0] or request.run_benchmark:
+            self.start_benchmark(request.output_dir, template_path=request.template_path)
+        return True
+
+    def _prompt_run_benchmark(self) -> None:
+        """Ask which labelled dataset to benchmark, then start."""
+        start = self._config.default_projects_root or Path.home()
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select a labelled dataset folder", str(start)
+        )
+        if directory:
+            self.start_benchmark(Path(directory))
+
+    def start_benchmark(self, dataset_dir: Path, template_path: Path | None = None) -> bool:
+        """Put the Scan stage into benchmark mode over ``dataset_dir``.
+
+        Args:
+            dataset_dir: The labelled dataset to score against.
+            template_path: Template to load first. When omitted, whatever the
+                Scan page already has is used - and a benchmark against the
+                wrong template is a benchmark of nothing, so the dataset's own
+                manifest names one when the caller does not.
+
+        Returns:
+            ``True`` when the Scan stage is ready to process the dataset.
+
+        Deliberately *not* a second processing window. The user ends up on the
+        page they already know, with the same buttons, and presses Process All.
+        """
+        scan_page = self._pages.get("scan")
+        if not isinstance(scan_page, ScanPage):
+            return False
+
+        self.show_page("scan")
+        if template_path is not None and not scan_page.load_template_from(template_path):
+            return False
+        if scan_page.state.template is None:
+            report_error(
+                self,
+                ConfigurationError(
+                    "Load the template this dataset was generated from before "
+                    "benchmarking it."
+                ),
+                context="Benchmark",
+            )
+            return False
+
+        started = scan_page.enter_benchmark_mode(dataset_dir)
+        if started:
+            self.statusBar().showMessage(
+                "Benchmark mode: press Process All to score this dataset",
+                STATUS_MESSAGE_MS,
+            )
+        return started
 
     def _broadcast_config_change(self) -> None:
         """Push settings that pages act on down to the pages that act on them."""

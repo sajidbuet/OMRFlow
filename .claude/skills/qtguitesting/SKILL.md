@@ -142,6 +142,9 @@ python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only scan-pro
 # The Processing settings in all three modes, and a multicore vs single-core run.
 python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only settings --only scan-multicore
 
+# Tools > Developer / Testing: the generation form, benchmark mode, the results.
+python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only devtools
+
 # Geometry of the template's regions, as JSON.
 python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario question-region
 
@@ -161,6 +164,7 @@ pytest -m gui                                     # Qt tests only
 pytest -m "not gui"                               # headless logic only
 pytest tests/gui/test_template_designer_region_geometry.py -q     # focused
 pytest tests/gui/test_scan_page.py -q                             # Scan workflow A-J
+pytest tests/gui/test_developer_tools.py -q                       # dataset + benchmark tools
 pytest tests/unit/test_question_region_container.py -q            # focused
 pytest tests/integration/test_orientation_marker_detection.py -q  # focused
 ruff check . && mypy                              # lint and types

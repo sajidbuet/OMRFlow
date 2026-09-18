@@ -10,6 +10,10 @@ stays in testing/stabilisation; recognition *accuracy* is unchanged and
 uncalibrated.
 **Updated:** 2026-09-18 — large-batch progress: a counting/ETA tracker,
 a progress panel, throttled repainting and responsive cancellation (§14).
+**Updated:** 2026-09-18 — developer testing tools: a template-driven synthetic
+dataset generator with named test cases, and a recognition benchmark that runs
+inside the Scan page and reports per test-case category (§16). Recognition
+*accuracy* is unchanged and still uncalibrated.
 **Version:** 0.1.0.dev0
 **Environment verified on:** Windows 11, Python 3.12.7, PySide6 6.11.2, OpenCV
 5.0.0, NumPy 2.5.3
@@ -594,3 +598,85 @@ Process a stack of genuinely filled sheets and compare the CSV against the
 papers. Count two numbers separately: how many sheets needed review, and how
 many were confidently *wrong*. The second decides whether this is usable for
 examination processing; nothing measured so far bounds it.
+
+---
+
+## 16. Developer testing tools (2026-09-18)
+
+A template-driven synthetic dataset generator and a recognition benchmark, both
+in the application and on the command line. Neither changes the recognition
+engine; both exist so that a change to it can be judged.
+
+### What was added
+
+| Module | Contents |
+|---|---|
+| `evaluation/test_cases.py` | `TestCaseTag` (~60 named conditions), `CaseFamily`, `MarkPlan`, `SheetCase`, `FieldLayout` (reads everything from the template), `SheetBuilder` (derives truth from the marks). |
+| `evaluation/case_plans.py` | `DatasetProfile`, `PROFILE_FAMILIES`, thirteen family builders, `plan_dataset`. |
+| `evaluation/synthetic_dataset.py` | Rewritten: `page_render_size`, `ImageFormat`, `render_case`, `generate_dataset` (progress + cancel + streaming), `describe_template`, `validate_template`, the three manifest files. |
+| `evaluation/benchmark.py` | `CategoryMetrics`, `BenchmarkRunConfig`, `grid_verdict`, duplicate metrics, `compare_categories`, the five report files. |
+| `evaluation/session.py` | `BenchmarkSession` - open a dataset, score results, write the report, compare with the previous run. No Qt. |
+| `imaging/synthetic.py` | Stroke and slash mark styles; faint and damaged markers; paper tint, speckle, scanner streaks, edge shadow. |
+| `gui/devtools/` | The generation dialog, the generation thread, the progress and summary dialogs, the benchmark results dialog. |
+| `gui/scan/page.py` | Benchmark mode: banner, dataset association, automatic scoring, `select_scan_named`. |
+| `gui/main_window.py` | The Tools > Developer / Testing menu and its two commands. |
+
+### Six decisions worth carrying forward
+
+- **The template is the only source of geometry.** A generator with its own
+  idea of where bubbles go would test the two halves of the application against
+  each other's mistakes. `FieldLayout` reads identifier length, symbols,
+  set-code structure, question count, option labels, bubble size and page
+  dimensions; tests assert that a nine-digit identifier, five options and a
+  template with no set code all work with no code change.
+- **Ground truth is derived from the marks, in one place.** A caller says "mark
+  B on question 7" once and both the drawing instruction and the expected value
+  come from that statement. The alternative has already failed here: double
+  marks were once labelled in the order they were drawn rather than printed
+  order, and the benchmark blamed the engine for 23 wrong options.
+- **150 DPI from the physical page size, not the canonical pixel size.**
+  Rendering at the canonical size would hand the engine a page that needed no
+  rescaling, and quietly stop testing one.
+- **Mandatory cases before random filler, and a spread when truncating.** A
+  randomly sampled fifty-sheet dataset has a real chance of containing no blank
+  identifier at all, and then the headline number looks fine while the case
+  that would have failed was never generated.
+- **Benchmarking runs in the Scan page, not a second window.** Same batch
+  architecture, same settings, same worker pool. A benchmark of a different
+  pipeline measures nothing worth knowing.
+- **Duplicates are scored apart from recognition.** Reading the same number on
+  two sheets is *correct*; whether the batch layer noticed is the batch layer's
+  question, and folding the two together would hide a regression in either.
+
+### What was measured
+
+120-sheet mixed dataset, 100-question example template, seed 424242, 150 dpi
+PNG, 8 workers, 23.6 s:
+
+| Metric | Value |
+|---|---|
+| Sheet accuracy (nothing wrong anywhere) | 0.9397 (109/116) |
+| Answer accuracy | 0.9652 (11,164/11,566) |
+| Registration | 1.0000 (116/116) |
+| Student ID / set code | 0.9741 / 0.9914 |
+| Blank detection / double marks | 1.0000 / 1.0000 |
+| Borderline marks handled acceptably | 34/34 |
+| Duplicate groups found | 4/4, 0 unplanted |
+| Errors | 402 `FALSE_BLANK`, 1 `ROLL_ERROR` |
+
+Every false blank came from three sheets, and the category table names them:
+`MARK_STYLE_DOT`, `MARK_STYLE_SLASH`, `MARK_STYLE_STROKE`. Measured leading fill
+ratios on those sheets against a 0.55 fill / 0.25 blank threshold: filled bubble
+**0.93**, stroke **0.51**, slash **0.52**, stroke **0.54** (all flagged
+`uncertain`), dot **0.16** (read confidently as `blank`).
+
+That is a property of coverage-based measurement, recorded rather than tuned
+away. Whether real candidates' ticks, dots and slashes behave this way is
+exactly what the real-dataset corpus is for, and **the thresholds must not be
+calibrated against synthetic pages**.
+
+**Synthetic results measure regression consistency and controlled edge-case
+handling. They do not establish real-world recognition accuracy.** Every report
+the tools write says so in the file itself.
+
+---

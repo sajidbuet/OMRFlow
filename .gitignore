@@ -64,3 +64,9 @@ desktop.ini
 !/local_test_data/README.md
 /real_dataset/
 /private_dataset/
+/private_test_data/
+
+# Benchmark reports written beside a dataset by Tools > Developer / Testing.
+# Reproducible from the dataset plus the engine, and the interesting one is
+# always the *latest*, which is not a thing to keep in version control.
+benchmark_report/

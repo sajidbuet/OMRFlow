@@ -177,7 +177,7 @@ class TestMakeDatasetTool:
                 "--seed",
                 "5",
                 "--profile",
-                "clean",
+                "baseline",
             ]
         )
         assert code == 0
@@ -209,7 +209,7 @@ class TestBenchmarkTool:
         out = tmp_path / "dataset"
         make_dataset.main(
             [str(out), "--template", str(template_path), "--count", "3",
-             "--seed", "21", "--profile", "clean"]
+             "--seed", "21", "--profile", "baseline"]
         )
         return out
 

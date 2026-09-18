@@ -22,8 +22,16 @@ Usage::
 
 Output::
 
-    <report>/summary.json   dataset-level metrics
-    <report>/errors.csv     one row per disagreement
+    <report>/summary.json           dataset-level metrics, with the categories
+    <report>/summary.csv            the same headline metrics, one per row
+    <report>/errors.csv             one row per disagreement
+    <report>/category_metrics.csv   accuracy per kind of test case
+    <report>/run_config.json        what produced these numbers
+
+A note on what the numbers mean:
+    On a synthetic dataset these measure regression consistency and controlled
+    edge-case handling. They are not evidence of real-world accuracy, and this
+    tool says so in every report it writes.
 
 Exit codes:
     ``0`` the benchmark ran, ``1`` it could not, ``2`` bad arguments. A poor
@@ -43,8 +51,11 @@ from omr_scanner.config.processing import ProcessingMode, ProcessingSettings
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.evaluation.benchmark import (
     BenchmarkReport,
+    BenchmarkRunConfig,
     compare_baseline,
+    compare_categories,
     evaluate,
+    load_categories,
     load_summary,
     write_report,
 )
@@ -58,6 +69,7 @@ from omr_scanner.evaluation.synthetic_dataset import (
     MANIFEST_FILENAME,
 )
 from omr_scanner.services.batch_processor import BatchOptions, process_batch
+from omr_scanner.services.recognition_models import utc_timestamp
 from omr_scanner.services.recognition_settings import RecognitionOptions
 from omr_scanner.services.scan_import import collect_scan_files
 from omr_scanner.services.template_service import load_template
@@ -103,6 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--limit", type=int, help="Only read the first N scans.")
+    parser.add_argument(
+        "--categories",
+        type=int,
+        default=12,
+        metavar="N",
+        help="How many test-case categories to print, least accurate first (0 for all).",
+    )
     return parser
 
 
@@ -142,6 +161,14 @@ def _print_summary(report: BenchmarkReport) -> None:
           f"  (processed {summary.processed}, failed {summary.failed},"
           f" expected failures {summary.expected_failures})")
     print(
+        f"Sheet accuracy:   {summary.sheet_accuracy:.4f}  "
+        f"({summary.sheets_correct} sheet(s) with nothing wrong at all)"
+    )
+    print(
+        f"Registration:     {summary.registration_rate:.4f}  "
+        f"({summary.registration_succeeded}/{summary.registration_expected})"
+    )
+    print(
         f"Roll accuracy:    {summary.roll_accuracy:.4f}  "
         f"({summary.roll_correct}/{summary.roll_checked})"
     )
@@ -169,6 +196,14 @@ def _print_summary(report: BenchmarkReport) -> None:
     print(f"Time:             {summary.total_seconds:.2f}s total, "
           f"{summary.mean_seconds_per_scan:.3f}s per scan")
 
+    if summary.duplicate_groups_expected:
+        print(
+            f"\nDuplicate identifiers (a batch concern, not a recognition one):"
+            f"\n  {summary.duplicate_groups_detected}/{summary.duplicate_groups_expected}"
+            f" planted group(s) found across {summary.duplicate_sheets_expected} sheet(s);"
+            f" {summary.duplicate_groups_false} unplanted collision(s)"
+        )
+
     if summary.error_counts:
         print("\nErrors by category:")
         for category, count in sorted(summary.error_counts.items()):
@@ -180,6 +215,30 @@ def _print_summary(report: BenchmarkReport) -> None:
                 f"  {band:<12} {values['accuracy']:.4f}  "
                 f"({int(values['correct'])}/{int(values['questions'])})"
             )
+
+
+def _print_categories(report: BenchmarkReport, limit: int) -> None:
+    """Print the per-test-case-kind table, least accurate first.
+
+    The most useful part of the report and therefore printed last, where it is
+    still on screen: an overall figure says whether to worry, this says what
+    about.
+    """
+    if not report.categories:
+        return
+    rows = report.categories if limit <= 0 else report.categories[:limit]
+    print(f"\nBy test case ({len(rows)} of {len(report.categories)}, least accurate first):")
+    print(f"  {'category':<26} {'sheets':>7} {'sheet ok':>9} {'answers':>9} {'errors':>7}")
+    for item in rows:
+        # A category of deliberate failures has no accuracy to show. A dash
+        # says so; printing 0.0000 would put a perfectly behaved category at
+        # the top of the list of things to worry about.
+        sheet_rate = f"{item.sheet_accuracy:.4f}" if item.scored else "-"
+        answer_rate = f"{item.question_accuracy:.4f}" if item.questions_checked else "-"
+        print(
+            f"  {item.tag:<26} {item.sheets:>7} {sheet_rate:>9} "
+            f"{answer_rate:>9} {item.errors:>7}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,26 +264,47 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_FAILED
 
     dataset_name = arguments.dataset.name
+    generator: dict[str, object] = {}
     if manifest_path.is_file():
         # A damaged manifest is not a reason to refuse to measure the data.
         with contextlib.suppress(ValueError):
-            dataset_name = load_manifest(manifest_path).name or dataset_name
+            manifest = load_manifest(manifest_path)
+            dataset_name = manifest.name or dataset_name
+            generator = dict(manifest.generator)
 
     workers = _resolve_workers(arguments.workers, len(paths))
     options = RecognitionOptions(with_preview=False)
 
     print(f"Reading {len(paths)} scan(s) on {workers} worker(s)...")
+    started_at = utc_timestamp()
     results = _run(paths, template, workers, options)
-    report = evaluate(results, truths, dataset=dataset_name)
+    report = evaluate(
+        results, truths, dataset=dataset_name, dataset_path=str(arguments.dataset)
+    ).with_config(
+        BenchmarkRunConfig(
+            dataset=dataset_name,
+            dataset_path=str(arguments.dataset),
+            template=template.name,
+            template_path=str(arguments.template),
+            engine_name=results[0].engine_name if results else "",
+            engine_version=results[0].engine_version if results else "",
+            worker_count=workers,
+            settings=template.recognition.model_dump(mode="json"),
+            generator=generator,
+            started_at=started_at,
+        )
+    )
     _print_summary(report)
+    _print_categories(report, arguments.categories)
 
     if arguments.report is not None:
-        summary_path, errors_path = write_report(report, arguments.report)
-        print(f"\nWritten: {summary_path}\n         {errors_path}")
+        written = write_report(report, arguments.report)
+        print("\nWritten: " + "\n         ".join(str(path) for path in written))
 
     if arguments.baseline is not None:
         try:
             baseline = load_summary(arguments.baseline)
+            baseline_categories = load_categories(arguments.baseline)
         except (OSError, ValueError) as exc:
             print(f"Could not read the baseline: {exc}", file=sys.stderr)
             return EXIT_FAILED
@@ -234,6 +314,20 @@ def main(argv: list[str] | None = None) -> int:
                 f"  {comparison.metric:<20} {comparison.baseline:.4f} -> "
                 f"{comparison.current:.4f}  {comparison.verdict}"
             )
+        moved = [
+            item
+            for item in compare_categories(baseline_categories, report.categories)
+            if item.verdict != "unchanged"
+        ]
+        if moved:
+            print("\nTest-case categories that moved:")
+            for comparison in moved:
+                print(
+                    f"  {comparison.metric:<40} {comparison.baseline:.4f} -> "
+                    f"{comparison.current:.4f}  {comparison.verdict}"
+                )
+        elif baseline_categories:
+            print("\nNo test-case category moved by more than the tolerance.")
 
     if arguments.sweep_fill is not None:
         _sweep_fill(paths, template, truths, dataset_name, workers, arguments.sweep_fill)

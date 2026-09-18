@@ -22,11 +22,16 @@ from tests.unit.test_recognition_contract import make_answer, make_field, make_r
 
 from omr_scanner.evaluation.benchmark import (
     DEFAULT_TOLERANCE,
+    BenchmarkRunConfig,
     BenchmarkSummary,
+    CategoryMetrics,
     ErrorCategory,
     compare_baseline,
+    compare_categories,
     compare_result,
     evaluate,
+    grid_verdict,
+    load_categories,
     load_summary,
     write_report,
 )
@@ -296,7 +301,9 @@ class TestSummaryMetrics:
 class TestReportFiles:
     def test_it_writes_a_summary_and_an_error_list(self, tmp_path: Path):
         report = evaluate([result_with({1: "C"})], {"scan": truth_with({1: "B"})})
-        summary_path, errors_path = write_report(report, tmp_path / "out")
+        summary_path, _summary_csv, errors_path, _categories, _config = write_report(
+            report, tmp_path / "out"
+        )
 
         stored = json.loads(summary_path.read_text(encoding="utf-8"))
         assert stored["questions_checked"] == 1
@@ -310,13 +317,15 @@ class TestReportFiles:
 
     def test_an_error_free_run_still_writes_a_csv_with_its_header(self, tmp_path: Path):
         report = evaluate([result_with({1: "B"})], {"scan": truth_with({1: "B"})})
-        _summary, errors_path = write_report(report, tmp_path / "out")
+        _summary, _summary_csv, errors_path, _categories, _config = write_report(
+            report, tmp_path / "out"
+        )
         text = errors_path.read_text(encoding="utf-8")
         assert text.startswith("scan,category,question")
 
     def test_a_written_summary_can_be_read_back_as_a_baseline(self, tmp_path: Path):
         report = evaluate([result_with({1: "B"})], {"scan": truth_with({1: "B"})})
-        summary_path, _errors = write_report(report, tmp_path / "out")
+        summary_path, *_rest = write_report(report, tmp_path / "out")
         assert load_summary(summary_path).question_accuracy == 1.0
 
 
@@ -349,9 +358,270 @@ class TestBaselineComparison:
     def test_every_headline_metric_is_compared(self):
         metrics = {item.metric for item in compare_baseline(BenchmarkSummary(), BenchmarkSummary())}
         assert metrics == {
+            "sheet_accuracy",
             "question_accuracy",
             "roll_accuracy",
             "set_accuracy",
             "blank_accuracy",
             "multiple_accuracy",
+            "registration_rate",
         }
+
+
+class TestTestCaseCategories:
+    """Per-test-case metrics: the reason the generator tags its sheets.
+
+    An overall figure says whether to worry; these say what about. They are
+    also the part most easily got subtly wrong - a sheet counted once per tag,
+    a category of deliberate failures reported as 0% - so each rule has a test.
+    """
+
+    def test_a_sheet_counts_in_full_towards_each_of_its_tags(self):
+        report = evaluate(
+            [result_with({1: "B"})],
+            {"scan": truth_with({1: "B"}, tags=("BLUR", "FAINT_MARK"))},
+        )
+        by_tag = {item.tag: item for item in report.categories}
+        assert by_tag["BLUR"].sheets == 1
+        assert by_tag["FAINT_MARK"].sheets == 1
+        assert by_tag["BLUR"].questions_checked == 1
+
+    def test_a_category_reports_its_own_accuracy(self):
+        report = evaluate(
+            [result_with({1: "B", 2: "C"}, source_path=Path("a.png"))],
+            {
+                "a": SheetGroundTruth(
+                    scan="a.png",
+                    roll="12",
+                    answers={1: "B", 2: "D"},
+                    tags=("MARK_STYLE_TICK",),
+                )
+            },
+        )
+        category = report.categories[0]
+        assert category.tag == "MARK_STYLE_TICK"
+        assert category.question_accuracy == 0.5
+        assert category.sheet_accuracy == 0.0  # one wrong answer spoils the sheet
+        assert category.errors == 1
+
+    def test_a_category_of_deliberate_failures_has_nothing_to_score(self):
+        # It behaved perfectly - the sheet was meant to fail and did - so a
+        # 0.0 in the accuracy column would be a lie with a decimal point.
+        report = evaluate(
+            [
+                result_with(
+                    {},
+                    registration=RegistrationStatus.FAILED,
+                    outcome=RecognitionOutcome.REGISTRATION_FAILED,
+                )
+            ],
+            {"scan": truth_with({}, expect_failure=True, tags=("CROP_SEVERE",))},
+        )
+        category = report.categories[0]
+        assert category.sheets == 1
+        assert category.scored == 0
+        assert category.errors == 0
+        assert category.as_row()["sheet_accuracy"] == ""
+
+    def test_untagged_sheets_still_appear(self):
+        # A real dataset has no tags. Dropping those sheets from the table
+        # would make a real benchmark look like it measured nothing.
+        report = evaluate([result_with({1: "B"})], {"scan": truth_with({1: "B"})})
+        assert [item.tag for item in report.categories] == ["UNTAGGED"]
+
+    def test_the_worst_category_is_reported_first(self):
+        report = evaluate(
+            [
+                result_with({1: "B"}, source_path=Path("good.png")),
+                result_with({1: "C"}, source_path=Path("bad.png")),
+            ],
+            {
+                "good": SheetGroundTruth(
+                    scan="good.png", roll="12", answers={1: "B"}, tags=("FILL",)
+                ),
+                "bad": SheetGroundTruth(
+                    scan="bad.png", roll="12", answers={1: "B"}, tags=("TICK",)
+                ),
+            },
+        )
+        assert [item.tag for item in report.categories] == ["TICK", "FILL"]
+
+    def test_categories_survive_a_round_trip_through_the_report(self, tmp_path: Path):
+        report = evaluate(
+            [result_with({1: "B"})], {"scan": truth_with({1: "B"}, tags=("BLUR",))}
+        )
+        summary_path, *_rest = write_report(report, tmp_path / "out")
+        restored = load_categories(summary_path)
+        assert [item.tag for item in restored] == ["BLUR"]
+        assert restored[0].sheets == 1
+
+    def test_a_category_that_got_worse_is_named(self):
+        before = (CategoryMetrics(tag="TICK", sheets=10, sheets_correct=10),)
+        after = (CategoryMetrics(tag="TICK", sheets=10, sheets_correct=4),)
+        moved = compare_categories(before, after)
+        assert [(item.metric, item.verdict) for item in moved] == [
+            ("TICK.sheet_accuracy", "regressed")
+        ]
+
+    def test_a_category_that_has_stopped_being_generated_is_a_regression(self):
+        # Silently producing no BLUR sheets at all would otherwise look like
+        # perfect blur handling.
+        before = (CategoryMetrics(tag="BLUR", sheets=5, sheets_correct=5),)
+        moved = compare_categories(before, ())
+        assert moved[0].metric == "BLUR.sheet_accuracy"
+        assert moved[0].verdict == "regressed"
+
+
+class TestGridFieldJudgement:
+    """The identifier and the set code, including their ambiguous columns."""
+
+    def test_an_exact_match_is_no_error(self):
+        assert grid_verdict("120317", "120317") is None
+
+    def test_a_mismatch_is_an_identifier_error(self):
+        assert grid_verdict("120317", "120318") is ErrorCategory.ROLL_ERROR
+
+    def test_an_empty_expectation_is_not_checked(self):
+        # A template with no set code, or a dataset that did not label one.
+        assert grid_verdict("", "anything") is None
+
+    def test_a_column_that_could_not_resolve_is_expected_to_read_as_unresolved(self):
+        # Without the ambiguity flag a "?" is a hard expectation: it is what a
+        # *doubly marked* column should read as, and quietly resolving that to
+        # one digit is exactly the mistake worth catching.
+        assert grid_verdict("12?317", "120317") is ErrorCategory.ROLL_ERROR
+
+    def test_a_borderline_column_may_be_flagged(self):
+        marks = ((), (), ("0",), (), (), ())
+        assert grid_verdict("12?317", "12?317", marks, ambiguous=True) is None
+
+    def test_a_borderline_column_may_be_read_as_what_was_drawn(self):
+        # The engine resolving a faint 0 to "0" is correct behaviour, not a
+        # failure to notice; the dataset recorded which digit was drawn.
+        marks = ((), (), ("0",), (), (), ())
+        assert grid_verdict("12?317", "120317", marks, ambiguous=True) is None
+
+    def test_a_borderline_column_read_as_something_never_drawn_is_its_own_error(self):
+        marks = ((), (), ("0",), (), (), ())
+        assert (
+            grid_verdict("12?317", "125317", marks, ambiguous=True)
+            is ErrorCategory.ROLL_AMBIGUITY_MISSED
+        )
+
+    def test_a_confident_column_is_still_checked_on_an_ambiguous_sheet(self):
+        marks = ((), (), ("0",), (), (), ())
+        assert (
+            grid_verdict("12?317", "99?317", marks, ambiguous=True)
+            is ErrorCategory.ROLL_ERROR
+        )
+
+    def test_a_length_change_is_a_plain_mismatch(self):
+        assert (
+            grid_verdict("12?317", "1203", ((), (), ("0",)), ambiguous=True)
+            is ErrorCategory.ROLL_ERROR
+        )
+
+    def test_the_set_code_gets_its_own_categories(self):
+        assert (
+            grid_verdict("A", "B", mismatch=ErrorCategory.SET_ERROR) is ErrorCategory.SET_ERROR
+        )
+
+
+class TestDuplicateIdentifiers:
+    """A batch-level property, scored apart from recognition correctness."""
+
+    def duplicate_pair(self, first_value: str, second_value: str, **truth_kwargs: object):
+        """Two sheets planted in one duplicate group, read as given."""
+        results = [
+            result_with({}, source_path=Path("a.png"), fields=(
+                make_field("roll_number", first_value, FieldStatus.RESOLVED.value),
+            )),
+            result_with({}, source_path=Path("b.png"), fields=(
+                make_field("roll_number", second_value, FieldStatus.RESOLVED.value),
+            )),
+        ]
+        truths = {
+            "a": SheetGroundTruth(
+                scan="a.png", roll="120317", duplicate_group="g1", **truth_kwargs
+            ),
+            "b": SheetGroundTruth(
+                scan="b.png", roll="120317", duplicate_group="g1", **truth_kwargs
+            ),
+        }
+        return evaluate(results, truths).summary
+
+    def test_a_planted_group_read_consistently_is_detected(self):
+        summary = self.duplicate_pair("120317", "120317")
+        assert summary.duplicate_groups_expected == 1
+        assert summary.duplicate_sheets_expected == 2
+        assert summary.duplicate_groups_detected == 1
+        assert summary.duplicate_detection_rate == 1.0
+
+    def test_a_group_whose_members_read_differently_is_missed(self):
+        summary = self.duplicate_pair("120317", "120318")
+        assert summary.duplicate_groups_detected == 0
+        assert summary.duplicate_groups_missed == 1
+
+    def test_an_unplanted_collision_is_reported_separately(self):
+        # Two different candidates read as the same number: a recognition
+        # error that shows up as a spurious duplicate.
+        results = [
+            result_with({}, source_path=Path("a.png"), fields=(
+                make_field("roll_number", "120317", FieldStatus.RESOLVED.value),
+            )),
+            result_with({}, source_path=Path("b.png"), fields=(
+                make_field("roll_number", "120317", FieldStatus.RESOLVED.value),
+            )),
+        ]
+        truths = {
+            "a": SheetGroundTruth(scan="a.png", roll="120317"),
+            "b": SheetGroundTruth(scan="b.png", roll="120318"),
+        }
+        summary = evaluate(results, truths).summary
+        assert summary.duplicate_groups_expected == 0
+        assert summary.duplicate_groups_false == 1
+
+    def test_duplicates_do_not_move_the_recognition_metrics(self):
+        # Reading the same number twice is *correct*; the identifier accuracy
+        # must say so, and the duplicate is reported on its own line.
+        summary = self.duplicate_pair("120317", "120317")
+        assert summary.roll_accuracy == 1.0
+
+    def test_a_deliberately_unreadable_member_is_left_out_of_the_group(self):
+        # The engine is right to decline it, so requiring it to collide would
+        # score correct caution as a miss.
+        summary = self.duplicate_pair("120317", "120317", roll_ambiguous=True)
+        assert summary.duplicate_groups_expected == 0
+
+
+class TestTheRunConfiguration:
+    def test_it_records_what_produced_the_numbers(self, tmp_path: Path):
+        report = evaluate(
+            [result_with({1: "B"})], {"scan": truth_with({1: "B"})}
+        ).with_config(
+            BenchmarkRunConfig(
+                dataset="synthetic",
+                template="sheet",
+                engine_version="1.0",
+                worker_count=4,
+                settings={"fill_ratio_threshold": 0.55},
+                generator={"seed": 7},
+            )
+        )
+        _summary, _csv, _errors, _categories, config_path = write_report(
+            report, tmp_path / "out"
+        )
+        stored = json.loads(config_path.read_text(encoding="utf-8"))
+        assert stored["worker_count"] == 4
+        assert stored["settings"]["fill_ratio_threshold"] == 0.55
+        assert stored["generator"]["seed"] == 7
+
+    def test_every_report_carries_the_synthetic_caveat(self, tmp_path: Path):
+        # A summary.json with a 0.999 in it will eventually be pasted into a
+        # slide. The file itself should say what it does and does not mean.
+        report = evaluate([result_with({1: "B"})], {"scan": truth_with({1: "B"})})
+        summary_path, _csv, _errors, _categories, config_path = write_report(
+            report, tmp_path / "out"
+        )
+        for path in (summary_path, config_path):
+            assert "not establish real-world" in path.read_text(encoding="utf-8")

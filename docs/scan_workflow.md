@@ -451,6 +451,33 @@ generator and the benchmark harness.
 
 ---
 
+## 10c. Benchmark mode
+
+*Tools > Developer / Testing > Run Recognition Benchmark* turns this same page
+into a scoring harness against a **labelled** dataset. A banner appears, the
+dataset's scans load into the ordinary scan list, and everything else works
+exactly as it always does - same *Process All*, same processing settings, same
+worker pool. When the run ends it is scored automatically and the results open.
+
+Deliberately not a separate window. A benchmark of a different pipeline would
+measure nothing worth knowing, and a second processing screen would be a second
+place for the two to drift apart.
+
+Two things change while benchmark mode is on: renaming is switched off (a
+benchmark reads a dataset and must not rewrite its own input), and a report is
+written to `<dataset>/benchmark_report/` when the run finishes, keeping the
+previous run beside it for comparison.
+
+Double-clicking a failing scan in the results selects it here, with its overlay,
+which is the point of running the benchmark in this page at all.
+
+Datasets come from *Tools > Developer / Testing > Generate Synthetic Test
+Dataset*, or from `python -m omr_scanner.tools.make_dataset`. **Synthetic
+results measure regression consistency and controlled edge cases, not
+real-world accuracy.**
+
+---
+
 ## 11. Known limitations
 
 * **PDF input is not supported** (§2).

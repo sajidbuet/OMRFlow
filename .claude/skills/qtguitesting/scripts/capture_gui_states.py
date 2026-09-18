@@ -469,6 +469,64 @@ def _capture_scan_multicore(image: Path) -> list[Path]:
     return written
 
 
+def _capture_developer_tools(_image: Path) -> list[Path]:
+    """The generation dialog, and the benchmark results of a real run.
+
+    Three images: the form a developer fills in, the Scan page in benchmark
+    mode with its banner, and the results dialog showing the per-test-case
+    table. The last is the one worth reading - it is what turns "94% accurate"
+    into something actionable.
+    """
+    from omr_scanner.evaluation.synthetic_dataset import (
+        DatasetProfile,
+        generate_dataset,
+    )
+    from omr_scanner.gui.devtools import BenchmarkResultsDialog, GenerateDatasetDialog
+    from omr_scanner.services import load_template
+
+    written: list[Path] = []
+    dataset = OUTPUT_ROOT / "capture_dataset"
+
+    # Constructed, never `exec()`d - a modal has nothing to click offscreen.
+    dialog = GenerateDatasetDialog(
+        template_path=SAMPLE_TEMPLATE, output_dir=dataset
+    )
+    dialog.count_spin.setValue(50)
+    dialog.profile_combo.setCurrentIndex(
+        dialog.profile_combo.findData(DatasetProfile.MIXED)
+    )
+    dialog.adjustSize()
+    written.append(_save(dialog, "devtools_generate_dialog"))
+
+    template = load_template(SAMPLE_TEMPLATE)
+    generate_dataset(
+        dataset, template, count=8, seed=4242, profile=DatasetProfile.MIXED,
+        name="capture",
+    )
+
+    harness = build_scan_page()
+    harness.page.benchmark_auto_show = False
+    harness.page.enter_benchmark_mode(dataset)
+    harness.process_events()
+    written.append(_save(harness.page, "devtools_benchmark_mode"))
+
+    report = harness.run_batch()
+    print(f"  benchmarked {report.total} sheet(s)")
+    scored = harness.page.last_benchmark
+    if scored is not None:
+        print(
+            f"  sheet accuracy {scored.summary.sheet_accuracy:.4f}, "
+            f"{len(scored.categories)} categor(ies), "
+            f"{len(scored.errors)} disagreement(s)"
+        )
+        results = BenchmarkResultsDialog(scored)
+        results.resize(880, 620)
+        harness.process_events()
+        written.append(_save(results, "devtools_benchmark_results"))
+    harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
     "loaded": _capture_loaded,
@@ -484,6 +542,7 @@ SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "scan-multicore": _capture_scan_multicore,
     "scan-progress": _capture_scan_progress,
     "settings": _capture_settings,
+    "devtools": _capture_developer_tools,
 }
 
 

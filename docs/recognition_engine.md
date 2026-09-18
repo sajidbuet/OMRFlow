@@ -262,46 +262,109 @@ prints one line per sheet and a summary; `--quiet` prints only the summary.
 
 ## 7. Synthetic datasets
 
-`python -m omr_scanner.tools.make_dataset` renders labelled sheets **from a real
-template**, so a dataset exercises the coordinate mapping the engine actually
-uses:
+Available two ways, from the same code: *Tools > Developer / Testing > Generate
+Synthetic Test Dataset* in the application, and
+`python -m omr_scanner.tools.make_dataset` on the command line. Both render
+labelled sheets **from a real template**, so a dataset exercises the coordinate
+mapping the engine actually uses:
 
 ```bash
 python -m omr_scanner.tools.make_dataset out/dataset \
     --template examples/templates/ece_0000_sample.omrt \
-    --count 24 --profile mixed --seed 20260918
+    --count 250 --profile mixed --seed 20260918
 ```
 
 ```text
 out/dataset/
 ├── images/SYN_000001.png ...
 ├── ground_truth/SYN_000001.json ...
-└── manifest.json          seed, profile, count, generator version
+├── manifest.json           template, seed, profile, count, DPI, format
+├── manifest.csv            one row per sheet, with its tags
+└── dataset_summary.json    how many sheets of each kind
 ```
 
-| Profile | What it produces |
+### Resolution and format
+
+Sheets are rendered at **150 DPI derived from the template's physical page
+size** (`page.width_mm` / `page.height_mm`), not at its canonical pixel size:
+A4 → 1240 × 1754 px, Letter → 1275 × 1650. That is the honest thing to do - a
+real scan is whatever the scanner produced, and rendering at the canonical size
+would hand the engine a page that needed no rescaling and quietly stop testing
+one. `--dpi` changes it; a template with no millimetres falls back to its
+canonical size and says so in the manifest.
+
+`--format png` (the default, lossless and therefore byte-reproducible) or
+`--format jpg`. JPEG quality defaults to 92: compression *damage* is its own
+test case with its own tag, and should not arrive uninvited in every dataset
+that happens to be written as JPEG.
+
+### Nothing is hard-coded
+
+Identifier length and symbols, set-code structure, question count, option
+labels, bubble size and page dimensions all come from the template
+(`evaluation.test_cases.FieldLayout`). A nine-digit identifier with six options
+and no set code generates correctly with no code change; an optional field that
+is absent simply produces no cases of that kind rather than an error.
+`--describe` prints what a template offers before anything is generated.
+
+### Named test cases, not random noise
+
+Every sheet is a *named case* carrying tags (`evaluation.test_cases.TestCaseTag`)
+that survive into the ground truth and then into the benchmark's category table.
+The families (`CaseFamily`):
+
+| Family | What it contains |
 |---|---|
-| `clean` | No distortion. Anything failing here is a bug, not a tolerance question |
-| `normal` | A decent office scanner: ±2°, mild exposure variation, light noise |
-| `difficult` | A tired photocopier: skew, perspective, uneven illumination, blur, JPEG, and marks in every style candidates actually use |
-| `stress` | At or past the documented limits, including a missing marker or a cropped page |
-| `mixed` | A realistic batch: mostly normal, some difficult, a few broken |
+| `baseline` | Clean valid sheets, first/last question, first/last option, repeated-digit and boundary identifiers |
+| `student_id` | Blank, partial, multiply-marked, faint, erased and offset identifier columns |
+| `set_code` | Blank, multiple, faint and erased set codes |
+| `answers` | Blank questions, all-blank sheets, double and triple marks, all options marked, strong-plus-weak pairs, faint, erased, offset, oversized, undersized and between-bubble marks |
+| `mark_styles` | Fill, tick, cross, ring, scribble, dot, horizontal/vertical stroke, slash |
+| `intensity` | A ten-step sweep across the template's own fill and blank thresholds |
+| `geometry` | Mild/moderate/severe rotation, quarter turns, scale, translation, perspective |
+| `cropping` | Mildly and severely cropped pages |
+| `markers` | Faint, damaged, missing and extra registration markers; missing and faint orientation mark |
+| `image_quality` | Blur, noise, speckle, brightness, contrast, illumination gradient, JPEG artefacts |
+| `paper` | Paper tint, scanner streaks, edge shadow |
+| `duplicates` | Planted duplicate identifiers: adjacent, separated, different set codes, one low-confidence |
+| `mixed` | Deliberate combinations of defects that really co-occur |
 
-Mark styles (`imaging.synthetic.MarkStyle`): a shaded disc, a circled bubble, a
-tick, a cross, a scribble, a stray dot - each with its own coverage, darkness,
-offset and size. Real candidates do not all shade neatly inside the ring, and an
-engine that has only ever been tested on concentric discs has been tested on the
-easy case.
+Profiles select families: `baseline`, `recognition`, `degradation`, `batch`,
+`stress`, `mixed` (the default), and `custom` with `--families`.
 
-**Reproducibility.** The same seed, count, profile and template give the same
-dataset, byte for byte. Each sheet derives its own seed, so sheet 7 can be
-regenerated alone and growing a dataset does not reshuffle the sheets already
-in it.
+**Mandatory cases come first.** Each family emits its edge cases
+unconditionally, and when a dataset is too small to hold them all the planner
+takes a *spread across families* rather than a prefix - so twelve sheets of a
+Mixed dataset are twelve different kinds of sheet, not twelve baselines. A
+randomly sampled dataset has a real chance of containing no blank identifier at
+all, and then the headline number looks fine while the case that would have
+failed was never generated.
 
-**Ground truth is generated, never inferred.** Each document records what was
-drawn, which defects were injected and with what parameters, and which
-questions were deliberately marked *borderline* (`ambiguous`) - for those,
-flagging the question is correct behaviour and is scored as such.
+### Reproducibility
+
+The same seed, count, profile, template, DPI and format give the same dataset,
+byte for byte. The plan is pure data, so one sheet can be re-rendered on its own
+without regenerating the ones before it. Generation streams: one sheet is
+rendered, encoded, written and released before the next begins, so ten thousand
+sheets cost one page of memory. It is cancellable, and a cancelled run writes a
+manifest that says how much of the dataset actually exists.
+
+### Ground truth is generated, never inferred
+
+Every expected value is derived from the marks the case will draw, by one rule,
+in one place (`SheetBuilder`). A generator that decided "this sheet answers B"
+separately from "draw a mark on B" will eventually disagree with itself and the
+benchmark will blame the engine - which has already happened once in this
+repository.
+
+Each document records the value *and* the marks behind it (`roll_marks`,
+`set_marks`), the tags, the degradation parameters that were applied, the
+duplicate group if any, and which questions were deliberately drawn *borderline*
+(`ambiguous`) - for those, flagging is correct behaviour and is scored as such.
+
+**Identifiers are fictional by construction**, derived from the sheet index.
+Nothing resembling a real institution's numbering is ever generated, so a
+synthetic dataset can be committed or shared freely.
 
 > Synthetic accuracy is not real accuracy. These pages have clean geometry,
 > even paper and marks drawn by arithmetic. They are excellent at catching
@@ -312,21 +375,35 @@ flagging the question is correct behaviour and is scored as such.
 
 ## 8. Benchmarking
 
+Two ways, one implementation. In the application, *Tools > Developer / Testing >
+Run Recognition Benchmark* puts the existing **Scan page into benchmark mode**:
+a banner, the dataset's scans in the ordinary list, and the same *Process All*
+button, the same settings and the same worker pool. There is deliberately no
+second processing window - a benchmark of a different pipeline would measure
+nothing worth knowing.
+
 ```bash
 python -m omr_scanner.tools.benchmark_recognition out/dataset \
-    --template sheet.omrt --report out/benchmark --workers auto
+    --template sheet.omrt --report out/benchmark --workers auto --categories 0
 ```
 
 ```text
 out/benchmark/
-├── summary.json    dataset-level metrics
-└── errors.csv      one row per disagreement
+├── summary.json           dataset-level metrics, with the categories
+├── summary.csv            the same metrics, one per row
+├── errors.csv             one row per disagreement
+├── category_metrics.csv   accuracy per kind of test case
+└── run_config.json        dataset, template, engine, workers, settings, seed
 ```
 
-Metrics: scans processed and failed, roll and set exact-match accuracy,
-question accuracy, blank-detection accuracy, multiple-mark accuracy, how
-borderline marks were handled, flagged questions, accuracy by decision-score
-band, and timing.
+In the GUI the report is written to `<dataset>/benchmark_report/`, with the
+previous run kept in `benchmark_report/previous/` so every run compares itself
+with the one before it.
+
+Metrics: sheets read with nothing wrong at all, registration rate, roll and set
+exact-match accuracy, question accuracy, blank-detection accuracy,
+multiple-mark accuracy, how borderline marks were handled, flagged questions,
+accuracy by decision-score band, and timing.
 
 Every disagreement is **classified**, because "94% accurate" is not actionable:
 
@@ -338,8 +415,40 @@ Every disagreement is **classified**, because "94% accurate" is not actionable:
 | `MISSED_MULTIPLE_MARK` | A candidate's second mark silently discarded. The dangerous one |
 | `FALSE_MULTIPLE_MARK` | Noisy, but safe: it is flagged |
 | `ROLL_ERROR`, `SET_ERROR` | The identifier or set code did not match |
+| `ROLL_AMBIGUITY_MISSED`, `SET_AMBIGUITY_MISSED` | A deliberately unreadable column was resolved confidently to something never drawn. The engine did not misread a digit - it failed to notice it was guessing |
 | `ALIGNMENT_ERROR` | Should have registered and did not, or vice versa |
+| `ORIENTATION_ERROR` | Registration failed specifically on the orientation mark |
 | `PROCESSING_FAILURE` | Could not be processed at all |
+
+### Per-test-case categories
+
+The reason the generator tags its sheets. A dataset that is 94% correct overall
+is far more useful described as "perfect everywhere except dot-shaped marks":
+
+```text
+By test case (least accurate first):
+  category                    sheets  sheet ok   answers  errors
+  MARK_STYLE_DOT                   1    0.0000    0.0000     100
+  MARK_STYLE_SLASH                 1    0.0000    0.0000     100
+  BASELINE                        15    1.0000    1.0000       0
+```
+
+A sheet counts in full towards each of its tags rather than being divided
+between them. A category made entirely of deliberate failures has no accuracy
+to report and shows a dash, not `0.0000`, and sorts to the end - it behaved
+perfectly, and a zero there would be a lie with a decimal point. Sheets with no
+tags at all, as a real dataset will have, appear under `UNTAGGED`.
+
+### Duplicate identifiers
+
+Reported on their own, never folded into identifier accuracy: reading the same
+number twice is **correct**, and whether the batch layer noticed is a different
+question from whether the engine read the digits. A planted group counts as
+detected when every sheet in it came back carrying the same identifier; a set of
+sheets that share a recognised identifier without having been planted together
+is an *unplanted collision*, which is a recognition error showing up as a
+spurious duplicate. A group member whose identifier was drawn deliberately
+unreadable is left out of the reckoning - the engine is right to decline it.
 
 ### Comparing against a baseline
 
@@ -348,10 +457,17 @@ python -m omr_scanner.tools.benchmark_recognition out/dataset \
     --template sheet.omrt --baseline out/benchmark_before/summary.json
 ```
 
-Each metric is reported as `improved`, `unchanged` or `regressed`, with a
-default tolerance of 0.5 percentage points - small datasets move by more than
-that when one sheet differs, and a comparison that shouts every run is ignored
-within a week.
+Each headline metric, and each test-case category, is reported as `improved`,
+`unchanged` or `regressed`, with a default tolerance of 0.5 percentage points -
+small datasets move by more than that when one sheet differs, and a comparison
+that shouts every run is ignored within a week. A category present in only one
+of the two runs is compared against zero rather than skipped: a family that has
+silently stopped being generated is exactly what a regression comparison exists
+to surface.
+
+`run_config.json` records what produced the numbers - dataset, template, engine
+version, worker count, the recognition settings in force and the dataset's own
+seed and profile. A number without its conditions is not a measurement.
 
 **Nothing here fails a build.** Whether a regression on synthetic data should
 block a change depends on what changed, and encoding that here would make the
@@ -389,11 +505,23 @@ diff: these files are a published contract.
 
 ## 10. Real datasets
 
-`local_test_data/` is where a real corpus goes. Everything inside it is
-git-ignored; only its README is committed. It uses the same layout and the same
-ground-truth schema as a synthetic dataset, so the same benchmark command works
-on either. Nothing is uploaded; no network request is made anywhere in
+`local_test_data/` and `private_test_data/` are where a real corpus goes.
+Everything inside them is git-ignored; only `local_test_data/README.md` is
+committed. They use the same layout and the same ground-truth schema as a
+synthetic dataset, so the same benchmark command and the Scan page's benchmark
+mode work on either. Nothing is uploaded; no network request is made anywhere in
 recognition, benchmarking or reporting.
+
+Writing the ground truth by hand is the whole job, and the schema is built for
+it: set `human_verified` and a `reviewer`, and add `tags` describing what makes
+each sheet interesting - `FAINT_MARK`, `ERASED_MARK`, `MULTIPLE_ANSWER`, and so
+on from `TestCaseTag`. Those tags put a real sheet in the same category table as
+its synthetic equivalent, which is where the two can finally be compared.
+Sheets with no tags appear under `UNTAGGED` rather than vanishing.
+
+**Never commit real candidate identifiers.** Synthetic datasets use fictional
+identifiers derived from the sheet index precisely so that they *can* be
+committed; a real one cannot.
 
 ---
 
@@ -408,11 +536,19 @@ are the questions a real dataset has to answer:
   interpretable and monotone in the evidence, and it has never been checked
   against observed correctness. The benchmark reports accuracy by band so that
   it *can* be, once there is data.
-- **Line-shaped marks are under-read.** Measured on a synthetic mixed dataset:
-  ticks produced a false-blank rate of about 33% and circled bubbles about 8%,
-  against 0% for crosses and scribbles, because a tick covers little of the
-  bubble's interior and the measurement is coverage-based. Whether real
-  candidates' ticks behave the same way, and whether the fix is a darkness term
-  or a lower threshold, is exactly what the real corpus is for.
+- **Line-shaped and small marks are under-read.** Measured on synthetic
+  datasets, two ways. On one template, ticks produced a false-blank rate of
+  about 33% and circled bubbles about 8%, against 0% for crosses and scribbles.
+  On another (100 questions, default 0.55 fill / 0.25 blank thresholds), the
+  mean leading fill ratio was **0.93** for a filled bubble, **0.51-0.54** for a
+  horizontal stroke or a slash - inside the uncertainty band, so the engine
+  flagged them - and **0.16** for a dot, below the blank threshold, so the
+  engine read it confidently as blank.
+
+  All of this follows from a coverage-based measurement, and is recorded rather
+  than tuned away. Whether real candidates' ticks, dots and slashes behave the
+  same way, and whether the fix is a darkness term, a stroke-aware measurement
+  or a lower threshold, is exactly what the real corpus is for. The benchmark's
+  category table is how the answer will be read: each mark style is its own row.
 - **Registration limits** are Phase 1's: ±15° plus quarter turns, illumination
   gradients to about 0.45, roughly 5% margin cropping.

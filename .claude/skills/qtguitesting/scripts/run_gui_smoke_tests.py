@@ -465,6 +465,133 @@ def _check_progress_panel_has_no_per_scan_widgets() -> CheckResult:
     )
 
 
+def _check_tools_menu_offers_the_developer_commands() -> CheckResult:
+    """Tools > Developer / Testing carries both commands, always enabled."""
+    from PySide6.QtWidgets import QMenu
+
+    from omr_scanner.gui.main_window import MainWindow
+
+    window = MainWindow()
+    titles = [menu.title() for menu in window.menuBar().findChildren(QMenu)]
+    ok = (
+        any("Tools" in title for title in titles)
+        and any("Developer" in title for title in titles)
+        and window.generate_dataset_action.isEnabled()
+        and window.run_benchmark_action.isEnabled()
+    )
+    window.close()
+    return ok, f"menus {[t for t in titles if t]}"
+
+
+def _check_generation_dialog_builds_a_request() -> CheckResult:
+    """The generation dialog collects a complete request from its widgets."""
+    from _harness import OUTPUT_ROOT, SAMPLE_TEMPLATE
+
+    from omr_scanner.evaluation.synthetic_dataset import DatasetProfile, ImageFormat
+    from omr_scanner.gui.devtools import GenerateDatasetDialog
+
+    # Constructed, never `exec()`d - see `_check_dialogs_instantiate`.
+    dialog = GenerateDatasetDialog(
+        template_path=SAMPLE_TEMPLATE, output_dir=OUTPUT_ROOT / "synthetic"
+    )
+    dialog.count_spin.setValue(24)
+    dialog.seed_spin.setValue(4242)
+    dialog.profile_combo.setCurrentIndex(
+        dialog.profile_combo.findData(DatasetProfile.DEGRADATION)
+    )
+    dialog.format_combo.setCurrentIndex(dialog.format_combo.findData(ImageFormat.JPEG))
+
+    request = dialog.request()
+    ok = (
+        request is not None
+        and request.count == 24
+        and request.seed == 4242
+        and request.profile is DatasetProfile.DEGRADATION
+        and request.image_format is ImageFormat.JPEG
+        and dialog.quality_spin.isEnabled()
+    )
+    return ok, (
+        f"profile {request.profile.value}, {request.count} sheet(s) at "
+        f"{request.dpi} dpi as {request.image_format.value}"
+        if request is not None
+        else "the dialog produced no request"
+    )
+
+
+def _check_generate_and_benchmark_end_to_end() -> CheckResult:
+    """Generate a small dataset, score it, and read the category table.
+
+    The one check here that exercises the whole developer feature: the
+    generator, the batch pipeline, the scorer and the report files.
+    """
+    from _harness import OUTPUT_ROOT, SAMPLE_TEMPLATE, build_scan_page
+
+    from omr_scanner.evaluation.session import REPORT_DIRNAME
+    from omr_scanner.evaluation.synthetic_dataset import (
+        DatasetProfile,
+        generate_dataset,
+    )
+    from omr_scanner.services import load_template
+
+    dataset = OUTPUT_ROOT / "smoke_dataset"
+    template = load_template(SAMPLE_TEMPLATE)
+    generate_dataset(
+        dataset,
+        template,
+        count=6,
+        seed=4242,
+        profile=DatasetProfile.BASELINE,
+        name="smoke",
+    )
+
+    harness = build_scan_page()
+    page = harness.page
+    page.benchmark_auto_show = False
+    if not page.enter_benchmark_mode(dataset):
+        harness.shutdown()
+        return False, "benchmark mode did not start"
+
+    harness.run_batch()
+    report = page.last_benchmark
+    harness.shutdown()
+    if report is None:
+        return False, "the run was not scored"
+
+    ok = (
+        report.summary.scans == 6
+        and report.summary.question_accuracy == 1.0
+        and bool(report.categories)
+        and (dataset / REPORT_DIRNAME / "summary.json").is_file()
+        and (dataset / REPORT_DIRNAME / "category_metrics.csv").is_file()
+    )
+    return ok, (
+        f"{report.summary.scans} sheet(s), sheet accuracy "
+        f"{report.summary.sheet_accuracy:.4f}, answer accuracy "
+        f"{report.summary.question_accuracy:.4f}, "
+        f"{len(report.categories)} test-case categor(ies), "
+        f"{len(report.errors)} disagreement(s)"
+    )
+
+
+def _check_benchmark_dialog_constructs() -> CheckResult:
+    """The results dialog builds from an empty report without a run behind it."""
+    from PySide6.QtWidgets import QTableWidget
+
+    from omr_scanner.evaluation.benchmark import BenchmarkReport, BenchmarkSummary
+    from omr_scanner.gui.devtools import BenchmarkResultsDialog
+
+    dialog = BenchmarkResultsDialog(
+        BenchmarkReport(summary=BenchmarkSummary(dataset="empty"))
+    )
+    required = ("benchmarkSummaryTable", "benchmarkCategoryTable", "benchmarkErrorTable")
+    missing = [name for name in required if dialog.findChild(QTableWidget, name) is None]
+    return not missing, (
+        "summary, category and error tables present"
+        if not missing
+        else f"missing: {', '.join(missing)}"
+    )
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -509,6 +636,11 @@ def main(argv: list[str] | None = None) -> int:
         ("settings dialog offers Diagnostics", _check_settings_dialog_diagnostics_section),
         ("progress panel renders a large batch", _check_progress_panel_renders_a_large_batch),
         ("no per-scan widgets at 10,000 rows", _check_progress_panel_has_no_per_scan_widgets),
+        (
+            "tools menu offers the developer commands",
+            _check_tools_menu_offers_the_developer_commands,
+        ),
+        ("benchmark results dialog constructs", _check_benchmark_dialog_constructs),
     ]
 
     # The Scan checks drive the real template that describes the real sample.
@@ -534,6 +666,14 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "multicore reads the same as single core",
                     lambda: _check_multicore_batch_matches_single_core(args.image),
+                ),
+                (
+                    "generation dialog builds a request",
+                    _check_generation_dialog_builds_a_request,
+                ),
+                (
+                    "generate and benchmark end to end",
+                    _check_generate_and_benchmark_end_to_end,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

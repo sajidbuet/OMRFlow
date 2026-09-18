@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGroupBox,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
@@ -85,11 +86,14 @@ from omr_scanner.services import (
     format_rate,
     load_template,
 )
+from omr_scanner.services.recognition_models import utc_timestamp
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
     from omr_scanner.domain.template import OmrTemplate
+    from omr_scanner.evaluation.benchmark import BenchmarkReport
+    from omr_scanner.evaluation.session import BenchmarkComparison, BenchmarkSession
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import ProjectSession
 
@@ -205,6 +209,10 @@ class ScanPageState:
         processing: How many CPU workers a run may use. Set from the application
             settings by the main window; the default is what a page built
             without one uses.
+        benchmark: The labelled dataset this page is scoring against, or
+            ``None`` in ordinary use. Benchmark mode changes what happens *after*
+            a run, never how the run itself works - the point is to measure the
+            pipeline users actually get.
     """
 
     template: OmrTemplate | None = None
@@ -213,6 +221,7 @@ class ScanPageState:
     output_dir: Path | None = None
     rename_enabled: bool = False
     processing: ProcessingSettings = field(default_factory=ProcessingSettings)
+    benchmark: BenchmarkSession | None = None
 
 
 class ScanPage(WorkflowPage):
@@ -222,6 +231,9 @@ class ScanPage(WorkflowPage):
         batch_finished: ``BatchReport`` when a run ends. GUI tests and the
             qtguitesting scripts wait on this instead of sleeping.
         scan_selected: ``int`` row index whenever the shown scan changes.
+        benchmark_finished: ``BenchmarkReport`` when a run in benchmark mode has
+            been scored. Emitted before the results dialog opens, so a test can
+            read the numbers without a dialog on screen.
 
     Args:
         spec: The "scan" workflow stage description.
@@ -230,6 +242,7 @@ class ScanPage(WorkflowPage):
 
     batch_finished = Signal(object)
     scan_selected = Signal(int)
+    benchmark_finished = Signal(object)
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
@@ -254,10 +267,21 @@ class ScanPage(WorkflowPage):
         self._dirty_rows: set[int] = set()
         self._last_snapshot = ProgressSnapshot()
         self._final_report: BatchReport | None = None
+        self._batch_started_at = ""
+
+        # The last benchmark this page produced, kept so the banner's "Show
+        # Results" can reopen it without re-running anything.
+        self.last_benchmark: BenchmarkReport | None = None
+        self.last_comparison: BenchmarkComparison | None = None
+        self.benchmark_auto_show = True
+        """Whether scoring a run opens the results dialog. GUI tests turn this
+        off and read :attr:`last_benchmark` instead of dismissing a modal."""
 
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(PROGRESS_REFRESH_MS)
         self._refresh_timer.timeout.connect(self._refresh_progress)
+
+        self.body.addWidget(self._build_benchmark_banner())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_controls())
@@ -392,6 +416,39 @@ class ScanPage(WorkflowPage):
 
         layout.addStretch(1)
         return panel
+
+    def _build_benchmark_banner(self) -> QWidget:
+        """Build the strip that says this page is scoring a labelled dataset.
+
+        Hidden in ordinary use. Visible and unmissable in benchmark mode,
+        because the one thing that must never happen is somebody processing a
+        real examination while the page is quietly comparing it against
+        somebody else's answer key.
+        """
+        banner = QWidget()
+        banner.setObjectName("benchmarkBanner")
+        banner.setVisible(False)
+        layout = QHBoxLayout(banner)
+        layout.setContentsMargins(8, 4, 8, 4)
+
+        self.benchmark_label = QLabel("")
+        self.benchmark_label.setObjectName("benchmarkBannerLabel")
+        self.benchmark_label.setWordWrap(True)
+        layout.addWidget(self.benchmark_label, stretch=1)
+
+        self.benchmark_results_button = QPushButton("Show Results")
+        self.benchmark_results_button.setObjectName("showBenchmarkResultsButton")
+        self.benchmark_results_button.setEnabled(False)
+        self.benchmark_results_button.clicked.connect(self.show_benchmark_results)
+        layout.addWidget(self.benchmark_results_button)
+
+        self.exit_benchmark_button = QPushButton("Exit Benchmark Mode")
+        self.exit_benchmark_button.setObjectName("exitBenchmarkButton")
+        self.exit_benchmark_button.clicked.connect(self.exit_benchmark_mode)
+        layout.addWidget(self.exit_benchmark_button)
+
+        self.benchmark_banner = banner
+        return banner
 
     def _build_progress_panel(self) -> QWidget:
         """Build the batch progress readout.
@@ -931,6 +988,7 @@ class ScanPage(WorkflowPage):
         )
         workers = self.planned_worker_count(len(paths))
         self._final_report = None
+        self._batch_started_at = utc_timestamp()
         # Everything before the first sheet is read is "preparing": the worker
         # pool has to start, and showing "0 / 10,000, 0%, remaining 00:00:00"
         # while that happens looks like a stalled run rather than a starting
@@ -1123,6 +1181,10 @@ class ScanPage(WorkflowPage):
         self._refresh_controls()
         if self.scan_table.currentRow() >= 0:
             self.select_scan(self.scan_table.currentRow())
+        # Scored before the signal so that anything waiting on `batch_finished`
+        # - a qtguitesting script, a test - already sees the benchmark result.
+        if self.state.benchmark is not None and not report.cancelled:
+            self._score_benchmark(report)
         self.batch_finished.emit(report)
 
     def _render_completion(self, report: BatchReport, snapshot: ProgressSnapshot) -> None:
@@ -1186,6 +1248,154 @@ class ScanPage(WorkflowPage):
         self._refresh_controls()
         _LOGGER.error("Batch could not start: %s", message)
         QMessageBox.warning(self, "Processing failed", message)
+
+    # ------------------------------------------------------------------
+    # Benchmark mode
+    # ------------------------------------------------------------------
+    def enter_benchmark_mode(self, dataset_dir: Path) -> bool:
+        """Score the next run against the labelled dataset at ``dataset_dir``.
+
+        Args:
+            dataset_dir: A dataset folder holding ``images/`` and
+                ``ground_truth/``.
+
+        Returns:
+            ``True`` when the dataset was opened and its scans were loaded.
+
+        Benchmark mode is deliberately thin: it loads the dataset's scans into
+        the ordinary scan list and remembers the ground truth. Processing then
+        happens through exactly the same batch architecture, with the same
+        settings and the same worker pool, because a benchmark of a *different*
+        pipeline would measure nothing worth knowing.
+        """
+        from omr_scanner.evaluation.session import BenchmarkSession
+
+        if self._worker is not None and self._worker.isRunning():
+            return False
+        try:
+            session = BenchmarkSession.open(dataset_dir)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Benchmark", str(exc))
+            return False
+
+        self.clear_scans()
+        self.state.benchmark = session
+        self.last_benchmark = None
+        self.last_comparison = None
+        # Renaming copies files about; a benchmark reads a dataset and must not
+        # rewrite it.
+        self.rename_checkbox.setChecked(False)
+        added = self.add_scan_paths([session.images_dir])
+        self._refresh_benchmark_banner()
+        _LOGGER.info(
+            "Benchmark mode: dataset '%s' at %s, %d labelled sheet(s), %d scan(s) loaded",
+            session.name,
+            session.dataset_dir,
+            session.sheet_count,
+            added,
+        )
+        if added == 0:
+            QMessageBox.warning(
+                self,
+                "Benchmark",
+                f"No scans found in {session.images_dir}.",
+            )
+        return added > 0
+
+    def exit_benchmark_mode(self) -> None:
+        """Return the page to ordinary scanning, leaving the scan list alone."""
+        if self.state.benchmark is None:
+            return
+        _LOGGER.info("Benchmark mode ended")
+        self.state.benchmark = None
+        self._refresh_benchmark_banner()
+
+    def _refresh_benchmark_banner(self) -> None:
+        """Show, hide and word the benchmark banner."""
+        session = self.state.benchmark
+        self.benchmark_banner.setVisible(session is not None)
+        self.benchmark_results_button.setEnabled(self.last_benchmark is not None)
+        if session is None:
+            self.benchmark_label.setText("")
+            return
+        self.benchmark_label.setText(
+            f"<b>Benchmark mode</b> - scoring against '{session.name}' "
+            f"({format_count(session.sheet_count)} labelled sheet(s)) from "
+            f"{session.dataset_dir}. Results are synthetic and are not "
+            f"real-world accuracy."
+        )
+
+    def _score_benchmark(self, report: BatchReport) -> None:
+        """Compare a finished run with the dataset's ground truth.
+
+        Called from the batch-finished handler. Failures here are reported and
+        swallowed: a benchmark that cannot be scored must not take the batch
+        result down with it - the run itself succeeded.
+        """
+        session = self.state.benchmark
+        if session is None:
+            return
+        results = [item.result for item in report.processed]
+        try:
+            scored, comparison = session.score(
+                results,
+                self.state.template,
+                worker_count=report.worker_count,
+                started_at=self._batch_started_at,
+            )
+        except OSError as exc:
+            _LOGGER.exception("Could not write the benchmark report")
+            QMessageBox.warning(self, "Benchmark", f"Could not write the report: {exc}")
+            return
+
+        self.last_benchmark = scored
+        self.last_comparison = comparison
+        self.benchmark_results_button.setEnabled(True)
+        self.progress_label.setText(
+            f"Benchmark: sheet accuracy {scored.summary.sheet_accuracy:.4f}, "
+            f"{format_count(len(scored.errors))} disagreement(s)"
+        )
+        _LOGGER.info(
+            "Benchmark scored: %d scan(s), sheet accuracy %.4f, %d error(s)%s",
+            scored.summary.scans,
+            scored.summary.sheet_accuracy,
+            len(scored.errors),
+            f", {len(comparison.regressions)} regression(s)" if comparison.has_baseline else "",
+        )
+        self.benchmark_finished.emit(scored)
+        if self.benchmark_auto_show:
+            self.show_benchmark_results()
+
+    def show_benchmark_results(self) -> None:
+        """Open the results dialog for the last scored run."""
+        if self.last_benchmark is None:
+            return
+        from omr_scanner.gui.devtools.benchmark_dialog import BenchmarkResultsDialog
+
+        session = self.state.benchmark
+        dialog = BenchmarkResultsDialog(
+            self.last_benchmark,
+            session.report_dir if session is not None else None,
+            self,
+        )
+        dialog.scan_requested.connect(self.select_scan_named)
+        dialog.exec()
+
+    def select_scan_named(self, name: str) -> bool:
+        """Select the scan whose file name is ``name``.
+
+        How a failing case gets reviewed: the benchmark names a scan, the page
+        selects it, and the existing preview and overlay do the rest. Returns
+        whether the scan was in the list.
+        """
+        for row, entry in enumerate(self.state.entries):
+            if entry.path.name == name:
+                self.select_scan(row)
+                item = self.scan_table.item(row, 0)
+                if item is not None:
+                    self.scan_table.scrollToItem(item)
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Selection and preview

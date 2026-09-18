@@ -139,6 +139,16 @@ class MarkStyle(StrEnum):
     DOT = "dot"
     """A small spot: a stray pen touch, or an answer barely begun."""
 
+    STROKE_H = "stroke_h"
+    """A single horizontal line through the bubble."""
+
+    STROKE_V = "stroke_v"
+    """A single vertical line through the bubble."""
+
+    SLASH = "slash"
+    """One diagonal stroke - half a cross, and a genuinely common way of
+    answering a paper form."""
+
 
 @dataclass(frozen=True, slots=True)
 class AnswerBubbleSpec:
@@ -242,6 +252,9 @@ class SyntheticSheetSpec:
     draw_answer_frames: bool = True
     decoy_markers: tuple[NormalizedPoint, ...] = ()
     omit_markers: frozenset[MarkerRole] = frozenset()
+    faint_markers: frozenset[MarkerRole] = frozenset()
+    damaged_markers: frozenset[MarkerRole] = frozenset()
+    faint_orientation_marker: bool = False
     omit_orientation_marker: bool = False
     answer_bubbles: tuple[AnswerBubbleSpec, ...] = ()
 
@@ -328,6 +341,10 @@ class DistortionSpec:
     blur_kernel_px: int = 0
     noise_sigma: float = 0.0
     jpeg_quality: int | None = None
+    paper_gray: int = _PAPER
+    speckle_density: float = 0.0
+    streak_strength: float = 0.0
+    edge_shadow: float = 0.0
     seed: int = 0
 
     def __post_init__(self) -> None:
@@ -392,7 +409,17 @@ def render_sheet(spec: SyntheticSheetSpec | None = None) -> SyntheticSheet:
     for role in CANONICAL_CORNER_ORDER:
         if role in active.omit_markers:
             continue
-        _draw_filled_rectangle(image, active.to_pixels(active.marker_targets[role]), marker_size)
+        centre = active.to_pixels(active.marker_targets[role])
+        # A faint marker is printed grey rather than black - a worn printer or
+        # a pale photocopy - and a damaged one has a corner torn out of it.
+        # Both are detector problems rather than page problems, which is
+        # exactly why they are drawn here and not applied as a distortion.
+        faint = role in active.faint_markers
+        _draw_filled_rectangle(
+            image, centre, marker_size, grey=_FAINT_MARKER_GREY if faint else _INK
+        )
+        if role in active.damaged_markers:
+            _damage_rectangle(image, centre, marker_size)
 
     for decoy in active.decoy_markers:
         _draw_filled_rectangle(image, active.to_pixels(decoy), marker_size)
@@ -402,6 +429,7 @@ def render_sheet(spec: SyntheticSheetSpec | None = None) -> SyntheticSheet:
             image,
             active.to_pixels(active.orientation_center),
             (active.orientation_width * active.width, active.orientation_height * active.height),
+            grey=_FAINT_MARKER_GREY if active.faint_orientation_marker else _INK,
         )
 
     control_points = tuple(active.to_pixels(point) for point in active.control_points)
@@ -510,6 +538,15 @@ def apply_distortion(sheet: SyntheticSheet, spec: DistortionSpec) -> DistortedSh
         generator = np.random.default_rng(spec.seed + 1)
         noise = generator.normal(0.0, spec.noise_sigma, size=image.shape)
         image = np.clip(image.astype(np.float64) + noise, 0, 255).astype(np.uint8)
+    if spec.paper_gray < _PAPER:
+        # Grey or tinted stock: everything paper-coloured darkens, ink does not.
+        image = _tint_paper(image, spec.paper_gray)
+    if spec.speckle_density > 0.0:
+        image = _add_speckle(image, spec.speckle_density, spec.seed + 2)
+    if spec.streak_strength > 0.0:
+        image = _add_scanner_streak(image, spec.streak_strength, spec.seed + 3)
+    if spec.edge_shadow > 0.0:
+        image = _add_edge_shadow(image, spec.edge_shadow)
     if spec.jpeg_quality is not None:
         encoded, buffer = cv2.imencode(
             ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), spec.jpeg_quality]
@@ -572,6 +609,65 @@ def project(matrix: NDArray[np.float64], points: Sequence[Point]) -> tuple[Point
     )
 
 
+def _tint_paper(image: NDArray[np.uint8], paper_gray: int) -> NDArray[np.uint8]:
+    """Darken the page towards ``paper_gray`` without touching the ink.
+
+    Scaled rather than offset, so black stays black: grey paper makes the
+    *contrast* between mark and background smaller, which is the property that
+    matters to a threshold, and an offset would simply lift everything.
+    """
+    factor = max(min(paper_gray, _PAPER), 1) / float(_PAPER)
+    tinted: NDArray[np.uint8] = np.clip(
+        image.astype(np.float32) * factor, 0, 255
+    ).astype(np.uint8)
+    return tinted
+
+
+def _add_speckle(
+    image: NDArray[np.uint8], density: float, seed: int
+) -> NDArray[np.uint8]:
+    """Scatter salt-and-pepper specks across the page.
+
+    What a dusty platen or a cheap photocopier produces. Kept as isolated
+    pixels: a speck the size of a bubble would be a different test.
+    """
+    generator = np.random.default_rng(seed)
+    result = image.copy()
+    draw = generator.random(image.shape)
+    result[draw < density / 2.0] = _INK
+    result[draw > 1.0 - density / 2.0] = _PAPER
+    return result
+
+
+def _add_scanner_streak(
+    image: NDArray[np.uint8], strength: float, seed: int
+) -> NDArray[np.uint8]:
+    """Darken one thin band across the page, as a dirty scanner roller does."""
+    generator = np.random.default_rng(seed)
+    height, width = image.shape[:2]
+    vertical = bool(generator.integers(0, 2))
+    thickness = max(2, round((width if vertical else height) * 0.004))
+    values = image.astype(np.float32)
+
+    if vertical:
+        left = int(generator.integers(0, max(width - thickness, 1)))
+        values[:, left : left + thickness] *= 1.0 - strength
+    else:
+        top = int(generator.integers(0, max(height - thickness, 1)))
+        values[top : top + thickness, :] *= 1.0 - strength
+    streaked: NDArray[np.uint8] = np.clip(values, 0, 255).astype(np.uint8)
+    return streaked
+
+
+def _add_edge_shadow(image: NDArray[np.uint8], strength: float) -> NDArray[np.uint8]:
+    """Darken one edge, the way a lifted page shades under a platen lid."""
+    width = image.shape[1]
+    ramp = np.linspace(1.0 - strength, 1.0, width, dtype=np.float32)
+    values = image.astype(np.float32) * ramp[np.newaxis, :]
+    shaded: NDArray[np.uint8] = np.clip(values, 0, 255).astype(np.uint8)
+    return shaded
+
+
 def _apply_illumination_gradient(
     image: NDArray[np.uint8], strength: float
 ) -> NDArray[np.uint8]:
@@ -584,15 +680,48 @@ def _apply_illumination_gradient(
 
 
 def _draw_filled_rectangle(
-    image: NDArray[np.uint8], center: Point, size: tuple[float, float]
+    image: NDArray[np.uint8], center: Point, size: tuple[float, float], grey: int = _INK
 ) -> None:
-    """Draw a solid black rectangle centred on ``center``."""
+    """Draw a solid rectangle centred on ``center``, black unless told otherwise."""
     half_width, half_height = size[0] / 2.0, size[1] / 2.0
     cv2.rectangle(
         image,
         (round(center.x - half_width), round(center.y - half_height)),
         (round(center.x + half_width), round(center.y + half_height)),
-        _INK,
+        grey,
+        thickness=cv2.FILLED,
+    )
+
+
+_FAINT_MARKER_GREY = 120
+"""Grey level of a deliberately faint registration marker.
+
+Pale enough to challenge a detector that assumes solid black, dark enough that
+a human would still call it a printed marker - which is the case worth testing,
+because a photocopied sheet produces exactly this."""
+
+_DAMAGE_RATIO = 0.45
+"""How much of a damaged marker's width and height is torn away."""
+
+
+def _damage_rectangle(
+    image: NDArray[np.uint8], center: Point, size: tuple[float, float]
+) -> None:
+    """Punch a paper-coloured notch out of one corner of a marker.
+
+    A torn or scuffed corner is what real damage looks like: the shape is still
+    mostly there, so a detector finds *something*, and whether the something is
+    still usable is exactly the question.
+    """
+    half_width, half_height = size[0] / 2.0, size[1] / 2.0
+    cv2.rectangle(
+        image,
+        (round(center.x), round(center.y)),
+        (
+            round(center.x + half_width * _DAMAGE_RATIO * 2),
+            round(center.y + half_height * _DAMAGE_RATIO * 2),
+        ),
+        _PAPER,
         thickness=cv2.FILLED,
     )
 
@@ -734,6 +863,33 @@ def _draw_mark(
                 stroke,
                 cv2.LINE_AA,
             )
+            cv2.line(
+                image,
+                (position[0] - axes[0], position[1] + axes[1]),
+                (position[0] + axes[0], position[1] - axes[1]),
+                grey,
+                stroke,
+                cv2.LINE_AA,
+            )
+        case MarkStyle.STROKE_H:
+            cv2.line(
+                image,
+                (position[0] - axes[0], position[1]),
+                (position[0] + axes[0], position[1]),
+                grey,
+                stroke,
+                cv2.LINE_AA,
+            )
+        case MarkStyle.STROKE_V:
+            cv2.line(
+                image,
+                (position[0], position[1] - axes[1]),
+                (position[0], position[1] + axes[1]),
+                grey,
+                stroke,
+                cv2.LINE_AA,
+            )
+        case MarkStyle.SLASH:
             cv2.line(
                 image,
                 (position[0] - axes[0], position[1] + axes[1]),

@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-18
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented and architecturally hardened; accuracy validation pending a real dataset. Phase 4 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and now measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 not started.
 
 Update this file at the end of every phase.
 
@@ -209,6 +209,50 @@ bubble's exceeds **0.5**. The same sheet still reads correctly after ±3°
 rotation, exact 90/180/270° turns, 0.7x and 1.3x rescaling, translation,
 perspective distortion, JPEG compression, and all of those combined.
 
+### Developer testing tools (Phase 3)
+
+- *Tools > Developer / Testing* offers **Generate Synthetic Test Dataset** and
+  **Run Recognition Benchmark**, both also available as command-line tools and
+  both entirely local - nothing is uploaded and no analytics exist.
+- The generator renders from a real `.omrt` at **150 DPI derived from the
+  template's physical page size** (A4 → 1240 × 1754 px), as PNG or JPEG, into
+  `images/` + `ground_truth/` + `manifest.json` + `manifest.csv` +
+  `dataset_summary.json`. One sheet is in memory at a time, so ten thousand
+  sheets cost one page; generation is cancellable and a cancelled run's manifest
+  says how much of the dataset exists.
+- Nothing about the sheet is hard-coded. `FieldLayout` reads identifier length
+  and symbols, set-code structure, question count, option labels, bubble size
+  and page dimensions from the template, and tests assert that a nine-digit
+  identifier, five options and a template with no set code all work unchanged.
+- Sheets are **named test cases** carrying tags (about sixty, in thirteen
+  families) that survive into the ground truth and then into the benchmark's
+  category table. Profiles select families; each family's edge cases are emitted
+  first, and a dataset too small to hold them all takes a spread across families
+  rather than a prefix.
+- Ground truth is derived from the marks in one place, and records the drawn
+  marks alongside the expected string, so an ambiguous column can be re-judged
+  without regenerating anything. Identifiers are fictional by construction.
+- Benchmarking runs **inside the existing Scan page**, in benchmark mode - same
+  batch architecture, same settings, same worker pool - and scores the run
+  automatically when it ends. There is no second processing window.
+- The report adds sheet-level and registration accuracy, per-test-case-category
+  metrics, duplicate-identifier metrics kept separate from recognition
+  correctness, a run configuration recording what produced the numbers, and a
+  comparison against the previous run of the same dataset (headline metrics and
+  every category).
+
+**Measured on a 120-sheet mixed dataset** (100-question example template, seed
+424242, 150 dpi PNG, 8 workers): 120 scans in 23.6 s, sheet accuracy 0.940,
+answer accuracy 0.965, registration 116/116, blank detection 1.000, double
+marks 1.000, borderline marks 34/34 handled acceptably, 4/4 planted duplicate
+groups found with no unplanted collisions. Every one of the 402 remaining errors
+was a false blank, and the category table attributes all of them to three
+sheets: dot, slash and stroke mark styles. Measured fill ratios: filled bubble
+0.93, stroke/slash 0.51-0.54 (flagged uncertain at the 0.55 threshold), dot 0.16
+(read confidently as blank, below the 0.25 blank threshold). **A finding for the
+real-dataset calibration, not a number to tune against**, and not evidence of
+real-world accuracy.
+
 ## What does not exist
 
 No conflict resolution, attendance reconciliation, answer-key handling, scoring,
@@ -322,13 +366,13 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2029 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2094 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest         2029 passed, 1 skipped in 201.0s
+pytest         2094 passed, 1 skipped in 182.5s
 ruff check .   All checks passed
-mypy           Success: no issues found in 90 source files
+mypy           Success: no issues found in 98 source files
 ```
 
 96 of those are the multicore work, and a further 94 the large-batch
@@ -346,7 +390,14 @@ The skip is structural: `tests/unit/test_qtguitesting_skill.py` parametrises
 over the skill's scripts and skips `_harness.py`, which is shared plumbing
 rather than a command a user runs.
 
-1300 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
+A further 94 are the developer testing tools: `integration/test_synthetic_dataset.py`
+(48, including template-independence and the presence of each profile's
+mandatory cases), `unit/test_evaluation_harness.py` (26 of its 62 are new -
+category metrics, grid-field judgement, duplicate scoring, the run
+configuration) and `gui/test_developer_tools.py` (20, driving the menu, the
+dialogs, cancellation and benchmark mode).
+
+1365 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
 added **no** new mypy overrides, Ruff ignores or tool configuration changes.
 
 Phase 2 added **one** tool configuration change, not a suppressed check: the
@@ -435,3 +486,13 @@ designer, run them through the Scan page, and compare the CSV against what the
 papers actually say. The measurement that matters is how many sheets needed
 review and how many were confidently *wrong* - the second number is the one that
 decides whether this is usable.
+
+The machinery for that now exists and needs no new code. Write a
+`ground_truth/*.json` per sheet by hand (`SheetGroundTruth`, `human_verified`
+set true, a `reviewer`), put the images in `images/`, and point benchmark mode
+at the folder: the same report, the same categories and the same
+previous-run comparison apply to real sheets, and tagging a sheet
+`FAINT_MARK` or `ERASED_MARK` by hand puts it in the category table beside its
+synthetic equivalent. Keep that data in `private_test_data/` or
+`local_test_data/`, which are git-ignored - real candidate identifiers must
+never reach this repository.

@@ -65,6 +65,25 @@ class SheetGroundTruth:
             module docstring. A question absent from this mapping is not
             checked - which is how a partially verified real sheet is recorded
             honestly rather than by guessing the rest.
+        tags: What this sheet was generated to test, as
+            :class:`~omr_scanner.evaluation.test_cases.TestCaseTag` values.
+            The benchmark groups its results by these, which is what turns
+            "97.9% correct" into "ticks 89/100, everything else perfect".
+        roll_marks: What was actually drawn in each identifier column, as a
+            list per column. Recorded alongside ``roll`` because the marks are
+            the fact and the expected string is an interpretation of them - a
+            column with two bubbles filled has no single correct reading, and
+            a dataset that recorded only the interpretation would have thrown
+            away the evidence.
+        roll_ambiguous: The identifier includes a deliberately borderline
+            column, so flagging it is as acceptable as reading it.
+        set_marks: The same, per set-code position.
+        set_ambiguous: As ``roll_ambiguous``, for the set code.
+        duplicate_group: The identifier this sheet deliberately shares with
+            others in the dataset, or ``""``. Duplicate handling is a
+            *batch-level* property and is scored separately from recognition.
+        degradation: The geometric and photometric parameters applied, so a
+            failure can be reproduced exactly.
         ambiguous: Question numbers whose mark is deliberately borderline - a
             faint pencil, a half-erased answer, a mark that barely touches the
             bubble. For these, *flagging* the question is correct behaviour and
@@ -92,11 +111,22 @@ class SheetGroundTruth:
     answers: dict[int, str] = field(default_factory=dict)
     ambiguous: tuple[int, ...] = ()
     expect_failure: bool = False
+    tags: tuple[str, ...] = ()
+    roll_marks: tuple[tuple[str, ...], ...] = ()
+    roll_ambiguous: bool = False
+    set_marks: tuple[tuple[str, ...], ...] = ()
+    set_ambiguous: bool = False
+    duplicate_group: str = ""
+    degradation: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
     human_verified: bool = False
     reviewer: str = ""
     dataset_version: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def has_tag(self, tag: str) -> bool:
+        """Whether this sheet was generated to test ``tag``."""
+        return tag in self.tags
 
     def is_ambiguous(self, question: int) -> bool:
         """Whether ``question`` was deliberately marked borderline."""
@@ -129,6 +159,13 @@ class SheetGroundTruth:
             "answers": {str(number): value for number, value in sorted(self.answers.items())},
             "ambiguous": list(self.ambiguous),
             "expect_failure": self.expect_failure,
+            "tags": list(self.tags),
+            "roll_marks": [list(column) for column in self.roll_marks],
+            "roll_ambiguous": self.roll_ambiguous,
+            "set_marks": [list(column) for column in self.set_marks],
+            "set_ambiguous": self.set_ambiguous,
+            "duplicate_group": self.duplicate_group,
+            "degradation": self.degradation,
             "notes": self.notes,
             "human_verified": self.human_verified,
             "reviewer": self.reviewer,
@@ -165,6 +202,17 @@ class SheetGroundTruth:
             answers=answers,
             ambiguous=tuple(int(number) for number in payload.get("ambiguous") or ()),
             expect_failure=bool(payload.get("expect_failure", False)),
+            tags=tuple(str(tag) for tag in payload.get("tags") or ()),
+            roll_marks=tuple(
+                tuple(str(mark) for mark in column) for column in payload.get("roll_marks") or ()
+            ),
+            roll_ambiguous=bool(payload.get("roll_ambiguous", False)),
+            set_marks=tuple(
+                tuple(str(mark) for mark in column) for column in payload.get("set_marks") or ()
+            ),
+            set_ambiguous=bool(payload.get("set_ambiguous", False)),
+            duplicate_group=str(payload.get("duplicate_group", "")),
+            degradation=dict(payload.get("degradation") or {}),
             notes=str(payload.get("notes", "")),
             human_verified=bool(payload.get("human_verified", False)),
             reviewer=str(payload.get("reviewer", "")),

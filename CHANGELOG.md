@@ -91,6 +91,77 @@ examination processing.
   a `ScanHarness`, ten smoke checks, seven screenshot scenarios and four new
   documented scenarios.
 
+### Added — Phase 3 developer testing tools
+
+A template-driven synthetic dataset generator and a recognition benchmark, both
+inside the application and on the command line, so recognition work can be
+measured rather than guessed at.
+
+- **`omr_scanner.evaluation.test_cases`**: the test-case vocabulary.
+  `TestCaseTag` (about sixty named conditions, from `BLANK_STUDENT_ID` to
+  `SCANNER_STREAK`), `CaseFamily`, `MarkPlan`, `SheetCase`, and `FieldLayout`,
+  which reads identifier length, symbols, set-code structure, question count
+  and option labels **from the template** so that nothing downstream assumes
+  six digits and four options. `SheetBuilder` derives every expected value from
+  the marks it is about to draw, in one place - the rule that stops a generator
+  disagreeing with itself and the benchmark blaming the engine.
+- **`omr_scanner.evaluation.case_plans`**: `DatasetProfile` (Baseline,
+  Recognition, Degradation, Batch, Stress, Mixed, Custom), thirteen family
+  builders and `plan_dataset`. Mandatory edge cases are emitted first and
+  unconditionally; a dataset too small to hold them all takes a spread across
+  families rather than a prefix, so twelve sheets are twelve *kinds* of sheet.
+- **`omr_scanner.evaluation.synthetic_dataset`** rewritten around the plan:
+  rendering at **150 DPI derived from the template's physical page size**
+  (A4 → 1240 × 1754 px), PNG and JPEG output, `manifest.json` + `manifest.csv`
+  + `dataset_summary.json` beside `images/` and `ground_truth/`, streaming one
+  sheet at a time, and `on_progress`/`should_cancel` hooks. `describe_template`
+  and `validate_template` say what a template offers before anything is
+  written.
+- **`omr_scanner.imaging.synthetic`**: horizontal-stroke, vertical-stroke and
+  slash mark styles; faint and physically damaged registration markers, a faint
+  orientation mark; paper tint, speckle, scanner streaks and edge shadow.
+- **`SheetGroundTruth`** now records the tags a sheet was generated to test, the
+  marks actually drawn in each identifier and set-code column, whether either is
+  deliberately borderline, the duplicate group, and the degradation parameters -
+  because the marks are the fact and the expected string is an interpretation of
+  them.
+- **`omr_scanner.evaluation.benchmark`**: `CategoryMetrics` and
+  per-test-case-category reporting, sheet-level and registration accuracy,
+  duplicate-identifier metrics kept separate from recognition correctness,
+  `grid_verdict` for identifier and set-code judgement including ambiguous
+  columns, the `ROLL_AMBIGUITY_MISSED` / `SET_AMBIGUITY_MISSED` /
+  `ORIENTATION_ERROR` categories, `BenchmarkRunConfig`, `compare_categories`,
+  and the `summary.csv` / `category_metrics.csv` / `run_config.json` outputs.
+- **`omr_scanner.evaluation.session`**: `BenchmarkSession` - open a dataset,
+  score a set of results, write the report beside the data, and compare with
+  the previous run, with no Qt anywhere in it.
+- **Tools > Developer / Testing** in the main window: *Generate Synthetic Test
+  Dataset* and *Run Recognition Benchmark*.
+- **`omr_scanner.gui.devtools`**: the generation dialog, a cancellable
+  generation thread reusing `BatchProgressTracker` for its ETA, the progress and
+  summary dialogs, and the benchmark results dialog (summary, per-test-case
+  table, every disagreement, failing scans - double-click to open one in the
+  scan list with its overlay).
+- **Benchmark mode in the existing Scan page** rather than a second processing
+  window: a banner, the dataset's scans in the ordinary list, and the same
+  *Process All* button, settings and worker pool. Scoring happens automatically
+  when a run ends.
+- CLI: `make_dataset` gained `--families`, `--format`, `--jpeg-quality`,
+  `--dpi`, `--describe` and progress output; `benchmark_recognition` gained
+  `--categories`, the category table, duplicate reporting and per-category
+  baseline comparison.
+- Tests: 48 dataset/generator tests, 26 benchmark-harness tests and 20
+  pytest-qt developer-tool tests; the `qtguitesting` smoke suite grew to 27
+  checks, including generating a dataset from the real template and
+  benchmarking it through the Scan page.
+
+**Synthetic results measure regression consistency and controlled edge-case
+handling. They do not establish real-world recognition accuracy**, and every
+report the tools write says so in the file itself. One finding recorded rather
+than tuned away: with the default 0.55 fill threshold, dot-shaped marks measure
+a mean fill ratio of 0.16 and read as blank, while strokes and slashes measure
+0.51-0.54 and are flagged as uncertain, against 0.93 for a filled bubble.
+
 ### Added — Phase 3 large-batch progress
 
 Batch processing is built for examination-scale runs (10,000+ scripts), and

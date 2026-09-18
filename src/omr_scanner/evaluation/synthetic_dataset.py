@@ -1,56 +1,88 @@
-"""Generating OMR sheets whose correct answers are known.
+"""Rendering a planned dataset: images, ground truth and a manifest.
 
 Purpose:
-    Produce test data for Phase 3 that is *reproducible* (a seed gives the same
-    dataset every time), *labelled* (ground truth is written beside every
-    image, never inferred afterwards), and *varied* (marks, geometry, exposure
-    and structural damage, in controlled amounts).
+    Take the case plan
+    (:mod:`omr_scanner.evaluation.case_plans`) and turn it into files on disk:
+    a scan-like image per sheet at a realistic resolution, a ground-truth
+    document beside it, and a manifest that makes the whole thing
+    reproducible.
 
 Responsibilities:
     * :func:`sheet_spec_from_template` - project a real ``.omrt`` template onto
-      a renderable synthetic page.
-    * :func:`generate_dataset` - write ``images/``, ``ground_truth/`` and
-      ``manifest.json`` for a whole dataset.
-    * :class:`DatasetProfile` - how hard the sheets should be.
+      a renderable page.
+    * :func:`render_case` - one planned case to one image plus its truth.
+    * :func:`generate_dataset` - the whole dataset, with progress and
+      cancellation.
 
 What does NOT belong here:
-    * Recognition, or any judgement about it. This module knows what it *drew*;
-      whether the engine agrees is :mod:`omr_scanner.evaluation.benchmark`'s
-      question, and keeping the two apart is what stops the generator from
-      quietly drawing whatever the engine happens to read.
-    * Real candidate data. Roll numbers here are fictional by construction.
+    * Deciding *what* to test - that is `case_plans`, and keeping the two
+      apart is what stops the renderer from quietly drawing whatever the
+      engine happens to read.
+    * Recognition, or any judgement about it
+      (:mod:`omr_scanner.evaluation.benchmark`).
 
-Why the template drives it:
-    The sheets are rendered from the geometry of an actual template - its
-    markers, its orientation mark, its zones' bubble grids - so a dataset
-    exercises the coordinate mapping the engine really uses. A generator with
-    its own private idea of where bubbles go would test the two halves of the
-    application against each other's mistakes.
+Why the template drives everything:
+    Page size, markers, orientation mark, zone geometry and bubble grids all
+    come from the selected template, so a dataset exercises the coordinate
+    mapping the engine really uses:
 
-    That also means the same command generates a dataset for the repository's
-    100-question sample sheet or for an institution's own template, which is
-    what makes this useful when the real corpus arrives.
+    ```text
+        one template definition
+                 │
+          ┌──────┴──────┐
+          ▼             ▼
+    real scanning   synthetic generation
+          └──────┬──────┘
+                 ▼
+        the same recognition geometry
+    ```
+
+    A generator with its own idea of where bubbles go would test the two
+    halves of the application against each other's mistakes.
+
+Resolution:
+    Sheets are rendered at :data:`DEFAULT_DPI` from the template's *physical*
+    page size in millimetres, not at its canonical pixel size. That is the
+    honest thing to do - a real scan is whatever the scanner produced, and
+    rendering at the canonical size would hand the engine a page that needed
+    no rescaling and quietly stop testing one.
 
 An honest warning, stated here because it is easy to forget:
     Synthetic accuracy is not real accuracy. These pages have clean geometry,
-    even paper and marks drawn by arithmetic. They are excellent at catching
-    *regressions* and coordinate bugs, and nearly useless as evidence that a
-    threshold is right for real pencil on real paper.
+    even paper and marks drawn by arithmetic. They measure *regression
+    consistency and controlled edge-case handling*, and are nearly useless as
+    evidence that a threshold is right for real pencil on real paper.
 """
 
 from __future__ import annotations
 
-import random
-from dataclasses import dataclass, field
+import csv
+import json
+import logging
+from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from omr_scanner.domain.template import IgnoredFieldDefinition, QuestionBlockFieldDefinition
+from omr_scanner.domain.template import IgnoredFieldDefinition
+from omr_scanner.evaluation.case_plans import (
+    CORNER_ROLES,
+    DatasetProfile,
+    families_for,
+    plan_dataset,
+)
 from omr_scanner.evaluation.ground_truth import (
     DatasetManifest,
     SheetGroundTruth,
     save_ground_truth,
     save_manifest,
+)
+from omr_scanner.evaluation.test_cases import (
+    CaseFamily,
+    FieldLayout,
+    MarkPlan,
+    SheetCase,
+    TestCaseTag,
 )
 from omr_scanner.imaging.synthetic import (
     AnswerBubbleSpec,
@@ -64,118 +96,131 @@ from omr_scanner.recognition.fields import zone_groups
 from omr_scanner.services.recognition_models import utc_timestamp
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Mapping, Sequence
-    from pathlib import Path
+    from collections.abc import Callable, Mapping, Sequence
 
     import numpy as np
     from numpy.typing import NDArray
 
-    from omr_scanner.domain.template import OmrTemplate, Zone
+    from omr_scanner.domain.template import OmrTemplate
 
-GENERATOR_VERSION = "1.0"
+_LOGGER = logging.getLogger(__name__)
+
+GENERATOR_VERSION = "2.0"
 """Version of this generator, recorded in every manifest.
 
 Changing how a defect is drawn changes what a dataset means, so a benchmark
 result that does not say which generator produced its data is not comparable
-with anything."""
+with anything. Bumped to 2.0 when named test cases, DPI-based rendering and
+JPEG output arrived."""
+
+DATASET_SCHEMA_VERSION = "1.0"
+"""Version of the dataset *layout* - the directories and the manifest."""
 
 IMAGES_DIRNAME = "images"
 GROUND_TRUTH_DIRNAME = "ground_truth"
 MANIFEST_FILENAME = "manifest.json"
+MANIFEST_CSV_FILENAME = "manifest.csv"
+SUMMARY_FILENAME = "dataset_summary.json"
 
 DEFAULT_PREFIX = "SYN"
 """Prefix for generated file names: ``SYN_000001.png``. Deliberately not
 anything that could be mistaken for a real candidate's identifier."""
 
+DEFAULT_DPI = 150
+"""Rendering resolution, in dots per inch.
 
-class DatasetProfile(StrEnum):
-    """How much the generator is allowed to degrade a sheet.
+The resolution an office scanner is usually set to for forms, and high enough
+that a bubble is tens of pixels across at any sensible sheet design."""
 
-    Four levels plus a mixture, rather than a continuum of knobs, because the
-    question a developer asks is "does it still work on ordinary scans?" or
-    "where does it break?" - not "what happens at blur 2.7".
-    """
+MM_PER_INCH = 25.4
 
-    CLEAN = "clean"
-    """No distortion at all. Anything that fails here is a real bug, not a
-    tolerance question."""
+DEFAULT_JPEG_QUALITY = 92
+"""Quality for JPEG output: visually lossless, and still a JPEG.
 
-    NORMAL = "normal"
-    """What a decent office scanner produces: a degree or two of rotation, mild
-    exposure variation, light noise."""
-
-    DIFFICULT = "difficult"
-    """A tired photocopier and a hurried operator: noticeable skew and
-    perspective, uneven illumination, blur, JPEG artefacts, and marks made in
-    every style candidates actually use."""
-
-    STRESS = "stress"
-    """Deliberately at or past the documented limits, including structural
-    damage - a missing marker, a cropped page. Most of these *should* fail, and
-    the ground truth says so."""
-
-    MIXED = "mixed"
-    """A realistic batch: mostly normal, some difficult, a few broken."""
+High on purpose. Compression *damage* is a degradation case with its own tag
+and its own parameter; it should not arrive uninvited in every dataset that
+happens to be written as JPEG."""
 
 
-PROFILE_WEIGHTS: dict[DatasetProfile, dict[str, float]] = {
-    DatasetProfile.CLEAN: {"clean": 1.0},
-    DatasetProfile.NORMAL: {"normal": 1.0},
-    DatasetProfile.DIFFICULT: {"difficult": 1.0},
-    DatasetProfile.STRESS: {"difficult": 0.4, "broken": 0.6},
-    DatasetProfile.MIXED: {"clean": 0.2, "normal": 0.5, "difficult": 0.25, "broken": 0.05},
-}
-"""How often each *case kind* appears under each profile.
+class ImageFormat(StrEnum):
+    """The formats a dataset can be written in."""
 
-Kept as data rather than branching code so that adding a profile is one entry,
-and so a reader can see the whole policy at a glance."""
+    PNG = "png"
+    """Lossless. The right default for a regression baseline: two runs of the
+    same seed produce byte-identical files."""
 
-
-@dataclass(frozen=True, slots=True)
-class GeneratedSheet:
-    """One rendered sheet and the truth about it.
-
-    Attributes:
-        image: The rendered, distorted page.
-        truth: What it should read.
-    """
-
-    image: NDArray[np.uint8]
-    truth: SheetGroundTruth
-
-
-@dataclass(frozen=True, slots=True)
-class MarkPlan:
-    """What is drawn into one response group.
-
-    Attributes:
-        labels: The symbols marked. Empty for a blank group; more than one for
-            a deliberate double mark.
-        fill: Coverage of each mark, in ``[0, 1]``.
-        style: How the marks were made.
-        intensity: How dark they are.
-        offset_x: Horizontal displacement, in fractions of a bubble radius.
-        offset_y: Vertical displacement.
-        size_scale: Mark size multiplier.
-        ambiguous: The mark was drawn deliberately borderline - too faint or
-            too partial to be a fair "the engine must read this" assertion. The
-            dataset records the question as ambiguous so that flagging it
-            counts as correct behaviour, which it is.
-    """
-
-    labels: tuple[str, ...] = ()
-    fill: float = 1.0
-    style: MarkStyle = MarkStyle.FILL
-    intensity: float = 1.0
-    offset_x: float = 0.0
-    offset_y: float = 0.0
-    size_scale: float = 1.0
-    ambiguous: bool = False
+    JPEG = "jpg"
+    """What most scanners actually emit, and therefore worth testing against
+    even at high quality."""
 
     @property
-    def value(self) -> str:
-        """The ground-truth value this plan produces (``""``, ``"B"``, ``"B-D"``)."""
-        return "-".join(self.labels)
+    def suffix(self) -> str:
+        """The file extension, with its dot."""
+        return f".{self.value}"
+
+    @classmethod
+    def parse(cls, value: str) -> ImageFormat:
+        """Accept ``png``, ``jpg`` or ``jpeg``, however it was capitalised."""
+        text = value.strip().lower().lstrip(".")
+        if text in {"jpg", "jpeg"}:
+            return cls.JPEG
+        if text == "png":
+            return cls.PNG
+        raise ValueError(f"Unsupported image format '{value}'; use png or jpg")
+
+
+@dataclass(frozen=True, slots=True)
+class PageRender:
+    """The pixel size one sheet is rendered at, and where it came from.
+
+    Attributes:
+        width: Image width in pixels.
+        height: Image height in pixels.
+        dpi: The resolution used.
+        derived_from: ``"physical"`` when the template declared millimetres,
+            ``"canonical"`` when the pixel size had to be used instead.
+    """
+
+    width: int
+    height: int
+    dpi: int
+    derived_from: str
+
+
+def page_render_size(template: OmrTemplate, dpi: int = DEFAULT_DPI) -> PageRender:
+    """Return the pixel size a sheet should be rendered at.
+
+    Derived from the template's *physical* page size:
+    ``mm / 25.4 * dpi``. A4 at 150 dpi is 1240 x 1754 px, Letter 1275 x 1650.
+
+    Falls back to the template's canonical pixel size only when the physical
+    dimensions are missing or nonsensical - never to an invented page size,
+    because a dataset rendered at the wrong aspect ratio would fail
+    registration for a reason that has nothing to do with recognition.
+
+    Raises:
+        ValueError: ``dpi`` is not positive.
+    """
+    if dpi <= 0:
+        raise ValueError(f"DPI must be positive, got {dpi}")
+
+    page = template.page
+    width_mm = float(getattr(page, "width_mm", 0.0) or 0.0)
+    height_mm = float(getattr(page, "height_mm", 0.0) or 0.0)
+    if width_mm > 0.0 and height_mm > 0.0:
+        return PageRender(
+            width=max(round(width_mm / MM_PER_INCH * dpi), 1),
+            height=max(round(height_mm / MM_PER_INCH * dpi), 1),
+            dpi=dpi,
+            derived_from="physical",
+        )
+
+    return PageRender(
+        width=page.canonical_width_px,
+        height=page.canonical_height_px,
+        dpi=dpi,
+        derived_from="canonical",
+    )
 
 
 def sheet_spec_from_template(
@@ -184,7 +229,12 @@ def sheet_spec_from_template(
     *,
     base: SyntheticSheetSpec | None = None,
     omit_markers: Sequence[str] = (),
+    faint_markers: Sequence[str] = (),
+    damaged_markers: Sequence[str] = (),
+    extra_marker: bool = False,
     omit_orientation: bool = False,
+    faint_orientation: bool = False,
+    render: PageRender | None = None,
 ) -> SyntheticSheetSpec:
     """Return a renderable page carrying every bubble ``template`` declares.
 
@@ -197,15 +247,22 @@ def sheet_spec_from_template(
             so the generator and the recogniser cannot disagree about which
             bubble is which.
         base: Starting page specification, for callers that want the default
-            decoy graphics or a different marker size.
-        omit_markers: Registration marker roles to leave off the page, for the
-            structural failure cases.
+            decoy graphics.
+        omit_markers: Registration marker roles to leave off the page.
+        faint_markers: Roles printed pale rather than black.
+        damaged_markers: Roles with a corner torn away.
+        extra_marker: Draw one additional marker-shaped decoy, to test that
+            selection uses position and not merely "the four blackest shapes".
         omit_orientation: Leave the orientation mark off.
+        faint_orientation: Print the orientation mark pale.
+        render: Pixel size to render at; the template's canonical size when
+            omitted.
 
     Returns:
         A specification whose page size, markers, orientation mark and bubbles
         all come from the template.
     """
+    from omr_scanner.domain.geometry import NormalizedPoint
     from omr_scanner.domain.template import MarkerRole
 
     chosen = marks or {}
@@ -242,10 +299,22 @@ def sheet_spec_from_template(
                     )
                 )
 
-    omitted = frozenset(MarkerRole(role) for role in omit_markers)
-    return SyntheticSheetSpec(
+    size = render if render is not None else PageRender(
         width=template.page.canonical_width_px,
         height=template.page.canonical_height_px,
+        dpi=DEFAULT_DPI,
+        derived_from="canonical",
+    )
+
+    decoys = tuple(start.decoy_markers)
+    if extra_marker:
+        # Inside the page rather than in a corner search region: a false
+        # marker that competes without being where a real one belongs.
+        decoys = (*decoys, NormalizedPoint(x=0.5, y=0.08))
+
+    return SyntheticSheetSpec(
+        width=size.width,
+        height=size.height,
         marker_targets={
             marker.role: marker.center for marker in template.registration_markers
         },
@@ -263,8 +332,11 @@ def sheet_spec_from_template(
         # realistic "there is ink here already" challenge instead.
         draw_text_bars=False,
         draw_answer_frames=False,
-        decoy_markers=start.decoy_markers,
-        omit_markers=omitted,
+        decoy_markers=decoys,
+        omit_markers=frozenset(MarkerRole(role) for role in omit_markers),
+        faint_markers=frozenset(MarkerRole(role) for role in faint_markers),
+        damaged_markers=frozenset(MarkerRole(role) for role in damaged_markers),
+        faint_orientation_marker=faint_orientation,
         omit_orientation_marker=omit_orientation,
         answer_bubbles=tuple(bubbles),
     )
@@ -284,297 +356,103 @@ def _marker_extent(template: OmrTemplate, *, axis: str) -> float:
     return sum(sizes) / len(sizes) if sizes else 0.03
 
 
-# ----------------------------------------------------------------------
-# Case construction
-# ----------------------------------------------------------------------
 @dataclass(frozen=True, slots=True)
-class _CaseRecipe:
-    """One sheet's worth of decisions, before anything is drawn.
+class GeneratedSheet:
+    """One rendered sheet and the truth about it.
 
-    Separated from the drawing so that the *what* (this sheet has a double mark
-    on Q7 and is rotated 4 degrees) is decided in one place and can be recorded
-    in the ground truth verbatim - which is what makes a failure reproducible.
+    Attributes:
+        image: The rendered, degraded page.
+        truth: What it should read.
     """
 
-    kind: str
-    distortion: DistortionSpec
-    omit_markers: tuple[str, ...] = ()
-    omit_orientation: bool = False
-    expect_failure: bool = False
-    defects: dict[str, Any] = field(default_factory=dict)
+    image: NDArray[np.uint8]
+    truth: SheetGroundTruth
 
 
-def _distortion_for(kind: str, rng: random.Random, seed: int) -> DistortionSpec:
-    """Return the geometric and photometric degradation for one case kind.
-
-    The numbers come from the limits ``docs/IMAGE_PROCESSING.md`` documents:
-    "normal" stays comfortably inside them, "difficult" approaches them, and
-    "broken" is past them on purpose.
-    """
-    if kind == "clean":
-        return DistortionSpec(seed=seed)
-    if kind == "normal":
-        return DistortionSpec(
-            rotation_degrees=rng.uniform(-2.0, 2.0),
-            scale_x=rng.uniform(0.97, 1.03),
-            scale_y=rng.uniform(0.97, 1.03),
-            translate_x_px=rng.uniform(-15, 15),
-            translate_y_px=rng.uniform(-15, 15),
-            brightness_gain=rng.uniform(0.95, 1.05),
-            noise_sigma=rng.uniform(0.0, 2.0),
-            seed=seed,
-        )
-    if kind == "difficult":
-        return DistortionSpec(
-            rotation_degrees=rng.uniform(-7.0, 7.0),
-            scale_x=rng.uniform(0.90, 1.10),
-            scale_y=rng.uniform(0.90, 1.10),
-            translate_x_px=rng.uniform(-40, 40),
-            translate_y_px=rng.uniform(-40, 40),
-            perspective_strength=rng.uniform(0.0, 0.02),
-            brightness_gain=rng.uniform(0.85, 1.12),
-            brightness_offset=rng.uniform(-15, 15),
-            illumination_gradient=rng.uniform(0.0, 0.25),
-            blur_kernel_px=rng.choice([0, 3, 5]),
-            noise_sigma=rng.uniform(1.0, 6.0),
-            jpeg_quality=rng.choice([None, 70, 50]),
-            seed=seed,
-        )
-    # "broken": past the documented limits, structurally or geometrically.
-    return DistortionSpec(
-        rotation_degrees=rng.choice([-24.0, 24.0]),
-        perspective_strength=rng.uniform(0.03, 0.05),
-        margin_px=0,
-        illumination_gradient=rng.uniform(0.4, 0.6),
-        noise_sigma=rng.uniform(4.0, 10.0),
-        seed=seed,
-    )
-
-
-def _recipe_for(kind: str, rng: random.Random, seed: int, index: int) -> _CaseRecipe:
-    """Choose one sheet's degradation, including structural damage."""
-    distortion = _distortion_for(kind, rng, seed)
-    if kind != "broken":
-        return _CaseRecipe(kind=kind, distortion=distortion, defects={"kind": kind})
-
-    # Rotate through the structural failures rather than choosing randomly, so
-    # a small "stress" dataset is guaranteed to contain one of each rather than
-    # five copies of whichever the generator happened to roll.
-    damage = index % 3
-    if damage == 0:
-        return _CaseRecipe(
-            kind=kind,
-            distortion=distortion,
-            omit_markers=("top_right",),
-            expect_failure=True,
-            defects={"kind": kind, "missing_marker": "top_right"},
-        )
-    if damage == 1:
-        return _CaseRecipe(
-            kind=kind,
-            distortion=distortion,
-            omit_orientation=True,
-            expect_failure=True,
-            defects={"kind": kind, "missing_orientation_mark": True},
-        )
-    return _CaseRecipe(
-        kind=kind,
-        distortion=distortion,
-        expect_failure=True,
-        defects={"kind": kind, "extreme_rotation_degrees": distortion.rotation_degrees},
-    )
-
-
-def _mark_plan(kind: str, labels: Sequence[str], rng: random.Random) -> MarkPlan:
-    """Choose how one answered question was marked.
-
-    Clean sheets are marked the way the instructions ask. Harder ones use the
-    styles candidates actually use - a tick, a cross, a ring, a light pencil, a
-    mark half a radius off centre - because those are what a measurement has to
-    survive, and they are invisible to a test that only ever draws a neat disc.
-    """
-    label = rng.choice(list(labels))
-    if kind in {"clean", "normal"}:
-        return MarkPlan(labels=(label,), fill=rng.uniform(0.85, 1.0))
-
-    style = rng.choice(
-        [MarkStyle.FILL, MarkStyle.FILL, MarkStyle.TICK, MarkStyle.CROSS,
-         MarkStyle.SCRIBBLE, MarkStyle.RING]
-    )
-    return MarkPlan(
-        labels=(label,),
-        fill=rng.uniform(0.55, 1.0),
-        style=style,
-        intensity=rng.uniform(0.55, 1.0),
-        offset_x=rng.uniform(-0.35, 0.35),
-        offset_y=rng.uniform(-0.35, 0.35),
-        size_scale=rng.uniform(0.75, 1.25),
-    )
-
-
-def _question_labels(zone: Zone) -> tuple[str, ...]:
-    """Return the answer labels one question block offers."""
-    field_definition = zone.field
-    if isinstance(field_definition, QuestionBlockFieldDefinition):
-        return tuple(field_definition.answer_labels)
-    return ()
-
-
-def _fictional_roll(rng: random.Random, digits: int) -> str:
-    """Return a fictional roll number of the right length.
-
-    Never drawn from anything resembling a real institution's numbering: the
-    first digit is forced non-zero only so the value reads like an identifier,
-    and the rest is noise. Committed fixtures must never carry a real
-    candidate's number, and generating one by accident is easier than it
-    sounds.
-    """
-    return "".join(str(rng.randint(0, 9)) for _ in range(digits))
-
-
-def build_sheet(
+def render_case(
     template: OmrTemplate,
+    case: SheetCase,
     *,
-    index: int,
-    kind: str,
-    seed: int,
-    dataset_version: str = "1",
+    render: PageRender | None = None,
+    image_format: ImageFormat = ImageFormat.PNG,
     prefix: str = DEFAULT_PREFIX,
+    dataset_version: str = "1",
+    seed: int = 0,
 ) -> GeneratedSheet:
-    """Render one labelled sheet.
+    """Render one planned case and return it with its ground truth.
 
     Args:
         template: The template to draw from.
-        index: The sheet's position in the dataset, used in its file name.
-        kind: ``clean``, ``normal``, ``difficult`` or ``broken``.
-        seed: Seed for this sheet alone, so one sheet can be regenerated
-            without regenerating the dataset around it.
-        dataset_version: Recorded in the ground truth.
+        case: What this sheet is, from
+            :func:`~omr_scanner.evaluation.case_plans.plan_dataset`.
+        render: Pixel size; derived from the template at
+            :data:`DEFAULT_DPI` when omitted.
+        image_format: Decides the file name recorded in the ground truth.
         prefix: File-name prefix.
+        dataset_version: Recorded in the ground truth.
+        seed: The dataset's master seed, recorded so one sheet can be
+            reproduced on its own.
 
     Returns:
-        The rendered page and the truth about it.
+        The image and the ground truth, which is copied from the case rather
+        than re-derived - the case already holds the single statement of what
+        was drawn.
     """
-    rng = random.Random(seed)
-    name = f"{prefix}_{index:06d}.png"
-    recipe = _recipe_for(kind, rng, seed, index)
-
-    marks: dict[str, dict[int, MarkPlan]] = {}
-    answers: dict[int, str] = {}
-    ambiguous: list[int] = []
-    styles: dict[int, str] = {}
-    roll = ""
-    set_code = ""
-
-    for zone in template.zones:
-        if zone.grid is None or isinstance(zone.field, IgnoredFieldDefinition):
-            continue
-        groups = list(zone_groups(zone))
-        zone_plans: dict[int, MarkPlan] = {}
-
-        if isinstance(zone.field, QuestionBlockFieldDefinition):
-            labels = _question_labels(zone)
-            first = zone.field.first_question
-            for offset, group in enumerate(groups):
-                number = first + offset
-                plan = _answer_plan(kind, labels, rng)
-                if plan is not None:
-                    zone_plans[group.key] = plan
-                    if plan.ambiguous:
-                        ambiguous.append(number)
-                    # Recorded per question, not per sheet: when a benchmark
-                    # reports fifty false blanks, the first thing worth knowing
-                    # is whether they were all ticks. Without this the analysis
-                    # is guesswork.
-                    styles[number] = plan.style.value
-                answers[number] = plan.value if plan is not None else ""
-        else:
-            symbols = list(zone.field.symbols)
-            value_characters: list[str] = []
-            for group in groups:
-                label = rng.choice(symbols)
-                zone_plans[group.key] = MarkPlan(
-                    labels=(label,), fill=rng.uniform(0.85, 1.0)
-                )
-                value_characters.append(label)
-            value = "".join(value_characters)
-            if zone.field.type.value == "numeric":
-                roll = value
-            elif zone.field.type.value == "set_code":
-                set_code = value
-
-        if zone_plans:
-            marks[zone.id] = zone_plans
+    size = render if render is not None else page_render_size(template)
+    name = f"{prefix}_{case.index:06d}{image_format.suffix}"
 
     spec = sheet_spec_from_template(
         template,
-        marks,
-        omit_markers=recipe.omit_markers,
-        omit_orientation=recipe.omit_orientation,
+        case.marks,
+        omit_markers=case.omit_markers,
+        faint_markers=case.faint_markers,
+        damaged_markers=case.damaged_markers,
+        extra_marker=case.extra_marker,
+        omit_orientation=case.omit_orientation,
+        faint_orientation=case.faint_orientation,
+        render=size,
     )
     sheet = render_sheet(spec)
-    image = apply_distortion(sheet, recipe.distortion).image
+    image = apply_distortion(sheet, case.distortion).image
 
     truth = SheetGroundTruth(
         scan=name,
-        roll=roll,
-        set_code=set_code,
-        answers=answers,
-        ambiguous=tuple(sorted(ambiguous)),
-        expect_failure=recipe.expect_failure,
+        roll=case.roll,
+        set_code=case.set_code,
+        answers=dict(case.answers),
+        ambiguous=case.ambiguous_questions,
+        expect_failure=case.expect_failure,
+        tags=case.tag_values,
+        roll_marks=case.roll_marks,
+        roll_ambiguous=case.roll_ambiguous,
+        set_marks=case.set_marks,
+        set_ambiguous=case.set_ambiguous,
+        duplicate_group=case.duplicate_group,
+        degradation=_degradation_summary(case),
+        notes=case.notes,
         dataset_version=dataset_version,
         metadata={
             "generator_version": GENERATOR_VERSION,
             "seed": seed,
-            "case_kind": kind,
-            "defects": recipe.defects,
-            "distortion": _distortion_summary(recipe.distortion),
-            "mark_styles": styles,
+            "case_index": case.index,
+            "render": {
+                "width": size.width,
+                "height": size.height,
+                "dpi": size.dpi,
+                "derived_from": size.derived_from,
+            },
+            "mark_styles": _mark_styles(case),
         },
     )
     return GeneratedSheet(image=image, truth=truth)
 
 
-def _answer_plan(kind: str, labels: Sequence[str], rng: random.Random) -> MarkPlan | None:
-    """Decide what happens to one question: an answer, a blank, or two marks.
+def _degradation_summary(case: SheetCase) -> dict[str, Any]:
+    """Return everything that was done to this sheet, and nothing that was not.
 
-    The proportions are fixed rather than uniform because a dataset of random
-    answers would contain almost no blanks and almost no double marks - the two
-    cases the recognition rules exist for.
-    """
-    if not labels:
-        return None
-    roll = rng.random()
-    if roll < 0.08:
-        return None  # left blank
-    if roll < 0.13:
-        chosen = set(rng.sample(list(labels), k=min(2, len(labels))))
-        # Sorted into *printed* order, not the order they were drawn: the
-        # engine reports a double mark in the order the options appear on the
-        # paper, and a ground truth that said "c-a" would fail a perfectly
-        # correct reading of "a-c".
-        pair = tuple(label for label in labels if label in chosen)
-        return MarkPlan(labels=pair, fill=rng.uniform(0.8, 1.0))
-    if kind in {"difficult", "broken"} and roll < 0.20:
-        # A mark too faint to accept. The *correct* engine behaviour here is to
-        # flag it rather than to read it, so the caller records the question as
-        # deliberately ambiguous; see `SheetGroundTruth.ambiguous`.
-        plan = _mark_plan(kind, labels, rng)
-        return MarkPlan(
-            labels=plan.labels,
-            fill=rng.uniform(0.12, 0.28),
-            style=plan.style,
-            intensity=rng.uniform(0.3, 0.5),
-            ambiguous=True,
-        )
-    return _mark_plan(kind, labels, rng)
-
-
-def _distortion_summary(spec: DistortionSpec) -> dict[str, Any]:
-    """Return the non-default distortion parameters, for the ground truth.
-
-    Only what was actually applied: a record listing twenty defaults tells a
-    reader nothing about which sheet they are looking at.
+    Only the non-default parameters: a record listing twenty defaults tells a
+    reader nothing about which sheet they are looking at, and a reader trying
+    to reproduce a failure wants the three numbers that mattered.
     """
     default = DistortionSpec()
     summary: dict[str, Any] = {}
@@ -582,11 +460,57 @@ def _distortion_summary(spec: DistortionSpec) -> dict[str, Any]:
         "rotation_degrees", "scale_x", "scale_y", "translate_x_px", "translate_y_px",
         "perspective_strength", "margin_px", "brightness_gain", "brightness_offset",
         "illumination_gradient", "blur_kernel_px", "noise_sigma", "jpeg_quality",
+        "paper_gray", "speckle_density", "streak_strength", "edge_shadow",
     ):
-        value = getattr(spec, name)
+        value = getattr(case.distortion, name)
         if value != getattr(default, name):
             summary[name] = value
+
+    if case.omit_markers:
+        summary["omitted_markers"] = list(case.omit_markers)
+    if case.faint_markers:
+        summary["faint_markers"] = list(case.faint_markers)
+    if case.damaged_markers:
+        summary["damaged_markers"] = list(case.damaged_markers)
+    if case.extra_marker:
+        summary["extra_marker"] = True
+    if case.omit_orientation:
+        summary["omitted_orientation_mark"] = True
+    if case.faint_orientation:
+        summary["faint_orientation_mark"] = True
     return summary
+
+
+def _mark_styles(case: SheetCase) -> dict[str, str]:
+    """Return the style drawn for each answered question.
+
+    Recorded per question because when a benchmark reports fifty false blanks,
+    the first thing worth knowing is whether they were all ticks.
+    """
+    styles: dict[str, str] = {}
+    for zone_plans in case.marks.values():
+        for plan in zone_plans.values():
+            if plan.labels and plan.style is not MarkStyle.FILL:
+                styles.setdefault(plan.style.value, plan.style.value)
+    return styles
+
+
+# ----------------------------------------------------------------------
+# Writing a whole dataset
+# ----------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class GenerationProgress:
+    """One progress report while a dataset is being written.
+
+    Attributes:
+        completed: Sheets written so far.
+        total: Sheets the dataset will contain.
+        name: The file just written.
+    """
+
+    completed: int
+    total: int
+    name: str
 
 
 def generate_dataset(
@@ -596,36 +520,64 @@ def generate_dataset(
     count: int = 24,
     seed: int = 20260918,
     profile: DatasetProfile = DatasetProfile.MIXED,
+    custom_families: Sequence[CaseFamily] | None = None,
+    dpi: int = DEFAULT_DPI,
+    image_format: ImageFormat | str = ImageFormat.PNG,
+    jpeg_quality: int = DEFAULT_JPEG_QUALITY,
     name: str = "synthetic",
     version: str = "1",
     prefix: str = DEFAULT_PREFIX,
     template_path: str = "",
+    write_metadata: bool = True,
+    on_progress: Callable[[GenerationProgress], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> DatasetManifest:
     """Write a complete labelled dataset to disk.
 
     Args:
-        output_dir: Folder to create ``images/``, ``ground_truth/`` and
-            ``manifest.json`` in.
+        output_dir: Folder to create ``images/``, ``ground_truth/`` and the
+            manifests in.
         template: The template to render from.
         count: How many sheets.
-        seed: Master seed. The same seed, count, profile and template produce
-            the same dataset, which is what makes a benchmark comparable
-            between two runs and two engine versions.
-        profile: How hard the sheets should be.
+        seed: Master seed. The same seed, count, profile, template and format
+            produce the same dataset, which is what makes a benchmark
+            comparable between two runs and two engine versions.
+        profile: Which families of test case to draw on.
+        custom_families: Families to use when ``profile`` is ``CUSTOM``.
+        dpi: Rendering resolution.
+        image_format: ``png`` or ``jpg``.
+        jpeg_quality: Quality for JPEG output.
         name: Dataset name, recorded in the manifest.
         version: Dataset revision.
         prefix: File-name prefix.
         template_path: Where the template came from, recorded in the manifest.
+        write_metadata: Also write ``manifest.csv`` and
+            ``dataset_summary.json``. The per-sheet ground truth is always
+            written - without it the dataset is just pictures.
+        on_progress: Called after each sheet is written. Runs on the calling
+            thread, so a GUI caller must marshal to the main thread.
+        should_cancel: Polled before each sheet; returning ``True`` stops the
+            run and writes a manifest describing what was actually produced.
 
     Returns:
         The manifest, already written.
 
     Raises:
-        ValueError: ``count`` is not positive, or the template declares no
-            bubble grids to fill in.
+        ValueError: ``count`` is not positive, the format is unsupported, or
+            the template declares no bubble grids to fill in.
+
+    Memory:
+        One sheet is rendered, encoded, written and released before the next
+        begins. A dataset of ten thousand sheets therefore costs one page of
+        memory, not ten thousand.
     """
     import cv2
 
+    chosen_format = (
+        image_format
+        if isinstance(image_format, ImageFormat)
+        else ImageFormat.parse(str(image_format))
+    )
     if count < 1:
         raise ValueError(f"A dataset needs at least one sheet, got {count}")
     if not any(zone.grid is not None for zone in template.zones):
@@ -633,35 +585,78 @@ def generate_dataset(
             "This template declares no bubble grids, so there is nothing to generate"
         )
 
+    render = page_render_size(template, dpi)
+    cases = plan_dataset(
+        template,
+        count=count,
+        seed=seed,
+        profile=profile,
+        custom_families=custom_families,
+    )
+
     images = output_dir / IMAGES_DIRNAME
     truths = output_dir / GROUND_TRUTH_DIRNAME
     images.mkdir(parents=True, exist_ok=True)
     truths.mkdir(parents=True, exist_ok=True)
 
-    kinds = _case_kinds(profile, count, seed)
+    encode_params = (
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)]
+        if chosen_format is ImageFormat.JPEG
+        else []
+    )
+
     entries: list[str] = []
+    rows: list[dict[str, Any]] = []
+    cancelled = False
 
-    for index, kind in enumerate(kinds, start=1):
-        # Each sheet gets its own derived seed, so regenerating sheet 7 alone
-        # gives the same sheet 7, and changing `count` does not reshuffle the
-        # sheets that were already there.
-        sheet = build_sheet(
+    _LOGGER.info(
+        "Generating %d synthetic sheet(s): profile=%s seed=%d %dx%d @%d dpi (%s) format=%s",
+        len(cases),
+        profile.value,
+        seed,
+        render.width,
+        render.height,
+        render.dpi,
+        render.derived_from,
+        chosen_format.value,
+    )
+
+    for position, case in enumerate(cases, start=1):
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+            _LOGGER.info("Dataset generation cancelled after %d sheet(s)", position - 1)
+            break
+
+        sheet = render_case(
             template,
-            index=index,
-            kind=kind,
-            seed=seed + index,
-            dataset_version=version,
+            case,
+            render=render,
+            image_format=chosen_format,
             prefix=prefix,
+            dataset_version=version,
+            seed=seed,
         )
-        image_path = images / sheet.truth.scan
-        success, buffer = cv2.imencode(".png", sheet.image)
-        if not success:  # pragma: no cover - PNG encoding of a valid array
+        success, buffer = cv2.imencode(chosen_format.suffix, sheet.image, encode_params)
+        if not success:  # pragma: no cover - encoding a valid array
             raise OSError(f"Could not encode {sheet.truth.scan}")
-        image_path.write_bytes(buffer.tobytes())
+        (images / sheet.truth.scan).write_bytes(buffer.tobytes())
 
-        truth_name = f"{image_path.stem}.json"
+        truth_name = f"{Path(sheet.truth.scan).stem}.json"
         save_ground_truth(sheet.truth, truths / truth_name)
         entries.append(truth_name)
+        rows.append(
+            {
+                "image": sheet.truth.scan,
+                "ground_truth": truth_name,
+                "tags": " ".join(sheet.truth.tags),
+                "roll": sheet.truth.roll,
+                "set_code": sheet.truth.set_code,
+                "duplicate_group": sheet.truth.duplicate_group,
+                "expect_failure": int(sheet.truth.expect_failure),
+            }
+        )
+        if on_progress is not None:
+            on_progress(GenerationProgress(position, len(cases), sheet.truth.scan))
 
     manifest = DatasetManifest(
         name=name,
@@ -670,54 +665,170 @@ def generate_dataset(
         template=template_path or template.name,
         generator={
             "generator_version": GENERATOR_VERSION,
+            "dataset_schema_version": DATASET_SCHEMA_VERSION,
             "seed": seed,
-            "count": count,
+            "count": len(entries),
+            "requested_count": count,
             "profile": profile.value,
+            "families": [family.value for family in families_for(profile, custom_families)],
             "prefix": prefix,
             "template_id": template.template_id,
+            "template_name": template.name,
+            "template_version": template.format_version,
+            "dpi": render.dpi,
+            "page_pixels": [render.width, render.height],
+            "page_size_from": render.derived_from,
+            "image_format": chosen_format.value,
+            "jpeg_quality": jpeg_quality if chosen_format is ImageFormat.JPEG else None,
+            "cancelled": cancelled,
         },
         entries=tuple(entries),
         notes=(
-            "Synthetic data. Useful for regression and coordinate correctness; "
-            "not evidence of real-world recognition accuracy."
+            "Synthetic data. Measures regression consistency and controlled "
+            "edge-case handling; not evidence of real-world recognition accuracy."
         ),
     )
     save_manifest(manifest, output_dir / MANIFEST_FILENAME)
+
+    if write_metadata:
+        _write_manifest_csv(output_dir / MANIFEST_CSV_FILENAME, rows)
+        _write_summary(output_dir / SUMMARY_FILENAME, manifest, rows)
+
+    _LOGGER.info(
+        "Dataset written: %d sheet(s) in %s%s",
+        len(entries),
+        output_dir,
+        " (cancelled)" if cancelled else "",
+    )
     return manifest
 
 
-def _case_kinds(profile: DatasetProfile, count: int, seed: int) -> list[str]:
-    """Return the case kind for each sheet, in order.
+MANIFEST_COLUMNS: tuple[str, ...] = (
+    "image",
+    "ground_truth",
+    "tags",
+    "roll",
+    "set_code",
+    "duplicate_group",
+    "expect_failure",
+)
+"""Columns of ``manifest.csv``. Stable: a spreadsheet is the second most
+common way somebody looks at a dataset, after the images themselves."""
 
-    Allocated proportionally and then shuffled with the dataset's own seed,
-    rather than drawn independently per sheet: a twenty-sheet "mixed" dataset
-    must reliably *contain* its one broken sheet, not merely have a five per
-    cent chance of one per draw.
+
+def _write_manifest_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Write the per-sheet manifest as CSV."""
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(MANIFEST_COLUMNS))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _write_summary(
+    path: Path, manifest: DatasetManifest, rows: Sequence[Mapping[str, Any]]
+) -> None:
+    """Write a dataset-level summary: how many sheets, and of what kinds."""
+    tag_counts: dict[str, int] = {}
+    for row in rows:
+        for tag in str(row["tags"]).split():
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    duplicate_groups: dict[str, int] = {}
+    for row in rows:
+        group = str(row["duplicate_group"])
+        if group:
+            duplicate_groups[group] = duplicate_groups.get(group, 0) + 1
+
+    payload = {
+        "dataset": manifest.name,
+        "dataset_version": manifest.version,
+        "created_at": manifest.created_at,
+        "generator": manifest.generator,
+        "image_count": len(rows),
+        "expected_failures": sum(int(row["expect_failure"]) for row in rows),
+        "tag_counts": dict(sorted(tag_counts.items())),
+        "duplicate_groups": {
+            "groups": len(duplicate_groups),
+            "sheets": sum(duplicate_groups.values()),
+            "sizes": dict(sorted(duplicate_groups.items())),
+        },
+        "notes": manifest.notes,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def describe_template(template: OmrTemplate) -> dict[str, Any]:
+    """Summarise what a template offers a generator, for a dialog or a log.
+
+    Used to tell a user *before* they generate that their template has no set
+    code, or eight identifier columns, rather than letting them discover it in
+    the ground truth afterwards.
     """
-    weights = PROFILE_WEIGHTS[profile]
-    kinds: list[str] = []
-    for kind, share in weights.items():
-        kinds.extend([kind] * max(round(share * count), 1 if share > 0 else 0))
+    layout = FieldLayout.of(template)
+    render = page_render_size(template)
+    return {
+        "name": template.name,
+        "template_id": template.template_id,
+        "identifier_columns": layout.identifier_columns,
+        "identifier_symbols": len(layout.identifier_symbols),
+        "set_code_columns": layout.set_columns,
+        "set_code_symbols": len(layout.set_symbols),
+        "questions": len(layout.questions),
+        "options": len(layout.option_labels),
+        "question_blocks": len(layout.question_zones),
+        "page_pixels": [render.width, render.height],
+        "dpi": render.dpi,
+        "page_size_from": render.derived_from,
+    }
 
-    # Rounding can overshoot or undershoot; trim or pad with the commonest kind.
-    commonest = max(weights, key=lambda key: weights[key])
-    while len(kinds) < count:
-        kinds.append(commonest)
-    del kinds[count:]
 
-    random.Random(seed).shuffle(kinds)
-    return kinds
+def validate_template(template: OmrTemplate) -> tuple[str, ...]:
+    """Return the reasons a template cannot be generated from, if any.
+
+    An *optional* field that is missing is not a reason: a template with no
+    set code simply produces no set-code cases. Only the things that make a
+    sheet unrenderable are refusals.
+    """
+    problems: list[str] = []
+    if not template.registration_markers:
+        problems.append("the template declares no registration markers")
+    if not any(zone.grid is not None for zone in template.zones):
+        problems.append("the template declares no bubble grids")
+    render = page_render_size(template)
+    if render.width < 200 or render.height < 200:
+        problems.append("the template's page is too small to render")
+    return tuple(problems)
 
 
+# Re-exported so that the many callers written against the previous module
+# layout keep working: the names moved to `test_cases` and `case_plans` when
+# the case taxonomy grew, but they are still part of this module's interface.
 __all__ = [
+    "CORNER_ROLES",
+    "DATASET_SCHEMA_VERSION",
+    "DEFAULT_DPI",
+    "DEFAULT_JPEG_QUALITY",
+    "DEFAULT_PREFIX",
     "GENERATOR_VERSION",
     "GROUND_TRUTH_DIRNAME",
     "IMAGES_DIRNAME",
+    "MANIFEST_CSV_FILENAME",
     "MANIFEST_FILENAME",
+    "SUMMARY_FILENAME",
+    "CaseFamily",
     "DatasetProfile",
     "GeneratedSheet",
+    "GenerationProgress",
+    "ImageFormat",
     "MarkPlan",
-    "build_sheet",
+    "PageRender",
+    "SheetCase",
+    "TestCaseTag",
+    "describe_template",
     "generate_dataset",
+    "page_render_size",
+    "plan_dataset",
+    "render_case",
     "sheet_spec_from_template",
+    "validate_template",
 ]

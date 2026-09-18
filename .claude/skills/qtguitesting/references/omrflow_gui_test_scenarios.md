@@ -87,6 +87,24 @@ the offered range depends on the machine, and fixing it is the only way an
 assertion about that range means the same thing on two computers. Never
 `exec()` it.
 
+### Developer testing tools (Phase 3)
+
+| `objectName` | Widget |
+| --- | --- |
+| `generateDatasetAction`, `runBenchmarkAction` | The two `Tools > Developer / Testing` commands |
+| `generateDatasetDialog` | The generation form |
+| `datasetTemplateEdit`, `datasetOutputEdit`, `datasetNameEdit` | Where from, where to, what to call it |
+| `datasetProfileCombo`, `datasetFamiliesList` | Profile, and the families a Custom profile uses |
+| `datasetCountSpin`, `datasetSeedSpin`, `newSeedButton` | How many, and reproducibly |
+| `datasetFormatCombo`, `datasetQualitySpin`, `datasetDpiSpin` | PNG/JPEG, quality, resolution |
+| `datasetMetadataCheckBox`, `datasetBenchmarkCheckBox` | Extra manifests; benchmark afterwards |
+| `generationProgressDialog` and its bar/labels | Progress, ETA, rate, cancel |
+| `generationSummaryDialog`, `openDatasetFolderButton`, `runBenchmarkButton` | What was produced, and what to do next |
+| `benchmarkBanner`, `benchmarkBannerLabel` | The Scan page in benchmark mode |
+| `showBenchmarkResultsButton`, `exitBenchmarkButton` | Reopen the results; leave benchmark mode |
+| `benchmarkResultsDialog`, `benchmarkTabs` | The results |
+| `benchmarkSummaryTable`, `benchmarkCategoryTable`, `benchmarkErrorTable`, `benchmarkFailingScansList` | The four views |
+
 **Never sleep waiting for a batch.** `ScanPage.batch_finished` carries the
 `BatchReport`; wait on it (`qtbot.waitSignal`, or `ScanHarness.run_batch()` in
 the scripts). Selecting a row starts a *separate* `PreviewWorker`, so anything
@@ -372,6 +390,53 @@ and the no-per-scan-widgets check).
 
 ---
 
+## Scenario 16 - Developer testing tools
+
+*Tools > Developer / Testing*: generate a labelled dataset, then score
+recognition against it.
+
+**The menu:** `Tools` and its `Developer / Testing` submenu exist, and both
+`generateDatasetAction` and `runBenchmarkAction` are enabled with no project
+open - a testing tool gated behind a project is a testing tool nobody reaches.
+
+**The generation dialog** (constructed, never `exec()`d):
+
+```
+format PNG              -> datasetQualitySpin disabled
+format JPEG             -> datasetQualitySpin enabled
+profile Custom, none    -> request() is None   (a custom profile needs families)
+profile Custom + a tick -> request().families == (that family,)
+no template path        -> request() is None
+```
+
+Qt hands item data back as a plain value, never the enum object, so
+`selected_profile()` / `selected_format()` coerce it. A test that compares
+`currentData() is DatasetProfile.CUSTOM` will fail for that reason and not
+because anything is broken.
+
+**Generation:** `DatasetWorker` emits `sheet_done` once per sheet and
+`finished_dataset` once, including after a cancel - what was written is a real
+dataset, and its manifest carries `cancelled: true` and the count actually
+produced. A missing template becomes a `failed` signal, never an exception on
+the thread.
+
+**Benchmark mode:** `page.enter_benchmark_mode(dataset)` shows
+`benchmarkBanner`, loads the dataset's scans into the ordinary list and turns
+renaming off. `Process All` then runs the normal pipeline and
+`benchmark_finished` carries the scored report. A baseline dataset must score
+1.0000; anything less is a defect in the generator or the engine. Set
+`page.benchmark_auto_show = False` so no modal appears in a headless run.
+
+**Results:** `benchmarkSummaryTable`, `benchmarkCategoryTable` and
+`benchmarkErrorTable` exist; the category table has one row per tag, and
+`scan_requested` connected to `page.select_scan_named` selects that row.
+
+**Automated:** `tests/gui/test_developer_tools.py` (20 tests) and
+`scripts/run_gui_smoke_tests.py` (the menu, the dialog, the results dialog, and
+one end-to-end generate-and-benchmark against the real template).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -403,6 +468,9 @@ scan_progress_cancelling.png
 settings_processing_automatic.png
 settings_processing_single_core.png
 settings_processing_custom.png
+devtools_generate_dialog.png
+devtools_benchmark_mode.png
+devtools_benchmark_results.png
 ```
 
 `scan_overlay_zoom.png` is the one worth reading closely: it is the answer area
