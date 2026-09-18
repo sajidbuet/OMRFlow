@@ -15,8 +15,10 @@ entities, it finds the intended shape and relationships already agreed.
 |---|---|---|
 | Project | Implemented (Phase 0) | `project.json` + `project_setting` table |
 | Template, Zone, FieldDefinition, RegistrationMarker, OrientationMarker, BubbleGrid, RecognitionSettings | Implemented (Phase 0) | `.omrt` document |
-| Scan | Planned (Phase 5) | database |
-| RecognitionResult, FieldValue | Planned (Phase 3/5) | database |
+| ScanBatch | Implemented (Phase 5) | `scan_batch` table |
+| BatchScan (one scan in a batch) | Implemented (Phase 5) | `batch_scan` table |
+| RecognitionResult | Implemented (Phase 5) | `batch_scan.result_json` |
+| FieldValue (per-zone, as its own row) | Planned (Phase 6) | database |
 | RecognitionConflict | Planned (Phase 6) | database |
 | Candidate, AttendanceRecord | Planned (Phase 7) | database |
 | AnswerKey | Planned (Phase 8) | database |
@@ -87,34 +89,80 @@ Fully specified in `docs/TEMPLATE_FORMAT.md`. Summary of the relationships:
 Templates are versioned documents, not database rows, so that a sheet design can
 be shared between projects and reviewed in version control.
 
-### Scan - *Phase 5*
+### ScanBatch - *implemented (Phase 5)*
 
-One scanned sheet.
+One run over a folder of scans. Table `scan_batch`.
 
-Intended fields: `scan_id`, `project_id`, `source_path` (relative to the project
-root), `aligned_path` (relative, nullable), `checksum`, `page_index`,
-`imported_at`, `status` (imported / aligned / recognised / failed),
-`alignment_error` (nullable), `template_id`.
+Fields: `batch_id` (UUID hex), `created_at`, `updated_at`, `source_folder`,
+`template_id`, `template_name`, `template_path`, `geometry_fingerprint`,
+`recognition_fingerprint`, `engine_version`, `settings_json`, `status`,
+`total_scans`.
+
+`status` is one of `new`, `running`, `interrupted`, `cancelled`, `completed`,
+`completed_with_errors`. The last two are deliberately distinct: "the loop
+finished" and "the work succeeded" are different claims, and only the second
+may be reported as success.
+
+The two fingerprints are why resume can refuse to mix results. They are the
+same hashes `OmrTemplate` computes for Phase 4's calibration staleness check,
+so a template edited between two halves of a batch is detected by the same
+mechanism in both places.
+
+### BatchScan - *implemented (Phase 5)*
+
+One scanned sheet inside a batch. Table `batch_scan`, unique on
+`(batch_id, source_path)`.
+
+Fields: `scan_id`, `batch_id`, `batch_index`, `source_path`, `filename`,
+`file_size`, `modified_at`, `status`, `attempt_count`, `outcome`,
+`registration`, `identifier_value`, `set_code_value`, `output_name`,
+`output_path`, `copied`, `error_code`, `error_category`, `error_message`,
+`result_json`, `started_at`, `finished_at`, `duration_seconds`.
+
+`status` is one of `pending`, `queued`, `processing`, `completed`, `warning`,
+`failed`, `cancelled`. Every state is either *terminal* (work a resume must
+keep) or *resumable*; a test asserts that no state is somehow neither, because
+a scan in such a state would be invisible to both the resume query and the
+completed count.
 
 Invariants:
-- original scans are never modified or moved by OMRFlow; only the path is stored,
-  so importing a folder does not duplicate gigabytes of images;
-- `aligned_path` points at a derived file that may be deleted and regenerated.
+- **original scans are never modified or moved** - only the path is stored, so
+  importing a folder does not duplicate gigabytes of images. Asserted by a
+  hash-before/hash-after test.
+- `batch_index` is the enumeration order and never changes, because it is what
+  a resumed run replays - and therefore what decides which of two sheets
+  sharing a roll number keeps the plain output name.
+- `file_size` and `modified_at` record what the file looked like when it was
+  enumerated. Cheap, and enough to notice a source replaced between runs;
+  hashing every scan would read the whole batch twice for a check that almost
+  never fires.
 
-### RecognitionResult and FieldValue - *Phase 3/5*
+### RecognitionResult - *implemented (Phase 5)*
 
-`RecognitionResult` is the per-scan outcome; `FieldValue` is one recognised zone
-within it.
+Stored as JSON in `batch_scan.result_json`, via
+`ScanResult.to_dict()`/`from_dict()`.
 
-`FieldValue` intended fields: `zone_id`, `value` (canonical string),
-`confidence` (0-1), `state` (confident / missing / multiple / low_confidence),
-`alternatives` (competing candidates), and the raw per-bubble measurements.
+Deliberately *not* exploded into typed columns: that serialisation is already a
+versioned, round-tripping contract with its own schema version, and duplicating
+its forty-odd fields as columns would mean a migration every time recognition
+gained a measurement. The handful of columns that *are* typed alongside it are
+exactly the ones a query needs to filter or sort on without decoding every row.
 
-Invariant, and the reason the two are separate: **the machine value is never
-overwritten.** A human correction is recorded alongside it with an `AuditEvent`,
-so a result can always be traced back to what the machine actually saw. The
-display strings described in the README (`?10018-10028`, `?1__18`) are rendered
-from this structured data; they are never the stored form.
+### FieldValue - *Phase 6*
+
+One recognised zone as its own row, which is what a conflict queue needs to
+point at.
+
+Intended fields: `zone_id`, `value` (canonical string), `confidence` (0-1),
+`state` (confident / missing / multiple / low_confidence), `alternatives`
+(competing candidates), and the raw per-bubble measurements.
+
+Invariant, and the reason this will be separate from the stored result:
+**the machine value is never overwritten.** A human correction is recorded
+alongside it with an `AuditEvent`, so a result can always be traced back to what
+the machine actually saw. The display strings described in the README
+(`?10018-10028`, `?1__18`) are rendered from this structured data; they are
+never the stored form.
 
 ### RecognitionConflict - *Phase 6*
 

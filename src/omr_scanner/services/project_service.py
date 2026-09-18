@@ -46,6 +46,25 @@ from omr_scanner.utils.logging_setup import attach_log_file, detach_log_file
 logger = logging.getLogger(__name__)
 
 
+__all__ = [
+    "ProjectDatabase",
+    "ProjectSession",
+    "create_project",
+    "is_project_directory",
+    "open_project",
+    "read_project_metadata",
+]
+"""``ProjectDatabase`` is re-exported deliberately.
+
+The GUI layer may not import :mod:`omr_scanner.database` - that is the
+dependency direction ``docs/ARCHITECTURE.md`` fixes and
+``tests/unit/test_architecture.py`` enforces - but it does hold
+:class:`ProjectSession` objects whose :attr:`~ProjectSession.database` is one
+of these, and a page that wants to *name* that type in an annotation would
+otherwise have to reach past this layer to do it. Re-exporting the name here
+keeps the import graph honest without pretending the type does not exist."""
+
+
 class ProjectSession:
     """An open project together with the resources it holds.
 

@@ -111,6 +111,42 @@ the scripts). Selecting a row starts a *separate* `PreviewWorker`, so anything
 that measures or captures the preview must also wait for
 `ScanPreviewView.has_page` - note it is a **property**, not a method.
 
+### Durable batches (Phase 5)
+
+| `objectName` | Widget |
+| --- | --- |
+| `resumeBatchButton` | Process only the scans this batch never finished |
+| `retryFailedButton` | Re-read the failures, and only those |
+| `batchStateLabel` | The stored batch's id and counts, or "no project open" |
+| `scanStatusFilterCombo` | All / Completed / Needs review / Failed / Not processed |
+| `scanFilterCountLabel` | "3 of 12" while a filter is active |
+
+**A batch is only recorded when a project is open.** `build_scan_page(...)`
+takes `with_project=True`, which creates a throwaway project under
+`test-output/gui/projects/` and opens it on the page. Without it
+`page.state.batch_id` stays `None`, `resume_batch()` refuses, and the state
+label says the run will not be saved - all of which is correct behaviour, not a
+harness failure.
+
+`ScanHarness` gained `run_paths(paths)` for a **partial** run (the resume
+scenarios need one; `run_batch()` always processes everything and therefore
+leaves nothing to resume), plus `resume()`, `retry_failed()` and
+`batch_summary`. `shutdown()` closes the page *before* the session, because the
+page's own shutdown flushes the last results into the database.
+
+**Assert that resume did less work**, not merely that the totals came out
+right - a resume that silently re-read everything produces the same final
+counts:
+
+```python
+harness = build_scan_page(scans, with_project=True)
+first = harness.run_paths(scans[:2])        # partial run
+assert harness.batch_summary.pending == 2
+resumed = harness.resume()
+assert resumed.total == 2                    # the two left, not all four
+assert harness.batch_summary.processed == 4
+```
+
 ### Calibration page (Phase 4)
 
 | `objectName` | Widget |

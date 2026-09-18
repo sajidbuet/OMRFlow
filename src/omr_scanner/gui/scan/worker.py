@@ -68,7 +68,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
     from omr_scanner.domain.template import OmrTemplate
-    from omr_scanner.services import ProgressSnapshot
+    from omr_scanner.services import BatchRecorder, ProgressSnapshot
 
 TERMINAL_OUTCOMES: dict[str, JobStatus] = {
     RecognitionOutcome.COMPLETE.value: JobStatus.SUCCESS,
@@ -106,6 +106,11 @@ class BatchWorker(QThread):
         parent: Optional Qt parent.
         tracker: Progress tracker to count into. One is created when omitted;
             a test passes its own with a fake clock and a short warm-up.
+        recorder: Durable store for finished sheets (Phase 5), or ``None`` to
+            run without persistence - which is what happens with no project
+            open, and what the benchmark and most tests do. The recorder is
+            driven from *this* thread, one result at a time, which is what
+            keeps SQLite's single-writer assumption true without a lock.
     """
 
     progress = Signal(object)
@@ -123,6 +128,7 @@ class BatchWorker(QThread):
         *,
         workers: int = 1,
         tracker: BatchProgressTracker | None = None,
+        recorder: BatchRecorder | None = None,
     ) -> None:
         super().__init__(parent)
         self._paths = list(paths)
@@ -133,6 +139,7 @@ class BatchWorker(QThread):
         self._cancelled = False
         self._tracker = tracker if tracker is not None else BatchProgressTracker()
         self._tracker.start(len(self._paths), workers=self._workers)
+        self._recorder = recorder
 
     def cancel(self) -> None:
         """Ask the run to stop after the sheets currently being read."""
@@ -158,6 +165,21 @@ class BatchWorker(QThread):
         """How many sheets this run reads at once."""
         return self._workers
 
+    @property
+    def recorder(self) -> BatchRecorder | None:
+        """The durable store this run is writing to, if any."""
+        return self._recorder
+
+    @property
+    def persistence_failure(self) -> str:
+        """Why results could not be stored, or ``""``.
+
+        Read by the page when the run ends: a batch whose results were computed
+        but not written is **not** a successful batch, and saying so is the
+        whole point of tracking it separately from recognition failures.
+        """
+        return self._recorder.failure if self._recorder is not None else ""
+
     def run(self) -> None:
         """Process the batch. Runs on the worker thread; touches no widget."""
         try:
@@ -173,10 +195,20 @@ class BatchWorker(QThread):
             )
         except Exception as exc:
             self._tracker.fail()
+            self._flush_recorder()
             self.failed.emit(str(exc))
             return
+        # Flush before announcing the run is over. Anything still buffered is
+        # finished work, and the page reports completion off the back of this
+        # signal - so the last few sheets must be durable before it does.
+        self._flush_recorder()
         self._tracker.finish(cancelled=report.cancelled)
         self.finished_report.emit(report)
+
+    def _flush_recorder(self) -> None:
+        """Commit whatever the recorder still holds, if there is one."""
+        if self._recorder is not None:
+            self._recorder.flush()
 
     def _emit_progress(self, update: BatchProgress) -> None:
         """Count the completion, then pass the event on.
@@ -191,6 +223,16 @@ class BatchWorker(QThread):
         self.progress.emit(update)
 
     def _emit_result(self, processed: ProcessedScan) -> None:
+        """Record one finished sheet durably, then hand it to the page.
+
+        Recording happens *before* the signal so that a result the page shows
+        as done has already been offered to the store. A storage failure does
+        not stop the batch - the remaining sheets are still worth reading, and
+        the results stay in memory where the page can still export them - but
+        it is remembered on the recorder and reported when the run ends.
+        """
+        if self._recorder is not None:
+            self._recorder.record(processed)
         self.scan_done.emit(processed)
 
 

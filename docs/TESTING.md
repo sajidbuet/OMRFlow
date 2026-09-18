@@ -427,6 +427,63 @@ Do not generate ten thousand real images to test a progress bar. The
 simulation covers the counting and the estimate; a few dozen synthetic sheets
 cover the wiring.
 
+## Testing durable batches (Phase 5)
+
+| Level | Where | Asserts |
+|---|---|---|
+| The state rules | `tests/unit/test_batch_store.py` (35 tests) | Resume selection, cancellation, crash repair, final-status derivation, the four compatibility differences, recorder buffering and storage-failure handling - against a real SQLite file with hand-built results, so the *rules* are tested without the engine that ordinarily drives them. |
+| The pipeline | `tests/integration/test_batch_persistence.py` (17 tests) | The real engine, real rendered sheets and a real project database: a normal batch, broken images, an unregistrable page, resume, a simulated interruption, one vs. many workers, duplicate identifiers, source integrity and reopening. |
+| The GUI | `tests/gui/test_scan_persistence.py` (20 tests) | The real page, a real project and a real `QThread`: cancellation, resume, retry, filtering, responsiveness, close-during-processing, and crash recovery through `MainWindow`. |
+
+**Use a real database, not a mock.** Every interesting property of the store is
+a property of the database - the foreign key, the unique constraint, the
+transaction boundary, the grouped count. A mocked session asserts that the code
+calls the functions it calls, which is the one thing worth nothing. The unit
+tests open a real SQLite file in `tmp_path`; they still run in about two
+seconds.
+
+**The mandatory exit criterion is a hash comparison.** Nothing else proves the
+originals were untouched:
+
+```python
+before = {path: sha256(path.read_bytes()).hexdigest() for path in paths}
+run_batch(..., options=BatchOptions(output_dir=out, rename_with_identifier=True))
+after = {path: sha256(path.read_bytes()).hexdigest() for path in paths}
+assert after == before, "a source scan was modified by processing"
+```
+
+Run with renaming **on** and a corrupt file in the list - those are the two
+paths most likely to touch a source file, and testing the quiet case proves
+nothing.
+
+**Assert that resume did less work, not just that the total came out right.**
+A resume that silently re-read everything produces exactly the same final
+counts as one that did not:
+
+```python
+report = harness.resume()          # or page.resume_batch()
+assert report.total == 2           # the two that were left, not all four
+assert summary_after.processed == 4
+```
+
+**Test the GUI event loop with a timer, not with a feeling.** A `QTimer` that
+could not tick if recognition were happening on the GUI thread is the honest
+form of "the window stayed responsive":
+
+```python
+heartbeat = QTimer(); heartbeat.setInterval(20)
+heartbeat.timeout.connect(lambda: ticks.append(1)); heartbeat.start()
+with qtbot.waitSignal(page.batch_finished, timeout=...):
+    page.process_all()
+assert len(ticks) > 3, "the GUI thread was blocked while the batch ran"
+```
+
+**Simulating a crash.** There is no way to kill a live process mid-write from
+a test, so the state a crash *leaves* is constructed instead - rows marked
+`queued`/`processing`, the database closed without a finalise - and recovery is
+asserted against that. The limitation is recorded in
+`development/PHASE_05_HANDOFF.md` §7 rather than papered over.
+
 ## Testing the Calibration workflow (Phase 4)
 
 Three levels, and the reason for each mirrors the recognition-testing table

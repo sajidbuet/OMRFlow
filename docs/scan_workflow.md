@@ -1,8 +1,10 @@
-# The Scan workflow (Phase 3)
+# The Scan workflow (Phases 3 and 5)
 
-Step 2 of OMRFlow: read a stack of scanned answer sheets against a template
-built in the Template designer, review what was read, optionally file the images
-under their roll numbers, and export the results as CSV.
+Read a stack of scanned answer sheets against a template built in the Template
+designer, review what was read, optionally file the images under their roll
+numbers, and export the results as CSV. Phase 5 adds the part that matters for
+a real examination: every scan's result is written to the project database as
+it finishes, so an interrupted run is **resumed rather than restarted**.
 
 This document covers what the workflow does and the conventions it follows.
 For the algorithms underneath, see [`IMAGE_PROCESSING.md`](IMAGE_PROCESSING.md);
@@ -23,8 +25,13 @@ for how the modules fit together, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
 How many sheets are read at once is set in **File > Settings > Processing** and
 is remembered between sessions; see [§10](#10-performance-and-responsiveness).
 
-Nothing is written anywhere until step 5 or 6. Processing alone never touches a
-file on disk.
+**Your original scans are never modified.** Recognition works on a copy in
+memory; renaming *copies* into the output folder and leaves the source exactly
+where it was, byte for byte. See [§11](#11-data-safety-your-originals).
+
+**With a project open, results are saved as they are produced** - see
+[§12](#12-durable-batches-resume-and-retry). Without a project, everything
+still works; it is simply not resumable, and the page says so.
 
 ---
 
@@ -478,7 +485,154 @@ real-world accuracy.**
 
 ---
 
-## 11. Known limitations
+## 11. Data safety: your originals
+
+**OMRFlow never modifies a source scan.** This is not a convention, it is a
+tested invariant: `tests/integration/test_batch_persistence.py` hashes every
+input file before a batch, processes it (with renaming switched on, and with a
+deliberately corrupt file in the list), hashes them again, and fails if a
+single byte moved. The same check runs in the `qtguitesting` smoke suite
+against the repository's real sample sheet.
+
+Concretely:
+
+* Recognition decodes each image into memory. Rotation, deskewing, perspective
+  correction, thresholding and overlays all happen to that copy.
+* Renaming **copies** the original into the output folder under its new name.
+  The source stays where it is. There is no move, and no rename-in-place.
+* A copy never overwrites: the name allocator guarantees a free name, and the
+  copy itself refuses to replace an existing file even if one appeared in
+  between.
+* Diagnostics, when switched on, write to their own folder.
+
+The only thing OMRFlow writes without being asked is the project database, and
+that lives inside the project folder.
+
+---
+
+## 12. Durable batches, resume and retry
+
+Everything in this section needs a **project** to be open, because a batch is
+recorded in the project's own database. Without one the page still processes,
+renames and exports - it simply says *"No project open - this run will not be
+saved."*
+
+### What is stored
+
+When a run starts, OMRFlow registers a **batch**: the folder, the template and
+its fingerprints, the run's settings, and one row per scan, all `pending`. As
+each sheet finishes, its row is updated with the outcome, the recognised roll
+and set code, the output name, the failure reason and category if it failed,
+and the full recognition result.
+
+Results are committed in **groups** rather than one transaction per sheet -
+every 25 sheets or every 2 seconds, whichever comes first. One `fsync` per
+sheet would dominate a run on a spinning disk or a synchronised folder; this
+bounds what an abrupt power loss can cost to a second or two of finished work
+rather than the whole batch. That bound is a deliberate trade and is tested.
+
+### The states a scan can be in
+
+| State | Meaning | Does resume process it? |
+| --- | --- | --- |
+| `pending` | Enumerated, never attempted | Yes |
+| `queued` | Submitted but not started | Yes |
+| `processing` | A worker is reading it | Yes, after recovery (below) |
+| `completed` | Read cleanly | No - it is done |
+| `warning` | Read, needs a human look | No - that is a *result*, not a failure |
+| `failed` | Could not be read | Only via **Retry Failed** |
+| `cancelled` | Not attempted; the run was stopped | Yes |
+
+### Cancelling
+
+Press **Cancel Processing**. No new sheet is started; sheets already inside a
+worker finish, because OpenCV cannot be interrupted part-way through a warp.
+Everything read is kept and committed, everything else becomes `cancelled`, and
+the batch is left ready to resume. Nothing is corrupted and no worker process
+is killed mid-write.
+
+### Closing the window mid-batch
+
+OMRFlow asks:
+
+> A batch is currently being processed. Stop processing and exit? Scans already
+> read are saved and the batch can be resumed next time this project is opened.
+
+On **Yes** the run is stopped and *waited for* - the pool is torn down and the
+last results flushed - and only then is the database released. That order is
+why the batch is still resumable afterwards.
+
+### After a crash
+
+If OMRFlow (or the machine) dies mid-run, rows are left saying `queued` or
+`processing`. A row can only be in those states while some process owns it, so
+on the next time the project is opened none does, and they are stale by
+definition. Opening the project returns them to `pending` and marks the batch
+`interrupted`.
+
+They are **never** recovered as `failed`: "we do not know what happened to this
+sheet" is not the same as "this sheet is bad", and marking it failed would
+quietly exclude it from the resume - skipping exactly the sheets that were in
+flight when the crash happened.
+
+### Resume
+
+**Resume Batch** processes only what is left. Sheets already read are not read
+again. The button is disabled when there is nothing to resume.
+
+If the template or the recognition thresholds have changed since the batch
+started, OMRFlow says exactly what changed and asks before continuing:
+
+> The recognition thresholds have changed since this batch was started, so the
+> remaining scans would be judged by different rules than the ones already
+> processed. Continuing would mix results produced under different rules in one
+> batch. Process the remaining scans anyway?
+
+Nothing is silently invalidated and nothing is silently mixed. **Reprocess**
+remains the way to read everything afresh under the new settings; it starts a
+new batch and leaves the old record intact.
+
+### Retry
+
+**Retry Failed** re-reads the scans that failed, and only those. Successful and
+needs-review results are untouched. Each retry increases that scan's attempt
+count, so a sheet that has failed three times is visibly different from one
+that has failed once.
+
+### Reviewing what happened
+
+The **Show** filter above the scan list narrows it to *Completed*, *Needs
+review*, *Failed* or *Not processed*. Filtering hides rows; it never changes
+what was recognised. Selecting a failed scan shows its reason in the results
+panel, and the preview re-renders the sheet so the failure can be looked at.
+
+### If results cannot be saved
+
+A storage failure - a full disk, a network share that went away - is treated
+differently from a sheet that failed to read. The batch keeps going (the
+remaining sheets are still worth reading, and the results stay in memory where
+they can still be exported), but when it ends OMRFlow says so in a dialog and
+asks you to export the CSV before closing. A run whose results could not be
+written is never reported as a clean success.
+
+---
+
+## 13. Troubleshooting
+
+| Symptom | Likely cause and what to do |
+| --- | --- |
+| A scan is `failed` with "could not be decoded" | The file is corrupt or not really an image. Open it in an image viewer; re-scan if it will not open. |
+| A scan is `failed` with a registration message | The four registration markers were not found: heavy rotation, a cropped margin, a very faint print. Check it against [§3](#3-registration-and-what-happens-when-it-fails). |
+| Many scans fail registration at once | Usually the wrong template for these sheets, or a scanner setting that changed mid-batch. Verify the template in the Calibrate stage first. |
+| Everything reads blank | Almost always a template whose bubble geometry does not match the print. The Calibrate stage will say so - see [`calibration_workflow.md`](calibration_workflow.md). |
+| **Resume Batch** is greyed out | Either no project is open, or the batch has nothing left to process. The line under the buttons says which. |
+| "Settings have changed" on resume | The template or its thresholds were edited after the batch started. Resume anyway, or **Reprocess** to read everything under the new settings. |
+| "Results could not be saved" | The project database could not be written. Export the CSV immediately, then check disk space and that the project folder is reachable. |
+| The batch reads nothing and the list is empty | The folder held no supported image formats ([§2](#2-supported-input-formats)). |
+
+---
+
+## 14. Known limitations
 
 * **PDF input is not supported** (§2).
 * **No manual correction** of recognised values yet (§8).

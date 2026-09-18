@@ -8,6 +8,81 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Added — Phase 5
+
+Batch Scan Processing Pipeline: a batch is now **durable and resumable**. With
+a project open, every scan's result is written to the project database as it
+finishes, so a run that is cancelled, closed or killed is continued rather than
+restarted. Full detail: `development/PHASE_05_HANDOFF.md`; operator
+description: `docs/scan_workflow.md` §11-§13.
+
+- **Two additive tables, created by migration 2**: `scan_batch` (one run - its
+  folder, template, both template fingerprints, engine version, settings and
+  lifecycle status) and `batch_scan` (one row per sheet - status, attempt count,
+  recognised roll and set code, output name, failure reason and a
+  machine-readable error category, timings, and the full `ScanResult` as JSON).
+  The result is stored through `ScanResult.to_dict()` - already a versioned,
+  round-tripping contract - rather than exploded into columns that would need a
+  migration every time recognition gained a measurement.
+- **`omr_scanner.services.batch_store`**: the repository layer, with no Qt and
+  no recognition in it. Attached to a run through
+  `process_batch`'s **existing** `on_result` hook, so a caller with no project
+  - a test, the benchmark, `python -m omr_scanner.tools.recognise` - runs
+  exactly the code path it always did. `batch_processor` still knows nothing
+  about a database.
+- **Incremental persistence, in bounded groups.** Results are committed every
+  25 sheets or every 2 seconds, whichever comes first: one `fsync` per sheet
+  dominates a run on a spinning disk or a synchronised folder, and this bounds
+  what an abrupt termination can cost to a second or two of finished work. The
+  bound is asserted by a test, not merely intended.
+- **Resume Batch** processes only the scans that were never finished, in batch
+  order - so duplicate-identifier suffixes stay stable across an interruption.
+  **Retry Failed** re-reads the failures and only those, incrementing each
+  scan's attempt count.
+- **Crash recovery on project open.** Rows left `queued` or `processing` can
+  only be in those states while some process owns them, and a project being
+  *opened* proves none does. They return to `pending` - never to `failed`,
+  because "we do not know what happened to this sheet" is not the same as "this
+  sheet is bad", and marking it failed would silently exclude exactly the sheets
+  a crash caught.
+- **Resume refuses to mix incompatible results silently.** Resuming with an
+  edited template or retuned thresholds compares the stored fingerprints
+  against the current ones and states precisely what changed before asking. The
+  fingerprints are the same ones Phase 4 uses for calibration staleness.
+- **Closing the window mid-batch** warns, then stops the run and *waits* for it
+  - the pool torn down and the last results flushed - before releasing the
+  database. That order is what leaves the batch resumable.
+- **A storage failure is not a recognition failure.** The batch continues (the
+  remaining sheets are still worth reading, and the results stay in memory where
+  they can be exported), the buffer is kept for a later retry, and the page
+  reports it in a dialog at the end. A run whose results could not be written is
+  never presented as a clean success. `BatchStatus.COMPLETED` and
+  `COMPLETED_WITH_ERRORS` are distinct for the same reason.
+- **A scan-list filter** - All / Completed / Needs review / Failed / Not
+  processed. Rows are hidden, never rebuilt, because a row index *is* an index
+  into the page's entries everywhere else.
+- **Bounded submission in the worker pool.** `recognise_in_parallel` previously
+  submitted every path up front; it now keeps at most four tasks per worker
+  outstanding, so a ten-thousand-sheet batch no longer builds ten thousand
+  futures before reading the first page, and cancellation responds sooner.
+  Nothing else about the pool changed - same `spawn` start method, same
+  per-worker initialisation, same crash isolation, same worker-count policy.
+- **Original scans remain byte-for-byte unchanged**, now proved rather than
+  asserted: `tests/integration/test_batch_persistence.py` hashes every input
+  before a batch that includes renaming *and* a deliberately corrupt file,
+  processes it, and hashes again. The same check runs in the `qtguitesting`
+  smoke suite against the repository's real sample sheet.
+- 72 new tests: 35 unit (`test_batch_store.py`), 17 integration
+  (`test_batch_persistence.py`, covering the plan's tests A, B, C, E, F, G, H,
+  I, J, K against the real engine) and 20 GUI (`test_scan_persistence.py`,
+  covering D, E and L through the real page, a real project and a real
+  `QThread`). Three new `qtguitesting` smoke checks. Measured throughput on 24
+  real scans: 1.00x / 1.30x / 1.79x / 1.98x at 1/2/4/8 workers.
+
+**Phase 5 makes a batch reliable and resumable. It says nothing about whether
+the values it durably recorded are correct** - Phase 3 recognition remains
+pending validation with a sufficiently large real-world dataset.
+
 Phase 3 - batch scanning and recognition. A user can now read filled answer
 sheets against a template: import one or many scans, have them rectified and
 recognised - concurrently across CPU cores, if the machine has them - review the

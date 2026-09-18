@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
@@ -58,7 +59,12 @@ from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
-from omr_scanner.services import ProjectSession, create_project, open_project
+from omr_scanner.services import (
+    ProjectSession,
+    create_project,
+    open_project,
+    recover_interrupted,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.evaluation.ground_truth import DatasetManifest
@@ -640,9 +646,34 @@ class MainWindow(QMainWindow):
         if self._session is not None:
             self._session.close()
         self._session = session
+        self._recover_interrupted_batches(session)
         self._remember_recent_project(session.root)
         self._broadcast_project_change()
         self.statusBar().showMessage(f"Project '{session.name}' is open", STATUS_MESSAGE_MS)
+
+    def _recover_interrupted_batches(self, session: ProjectSession) -> None:
+        """Repair batch state left behind by a run that never finished.
+
+        Done here, once, immediately after the database is opened and before
+        any page sees the session. A scan row can only be QUEUED or PROCESSING
+        while some process owns it; this application is only just starting, so
+        none does, and those rows are stale by definition. Leaving them would
+        make a resumed batch skip exactly the sheets that were in flight when
+        the crash happened - the ones most likely to be missing.
+
+        Never fatal: a project that cannot be repaired still opens, because
+        the operator can do plenty with it that has nothing to do with batches.
+        """
+        try:
+            batches, scans = recover_interrupted(session.database)
+        except OMRScannerError:
+            logger.exception("Could not recover interrupted batch state")
+            return
+        if scans:
+            self.statusBar().showMessage(
+                f"Recovered {scans} scan(s) from {batches} interrupted batch(es)",
+                STATUS_MESSAGE_MS,
+            )
 
     def _broadcast_project_change(self) -> None:
         """Push the current session to every page and update chrome."""
@@ -702,13 +733,55 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Qt overrides
     # ------------------------------------------------------------------
-    def closeEvent(self, event: QCloseEvent) -> None:
-        """Close the open project before the window disappears.
+    def _scan_page(self) -> ScanPage | None:
+        """The Scan page, when this window built a real one.
 
-        Releasing the SQLite handle here (rather than in ``__del__``) guarantees
-        the project folder is not locked after the window closes, which matters
-        on Windows.
+        It is a :class:`~omr_scanner.gui.pages.PlaceholderPage` in a build
+        where the stage is not implemented, so the type is checked rather than
+        assumed.
         """
+        page = self._pages.get("scan")
+        return page if isinstance(page, ScanPage) else None
+
+    def batch_is_running(self) -> bool:
+        """Whether the Scan page is in the middle of processing a batch."""
+        page = self._scan_page()
+        return page is not None and page.is_processing
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Stop any running batch, then close the project, then disappear.
+
+        The order matters. A batch writes recognition results into the project
+        database as it goes, so closing that database underneath a running
+        worker would abort the very writes that make the run resumable - and
+        on Windows it would also leave the SQLite handle open until the worker
+        noticed. The batch is therefore stopped and waited for *first*, and
+        only then is the project released.
+
+        Releasing the handle here rather than in ``__del__`` is what guarantees
+        the project folder is not locked once the window is gone.
+        """
+        if self.batch_is_running():
+            answer = QMessageBox.question(
+                self,
+                "Batch in progress",
+                "A batch is currently being processed.\n\n"
+                "Stop processing and exit? Scans already read are saved and the "
+                "batch can be resumed next time this project is opened.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+            logger.info("Window closing: stopping the running batch first")
+            page = self._scan_page()
+            if page is not None:
+                # Cancel *and wait*: the pool has to be torn down and the last
+                # results flushed before the database goes away, or the run is
+                # neither finished nor properly resumable.
+                page.shutdown_batch()
+
         self.close_project()
         logger.info("Main window closed")
         super().closeEvent(event)

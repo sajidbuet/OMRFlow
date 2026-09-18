@@ -39,7 +39,13 @@ from datetime import UTC, datetime
 from sqlalchemy import Connection, Engine, insert, inspect, select
 
 from omr_scanner import __version__
-from omr_scanner.database.models import Base, SchemaMigration
+from omr_scanner.database.models import (
+    Base,
+    BatchScan,
+    ProjectSetting,
+    ScanBatch,
+    SchemaMigration,
+)
 from omr_scanner.errors import DatabaseError, SchemaVersionError
 
 logger = logging.getLogger(__name__)
@@ -63,8 +69,38 @@ class Migration:
 
 
 def _migration_001_initial_schema(connection: Connection) -> None:
-    """Create the schema-version ledger and the project settings table."""
-    Base.metadata.create_all(connection)
+    """Create the schema-version ledger and the project settings table.
+
+    Historically this was ``Base.metadata.create_all``. It is now pinned to the
+    two tables that actually belonged to version 1: leaving it as "create
+    everything" would mean a brand-new database got the Phase 5 batch tables
+    from migration 1 and then migration 2 tried to create them again, while an
+    existing database took a different path to the same schema. One table, one
+    migration, the same sequence for every database.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[SchemaMigration.__tablename__],
+            Base.metadata.tables[ProjectSetting.__tablename__],
+        ],
+    )
+
+
+def _migration_002_batch_persistence(connection: Connection) -> None:
+    """Add durable batch state (Phase 5): ``scan_batch`` and ``batch_scan``.
+
+    Nothing in an existing project needs converting - before this version there
+    was no batch state to convert, because a run lived only in the Scan page's
+    memory and was lost when the window closed.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[ScanBatch.__tablename__],
+            Base.metadata.tables[BatchScan.__tablename__],
+        ],
+    )
 
 
 MIGRATIONS: tuple[Migration, ...] = (
@@ -72,6 +108,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=1,
         description="Initial schema: schema_migration, project_setting",
         apply=_migration_001_initial_schema,
+    ),
+    Migration(
+        version=2,
+        description="Phase 5 batch persistence: scan_batch, batch_scan",
+        apply=_migration_002_batch_persistence,
     ),
 )
 

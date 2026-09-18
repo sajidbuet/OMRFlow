@@ -20,6 +20,7 @@ What does NOT belong here:
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -252,6 +253,13 @@ class ScanHarness:
     page: object
     template_path: Path
     output_dir: Path
+    session: object | None = None
+    """The open `ProjectSession`, when the page was built with one.
+
+    Phase 5 records every batch into the project database, so a scenario that
+    exercises resume, retry or crash recovery needs a real project; one that
+    only exercises recognition does not, and passing ``None`` keeps those
+    scenarios exactly as fast as they were."""
 
     def process_events(self, *, rounds: int = 3) -> None:
         """Let Qt finish laying out and painting. See `DesignerHarness`."""
@@ -259,6 +267,51 @@ class ScanHarness:
 
         for _ in range(rounds):
             QApplication.processEvents()
+
+    @property
+    def batch_summary(self) -> object | None:
+        """The stored counts for the page's current batch, or ``None``."""
+        return self.page.batch_summary()
+
+    def run_paths(self, paths: list[Path], *, timeout_ms: int = 120_000) -> object:
+        """Process exactly ``paths`` and return the `BatchReport`.
+
+        The partial-run primitive the resume scenarios need: `run_batch`
+        always processes the whole list, which by definition leaves nothing to
+        resume.
+        """
+        return self._await_batch(
+            lambda: self.page._start_batch(paths), timeout_ms=timeout_ms
+        )
+
+    def resume(self, *, timeout_ms: int = 120_000) -> object:
+        """Resume the stored batch and return the `BatchReport`."""
+        return self._await_batch(self.page.resume_batch, timeout_ms=timeout_ms)
+
+    def retry_failed(self, *, timeout_ms: int = 120_000) -> object:
+        """Retry the stored batch's failures and return the `BatchReport`."""
+        return self._await_batch(self.page.retry_failed, timeout_ms=timeout_ms)
+
+    def _await_batch(self, start: Callable[[], bool], *, timeout_ms: int) -> object:
+        """Start a run with ``start`` and pump events until it finishes."""
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        received: list[object] = []
+        self.page.batch_finished.connect(received.append)
+        try:
+            if not start():
+                raise RuntimeError("the batch did not start")
+            clock = QElapsedTimer()
+            clock.start()
+            while not received:
+                QApplication.processEvents()
+                if clock.elapsed() > timeout_ms:
+                    raise TimeoutError(f"batch did not finish within {timeout_ms} ms")
+        finally:
+            self.page.batch_finished.disconnect(received.append)
+        self.process_events()
+        return received[0]
 
     def settle(self) -> None:
         """Give the page real laid-out geometry without showing a window."""
@@ -315,9 +368,16 @@ class ScanHarness:
 
         The application itself does this in ``ScanPage.closeEvent``; a script
         that never closes the page has to do it explicitly.
+
+        The project session, if there is one, is closed *after* the page: the
+        page's own shutdown flushes the last batch results into the database,
+        and releasing the SQLite handle first would be closing the file the
+        page is still writing to.
         """
         self.page.close()
         self.process_events()
+        if self.session is not None:
+            self.session.close()
 
     def await_preview(self, *, timeout_ms: int = 120_000) -> bool:
         """Pump events until the selected scan's preview has been rendered.
@@ -346,6 +406,7 @@ def build_scan_page(
     output_dir: Path | None = None,
     rename: bool = False,
     processing: object | None = None,
+    with_project: bool = False,
 ) -> ScanHarness:
     """Build a Scan page with a template loaded and ``scans`` imported.
 
@@ -365,6 +426,11 @@ def build_scan_page(
         processing: A `ProcessingSettings` to drive the page with, for the
             multicore scenarios. ``None`` leaves the page on its default
             (Automatic), which is what a fresh installation uses.
+        with_project: Create a throwaway project and open it on the page, so
+            that batches are recorded durably (Phase 5). Needed by anything
+            exercising resume, retry or crash recovery; skipped otherwise, so
+            the recognition scenarios pay nothing for a database they do not
+            read.
 
     Returns:
         The harness, already laid out.
@@ -390,6 +456,11 @@ def build_scan_page(
     spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
     page = ScanPage(spec)
     page.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+
+    session = _throwaway_project() if with_project else None
+    if session is not None:
+        page.on_project_changed(session)
+
     if not page.load_template_from(template):
         raise RuntimeError(f"Could not load the template: {template}")
     page.add_scan_paths(selected)
@@ -398,9 +469,33 @@ def build_scan_page(
     if processing is not None:
         page.set_processing_settings(processing)
 
-    harness = ScanHarness(page=page, template_path=template, output_dir=destination)
+    harness = ScanHarness(
+        page=page, template_path=template, output_dir=destination, session=session
+    )
     harness.settle()
     return harness
+
+
+def _throwaway_project() -> object:
+    """Create a fresh project under ``test-output/`` and return its session.
+
+    A new directory per call, so one scenario's stored batches can never be
+    mistaken for another's - these scripts are run repeatedly and a shared
+    project would accumulate batches until "the most recent batch" stopped
+    meaning what the scenario intended.
+    """
+    import shutil
+    import uuid
+
+    from omr_scanner.services import create_project
+
+    root = OUTPUT_ROOT / "projects"
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = root / uuid.uuid4().hex[:8]
+    if workspace.exists():  # pragma: no cover - a uuid collision is not expected
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    return create_project(workspace, "GUI Test Examination")
 
 
 @dataclass(frozen=True, slots=True)

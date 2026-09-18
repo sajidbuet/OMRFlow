@@ -337,6 +337,54 @@ tests and the `qtguitesting` scripts drive the second group, so nothing has to
 interact with a native file dialog. See `docs/scan_workflow.md` for the
 user-facing description.
 
+## Durable batches (Phase 5)
+
+Phase 5 adds persistence *around* the Phase 3 pipeline rather than inside it.
+`services.batch_processor` still knows nothing about a database; the store is
+attached through the `on_result` hook it already had:
+
+```text
+ScanPage._start_batch
+  -> services.batch_store.create_batch        (one row per scan, all PENDING)
+  -> services.batch_store.mark_queued / set_batch_status(RUNNING)
+  -> gui.scan.worker.BatchWorker(recorder=BatchRecorder)   (a QThread)
+       -> services.batch_processor.process_batch
+            -> services.parallel_batch          (worker processes: results only)
+            -> on_result -> BatchRecorder.record  (buffered)
+                              -> batch_store.record_results  (one transaction)
+       -> BatchWorker.run flushes the recorder before emitting finished_report
+  -> ScanPage._settle_batch_state
+       -> batch_store.mark_cancelled | finalise_batch
+```
+
+Four decisions worth carrying forward:
+
+- **Only the coordinating process writes.** Worker processes return recognition
+  results and nothing else: they never open the database, never assign an
+  output name, never touch shared state. SQLite is a single-writer store and
+  the architecture keeps it that way by construction rather than by locking
+  discipline. This is the same reason the workers do not name files (see
+  "Multicore batch recognition" below) - one rule, two consequences.
+- **Persistence is optional, and its absence is visible.** With no project
+  open there is no recorder, `process_batch` runs exactly the code path it
+  always did, and the page says the run will not be saved. That is what keeps
+  the benchmark, the command line tools and most tests free of a database.
+- **Results are committed in groups**, not one transaction per sheet. One
+  `fsync` per sheet dominates a run on a spinning disk or a synchronised
+  folder; buffering to whichever of 25 sheets or 2 seconds comes first bounds
+  what an abrupt termination costs to a second or two of finished work. The
+  bound is a documented trade and is asserted by a test.
+- **A storage failure is not a recognition failure.** `BatchRecorder` records
+  the first one, keeps the buffer so a later flush can retry, lets the batch
+  continue, and the page reports it in a dialog at the end. A run whose results
+  could not be written is never presented as a clean success.
+
+The one piece of state that needs repairing rather than reading is a row left
+`QUEUED` or `PROCESSING`: those states are only valid while some process owns
+the row, so a project being *opened* proves nobody does.
+`batch_store.recover_interrupted` is called once, from `MainWindow._adopt_session`,
+before any page sees the session.
+
 ## The Calibration workflow (Phase 4)
 
 `omr_scanner.gui.calibration` verifies a template against representative

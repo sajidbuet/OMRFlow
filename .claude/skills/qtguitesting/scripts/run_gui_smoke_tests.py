@@ -778,6 +778,105 @@ def _check_the_overlay_shows_the_sampled_region_not_the_printed_bubble() -> Chec
     return ok, detail
 
 
+def _check_a_batch_is_recorded_in_the_project_database() -> CheckResult:
+    """Phase 5: processing a batch writes durable per-scan state."""
+    from _harness import build_scan_page
+
+    harness = build_scan_page(with_project=True)
+    harness.run_batch()
+    summary = harness.batch_summary
+    ok = (
+        summary is not None
+        and summary.total == 1
+        and summary.processed == 1
+        and summary.pending == 0
+    )
+    detail = (
+        f"batch {summary.batch_id[:8]}: {summary.resume_label}, status={summary.status}"
+        if summary is not None
+        else "no batch was recorded"
+    )
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_a_partial_run_can_be_resumed() -> CheckResult:
+    """Phase 5: a batch stopped part-way finishes without redoing its work."""
+    import shutil
+
+    from _harness import OUTPUT_ROOT, SAMPLE_SHEET, build_scan_page
+
+    # Four copies of the real sample, so there is genuinely something left
+    # over after a partial run.
+    scans_dir = OUTPUT_ROOT / "resume_scans"
+    shutil.rmtree(scans_dir, ignore_errors=True)
+    scans_dir.mkdir(parents=True, exist_ok=True)
+    scans = []
+    for index in range(4):
+        copy = scans_dir / f"sheet_{index}.png"
+        shutil.copy2(SAMPLE_SHEET, copy)
+        scans.append(copy)
+
+    harness = build_scan_page(scans, with_project=True)
+    first = harness.run_paths(scans[:2])
+    partial = harness.batch_summary
+    resumed = harness.resume()
+    final = harness.batch_summary
+
+    ok = (
+        first.total == 2
+        and partial is not None
+        and partial.pending == 2
+        # The resumed run read the two that were left, not all four.
+        and resumed.total == 2
+        and final is not None
+        and final.processed == 4
+        and final.pending == 0
+    )
+    detail = (
+        f"first run {first.total}, then {partial.pending if partial else '?'} pending, "
+        f"resumed {resumed.total}, final {final.processed if final else '?'}/"
+        f"{final.total if final else '?'}"
+    )
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_originals_are_unchanged_by_processing() -> CheckResult:
+    """Phase 5 exit criterion: a batch never modifies its source scans."""
+    import hashlib
+    import shutil
+
+    from _harness import OUTPUT_ROOT, SAMPLE_SHEET, build_scan_page
+
+    scans_dir = OUTPUT_ROOT / "integrity_scans"
+    shutil.rmtree(scans_dir, ignore_errors=True)
+    scans_dir.mkdir(parents=True, exist_ok=True)
+    scans = []
+    for index in range(2):
+        copy = scans_dir / f"sheet_{index}.png"
+        shutil.copy2(SAMPLE_SHEET, copy)
+        scans.append(copy)
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    before = {path: digest(path) for path in scans}
+    harness = build_scan_page(
+        scans, rename=True, output_dir=OUTPUT_ROOT / "integrity_output", with_project=True
+    )
+    harness.run_batch()
+    after = {path: digest(path) for path in scans}
+    harness.shutdown()
+
+    changed = [path.name for path in scans if before[path] != after[path]]
+    return not changed, (
+        f"{len(scans)} original(s) byte-for-byte unchanged after renaming"
+        if not changed
+        else f"MODIFIED: {', '.join(changed)}"
+    )
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -877,6 +976,15 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "the overlay shows the sampled region, not the printed bubble",
                     _check_the_overlay_shows_the_sampled_region_not_the_printed_bubble,
+                ),
+                (
+                    "a batch is recorded in the project database",
+                    _check_a_batch_is_recorded_in_the_project_database,
+                ),
+                ("a partial run can be resumed", _check_a_partial_run_can_be_resumed),
+                (
+                    "originals are unchanged by processing",
+                    _check_originals_are_unchanged_by_processing,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

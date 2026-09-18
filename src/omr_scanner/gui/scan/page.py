@@ -41,6 +41,7 @@ from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QGroupBox,
@@ -68,10 +69,14 @@ from omr_scanner.gui.scan.preview import ScanPreviewView
 from omr_scanner.gui.scan.worker import BatchWorker, PreviewWorker
 from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
 from omr_scanner.services import (
+    BatchIdentity,
     BatchOptions,
     BatchProgress,
+    BatchRecorder,
     BatchReport,
     BatchState,
+    BatchStatus,
+    BatchSummary,
     DiagnosticsOptions,
     FilenameAllocator,
     ProcessedScan,
@@ -79,12 +84,23 @@ from omr_scanner.services import (
     RecognitionOptions,
     RecognitionOutcome,
     ScanResult,
+    check_compatibility,
     collect_scan_files,
+    completed_results,
+    create_batch,
     export_scan_results,
+    failed_scans,
+    finalise_batch,
     format_count,
     format_duration,
     format_rate,
+    load_summary,
     load_template,
+    mark_cancelled,
+    mark_queued,
+    resumable_scans,
+    scan_paths,
+    set_batch_status,
 )
 from omr_scanner.services.recognition_models import utc_timestamp
 
@@ -95,7 +111,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.evaluation.benchmark import BenchmarkReport
     from omr_scanner.evaluation.session import BenchmarkComparison, BenchmarkSession
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
-    from omr_scanner.services import ProjectSession
+    from omr_scanner.services import ProjectDatabase, ProjectSession
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -148,6 +164,29 @@ STATUS_COLORS: dict[str, QColor] = {
     RecognitionOutcome.ERROR.value: QColor(253, 226, 226),
 }
 """Row tints. Backed up by the text in the Status column, never used alone."""
+
+FILTER_ALL = "All"
+FILTER_COMPLETED = "Completed"
+FILTER_REVIEW = "Needs review"
+FILTER_FAILED = "Failed"
+FILTER_PENDING = "Not processed"
+
+FILTER_OUTCOMES: dict[str, frozenset[str]] = {
+    FILTER_COMPLETED: frozenset({RecognitionOutcome.COMPLETE.value}),
+    FILTER_REVIEW: frozenset({RecognitionOutcome.REVIEW.value}),
+    FILTER_FAILED: frozenset(
+        {
+            RecognitionOutcome.REGISTRATION_FAILED.value,
+            RecognitionOutcome.ERROR.value,
+        }
+    ),
+    FILTER_PENDING: frozenset({RecognitionOutcome.PENDING.value}),
+}
+"""Which recognition outcomes each filter shows.
+
+``FILTER_ALL`` is deliberately absent: "no filter" is the absence of an entry
+rather than a set that happens to contain everything, so adding an outcome
+later cannot accidentally leave it out of the unfiltered view."""
 
 MARK_STATUS_LABELS: dict[str, str] = {
     "resolved": "",
@@ -222,6 +261,12 @@ class ScanPageState:
     rename_enabled: bool = False
     processing: ProcessingSettings = field(default_factory=ProcessingSettings)
     benchmark: BenchmarkSession | None = None
+    batch_id: str | None = None
+    """The stored batch this scan list belongs to (Phase 5).
+
+    ``None`` when there is no project open, which is a supported way to run:
+    recognition, renaming and CSV export all work exactly as before, they are
+    simply not durable. Resume and retry need a project, and say so."""
 
 
 class ScanPage(WorkflowPage):
@@ -375,6 +420,24 @@ class ScanPage(WorkflowPage):
         self.process_selected_button.clicked.connect(self.process_selected)
         process_layout.addWidget(self.process_selected_button)
 
+        self.resume_button = QPushButton(load_icon("redo-2"), "Resume Batch")
+        self.resume_button.setObjectName("resumeBatchButton")
+        self.resume_button.setToolTip(
+            "Continue the stored batch: process only the scans that were never "
+            "finished. Scans already read are kept, not read again."
+        )
+        self.resume_button.clicked.connect(self.resume_batch)
+        process_layout.addWidget(self.resume_button)
+
+        self.retry_failed_button = QPushButton(load_icon("rotate-ccw"), "Retry Failed")
+        self.retry_failed_button.setObjectName("retryFailedButton")
+        self.retry_failed_button.setToolTip(
+            "Process the scans that failed, and only those. Successful results "
+            "are left exactly as they are."
+        )
+        self.retry_failed_button.clicked.connect(self.retry_failed)
+        process_layout.addWidget(self.retry_failed_button)
+
         self.reprocess_button = QPushButton(load_icon("rotate-ccw"), "Reprocess")
         self.reprocess_button.setObjectName("reprocessButton")
         self.reprocess_button.setToolTip("Process every scan again, discarding previous results")
@@ -385,6 +448,16 @@ class ScanPage(WorkflowPage):
         self.cancel_button.setObjectName("cancelButton")
         self.cancel_button.clicked.connect(self.cancel_processing)
         process_layout.addWidget(self.cancel_button)
+
+        self.batch_state_label = QLabel("")
+        self.batch_state_label.setObjectName("batchStateLabel")
+        self.batch_state_label.setWordWrap(True)
+        self.batch_state_label.setToolTip(
+            "The stored state of this batch. Recognition results are written to "
+            "the project database as they finish, so an interrupted run can be "
+            "resumed instead of restarted."
+        )
+        process_layout.addWidget(self.batch_state_label)
 
         process_layout.addWidget(self._build_progress_panel())
         layout.addWidget(process_box)
@@ -544,9 +617,45 @@ class ScanPage(WorkflowPage):
         self.scan_table.itemSelectionChanged.connect(self._on_table_selection_changed)
         self.scan_table.setMinimumHeight(140)
 
+        # Filtering hides rows rather than rebuilding the table: the row index
+        # *is* the index into `state.entries` everywhere else on this page, and
+        # a filtered rebuild would break that correspondence in a way that is
+        # invisible until someone selects the wrong scan.
+        filter_row = QWidget()
+        filter_layout = QHBoxLayout(filter_row)
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.addWidget(QLabel("Show:"))
+        self.status_filter_combo = QComboBox()
+        self.status_filter_combo.setObjectName("scanStatusFilterCombo")
+        self.status_filter_combo.addItems(
+            [
+                FILTER_ALL,
+                FILTER_COMPLETED,
+                FILTER_REVIEW,
+                FILTER_FAILED,
+                FILTER_PENDING,
+            ]
+        )
+        self.status_filter_combo.setToolTip(
+            "Narrow the list to one kind of outcome. Filtering never changes "
+            "what was recognised, only what is shown."
+        )
+        self.status_filter_combo.currentIndexChanged.connect(self._apply_status_filter)
+        filter_layout.addWidget(self.status_filter_combo, stretch=1)
+        self.filter_count_label = QLabel("")
+        self.filter_count_label.setObjectName("scanFilterCountLabel")
+        filter_layout.addWidget(self.filter_count_label)
+
+        table_column = QWidget()
+        table_layout = QVBoxLayout(table_column)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+        table_layout.setSpacing(2)
+        table_layout.addWidget(filter_row)
+        table_layout.addWidget(self.scan_table, stretch=1)
+
         vertical = QSplitter(Qt.Orientation.Vertical)
         vertical.addWidget(self.preview)
-        vertical.addWidget(self.scan_table)
+        vertical.addWidget(table_column)
         vertical.setStretchFactor(0, 3)
         vertical.setStretchFactor(1, 1)
         # Stretch factors only govern how extra space is *shared out on resize*;
@@ -679,8 +788,133 @@ class ScanPage(WorkflowPage):
     # WorkflowPage hook
     # ------------------------------------------------------------------
     def on_project_changed(self, session: ProjectSession | None) -> None:
-        """Track the open project, used to default file dialogs sensibly."""
+        """Adopt the open project: file dialog defaults, and durable batches.
+
+        A batch belongs to a project, so switching projects abandons the
+        current batch id rather than carrying it into a database that has never
+        heard of it. Nothing is deleted - the previous project's rows stay
+        exactly where they were, ready to be resumed when it is reopened.
+        """
         self._session = session
+        self.state.batch_id = None
+        self._refresh_batch_state_label()
+        self._refresh_controls()
+
+    # ------------------------------------------------------------------
+    # Durable batches (Phase 5)
+    # ------------------------------------------------------------------
+    @property
+    def database(self) -> ProjectDatabase | None:
+        """The open project's database, or ``None`` when no project is open."""
+        return self._session.database if self._session is not None else None
+
+    def _batch_identity(self) -> BatchIdentity | None:
+        """Capture what the next run would be bound to."""
+        if self.state.template is None:
+            return None
+        return BatchIdentity.of(self.state.template, self.state.template_path)
+
+    def _batch_settings(self) -> dict[str, object]:
+        """The run configuration worth recording, as plain JSON-safe data."""
+        return {
+            "rename_with_identifier": self.state.rename_enabled,
+            "output_dir": str(self.state.output_dir) if self.state.output_dir else "",
+            "processing_mode": self.state.processing.mode.value,
+            "diagnostics": self.state.processing.writes_diagnostics,
+        }
+
+    def _ensure_batch(self, paths: Sequence[Path]) -> str | None:
+        """Return the batch id to record this run under, creating one if needed.
+
+        A batch is registered the first time a run starts against the current
+        scan list, not when scans are added: enumerating a folder the operator
+        then changes their mind about should not leave a row behind.
+        """
+        database = self.database
+        identity = self._batch_identity()
+        if database is None or identity is None:
+            return None
+        if self.state.batch_id is not None:
+            return self.state.batch_id
+        try:
+            batch_id = create_batch(
+                database,
+                [entry.path for entry in self.state.entries] or list(paths),
+                identity=identity,
+                source_folder=paths[0].parent if paths else None,
+                settings=self._batch_settings(),
+            )
+        except OMRScannerError:
+            # Losing durability must not lose the run: the batch still
+            # processes, exports and renames, it simply cannot be resumed. The
+            # label says so rather than a dialog interrupting the operator.
+            _LOGGER.exception("Could not register a batch; this run will not be resumable")
+            return None
+        self.state.batch_id = batch_id
+        return batch_id
+
+    def adopt_batch(self, batch_id: str) -> bool:
+        """Load a stored batch into the scan list, results and all.
+
+        Args:
+            batch_id: The batch to reopen.
+
+        Returns:
+            Whether it was found and adopted.
+
+        This is what makes a batch reopenable rather than merely resumable:
+        the scans come back in their stored order and the results already
+        produced come back with them, so a CSV exported after reopening covers
+        the whole batch and not just what this session read.
+        """
+        database = self.database
+        if database is None:
+            return False
+        summary = load_summary(database, batch_id)
+        if summary is None:
+            return False
+
+        stored = {result.source_path: result for result in completed_results(database, batch_id)}
+        paths = scan_paths(database, batch_id)
+        self.state.entries = [
+            ScanEntry(
+                path=path,
+                processed=(
+                    ProcessedScan(result=stored[path]) if path in stored else None
+                ),
+            )
+            for path in paths
+        ]
+        self.state.batch_id = batch_id
+        self._preview_cache.clear()
+        self._allocator = FilenameAllocator(self.state.output_dir)
+        self._rebuild_scan_table()
+        self._refresh_batch_state_label()
+        self._refresh_controls()
+        _LOGGER.info(
+            "Reopened batch %s: %s", batch_id, summary.resume_label
+        )
+        return True
+
+    def batch_summary(self) -> BatchSummary | None:
+        """The stored counts for the current batch, or ``None``."""
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return None
+        return load_summary(database, self.state.batch_id)
+
+    def _refresh_batch_state_label(self) -> None:
+        """Say what is stored for this batch, in one line."""
+        summary = self.batch_summary()
+        if summary is None:
+            self.batch_state_label.setText(
+                "" if self._session is not None else "No project open - this run will not be saved."
+            )
+            return
+        self.batch_state_label.setText(
+            f"Batch {summary.batch_id[:8]} - {summary.resume_label} "
+            f"({summary.completed} ok, {summary.warning} review, {summary.failed} failed)"
+        )
 
     # ------------------------------------------------------------------
     # Processing settings
@@ -962,13 +1196,112 @@ class ScanPage(WorkflowPage):
         return self._start_batch([self.state.entries[row].path for row in rows])
 
     def reprocess_all(self) -> bool:
-        """Discard every result and process the whole list again."""
+        """Discard every result and process the whole list again.
+
+        The stored batch is abandoned rather than overwritten: this run reads
+        everything afresh, so it is a new batch, and keeping the old rows means
+        a mistaken click does not destroy the previous run's record.
+        """
         for entry in self.state.entries:
             entry.processed = None
         self._preview_cache.clear()
         self._allocator = FilenameAllocator(self.state.output_dir)
+        self.state.batch_id = None
         self._rebuild_scan_table()
         return self.process_all()
+
+    def resume_batch(self) -> bool:
+        """Process only the scans this batch never finished.
+
+        Returns:
+            Whether a run started. ``False`` when there is nothing to resume,
+            no project is open, or the operator declined an incompatible
+            resume.
+        """
+        return self._resume(include_failed=False)
+
+    def retry_failed(self) -> bool:
+        """Process the scans that failed, and only those.
+
+        Returns:
+            Whether a run started.
+
+        Successful and needs-review results are untouched. Each retried scan's
+        attempt counter increases, so a sheet that has failed three times is
+        visibly different from one that has failed once.
+        """
+        return self._resume(include_failed=True, failed_only=True)
+
+    def _resume(self, *, include_failed: bool, failed_only: bool = False) -> bool:
+        """Shared body of resume and retry."""
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is None or batch_id is None:
+            QMessageBox.information(
+                self,
+                "Nothing to resume",
+                "Resuming needs a saved batch. Open a project and process some "
+                "scans first - results are stored as they finish.",
+            )
+            return False
+
+        if not self._confirm_compatible(database, batch_id):
+            return False
+
+        paths = (
+            failed_scans(database, batch_id)
+            if failed_only
+            else resumable_scans(database, batch_id, include_failed=include_failed)
+        )
+        if not paths:
+            QMessageBox.information(
+                self,
+                "Nothing to process",
+                "Every scan in this batch has already been processed."
+                if not failed_only
+                else "No scan in this batch has failed.",
+            )
+            return False
+
+        _LOGGER.info(
+            "Resuming batch %s: %d scan(s)%s",
+            batch_id,
+            len(paths),
+            " (failed only)" if failed_only else "",
+        )
+        return self._start_batch(paths)
+
+    def _confirm_compatible(self, database: ProjectDatabase, batch_id: str) -> bool:
+        """Check the current configuration against the batch's, and ask if not.
+
+        Mixing results produced under two different templates or two different
+        thresholds gives a CSV whose rows are not comparable - and nothing
+        downstream could tell, because each row looks perfectly ordinary. The
+        operator is told exactly what changed and chooses; nothing is silently
+        invalidated and nothing is silently mixed.
+        """
+        identity = self._batch_identity()
+        if identity is None:
+            return False
+        verdict = check_compatibility(database, batch_id, identity)
+        if verdict.compatible:
+            return True
+
+        _LOGGER.warning(
+            "Resume of batch %s requested with incompatible settings: %s",
+            batch_id,
+            verdict.summary,
+        )
+        answer = QMessageBox.warning(
+            self,
+            "Settings have changed",
+            f"{verdict.summary}\n\n"
+            "Continuing would mix results produced under different rules in one "
+            "batch. Process the remaining scans anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def selected_rows(self) -> list[int]:
         """Rows currently selected in the scan list, in order."""
@@ -1009,12 +1342,29 @@ class ScanPage(WorkflowPage):
         # one.
         self._show_preparing(len(paths))
 
+        # Register (or reuse) the durable batch before a single sheet is read,
+        # so that a crash one second into the run still leaves a resumable
+        # record of what was supposed to happen.
+        batch_id = self._ensure_batch(paths)
+        recorder: BatchRecorder | None = None
+        database = self.database
+        if batch_id is not None and database is not None:
+            try:
+                mark_queued(database, batch_id, paths)
+                set_batch_status(database, batch_id, BatchStatus.RUNNING)
+                recorder = BatchRecorder(database=database, batch_id=batch_id)
+            except OMRScannerError:
+                _LOGGER.exception("Could not mark batch %s as running", batch_id)
+                recorder = None
+
         _LOGGER.info(
-            "Batch started: %d scan(s), %d worker(s), mode %s, diagnostics %s",
+            "Batch started: %d scan(s), %d worker(s), mode %s, diagnostics %s, "
+            "batch %s",
             len(paths),
             workers,
             self.state.processing.mode.value,
             "on" if self.state.processing.writes_diagnostics else "off",
+            batch_id or "(not stored)",
         )
 
         worker = BatchWorker(
@@ -1024,6 +1374,7 @@ class ScanPage(WorkflowPage):
             self._allocator,
             self,
             workers=workers,
+            recorder=recorder,
         )
         worker.progress.connect(self._on_progress)
         worker.scan_done.connect(self._on_scan_done)
@@ -1119,6 +1470,9 @@ class ScanPage(WorkflowPage):
         finally:
             self._suppress_selection = False
 
+        # A row that just finished may no longer belong to the active filter.
+        self._apply_status_filter()
+
         current = self.scan_table.currentRow()
         if current in rows and 0 <= current < len(self.state.entries):
             self._show_result(self.state.entries[current].processed)
@@ -1168,16 +1522,22 @@ class ScanPage(WorkflowPage):
         )
 
     def _on_batch_finished(self, report: BatchReport) -> None:
-        """Finish a run: summarise it and re-enable the controls."""
+        """Finish a run: settle its stored state, summarise it, re-enable."""
         self._refresh_timer.stop()
         snapshot = self._worker.progress_snapshot() if self._worker is not None else None
+        persistence_failure = (
+            self._worker.persistence_failure if self._worker is not None else ""
+        )
         self._flush_dirty_rows()
         self._worker = None
         self._final_report = report
 
+        self._settle_batch_state(report)
         if snapshot is not None:
             self._last_snapshot = snapshot
         self._render_completion(report, self._last_snapshot)
+        if persistence_failure:
+            self._report_persistence_failure(persistence_failure)
 
         _LOGGER.info(
             "Batch %s: %d processed (%d complete, %d review, %d failed), "
@@ -1200,6 +1560,49 @@ class ScanPage(WorkflowPage):
         if self.state.benchmark is not None and not report.cancelled:
             self._score_benchmark(report)
         self.batch_finished.emit(report)
+
+    def _settle_batch_state(self, report: BatchReport) -> None:
+        """Write the batch's terminal state after a run ends.
+
+        A cancelled run returns its unfinished scans to a resumable state; a
+        completed one records whether anything failed, because "the loop
+        ended" and "the work succeeded" are different claims.
+        """
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is None or batch_id is None:
+            return
+        try:
+            if report.cancelled:
+                mark_cancelled(database, batch_id)
+            else:
+                finalise_batch(database, batch_id)
+        except OMRScannerError:
+            _LOGGER.exception("Could not record the final state of batch %s", batch_id)
+        self._refresh_batch_state_label()
+
+    def _report_persistence_failure(self, message: str) -> None:
+        """Tell the operator that results were produced but not stored.
+
+        Deliberately a dialog and not a status line. Every other failure this
+        page reports is about a *sheet*; this one is about the batch's record
+        of itself, and an operator who closes the window believing the run was
+        saved would lose work they have no way of knowing they lost.
+        """
+        _LOGGER.error("Batch results could not be persisted: %s", message)
+        self.batch_state_label.setText(
+            "⚠ Results could not be saved to the project database. "
+            "Export the CSV before closing."
+        )
+        QMessageBox.warning(
+            self,
+            "Results could not be saved",
+            "The scans were processed, but their results could not be written to "
+            "the project database, so this batch cannot be resumed and the "
+            "results will be lost when the window closes.\n\n"
+            f"{message}\n\n"
+            "Export the CSV now to keep what was read.",
+        )
 
     def _render_completion(self, report: BatchReport, snapshot: ProgressSnapshot) -> None:
         """Show the final state: exactly 100%, or an honest partial count."""
@@ -1616,6 +2019,7 @@ class ScanPage(WorkflowPage):
         finally:
             self.scan_table.setUpdatesEnabled(True)
             self._suppress_selection = False
+        self._apply_status_filter()
 
     def _update_scan_row(self, row: int, entry: ScanEntry) -> None:
         """Refresh one row of the scan list."""
@@ -1677,6 +2081,36 @@ class ScanPage(WorkflowPage):
         return written
 
     # ------------------------------------------------------------------
+    # Filtering
+    # ------------------------------------------------------------------
+    def _apply_status_filter(self) -> None:
+        """Hide the rows the current filter excludes.
+
+        Rows are hidden, never removed: every other part of this page treats a
+        table row index as an index into :attr:`ScanPageState.entries`, and a
+        filter that rebuilt the table would silently break that.
+        """
+        choice = self.status_filter_combo.currentText()
+        wanted = FILTER_OUTCOMES.get(choice)
+        shown = 0
+        for row, entry in enumerate(self.state.entries):
+            visible = wanted is None or entry.outcome in wanted
+            self.scan_table.setRowHidden(row, not visible)
+            shown += visible
+        total = len(self.state.entries)
+        self.filter_count_label.setText(
+            "" if wanted is None else f"{shown} of {total}"
+        )
+
+    def visible_rows(self) -> list[int]:
+        """Rows the current filter leaves on screen, in order."""
+        return [
+            row
+            for row in range(len(self.state.entries))
+            if not self.scan_table.isRowHidden(row)
+        ]
+
+    # ------------------------------------------------------------------
     # Enablement
     # ------------------------------------------------------------------
     def _refresh_controls(self) -> None:
@@ -1692,6 +2126,15 @@ class ScanPage(WorkflowPage):
         self.process_all_button.setEnabled(has_template and has_scans and not running)
         self.process_selected_button.setEnabled(has_template and has_scans and not running)
         self.reprocess_button.setEnabled(has_template and has_results and not running)
+        # Resume and retry act on the *stored* batch, so they need a project
+        # and something actually left to do - not merely a non-empty list.
+        summary = self.batch_summary()
+        self.resume_button.setEnabled(
+            has_template and not running and summary is not None and summary.pending > 0
+        )
+        self.retry_failed_button.setEnabled(
+            has_template and not running and summary is not None and summary.failed > 0
+        )
         # Enabled only while a run is going *and* has not already been asked to
         # stop: a second cancel has nothing left to do.
         cancelling = self._last_snapshot.state is BatchState.CANCELLING
@@ -1707,21 +2150,51 @@ class ScanPage(WorkflowPage):
     # ------------------------------------------------------------------
     # Qt overrides
     # ------------------------------------------------------------------
-    def closeEvent(self, event: object) -> None:
-        """Stop any running worker before the page disappears.
+    @property
+    def is_processing(self) -> bool:
+        """Whether a batch run is currently going.
 
-        Waiting matters more now than it did single-threaded: the batch thread
-        owns a pool of worker processes, and letting the application exit while
-        it still exists is how orphaned Python processes are left behind. The
-        wait is generous because cancelling still lets the sheets already inside
-        a worker finish, which is a second or two each.
+        Read by the main window before it closes, so the operator is warned
+        rather than having a run stopped out from under them.
+        """
+        return self._worker is not None and self._worker.isRunning()
+
+    def shutdown_batch(self) -> None:
+        """Stop a running batch and wait for it, leaving the state consistent.
+
+        Waiting matters more than it did single-threaded: the batch thread owns
+        a pool of worker processes, and letting the application exit while it
+        still exists is how orphaned Python processes are left behind. The wait
+        is generous because cancelling still lets the sheets already inside a
+        worker finish, which is a second or two each.
+
+        The worker flushes its recorder before it returns, so by the time this
+        call ends every sheet that finished is durable and the rest are
+        resumable. That is the whole reason this is a wait and not a kill.
         """
         self._refresh_timer.stop()
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.cancel()
-            self._worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+            # `finished_report` may never be delivered - the event loop is on
+            # its way out - so the batch's stored state is settled here rather
+            # than relying on a signal that might not arrive.
+            database = self.database
+            batch_id = self.state.batch_id
+            if database is not None and batch_id is not None:
+                try:
+                    mark_cancelled(database, batch_id)
+                except OMRScannerError:
+                    _LOGGER.exception(
+                        "Could not mark batch %s cancelled during shutdown", batch_id
+                    )
         if self._preview_worker is not None and self._preview_worker.isRunning():
             self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+
+    def closeEvent(self, event: object) -> None:
+        """Stop any running worker before the page disappears."""
+        self.shutdown_batch()
         super().closeEvent(event)  # type: ignore[arg-type]
 
 

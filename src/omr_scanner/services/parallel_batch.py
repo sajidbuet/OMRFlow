@@ -86,6 +86,21 @@ CANCEL_POLL_SECONDS = 0.2
 Short enough that "Cancel" feels immediate, long enough that waiting costs
 nothing measurable next to reading a page."""
 
+QUEUE_DEPTH_PER_WORKER = 4
+"""How many tasks may be outstanding per worker before submission pauses.
+
+Backpressure, and the reason a ten-thousand-sheet batch behaves like a
+hundred-sheet one. Submitting every task up front would build ten thousand
+`Future` objects and ten thousand queued messages before the first page was
+read, which costs memory, delays the first result, and makes cancellation
+slower because every one of those futures has to be cancelled individually.
+
+Four per worker is deep enough that no worker ever waits for the parent to
+hand it the next page - by the time it finishes one, three more are already
+queued for it - and shallow enough that "stop" means stopping within a page or
+two. The jobs themselves stay tiny either way: an index and a path, never an
+image (see the module docstring)."""
+
 _WORKER_TEMPLATE: OmrTemplate | None = None
 _WORKER_OPTIONS: RecognitionOptions | None = None
 """Per-process state, set once by :func:`worker_initialise`.
@@ -243,14 +258,30 @@ def recognise_in_parallel(
         initializer=worker_initialise,
         initargs=(template, options),
     )
+    queue_depth = max(workers * QUEUE_DEPTH_PER_WORKER, workers)
+    submitted = 0
+    cancelled = False
     try:
-        for index, path in enumerate(paths):
-            pending[executor.submit(worker_recognise, index, path)] = index
+        while True:
+            # Top the queue back up before waiting. Submission is bounded
+            # (`QUEUE_DEPTH_PER_WORKER`) so a ten-thousand-sheet batch never
+            # builds ten thousand futures; the pool stays fed because the
+            # refill happens before every wait, not after every completion.
+            if not cancelled:
+                while submitted < len(paths) and len(pending) < queue_depth:
+                    future = executor.submit(worker_recognise, submitted, paths[submitted])
+                    pending[future] = submitted
+                    submitted += 1
 
-        while pending:
-            if should_cancel is not None and should_cancel():
+            if not pending:
+                break
+
+            if not cancelled and should_cancel is not None and should_cancel():
+                cancelled = True
                 _LOGGER.info(
-                    "Cancelling %d scan(s) that had not started yet", len(pending)
+                    "Cancelling: %d scan(s) in flight, %d never submitted",
+                    len(pending),
+                    len(paths) - submitted,
                 )
                 for future in pending:
                     future.cancel()
@@ -311,6 +342,7 @@ def describe_environment() -> str:
 
 
 __all__ = [
+    "QUEUE_DEPTH_PER_WORKER",
     "START_METHOD",
     "WorkerOutcome",
     "describe_environment",

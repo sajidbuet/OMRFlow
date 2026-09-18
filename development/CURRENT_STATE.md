@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-18
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 not started.
 
 Update this file at the end of every phase.
 
@@ -326,13 +326,60 @@ unusable.
   explicit rule (`NO_MARKS_DETECTED`) with no tunable constant, plus the
   pre-existing systematic-ambiguity rule for partial displacement.
 
+### Durable batch processing (Phase 5)
+
+- Two additive tables, created by **migration 2**: `scan_batch` (one run: its
+  folder, template, both template fingerprints, engine version, settings and
+  lifecycle status) and `batch_scan` (one row per sheet: status, attempt count,
+  recognised roll and set code, output name, failure reason and machine-readable
+  category, timings, and the full `ScanResult` as JSON). Field-by-field:
+  `docs/DATA_MODEL.md`.
+- `services.batch_store` is the repository layer. It contains no Qt and no
+  recognition, and is attached to a run through `process_batch`'s **existing**
+  `on_result` hook - so a caller with no project open (a test, the benchmark,
+  `python -m omr_scanner.tools.recognise`) runs exactly the code path it always
+  did. `batch_processor` still knows nothing about a database.
+- Results are committed in **groups** - 25 sheets or 2 seconds, whichever comes
+  first - because one `fsync` per sheet dominates a run on a spinning disk or a
+  synchronised folder. That bounds what an abrupt termination costs to a second
+  or two of finished work, and the bound is asserted by a test rather than
+  merely intended.
+- **Only the coordinating process writes.** Workers return recognition results
+  and nothing else - the same rule that already stopped them naming files. SQLite
+  is single-writer and the architecture keeps it that way by construction.
+- **Resume** processes only `pending`/`queued`/`processing`/`cancelled` rows, in
+  batch order, so duplicate-identifier suffixes stay stable across an
+  interruption. **Retry Failed** targets failures and only those, incrementing
+  each scan's attempt count.
+- Opening a project runs `recover_interrupted`: rows left `queued` or
+  `processing` can only be in those states while some process owns them, and a
+  project being *opened* proves none does. They return to `pending` - never to
+  `failed`, because "we do not know what happened to this sheet" is not "this
+  sheet is bad", and marking it failed would silently exclude exactly the sheets
+  a crash caught.
+- Resuming with an edited template or retuned thresholds compares the stored
+  fingerprints against the current ones and says precisely what changed before
+  asking. The fingerprints are the same ones Phase 4 uses for calibration
+  staleness.
+- A **storage** failure is handled separately from a **recognition** failure:
+  the batch continues, the buffer is kept for a later retry, and the page
+  reports it in a dialog. A run whose results could not be written is never
+  presented as a clean success.
+- `parallel_batch` gained bounded submission (4 tasks per worker) so a
+  ten-thousand-sheet batch no longer builds ten thousand futures before reading
+  the first page. Nothing else about the pool changed.
+
+**Measured** (24 copies of `examples/ECE-0000.png`, 16 logical CPUs):
+1 worker 8.02 s / 2.99 scans-s; 2 workers 6.15 s / 1.30x; 4 workers 4.47 s /
+1.79x; 8 workers 4.05 s / 1.98x. All 24 read at every worker count -
+multiprocessing has not silently fallen back to sequential.
+
 ## What does not exist
 
-No conflict resolution, attendance reconciliation, answer-key handling, scoring,
-database-backed results, or Excel/PDF reporting. Recognised values cannot yet be
-corrected by hand in the GUI, and results are not written to the project
-database - a batch's output is the CSV and, optionally, the renamed image
-copies.
+No conflict resolution, attendance reconciliation, answer-key handling, scoring
+or Excel/PDF reporting. Recognised values cannot yet be corrected by hand in the
+GUI. There is no batch-browser dialog: `adopt_batch` and `list_batches` exist and
+are tested, but nothing in the UI lists previous batches to pick from yet.
 
 `omr_scanner.reporting` contains module documentation and no code. The Resolve,
 Results and later GUI pages say which phase will implement them and do not

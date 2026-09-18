@@ -16,7 +16,7 @@ that cannot be tested.
 | 2 | Template Data Model & Template Designer Core | **Complete** |
 | 3 | Bubble Mapping & Recognition Engine | Implemented; testing in progress - see `development/PHASE_03_HANDOFF.md` |
 | 4 | Template Calibration & Validation | Implemented; testing in progress - see `development/PHASE_04_HANDOFF.md` |
-| 5 | Batch Scan Processing Pipeline | Not started (Phase 3 already delivers batch *processing*; Phase 5 adds *persistence* and resume) |
+| 5 | Batch Scan Processing Pipeline | Implemented; testing in progress - see `development/PHASE_05_HANDOFF.md` |
 | 6 | Conflict Detection & Human Resolution | Not started |
 | 7 | Candidate & Attendance Reconciliation | Not started |
 | 8 | Answer-Key & Scoring Engine | Not started |
@@ -163,17 +163,32 @@ accuracy at scale; that remains Phase 3's own open item.
 
 **Purpose.** Process a folder of scans reliably and resumably.
 
-**Deliverables.** Scan import that references files in place; worker-thread
-execution with progress reporting; per-sheet error isolation; persistence of
-scans and recognition results; resume after interruption.
+**Delivered as** two additive tables (`scan_batch`, `batch_scan`, migration 2)
+and `services.batch_store` - the durable state, its recorder, the resume
+selection, the crash repair and the template/settings compatibility guard -
+plus the Scan page's Resume, Retry Failed, status filter and batch-state line,
+and the main window's crash recovery on project open and stop-and-wait on close.
+Scan import, the multiprocessing pool, per-sheet error isolation, progress and
+the ETA already existed from Phase 3 and were **preserved unchanged**; the pool
+gained only bounded submission. Full detail: `development/PHASE_05_HANDOFF.md`;
+operator description: `docs/scan_workflow.md` §11-§13.
 
-**Major tests.** A batch with deliberately broken sheets completes and reports
-them; progress and cancellation behave; results survive an interrupted run; the
-GUI never blocks.
+**Exit criteria - met.** Several hundred synthetic sheets process end to end
+with per-sheet status; one broken sheet cannot abort a batch; original scans are
+**provably** unmodified (hashed before and after, at two levels, including with
+renaming on and a corrupt file in the list); results are persisted incrementally
+and an interrupted or cancelled batch resumes without redoing finished work;
+single-worker and multi-worker runs persist identical results in identical
+order; the GUI stays responsive throughout, asserted by a timer that could not
+tick if it were blocked.
 
-**Exit criteria.** A few hundred sheets process end to end with per-sheet status;
-a failure in one sheet cannot abort the batch; original scans are provably
-unmodified.
+**Not done.** No real examination-scale run - the largest measured batch is 48
+real scans, and the ten-thousand figure remains a simulation of the progress
+path. Storage failures are tested by injection, not against a real network
+share or full disk; crash recovery is tested by simulating the state a crash
+leaves rather than by killing a live process; Windows only. And Phase 5 makes a
+batch *reliable*, not *accurate* - whether the values it durably recorded are
+correct remains Phase 3's open item.
 
 ---
 

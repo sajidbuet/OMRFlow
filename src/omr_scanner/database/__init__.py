@@ -25,10 +25,15 @@ Invariants:
 
 from omr_scanner.database.engine import ProjectDatabase, open_project_database
 from omr_scanner.database.migrations import SCHEMA_VERSION, current_schema_version
+from omr_scanner.database.models import BatchScan, BatchStatus, ScanBatch, ScanJobStatus
 
 __all__ = [
     "SCHEMA_VERSION",
+    "BatchScan",
+    "BatchStatus",
     "ProjectDatabase",
+    "ScanBatch",
+    "ScanJobStatus",
     "current_schema_version",
     "open_project_database",
 ]

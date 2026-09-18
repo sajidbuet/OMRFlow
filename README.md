@@ -17,21 +17,23 @@ human verification + reproducible result processing**
 
 ## Development Status
 
-> **Pre-release. Phases 0-2 of 11 are complete; Phase 3 (Recognition Engine
-> v1) and Phase 4 (Template Calibration & Validation) are implemented and
-> undergoing testing.**
+> **Pre-release. Phases 0-2 of 11 are complete; Phases 3, 4 and 5 are
+> implemented and undergoing testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
 > canonical page, has an interactive designer for building that template, can
 > now read the marks on a filled-in sheet, name/export the results, and file
-> the processed images by roll number, and can calibrate a saved template
-> against representative real scans before a batch is run. None of the Phase 3
-> recognition pipeline has been validated on more than one real printed sheet.
-> **Do not use it for examination processing.**
+> the processed images by roll number, can calibrate a saved template
+> against representative real scans before a batch is run, and records every
+> batch durably so an interrupted run resumes rather than restarts. None of the
+> Phase 3 recognition pipeline has been validated on more than one real printed
+> sheet. **Do not use it for examination processing.**
 >
 > **Phase 3 v1 is architecturally stabilized but recognition accuracy remains
 > under active validation pending a large real-world OMR dataset. Phase 4
 > makes that validation safer and more systematic to perform on whatever real
-> scans an operator has - it does not perform the validation itself.**
+> scans an operator has - it does not perform the validation itself. Phase 5
+> makes a batch reliable and resumable; it says nothing about whether the
+> values that batch produced are correct.**
 
 OMRFlow is being developed incrementally, in the defined phases listed in
 [`development/ROADMAP.md`](development/ROADMAP.md). Each phase is implemented,
@@ -49,7 +51,7 @@ validated against a broad, real-world set of filled sheets.
 | 2 | Template data model & template designer core | Complete | Complete | ✅ Complete |
 | 3 | Recognition Engine v1: bubble mapping, recognition, batch scanning, renaming & CSV export | Implemented & architecturally hardened | In progress | 🧪 Testing |
 | 4 | Template calibration & validation | Implemented | In progress | 🧪 Testing |
-| 5 | Batch scan processing pipeline (persistence, resume) | Pending | Not started | ⏳ Pending |
+| 5 | Batch scan processing pipeline (persistence, resume) | Implemented | In progress | 🧪 Testing |
 | 6 | Conflict detection & human resolution | Pending | Not started | ⏳ Pending |
 | 7 | Candidate & attendance reconciliation | Pending | Not started | ⏳ Pending |
 | 8 | Answer-key & scoring engine | Pending | Not started | ⏳ Pending |
@@ -57,7 +59,7 @@ validated against a broad, real-world set of filled sheets.
 | 10 | Integration, recovery & production hardening | Pending | Not started | ⏳ Pending |
 | 11 | Release, user documentation & packaging | Pending | Not started | ⏳ Pending |
 
-Phase titles and descriptions for 4-11 are taken directly from
+Phase titles and descriptions for 6-11 are taken directly from
 [`development/ROADMAP.md`](development/ROADMAP.md), which is the authoritative
 plan; see that document for each phase's purpose, deliverables and exit
 criteria.
@@ -149,6 +151,28 @@ criteria.
   Phase 3's real-world accuracy at scale; see
   [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md) and
   [`docs/calibration_workflow.md`](docs/calibration_workflow.md).
+- **Durable, resumable batches** (Phase 5, *implemented, testing in progress*):
+  with a project open, every scan's result is written to the project database
+  as it finishes, so a run that is cancelled, closed or killed is **resumed
+  rather than restarted**:
+  - one durable row per scan, carrying its status, attempt count, recognised
+    roll and set code, output name, failure reason and category, and the full
+    recognition result;
+  - **Resume Batch** processes only what is left; sheets already read are never
+    read again. **Retry Failed** re-reads the failures and only those;
+  - a batch that was interrupted mid-run is repaired when the project is
+    reopened — scans left mid-flight return to *pending*, never to *failed*,
+    so a resume cannot silently skip exactly the sheets the crash caught;
+  - resuming with an edited template or retuned thresholds says precisely what
+    changed and asks, rather than silently mixing results produced under two
+    different sets of rules;
+  - closing the window mid-batch warns, stops the run, waits for it, and leaves
+    the batch resumable;
+  - a filter (*Completed / Needs review / Failed / Not processed*) for reviewing
+    what happened;
+  - a failure to *store* results is reported separately from a failure to
+    *read* a sheet: a run whose results could not be written is never presented
+    as a clean success.
 - A PySide6 application shell with the nine workflow stages; **Project**,
   **Template**, **Calibrate** and **Scan** are implemented, and the remaining
   stages state which phase will implement them.
@@ -541,6 +565,64 @@ Still open, and why Phase 4 is not marked complete:
   permitting a simpler alternative where a fitted statistical measure could
   not be justified on the data available
 
+### Phase 5 testing status
+
+Phase 5 (Batch Scan Processing Pipeline) is implemented and covered by 72 new
+automated tests (35 unit, 17 integration, 20 GUI), plus three new `qtguitesting`
+smoke checks against the repository's real sample sheet. Full detail is in
+[`development/PHASE_05_HANDOFF.md`](development/PHASE_05_HANDOFF.md).
+
+Confirmed by the current automated suite:
+
+- [x] **Original scans are byte-for-byte unchanged** by processing — hashed
+  before and after a batch that includes renaming *and* a deliberately corrupt
+  file, at both the integration and `qtguitesting` levels (the mandatory Phase 5
+  exit criterion)
+- [x] Recognition results are persisted **incrementally**, in bounded groups,
+  so an abrupt termination costs at most a second or two of finished work
+- [x] A cancelled batch keeps everything it read and leaves the rest resumable
+- [x] **Resume processes only what is left** — asserted by the resumed run's own
+  scan count, not merely by the final total
+- [x] A batch interrupted mid-run is repaired on reopening: scans left
+  in-flight return to *pending*, never to *failed*
+- [x] Resuming with a changed template or changed thresholds warns and asks,
+  rather than silently mixing incompatible results
+- [x] One broken sheet fails alone; the batch finishes and records the reason
+  and a machine-readable error category
+- [x] A sheet that cannot be registered produces no fabricated values at all
+- [x] Single-worker and multi-worker runs persist identical results, in
+  identical order
+- [x] Duplicate roll numbers produce distinct output files and distinct rows;
+  nothing is overwritten
+- [x] The GUI event loop keeps running throughout a batch (asserted with a
+  timer that could not tick if the GUI thread were blocked)
+- [x] Closing the window mid-batch warns, stops the run, waits for it, and
+  leaves the batch resumable with no orphaned worker processes
+- [x] A storage failure is reported rather than swallowed, and never presented
+  as a successful run
+- [x] Multiprocessing genuinely parallelises: measured **1.00x / 1.30x / 1.79x /
+  1.98x** at 1/2/4/8 workers over 24 real scans on the development machine
+- [x] Existing project databases gain the new tables by migration, not by
+  `create_all`
+
+Still open, and why Phase 5 is not marked complete:
+
+- [ ] **No real examination-scale run.** The largest *measured* batch is 48
+  real scans; the 10,000-scan figure the architecture targets has been
+  exercised as a simulation of the progress and counting path, not as ten
+  thousand real recognitions with ten thousand database rows
+- [ ] Persistence has not been exercised on a network share, a synchronised
+  folder (OneDrive/Dropbox) or a full disk — the three places a real
+  examination office would most plausibly hit a storage failure
+- [ ] Crash recovery is tested by *simulating* the state a crash leaves
+  (closing the database with rows still claimed as in-flight), not by killing
+  a live process
+- [ ] Only tested on Windows with a 16-thread CPU; Linux and macOS are
+  untested, as are low-memory machines
+- [ ] **Phase 5 makes a batch reliable, not accurate.** It says nothing about
+  whether the values it durably recorded are correct — that remains Phase 3's
+  open item
+
 ### Development philosophy
 
 OMRFlow follows an incremental development process. Major functionality is
@@ -554,11 +636,16 @@ exists.
 
 ### Pending development
 
-Phases 4-11 have not started. Their titles, purposes and deliverables as
+Phases 6-11 have not started. Their titles, purposes and deliverables as
 currently planned are documented in
 [`development/ROADMAP.md`](development/ROADMAP.md); this project does not
 promise a delivery date for any of them, and scopes may be refined as earlier
 phases surface real requirements.
+
+**Real-world validation remains pending for every phase that needs it.**
+Implemented, automated tests passing, synthetic dataset validated, real scanned
+dataset validated and production validated are five separate things, and
+OMRFlow currently claims the first three.
 
 Current detail: [`development/CURRENT_STATE.md`](development/CURRENT_STATE.md).
 Plan: [`development/ROADMAP.md`](development/ROADMAP.md).
