@@ -77,18 +77,50 @@ operator procedure: `docs/calibration_workflow.md`.
   `expected_x/y` (the template's own declared marker centre, in the same
   coordinate space) - both additive, both computed once from existing
   geometry, never a second calculation.
+- **The sampled region is drawn, not just the printed bubble.**
+  `BubbleMeasurement` records `sample_half_width`/`sample_half_height` at the
+  moment it builds the sampling mask, `BubbleView` carries them, and the
+  overlay has separate **Sampling** (the measured ellipse) and **Centres**
+  layers alongside the printed-bubble outline. The two are genuinely different
+  regions - the interior is read at 62% of the printed half-axes, which on the
+  repository's real sample is 22.3 px across inside a printed 36.0 px bubble -
+  and an overlay that draws one while meaning the other shows an operator a
+  region recognition never looked at.
+- **Registered page / Original scan** views, with overlays deliberately
+  restricted to the former: overlay coordinates are canonical-page pixels, and
+  painting them over an uncorrected scan would be wrong everywhere while
+  looking plausible.
+- **Per-position field diagnostics**: every printed column of the Student ID
+  and the Set Code with its own symbol, status, fill ratio, margin and
+  confidence, plus the flagged questions with the same evidence. Positions are
+  iterated exactly as the template declares them, so a multi-position or
+  multi-character set code is reported as what it is rather than assumed to be
+  a single letter.
+- **A template whose zones are displaced but whose markers still register** is
+  reported as needing review rather than passing. Registration succeeds, no
+  sampling window leaves the page, no alignment warning fires, and every group
+  reads a confident blank from bare paper - so the existing checks are blind to
+  it. Caught by a rule with no tunable constant (`NO_MARKS_DETECTED`: the sheet
+  registered and not one response position carried a mark) reported as *needs
+  review*, never *failed*, because a genuinely blank sheet produces identical
+  evidence and the message says so.
 - **`ScanPreviewView`** (already used by the Scan page) gained marker-overlay
   painting and a `clicked_scene_point` signal, reused by the Calibration page
   rather than a second image-viewer component; the Scan page's own behaviour
   is unchanged.
-- 63 new tests: 27 unit (`test_calibration_service.py`), 10 integration
+- 93 new tests: 38 unit (`test_calibration_service.py`, plus the reported
+  sampling geometry in `test_bubble_metrics.py`), 18 integration
   (`test_calibration_workflow.py`, against the real `RecognitionEngine` and
-  real templates) and 26 GUI (`test_calibration_page.py`), including a
+  real templates) and 37 GUI (`test_calibration_page.py`), including a
   cross-check that the on-screen question-number label always agrees with the
-  number the engine itself recognised. The `qtguitesting` skill gained a
-  `CalibrationHarness`, three smoke checks (object names, a clean run against
-  the real sample, a mismatched-template run against the real sample) and
-  five documented screenshot scenarios.
+  number the engine itself recognised, an overlay/image alignment check across
+  three zoom levels, and a shared-data-path proof that runs the engine with a
+  non-default `sample_radius_ratio` and requires the displayed sampling window
+  to follow it. The `qtguitesting` skill gained a `CalibrationHarness`, five
+  smoke checks and ten documented screenshot scenarios - three of them the
+  sampling overlay at the top, middle and bottom of the same sheet, because a
+  scale error accumulates down the page and checking one region proves nothing
+  about the others.
 
 **Calibrating a template against representative scans is not the same as
 validating Phase 3's real-world recognition accuracy at scale.** This phase

@@ -295,13 +295,36 @@ real-world accuracy.
 - The Scan page shows a small, non-blocking warning when a loaded template has
   never been calibrated or has gone stale; it never blocks *Process All*.
 
+- The overlay draws the **sampled** ellipse and the **printed** bubble as two
+  separate, separately-labelled layers, plus a centre cross. They are
+  genuinely different regions - the sampler reads the interior at
+  `sample_radius_ratio` (0.62) of the printed half-axes, which on the real
+  sample is 22.3 px across inside a printed 36.0 px bubble - and
+  `BubbleMeasurement` now records the sampled extent at the moment it builds
+  the mask so the two cannot drift apart. An audit pass corrected an earlier
+  version that drew only the printed size, meaning an operator checking
+  alignment was shown a region 2.6x the area of anything actually measured.
+
 **Measured on the real sample** (`examples/ECE-0000.png`, its own template):
 calibration status `Validation passed with warnings` (a pre-existing marker
 alignment warning, not a Phase 4 finding), 4/4 markers detected within 0 px of
-their expected canonical position, all 100 answers single-marked, 0 flagged.
-A deliberately mismatched template (every marker shifted 0.3 normalised) run
-against the same real scan: `Registration: FAILED`, `Markers detected: 0 / 4`,
-0 fields/answers/bubbles, calibration status `FAILED` - not a degraded pass.
+their expected canonical position, all 100 answers single-marked, 0 flagged,
+marks detected in 110 of 110 response positions, 0 of 500 sampling windows
+unusable.
+
+**The two miscalibration shapes, both measured on that same real scan:**
+
+- *Markers displaced* (every marker shifted 0.3 normalised): `Registration:
+  FAILED`, `Markers detected: 0 / 4`, 0 fields/answers/bubbles, calibration
+  status `FAILED` - not a degraded pass.
+- *Only the zones displaced* (every zone and grid origin shifted 0.02
+  normalised): registration **succeeds** cleanly, 0 of 500 sampling windows
+  unusable, no alignment problem at all - and the status is `Needs review`
+  with "marks detected in 2 of 110 response positions". This is the case that
+  no registration-level check can see, and the one an audit pass found
+  reporting `Validation passed with warnings`; it is now covered by an
+  explicit rule (`NO_MARKS_DETECTED`) with no tunable constant, plus the
+  pre-existing systematic-ambiguity rule for partial displacement.
 
 ## What does not exist
 
@@ -416,25 +439,33 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2158 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2188 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest -m "not gui"   1576 passed, 1 skipped in 88.9s
-pytest -m gui         582 passed in [long-running; real QThreads and a real recognition engine]
+pytest -m "not gui"   1595 passed, 1 skipped in 95s
+pytest -m gui         593 passed in 109s
 ruff check .          All checks passed
 mypy                  Success: no issues found in 102 source files
 ```
 
-63 of those are Phase 4 (Template Calibration & Validation): `tests/unit/test_calibration_service.py`
-(27, the four-state judgement rules against hand-built results),
-`tests/integration/test_calibration_workflow.py` (10, the real engine against
-real templates and synthetic sheets, including the mismatched-marker and
-small-vs-large-offset pairs) and `tests/gui/test_calibration_page.py` (26,
-A-J, the whole workflow through the page's public commands). Confirmed
-end-to-end against the real sample and its real template through
-`scripts/run_gui_smoke_tests.py` (30/30 checks) and by inspecting the
-screenshots `scripts/capture_gui_states.py --only calibration` produces.
+93 of those are Phase 4 (Template Calibration & Validation):
+`tests/unit/test_calibration_service.py` (34, the four-state judgement rules
+against hand-built results, including the nothing-marked-anywhere rule and the
+answer counts that must come from `MarkStatus` rather than from the value
+string), `tests/unit/test_bubble_metrics.py` (+4, the reported sampling
+geometry), `tests/integration/test_calibration_workflow.py` (18, the real
+engine against real templates and synthetic sheets, including *both*
+miscalibration shapes, the small-vs-large-offset pair, and a shared-data-path
+proof that varies the sampler's own configuration) and
+`tests/gui/test_calibration_page.py` (37, A-J plus overlay/image alignment
+across three zoom levels, the original-scan view, and per-position field
+diagnostics). Confirmed end-to-end against the real sample and its real
+template through `scripts/run_gui_smoke_tests.py` (32/32 checks) and by
+inspecting the ten screenshots `scripts/capture_gui_states.py --only
+calibration` produces - including the sampling overlay at the top, middle and
+bottom of the page, since a scale error accumulates downwards and one region
+proves nothing about the others.
 
 96 of those are the multicore work, and a further 94 the large-batch
 progress work (`tests/unit/test_batch_progress.py`, 58, including a

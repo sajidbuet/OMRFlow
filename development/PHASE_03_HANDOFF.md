@@ -22,6 +22,19 @@ re-decide cached measurements without repeating registration, and `MarkerView`
 gained two additive coordinate pairs. See `development/PHASE_04_HANDOFF.md`
 §4 for the full account; the existing recognition/batch/benchmark test suites
 pass unchanged, which is the evidence that no recognised value moved.
+
+**Updated:** 2026-09-18 — Phase 4's audit pass made one further additive change
+here: `imaging.metrics.BubbleMeasurement` now reports
+`sample_half_width`/`sample_half_height`, the half-axes of the elliptical
+interior `measure_bubble` samples. The values were already being computed to
+build the mask; they are now returned instead of discarded, and the mask is
+built from the same two locals so the reported number and the sampled region
+cannot diverge. Nothing reads them to make a decision — they exist so that a
+calibration overlay draws the region that was actually measured rather than
+the (larger) printed bubble, which an earlier Phase 4 build did. Defaults to
+`0.0`, populated on every return path including the unusable ones.
+`tests/unit/test_bubble_metrics.py` gained four tests; every other test in the
+repository is unchanged and passing.
 **Version:** 0.1.0.dev0
 **Environment verified on:** Windows 11, Python 3.12.7, PySide6 6.11.2, OpenCV
 5.0.0, NumPy 2.5.3

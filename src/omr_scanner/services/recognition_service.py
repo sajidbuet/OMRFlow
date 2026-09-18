@@ -701,13 +701,27 @@ class CalibrationSession:
             return self._failure
         return _decide_and_build(self._measured, template, self._options)
 
-    def original_preview(self, max_dimension: int | None = None) -> DecodedImage:
+    def original_preview(
+        self, max_dimension: int | None = DEFAULT_PREVIEW_MAX_DIMENSION
+    ) -> tuple[DecodedImage, float, int, int]:
         """A display copy of the scan **before** registration.
 
-        For the calibration viewer's "Original Scan" mode
+        For the calibration viewer's "Original scan" mode
         (``docs/calibration_workflow.md``): the page as it arrived, with none
         of Phase 1's correction applied, so a printer margin or a skewed feed
         is visible for what it is rather than already straightened out.
+
+        Args:
+            max_dimension: Longest side of the returned copy; ``None`` for
+                full resolution.
+
+        Returns:
+            ``(image, scale, source_width, source_height)`` - the scale and
+            the *source* dimensions travel with the image because overlay
+            coordinates are canonical-page pixels and therefore do **not**
+            apply to it. A caller showing this image must say so and draw no
+            bubble or zone overlay over it; see
+            :meth:`~omr_scanner.gui.calibration.page.CalibrationPage._refresh_preview_mode`.
 
         Raises:
             RuntimeError: The session's registration failed, so there is no
@@ -718,8 +732,8 @@ class CalibrationSession:
             raise RuntimeError(
                 "This session's registration failed; there is no scan cached to preview"
             )
-        image, _scale = _downscaled_preview(self._measured.image, max_dimension)
-        return image
+        image, scale = _downscaled_preview(self._measured.image, max_dimension)
+        return image, scale, self._measured.source_width, self._measured.source_height
 
 
 class _StageClock:
@@ -1072,6 +1086,12 @@ def _build_views(
                     ink_threshold=evidence.ink_threshold,
                     sample_pixels=evidence.sample_pixels,
                     usable=evidence.usable,
+                    # Straight off the measurement, never recomputed from the
+                    # grid: this is the ellipse the sampler read, and a
+                    # calibration overlay draws it to show the operator the
+                    # actual region behind `fill_ratio`.
+                    sample_half_width=measurement.sample_half_width,
+                    sample_half_height=measurement.sample_half_height,
                 )
             )
 

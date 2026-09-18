@@ -38,17 +38,30 @@ never a general accuracy claim - see [§7](#7-real-scans-vs-synthetic-scans).
 
 1. **Load Template** - the `.omrt` to verify.
 2. **Add Scan(s)** or **Add Folder** - several *representative* real scans
-   (§6), not one.
+   (§3), not one.
 3. **Run Test** (the selected scan) or **Run All Tests** (every scan).
-4. Inspect the marker overlay, the bubble overlay, the quality summary and the
-   calibration status for each scan.
-5. Adjust a threshold if the evidence calls for it, and watch recognition
-   update immediately - no scan is re-registered for this.
-6. Repeat step 3 to confirm the change holds across every representative scan.
-7. **Save to Template** once satisfied.
-8. Only then process the production batch on the Scan page.
+4. Check **registration**: the status line, "Markers detected: 4 / 4", and
+   orientation.
+5. Switch on the **Markers** overlay and confirm the detected squares sit on
+   the printed registration marks.
+6. Switch on **Sampling** and **Centres**, zoom to 100%, and check the bubble
+   geometry at the **top, middle and bottom** of the page - a scale error
+   accumulates downwards, so one region proves nothing about the others.
+7. Check the **Student ID** and **Set Code** blocks specifically, position by
+   position, in the field diagnostics panel.
+8. Click a few individual bubbles - a marked one and an empty one - and read
+   their fill scores against the active threshold.
+9. Adjust a threshold **only if the evidence calls for it**, and watch
+   recognition update immediately - no scan is re-registered for this.
+10. Re-check every representative scan, not just the one you tuned against.
+11. Review the findings and the sample status.
+12. **Save to Template** once satisfied.
+13. Only then process the production batch on the Scan page.
 
-Nothing is written to the template file until step 7.
+Nothing is written to the template file until step 12.
+
+If the geometry is wrong, **stop**: a threshold cannot fix a misplaced region.
+Use **Edit Template** (§10) instead.
 
 ---
 
@@ -77,21 +90,67 @@ Calibration invents on its own.
 | --- | --- |
 | **Markers** | Every registration marker's *expected* position (blue cross - the template's own declared centre, in canonical pixels) against its *detected* position (green square: close; red square: displaced, with the distance labelled). |
 | **Regions** | Every zone rectangle, tinted by its status - the same overlay the Scan page draws. |
-| **Selections** | Bubbles the engine took as the answer, or that need review. |
-| **All bubbles** | Also outlines bubbles measured as empty - useful for checking that a bubble window sits where the printed circle actually is. |
+| **Selections** | The **printed** bubble outline, for bubbles the engine took as the answer or that need review. |
+| **All bubbles** | Extends the above to bubbles measured as empty. |
+| **Sampling** | The **measured** ellipse: the interior the sampler actually read for each bubble, dotted blue. |
+| **Centres** | A small magenta cross at each bubble's sampled centre. |
+
+### Printed bubble vs. sampled region - read this before judging alignment
+
+**They are deliberately different sizes.** The printed ring is ink, so
+measuring the full bubble would score an empty one as partly filled. The
+sampler therefore reads only the interior, at
+`BubbleMetricsConfig.sample_radius_ratio` (0.62) of the printed half-axes -
+on the repository's real sample sheet, a **22.3 x 22.3 px ellipse inside a
+printed 36.0 x 36.0 px bubble**.
+
+The **Selections** / **All bubbles** layers draw the printed bubble. The
+**Sampling** layer draws what was actually measured. When you are checking
+whether the template lines up, the Sampling and Centres layers are the ones
+that matter: a printed outline that merely *overlaps* the real bubble can
+still be sampling mostly paper.
 
 The **field filter** (All / Student ID / Set Code / Questions / Other fields)
 narrows the bubble overlay to one kind of field - useful on a template with
 many questions.
 
+### Registered page vs. Original scan
+
+The view selector switches between the rectified page - the coordinate system
+recognition works in, and the only one overlays belong in - and the scan
+exactly as it arrived, before Phase 1 corrected it. Use the original to see a
+skewed feed, a printer margin or a fold for what it is.
+
+Overlays are **not** drawn over the original scan, and clicking it does not
+report a bubble. Overlay coordinates are canonical-page pixels; painting them
+over an uncorrected image would put every ellipse in the wrong place while
+looking entirely plausible. Rather than map them backwards - a second geometry
+path this workflow must not create - that view simply shows the image.
+
 ### Bubble inspector
 
 Click any bubble in the preview. The panel on the right shows its field
 identity (e.g. "Question 42 - option C", "Roll number - position 3 - value
-7"), its centre in canonical pixels, its raw fill score, the active fill and
-blank thresholds, the measured darkness and contrast, and its classification
+7"), its row and column, its centre in canonical pixels, **both** the sampled
+window and the printed bubble size, its raw fill score, the active fill and
+blank thresholds, the measured darkness, contrast, ink threshold and local
+paper level, its rank within its response group, and its classification
 (FILLED / EMPTY / etc.) - exactly the numbers the recognition engine itself
 computed, never a re-estimate.
+
+### Field diagnostics
+
+Below the inspector, every recognised field is broken down **position by
+position**: each printed column of the Student ID and the Set Code with its
+own symbol, status, top fill ratio, margin and confidence, so a single weak
+digit is visible rather than hidden inside a final ID string. Positions are
+iterated exactly as the template declares them, so a multi-position or
+multi-character set code (`"10"`, `"11"`, `"12"`) is reported as what it is
+and never assumed to be one letter.
+
+Underneath, the questions flagged for review are listed with the same
+evidence (up to twelve, then a count of the rest) - which question, what it
+was read as, and the fill and margin behind that.
 
 ### Recognition thresholds
 
@@ -111,11 +170,13 @@ already-measured bubble scores are re-decided against the new threshold - see
 [§8](#8-architecture-why-threshold-changes-are-instant).
 
 **Working value vs. saved value.** Moving a slider never touches the
-template file. **Reset to Template** restores the values the template was
-last saved with; **Defaults** restores the application's built-in defaults;
-**Save to Template** is the one action that writes anything to disk, and it
-asks for confirmation first, naming the calibration status it is about to
-record.
+template file. A line above the sliders always states which of the two you
+are looking at - *"Matching the template's saved values"* or *"Modified - not
+saved to the template yet"* - so the state is never something you have to
+infer. **Reset to Template** restores the values the template was last saved
+with; **Defaults** restores the application's built-in defaults; **Save to
+Template** is the one action that writes anything to disk, and it asks for
+confirmation first, naming the calibration status it is about to record.
 
 ### Quality summary and sample summary
 
@@ -167,12 +228,41 @@ see the next section.
 | Filled and empty bubble scores strongly overlapping | "Poorly separated" in the sample summary - a genuine measurement problem (lighting, print contrast), not something a threshold slider can fix. |
 | Frequent "needs review" across otherwise clean scans | Check the systematic-ambiguity finding; a threshold that is close to the sheet's actual ink levels needs adjusting, or the sheets are genuinely faint. |
 | Registration succeeding on some scans and failing on very similar ones | Inconsistent print or scan quality across the batch - worth widening the representative sample rather than adjusting a threshold. |
+| Everything blank, on a sheet you know is marked | The classic displaced-template signature: the sampling windows are on clean paper. Switch on **Sampling** and **Centres** and look. Reported as *"Marks detected in 0 of N response positions"*. |
+| "Marks detected in 2 of 110 response positions" on a marked sheet | Partial displacement - the windows are catching the edges of neighbouring bubbles. Same remedy. |
 
-**The one thing Calibration will never do:** show a plausible-looking, wrong
-result. If registration fails, the status is *Calibration failed* and no
-field, answer or bubble is reported at all - there is nothing to show, so
-nothing is shown. See [§8](#8-architecture-why-threshold-changes-are-instant)
-for exactly how that fail-safe works.
+### The two shapes of a badly calibrated template
+
+They look completely different, and only one of them announces itself:
+
+**1. The markers do not match** - the wrong template for this sheet design, or
+marker positions that are simply wrong. Registration *fails*. The status is
+*Calibration failed*, and no field, answer or bubble is reported at all -
+there is nothing to show, so nothing is shown.
+
+**2. The markers match but the bubble geometry does not** - the template was
+drawn against a different print run, or a region was moved. This is the
+dangerous one: registration **succeeds**, the page rectifies perfectly, every
+sampling window lands comfortably on the page, and every group reads a
+*confident blank* because it is measuring bare paper. Nothing about
+registration, nothing about unusable bubbles and nothing about alignment
+warnings can see this.
+
+It is caught two ways instead:
+
+- **No marks detected** - not one response position on the whole sheet carried
+  a mark. Reported as *Needs review*, never as a pass, and deliberately not as
+  a failure: a genuinely blank practice sheet looks identical, and the
+  evidence cannot tell them apart. The message says so and tells you which
+  overlays to switch on.
+- **Systematic ambiguity** - more than 30 per cent of positions need review,
+  which is what partial displacement looks like when the windows catch the
+  edges of neighbouring bubbles.
+
+**The one thing Calibration will never do:** report a template as *passed*
+while its values were read from the wrong part of the page. Whether it can
+tell you *why* depends on the evidence; whether it lets a pass through does
+not.
 
 ---
 
@@ -216,11 +306,29 @@ also why the failed-scan path never has fields, answers or bubbles to show:
 `ScanResult` for a failed registration carries none of them, by construction,
 in every code path that produces one.
 
-Overlay geometry - every bubble circle, every marker cross and square - is
-drawn from the *same* `ScanResult` the recognition engine returned. The
-marker overlay's "detected" position is the engine's own detected marker,
-reprojected through the *same fitted homography* that produced the rectified
-page; nothing about geometry is approximated or recomputed in the GUI layer.
+Overlay geometry - every bubble circle, every sampled ellipse, every centre
+cross, every marker square - is drawn from the *same* `ScanResult` the
+recognition engine returned. Specifically:
+
+- a bubble's centre is `BubbleMeasurement.center_x/y`: the coordinate
+  `measure_bubble` was *called with*, so the ellipse on screen is at the
+  position the fill score beside it was read from;
+- its sampled extent is `BubbleMeasurement.sample_half_width/height`, recorded
+  by the sampler itself at the moment it built the mask - not recomputed from
+  the grid, and not derivable from the printed size without knowing the
+  sampler's own configuration;
+- the marker overlay's "detected" position is the engine's own detected
+  marker, reprojected through the *same fitted homography* that produced the
+  rectified page;
+- its "expected" position is the template's declared centre, scaled onto the
+  canonical page - no transform involved at all.
+
+Nothing about geometry is approximated or recomputed in the GUI layer. The
+regression test for this is not "the two agree today" but "change what the
+sampler does and the display follows": `tests/integration/test_calibration_workflow.py`
+runs the engine with a non-default `sample_radius_ratio` and asserts the
+reported window moves with it, which a GUI-side reimplementation using the
+default would fail.
 
 ---
 

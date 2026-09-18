@@ -118,6 +118,9 @@ THRESHOLD_SLIDER_STEPS = 1000
 0.001 step is finer than the difference a fill-ratio measurement can actually
 resolve, so nothing is lost to the slider's own granularity."""
 
+VIEW_MODE_REGISTERED = "Registered page"
+VIEW_MODE_ORIGINAL = "Original scan"
+
 FIELD_FILTER_ALL = "All"
 FIELD_FILTER_IDENTIFIER = "Student ID"
 FIELD_FILTER_SET_CODE = "Set Code"
@@ -322,6 +325,11 @@ class CalibrationPage(WorkflowPage):
         box = QGroupBox("Recognition thresholds (working values)")
         box_layout = QVBoxLayout(box)
 
+        self.threshold_state_label = QLabel("")
+        self.threshold_state_label.setObjectName("thresholdStateLabel")
+        self.threshold_state_label.setWordWrap(True)
+        box_layout.addWidget(self.threshold_state_label)
+
         self.fill_slider, self.fill_spin = self._build_threshold_row(
             box_layout,
             "Bubble fill threshold",
@@ -524,6 +532,19 @@ class CalibrationPage(WorkflowPage):
         toolbar.addAction(self.actual_size_action)
         toolbar.addSeparator()
 
+        self.view_mode_combo = QComboBox()
+        self.view_mode_combo.setObjectName("calibrationViewModeCombo")
+        self.view_mode_combo.addItems([VIEW_MODE_REGISTERED, VIEW_MODE_ORIGINAL])
+        self.view_mode_combo.setToolTip(
+            "Registered page: the rectified sheet, in the coordinates recognition "
+            "works in - the only view overlays can be drawn over.\n"
+            "Original scan: the file exactly as it arrived, before Phase 1 "
+            "corrected it."
+        )
+        self.view_mode_combo.currentIndexChanged.connect(self._on_view_mode_changed)
+        toolbar.addWidget(self.view_mode_combo)
+        toolbar.addSeparator()
+
         self.marker_overlay_toggle = QCheckBox("Markers")
         self.marker_overlay_toggle.setObjectName("markerOverlayToggle")
         self.marker_overlay_toggle.setChecked(True)
@@ -551,6 +572,25 @@ class CalibrationPage(WorkflowPage):
         self.score_overlay_toggle.setToolTip("Also outline bubbles measured as empty.")
         self.score_overlay_toggle.toggled.connect(self._refresh_overlay_visibility)
         toolbar.addWidget(self.score_overlay_toggle)
+
+        self.sample_overlay_toggle = QCheckBox("Sampling")
+        self.sample_overlay_toggle.setObjectName("sampleWindowOverlayToggle")
+        self.sample_overlay_toggle.setToolTip(
+            "Outline the exact elliptical interior the engine measured for each "
+            "bubble. Smaller than the printed bubble on purpose - the printed "
+            "ring is ink and is excluded from the sample."
+        )
+        self.sample_overlay_toggle.toggled.connect(self._refresh_overlay_visibility)
+        toolbar.addWidget(self.sample_overlay_toggle)
+
+        self.center_overlay_toggle = QCheckBox("Centres")
+        self.center_overlay_toggle.setObjectName("bubbleCenterOverlayToggle")
+        self.center_overlay_toggle.setToolTip(
+            "Mark each bubble's sampled centre. The quickest way to see a "
+            "template that is displaced consistently across the page."
+        )
+        self.center_overlay_toggle.toggled.connect(self._refresh_overlay_visibility)
+        toolbar.addWidget(self.center_overlay_toggle)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -616,6 +656,22 @@ class CalibrationPage(WorkflowPage):
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(separator)
+
+        field_heading = QLabel("Field diagnostics")
+        field_heading_font = field_heading.font()
+        field_heading_font.setBold(True)
+        field_heading.setFont(field_heading_font)
+        layout.addWidget(field_heading)
+
+        self.field_diagnostics_label = QLabel("Run a scan to see per-position detail.")
+        self.field_diagnostics_label.setObjectName("fieldDiagnosticsLabel")
+        self.field_diagnostics_label.setWordWrap(True)
+        self.field_diagnostics_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.field_diagnostics_label)
+
+        second_separator = QFrame()
+        second_separator.setFrameShape(QFrame.Shape.HLine)
+        layout.addWidget(second_separator)
 
         self.advanced_toggle = QPushButton("Show Advanced Diagnostics")
         self.advanced_toggle.setObjectName("advancedDiagnosticsButton")
@@ -805,9 +861,15 @@ class CalibrationPage(WorkflowPage):
         if entry is None:
             return
         entry.session = item.session
-        entry.result = item.result
+        # Re-decide against the settings in force *now*, not the ones captured
+        # when the worker started: an operator may have moved a slider while
+        # this scan was still registering, and `_recompute_all` skipped it
+        # because it had no session yet. Judging `item.result` (old settings)
+        # with the current working template would show a verdict and a result
+        # that disagree about which thresholds produced them.
         template = self._working_template()
-        entry.report = evaluate_calibration(item.result, template)
+        entry.result = item.session.recompute(template)
+        entry.report = evaluate_calibration(entry.result, template)
         self._refresh_sample_summary()
         if self._current_selected_entry() is entry:
             self._show_entry(entry)
@@ -895,6 +957,7 @@ class CalibrationPage(WorkflowPage):
             entry.result = entry.session.recompute(template)
             entry.report = evaluate_calibration(entry.result, template)
         self._refresh_sample_summary()
+        self._refresh_threshold_state_label()
         current = self._current_selected_entry()
         if current is not None:
             self._show_entry(current)
@@ -948,6 +1011,7 @@ class CalibrationPage(WorkflowPage):
 
         self.state.template = updated
         self._refresh_template_label()
+        self._refresh_threshold_state_label()
         _LOGGER.info(
             "Calibration saved to %s: status=%s sample=%d",
             self.state.template_path,
@@ -1013,6 +1077,53 @@ class CalibrationPage(WorkflowPage):
         if rows and rows[0] != self.test_scan_list.currentRow():
             self.test_scan_list.setCurrentRow(rows[0])
 
+    def _on_view_mode_changed(self) -> None:
+        entry = self._current_selected_entry()
+        if entry is not None:
+            self._refresh_preview_mode(entry)
+
+    def _refresh_preview_mode(self, entry: TestScanEntry) -> None:
+        """Show either the rectified page or the original scan.
+
+        The overlay is drawn **only** over the registered page. Every overlay
+        coordinate - zone, bubble, marker - is in canonical pixels, which is a
+        frame the original scan is not in; painting them over it would put
+        every ellipse in the wrong place while looking entirely plausible.
+        Rather than mapping them backwards (a second geometry path, which
+        Phase 4 must not create), the original view simply shows the image.
+        """
+        result = entry.result
+        if result is None:
+            return
+        showing_original = self.view_mode_combo.currentText() == VIEW_MODE_ORIGINAL
+        session = entry.session
+        if showing_original and session is not None and session.registered:
+            image, scale, width, height = session.original_preview()
+            self.preview.set_page(
+                image, canonical_width=width, canonical_height=height, preview_scale=scale
+            )
+            self.preview.set_overlay((), (), ())
+            self.preview.set_overlay_visible(zones=False, bubbles=False, empty=False)
+        else:
+            if showing_original:
+                # Nothing was cached to show - say so rather than silently
+                # displaying the rectified page under the wrong label.
+                self.preview.clear()
+                return
+            self.preview.set_page(
+                result.preview,
+                canonical_width=result.canonical_width,
+                canonical_height=result.canonical_height,
+                preview_scale=result.preview_scale,
+            )
+            self._refresh_overlay_content()
+        self.preview.fit_to_window()
+
+    @property
+    def overlay_is_drawable(self) -> bool:
+        """Whether the current view is the one overlays belong in."""
+        return self.view_mode_combo.currentText() == VIEW_MODE_REGISTERED
+
     def _show_entry(self, entry: TestScanEntry) -> None:
         result = entry.result
         if result is None:
@@ -1021,19 +1132,14 @@ class CalibrationPage(WorkflowPage):
             self.calibration_summary_panel.setText(
                 "Not run yet - press Run Test to register and measure this scan."
             )
+            self.field_diagnostics_label.setText("Run a scan to see per-position detail.")
             return
 
-        self.preview.set_page(
-            result.preview,
-            canonical_width=result.canonical_width,
-            canonical_height=result.canonical_height,
-            preview_scale=result.preview_scale,
-        )
-        self._refresh_overlay_content()
-        self.preview.fit_to_window()
+        self._refresh_preview_mode(entry)
         self._show_status(entry.report)
         self.calibration_summary_panel.setText(_quality_summary_html(result, entry.report))
         self.inspector_label.setText("Click a bubble in the preview to inspect it.")
+        self.field_diagnostics_label.setText(_field_diagnostics_html(result))
         self.advanced_panel.setText(_advanced_diagnostics_html(result))
 
     def _show_status(self, report: CalibrationReport | None) -> None:
@@ -1048,16 +1154,24 @@ class CalibrationPage(WorkflowPage):
     # Overlay
     # ------------------------------------------------------------------
     def _refresh_overlay_visibility(self) -> None:
+        if not self.overlay_is_drawable:
+            # Original-scan mode: overlay coordinates do not apply to what is
+            # on screen. See `_refresh_preview_mode`.
+            return
         self.preview.set_overlay_visible(
             zones=self.region_overlay_toggle.isChecked(),
             bubbles=self.bubble_overlay_toggle.isChecked(),
             empty=self.score_overlay_toggle.isChecked(),
             markers=self.marker_overlay_toggle.isChecked(),
+            sample_windows=self.sample_overlay_toggle.isChecked(),
+            centers=self.center_overlay_toggle.isChecked(),
         )
 
     def _refresh_overlay_content(self) -> None:
         entry = self._current_selected_entry()
         if entry is None or entry.result is None or self.state.template is None:
+            return
+        if not self.overlay_is_drawable:
             return
         result = entry.result
         bubbles = _filter_bubbles(
@@ -1072,6 +1186,14 @@ class CalibrationPage(WorkflowPage):
     def _on_preview_clicked(self, x: float, y: float) -> None:
         entry = self._current_selected_entry()
         if entry is None or entry.result is None or self.state.template is None:
+            return
+        if not self.overlay_is_drawable:
+            # The click is in the original scan's own pixels; matching it
+            # against canonical bubble geometry would report a bubble the
+            # operator did not click on.
+            self.inspector_label.setText(
+                "Switch to the registered page to inspect individual bubbles."
+            )
             return
         bubble = _bubble_at(entry.result.bubbles, x, y)
         if bubble is None:
@@ -1131,7 +1253,30 @@ class CalibrationPage(WorkflowPage):
     # ------------------------------------------------------------------
     # Enablement
     # ------------------------------------------------------------------
+    def _refresh_threshold_state_label(self) -> None:
+        """Say plainly whether the working thresholds differ from the saved ones.
+
+        Spec section 26/62: experimentation must never be silently persisted,
+        and the operator must never have to guess which of the two values is
+        in force. The page is explicit in both directions.
+        """
+        template = self.state.template
+        if template is None:
+            self.threshold_state_label.setText("")
+            return
+        if self.state.working_settings == template.recognition:
+            self.threshold_state_label.setText(
+                "<span style='color:#1B7F3A;'>Matching the template's saved values.</span>"
+            )
+        else:
+            self.threshold_state_label.setText(
+                "<span style='color:#9A6A00;'>Modified - not saved to the template "
+                "yet. Use Save to Template to keep these, or Reset to Template to "
+                "discard them.</span>"
+            )
+
     def _refresh_controls(self) -> None:
+        self._refresh_threshold_state_label()
         has_template = self.state.template is not None
         has_scans = bool(self.state.entries)
         running = self._worker is not None and self._worker.isRunning()
@@ -1175,19 +1320,27 @@ def _registration_label(result: ScanResult | None) -> str:
 
 
 def _bubble_at(bubbles: Sequence[BubbleView], x: float, y: float) -> BubbleView | None:
-    """Return the bubble whose sampling ellipse contains ``(x, y)``, if any.
+    """Return the bubble whose printed ellipse contains ``(x, y)``, if any.
+
+    Hit-testing deliberately uses the *printed* bubble extent (plus
+    :data:`BUBBLE_HIT_MARGIN_PX`) rather than the smaller sampled interior:
+    an operator aims at the bubble they can see on the page, and requiring
+    them to land inside the 62 per-cent interior would make inspection
+    needlessly fiddly. Nothing is approximated either way - both extents come
+    from the engine's own
+    :class:`~omr_scanner.services.recognition_models.BubbleView`, and what the
+    inspector then *reports* is the sampled geometry, not this one.
 
     Args:
         bubbles: Every measured bubble on this sheet - already the recognition
             engine's own geometry (:attr:`~omr_scanner.services.recognition_models.BubbleView.x`),
-            never recomputed here (spec: "the overlay must be derived from the
-            same computed coordinates the recognition engine uses").
+            never recomputed here.
         x: Click position, canonical pixels.
         y: Click position, canonical pixels.
 
     Returns:
-        The closest bubble whose (slightly enlarged) ellipse contains the
-        point, or ``None``.
+        The closest bubble whose (slightly enlarged) printed ellipse contains
+        the point, or ``None``.
     """
     best: BubbleView | None = None
     best_distance = float("inf")
@@ -1266,13 +1419,25 @@ def _bubble_inspector_html(bubble: BubbleView, template: OmrTemplate) -> str:
 
     settings = template.effective_recognition(zone) if zone is not None else template.recognition
     classification = "FILLED" if bubble.selected else bubble.group_status.upper()
+    # The sampled ellipse, not the printed bubble - this panel's job is to say
+    # what the engine measured, and those are two different regions.
+    window = (
+        f"{bubble.sample_half_width * 2.0:.1f} x {bubble.sample_half_height * 2.0:.1f} px"
+        if bubble.sample_half_width > 0.0
+        else "not recorded"
+    )
     return (
         f"<b>{identity} — value {bubble.label or '(none)'}</b><br>"
+        f"Row {bubble.row}, column {bubble.column}<br>"
         f"Centre: x={bubble.x:.1f}, y={bubble.y:.1f} px<br>"
+        f"Sampling window (ellipse): {window}<br>"
+        f"Printed bubble: {bubble.width:.1f} x {bubble.height:.1f} px<br>"
         f"Fill score: {bubble.fill_ratio:.3f}<br>"
         f"Fill threshold: {settings.fill_ratio_threshold:.3f} · "
         f"Blank threshold: {settings.blank_ratio_threshold:.3f}<br>"
         f"Mean darkness: {bubble.mean_darkness:.3f} · Contrast: {bubble.contrast:.3f}<br>"
+        f"Ink threshold: {bubble.ink_threshold:.1f} · Paper: {bubble.paper_level:.1f}<br>"
+        f"Rank in group: {bubble.rank + 1}<br>"
         f"Classification: <b>{classification}</b><br>"
         f"Usable sample: {'yes' if bubble.usable else 'no'} ({bubble.sample_pixels} px)"
     )
@@ -1299,18 +1464,70 @@ def _quality_summary_html(result: ScanResult, report: CalibrationReport | None) 
             f"({'needs review' if set_code.needs_review else 'no warnings'})"
         )
     if report is not None:
-        single = report.answers_total - report.answers_blank - report.answers_multiple - (
-            report.answers_needing_review
-        )
         lines.append(
             f"Questions: {report.answers_total} total — "
-            f"single: {max(single, 0)}, blank: {report.answers_blank}, "
+            f"single: {report.answers_single}, blank: {report.answers_blank}, "
             f"multiple: {report.answers_multiple}, "
             f"flagged for review: {report.answers_needing_review}"
         )
+        lines.append(
+            f"Marks detected in {report.groups_with_marks} of "
+            f"{report.groups_total} response positions"
+        )
         lines.append(f"Near-threshold bubbles: {report.near_threshold_count}")
+        lines.append(
+            f"Unusable sampling windows: {report.bubbles_unusable} / {report.bubbles_total}"
+        )
         for finding in report.findings:
             lines.append(f"⚠ {finding.message}")
+    return "<br>".join(lines)
+
+
+MAX_LISTED_QUESTIONS = 12
+"""How many flagged questions the field-diagnostics panel lists before saying
+how many more there are. A calibration scan with a hundred flagged questions
+has one problem, not a hundred, and a panel that scrolls for a page hides it."""
+
+
+def _field_diagnostics_html(result: ScanResult) -> str:
+    """Render per-position detail for each recognised field, plus flagged questions.
+
+    Every number here comes from
+    :class:`~omr_scanner.services.recognition_models.CharacterView` - the
+    per-position decisions the engine already made. Positions are iterated
+    generically, so a multi-position or multi-character set code ("10", "11",
+    "12") is reported exactly as the template defines it rather than being
+    assumed to be a single letter.
+    """
+    if not result.fields and not result.answers:
+        return "No fields were recognised on this scan."
+
+    lines: list[str] = []
+    for item in result.fields:
+        flag = " ⚠" if item.needs_review else ""
+        lines.append(f"<b>{item.label}</b> — '{item.value}' ({item.status}){flag}")
+        for character in item.characters:
+            symbol = character.value or "(blank)"
+            mark = " ⚠" if character.status not in ("resolved", "blank") else ""
+            lines.append(
+                f"&nbsp;&nbsp;{character.position + 1}: {symbol} · {character.status} · "
+                f"fill {character.top_fill:.2f} · margin {character.margin:.2f} · "
+                f"conf {character.confidence:.2f}{mark}"
+            )
+
+    flagged = [answer for answer in result.answers if answer.needs_review]
+    if result.answers:
+        lines.append(
+            f"<b>Questions</b> — {len(flagged)} of {len(result.answers)} flagged"
+        )
+        for answer in flagged[:MAX_LISTED_QUESTIONS]:
+            shown = answer.value or "(none)"
+            lines.append(
+                f"&nbsp;&nbsp;Q{answer.number}: {shown} · {answer.status} · "
+                f"fill {answer.top_fill:.2f} · margin {answer.margin:.2f}"
+            )
+        if len(flagged) > MAX_LISTED_QUESTIONS:
+            lines.append(f"&nbsp;&nbsp;... and {len(flagged) - MAX_LISTED_QUESTIONS} more")
     return "<br>".join(lines)
 
 

@@ -51,6 +51,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from omr_scanner.domain.template import CalibrationRecord, IgnoredFieldDefinition
+from omr_scanner.recognition.models import MarkStatus
 from omr_scanner.services.recognition_models import (
     ENGINE_VERSION,
     RegistrationStatus,
@@ -110,6 +111,27 @@ is expressed in), not a statistical estimate: it answers "how many
 measurements would flip if the threshold moved by five percentage points",
 which is the concrete, testable question an operator turning the threshold
 slider is actually asking. See :func:`_near_threshold_count`."""
+
+NO_MARKS_REVIEW_THRESHOLD = 0
+"""How many response groups may carry a detected mark before "nothing at all
+was marked on this sheet" stops being reported.
+
+Zero, and deliberately not a tunable fraction: the rule this backs is not a
+heuristic about how *many* marks a sheet should have, it is the observation
+that a sheet on which **no** sampling window anywhere found a mark has
+demonstrated nothing about whether those windows sit over the printed bubbles.
+That is the one blind spot the other checks in this module cannot see:
+a template whose zones are displaced but whose *markers* still register
+produces windows that land on clean paper, so every group reads a confident
+BLANK - no unusable bubbles, no ambiguity, no alignment warning, and
+(before this rule existed) a calibration verdict of "passed with warnings"
+over an entirely misread sheet.
+
+The verdict is :attr:`CalibrationStatus.NEEDS_REVIEW` rather than
+:attr:`~CalibrationStatus.FAILED` because the evidence genuinely does not
+distinguish the two causes - a deliberately blank practice sheet looks
+identical - and claiming otherwise would be the same overconfidence in the
+opposite direction. See :func:`evaluate_calibration`."""
 
 GEOMETRY_WARNING_CODES: frozenset[str] = frozenset(
     {"LARGE_REPROJECTION_ERROR", "ASPECT_RATIO_DEVIATION"}
@@ -232,10 +254,26 @@ class CalibrationReport:
         near_threshold_count: Bubbles whose fill ratio sits within
             :data:`NEAR_THRESHOLD_BAND` of their zone's fill threshold.
         answers_total: Questions checked.
-        answers_blank: Genuinely blank answers.
-        answers_multiple: Double-marked answers.
+        answers_single: Answers carrying exactly one confidently resolved
+            mark. Counted from
+            :attr:`~omr_scanner.recognition.models.MarkStatus.RESOLVED`, not
+            by subtracting the other categories from the total - blank,
+            multiple and needs-review overlap (a double mark is both
+            ``MULTIPLE`` *and* flagged for review), so arithmetic on them
+            double-counts.
+        answers_blank: Genuinely blank answers
+            (:attr:`~omr_scanner.recognition.models.MarkStatus.BLANK`).
+        answers_multiple: Double-marked answers
+            (:attr:`~omr_scanner.recognition.models.MarkStatus.MULTIPLE`).
         answers_needing_review: Answers the engine flagged for a human,
-            whatever the reason.
+            whatever the reason. Overlaps the three counts above on purpose:
+            it answers a different question.
+        groups_total: Response groups checked - every question plus every
+            character position of every field.
+        groups_with_marks: How many of those carried at least one bubble over
+            the fill threshold. Zero on a well-registered sheet is the
+            signature of displaced bubble geometry; see
+            :data:`NO_MARKS_REVIEW_THRESHOLD`.
         fields_needing_review: Non-question fields (identifier, set code, ...)
             flagged for a human.
         identifier_value: The recognised candidate identifier, as a plain
@@ -260,6 +298,9 @@ class CalibrationReport:
     fields_needing_review: int = 0
     identifier_value: str = ""
     set_code_value: str = ""
+    answers_single: int = 0
+    groups_total: int = 0
+    groups_with_marks: int = 0
 
     @property
     def ambiguous_count(self) -> int:
@@ -286,10 +327,13 @@ class CalibrationReport:
             "bubbles_unusable": self.bubbles_unusable,
             "near_threshold_count": self.near_threshold_count,
             "answers_total": self.answers_total,
+            "answers_single": self.answers_single,
             "answers_blank": self.answers_blank,
             "answers_multiple": self.answers_multiple,
             "answers_needing_review": self.answers_needing_review,
             "fields_needing_review": self.fields_needing_review,
+            "groups_total": self.groups_total,
+            "groups_with_marks": self.groups_with_marks,
             "identifier_value": self.identifier_value,
             "set_code_value": self.set_code_value,
         }
@@ -487,8 +531,37 @@ def evaluate_calibration(result: ScanResult, template: OmrTemplate) -> Calibrati
 
     near_threshold = _near_threshold_count(bubbles, template)
 
+    # -- nothing marked anywhere ----------------------------------------
+    # A group "carries a mark" when at least one of its bubbles crossed the
+    # fill threshold, which is exactly what a non-empty group value means
+    # (`GroupDecision.value` joins the selected labels and is "" when nothing
+    # was selected). Read from the decisions the engine already made - this
+    # never looks at a pixel or a bubble geometry.
+    groups_total = len(result.answers) + sum(len(item.characters) for item in result.fields)
+    groups_with_marks = sum(1 for answer in result.answers if answer.value) + sum(
+        1 for item in result.fields for character in item.characters if character.value
+    )
+    if groups_total and groups_with_marks <= NO_MARKS_REVIEW_THRESHOLD:
+        status = _worse(status, CalibrationStatus.NEEDS_REVIEW)
+        findings.append(
+            CalibrationFinding(
+                severity=CalibrationStatus.NEEDS_REVIEW,
+                code="NO_MARKS_DETECTED",
+                message=(
+                    f"No mark was detected in any of this sheet's {groups_total} "
+                    "response positions, even though the page registered. Either "
+                    "this scan really is blank, or the template's bubble geometry "
+                    "does not line up with what is printed on it - a displaced "
+                    "template samples clean paper and reports confident blanks. "
+                    "Switch on the Sampling and Centres overlays and check that "
+                    "the sampled ellipses sit on the printed bubbles before "
+                    "trusting this calibration."
+                ),
+            )
+        )
+
     # -- systematic ambiguity -------------------------------------------
-    checked = len(result.answers) + sum(len(item.characters) for item in result.fields)
+    checked = groups_total
     reviewable = result.review_count
     if checked:
         ambiguity_fraction = reviewable / checked
@@ -525,15 +598,26 @@ def evaluate_calibration(result: ScanResult, template: OmrTemplate) -> Calibrati
         bubbles_unusable=unusable,
         near_threshold_count=near_threshold,
         answers_total=len(result.answers),
-        answers_blank=sum(
-            1 for answer in result.answers if answer.value == "" and not answer.needs_review
-        ),
-        answers_multiple=sum(1 for answer in result.answers if "-" in answer.value),
+        # Counted from the engine's own MarkStatus, never re-derived from the
+        # value string: a label containing the multiple-mark separator (a set
+        # code printed "A-1", say) would make a single answer look like a
+        # double one, and a blank answer whose confidence fell below
+        # min_confidence is still blank.
+        answers_single=_count_answers(result, MarkStatus.RESOLVED),
+        answers_blank=_count_answers(result, MarkStatus.BLANK),
+        answers_multiple=_count_answers(result, MarkStatus.MULTIPLE),
         answers_needing_review=sum(answer.needs_review for answer in result.answers),
         fields_needing_review=fields_needing_review,
+        groups_total=groups_total,
+        groups_with_marks=groups_with_marks,
         identifier_value=identifier.value if identifier is not None else "",
         set_code_value=set_code.value if set_code is not None else "",
     )
+
+
+def _count_answers(result: ScanResult, status: MarkStatus) -> int:
+    """Count answers whose group status is exactly ``status``."""
+    return sum(1 for answer in result.answers if answer.status == status.value)
 
 
 def _near_threshold_count(bubbles: Sequence[BubbleView], template: OmrTemplate) -> int:
@@ -700,6 +784,7 @@ def separation_label(bubbles: Sequence[BubbleView]) -> str:
 __all__ = [
     "GEOMETRY_WARNING_CODES",
     "NEAR_THRESHOLD_BAND",
+    "NO_MARKS_REVIEW_THRESHOLD",
     "SYSTEMATIC_AMBIGUITY_REVIEW_FRACTION",
     "UNUSABLE_BUBBLE_FAILURE_FRACTION",
     "UNUSABLE_BUBBLE_REVIEW_FRACTION",

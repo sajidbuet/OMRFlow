@@ -434,9 +434,9 @@ above:
 
 | Level | Where | Asserts |
 |---|---|---|
-| The judgement rules | `tests/unit/test_calibration_service.py` (27 tests) | Every threshold and boundary `evaluate_calibration` uses - unusable-bubble fractions, geometry-class vs. cosmetic alignment warnings, the systematic-ambiguity fraction, the near-threshold band - against hand-built `ScanResult`s, so the *rules* are tested independently of anything that would ordinarily produce one. |
+| The judgement rules | `tests/unit/test_calibration_service.py` (34 tests) | Every threshold and boundary `evaluate_calibration` uses - unusable-bubble fractions, geometry-class vs. cosmetic alignment warnings, the systematic-ambiguity fraction, the near-threshold band, the nothing-marked-anywhere rule - against hand-built `ScanResult`s, so the *rules* are tested independently of anything that would ordinarily produce one. Also that the answer counts come from `MarkStatus` and not from the value string. |
 | The real pipeline | `tests/integration/test_calibration_workflow.py` (10 tests) | Real templates, real synthetic renders, the real `RecognitionEngine`: a deliberately displaced-marker template fails to register and produces `CalibrationStatus.FAILED`; a small marker offset (inside the default `search_radius`) still registers; a threshold change on a real `CalibrationSession` flips a real classification while the raw score and the registration stay untouched; saving and reloading a calibration round-trips; editing recognition settings afterwards invalidates it; a template document with no `calibration` key (pre-Phase-4) still loads. |
-| The GUI | `tests/gui/test_calibration_page.py` (26 tests, A-J) | The whole workflow through `CalibrationPage`'s public commands - load, add scans, run, overlay geometry matching the engine's own bubble and marker coordinates exactly, click-to-inspect, field filtering, threshold controls (including that a threshold change starts **no** worker), reset/defaults, save-and-stale-detection, the multi-scan sample summary, and the mismatched-template failure path end to end. |
+| The GUI | `tests/gui/test_calibration_page.py` (37 tests, A-J) | The whole workflow through `CalibrationPage`'s public commands - load, add scans, run, overlay geometry matching the engine's own bubble and marker coordinates exactly, click-to-inspect, field filtering, threshold controls (including that a threshold change starts **no** worker), reset/defaults, save-and-stale-detection, the multi-scan sample summary, per-position field diagnostics, the original-scan view, overlay/image alignment across zoom levels, and both miscalibration paths end to end. |
 
 **The major Phase 4 geometry test.** Overlay coordinates must equal the
 engine's own, not merely be close to them:
@@ -444,6 +444,34 @@ engine's own, not merely be close to them:
 ```python
 overlay._bubbles  ==  {(b.zone_id, b.row, b.column) for b in result.bubbles}
 one.x == matching_result_bubble.x   # exact, not approximate
+```
+
+**Test the data path, not the agreement.** A test that asserts two
+computations agree passes just as happily when both are wrong in the same way -
+which is exactly how an earlier build shipped an overlay that drew the printed
+bubble while claiming to show the sampled region. The replacement varies the
+*source* and requires the display to follow:
+
+```python
+narrow = RecognitionEngine(RecognitionOptions(
+    metrics=BubbleMetricsConfig(sample_radius_ratio=0.4), ...))
+bubble = narrow.process(path, template).bubbles[0]
+assert bubble.sample_half_width == pytest.approx(bubble.width / 2.0 * 0.4)
+```
+
+A GUI-side reimplementation using the default ratio passes an agreement test
+and fails this one.
+
+**Overlay and image must stay locked together at every zoom.** A double
+transform - coordinates converted once by the engine and again by the viewer -
+produces a display that looks nearly right and drifts as you magnify it:
+
+```python
+pixmap_point = QPointF(bubble.x * result.preview_scale, bubble.y * result.preview_scale)
+for zoom in (0.25, 1.0, 4.0):
+    preview._apply_zoom(zoom)
+    assert (preview.mapFromScene(QPointF(bubble.x, bubble.y))
+            == preview.mapFromScene(background.mapToScene(pixmap_point)))
 ```
 
 and a dedicated cross-check
@@ -472,9 +500,32 @@ Exercised at the unit level (hand-built), the integration level (a real
 mismatched template against a real rendered sheet) and the GUI level (the
 same, through the page), and again in
 `scripts/run_gui_smoke_tests.py` against the **real** sample and template
-(`examples/ECE-0000.png` / `examples/templates/ece_0000_sample.omrt`) - the
-only place in the whole suite where this specific failure mode is proven
-against a genuine scanned sheet rather than a synthetic render.
+(`examples/ECE-0000.png` / `examples/templates/ece_0000_sample.omrt`).
+
+**The load-bearing test's harder sibling.** Displacing the *markers* makes
+registration fail, which is loud. Displacing only the **zones** does not: the
+markers are still found, the transform is still exact, no sampling window
+leaves the page, and every group reads a *confident blank* from bare paper.
+Every registration-level assertion above is satisfied by a sheet that has been
+completely misread, so the test must assert on the operator-visible verdict
+instead:
+
+```python
+displaced = shifted_zones(template, dx=0.02, dy=0.02)   # markers untouched
+result = engine.process(path, displaced)
+report = evaluate_calibration(result, displaced)
+
+assert result.registration is not RegistrationStatus.FAILED   # genuinely fine
+assert report.bubbles_unusable == 0                            # all on-page
+assert report.status in (CalibrationStatus.NEEDS_REVIEW, CalibrationStatus.FAILED)
+```
+
+Parametrised over three displacements (2%, 5%, 12% of the page) because they
+fail differently: the smallest produces *no* marks anywhere and is caught by
+`NO_MARKS_DETECTED`, the larger ones catch the edges of neighbouring bubbles
+and are caught by `SYSTEMATIC_AMBIGUITY`. Both shapes are also smoke-checked
+against the genuine scanned sheet, which is the only place in the suite where
+either failure mode is proven on real paper rather than a synthetic render.
 
 **Threshold propagation, without repeating registration.** The same synthetic
 sheet is measured once (`RecognitionEngine.open_session`), then decided twice

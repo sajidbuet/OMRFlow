@@ -23,7 +23,8 @@ import cv2
 import pytest
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 
-from omr_scanner.domain.geometry import NormalizedPoint
+from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect
+from omr_scanner.imaging.metrics import BubbleMetricsConfig
 from omr_scanner.services import (
     CalibrationStatus,
     RecognitionEngine,
@@ -137,6 +138,163 @@ class TestMiscalibrationIsNeverAConfidentPass:
         assert result.registration is not RegistrationStatus.FAILED
         assert result.identifier_value == "120317"
         assert report.status in (CalibrationStatus.PASSED, CalibrationStatus.PASSED_WITH_WARNINGS)
+
+
+def shifted_zones(template: OmrTemplate, *, dx: float, dy: float) -> OmrTemplate:
+    """Return a copy of ``template`` with every zone and bubble grid moved.
+
+    The dangerous mismatch, and a different one from :func:`shifted_markers`:
+    the *registration markers* are untouched, so Phase 1 still rectifies the
+    page perfectly. Only the bubble geometry is wrong - which is exactly what
+    a mis-drawn or wrong-page template looks like, and exactly the case that
+    produces confident values read from blank paper.
+    """
+    zones = []
+    for zone in template.zones:
+        bounds = zone.bounds
+        update: dict = {
+            "bounds": NormalizedRect(
+                x=min(max(bounds.x + dx, 0.0), 1.0 - bounds.width),
+                y=min(max(bounds.y + dy, 0.0), 1.0 - bounds.height),
+                width=bounds.width,
+                height=bounds.height,
+            )
+        }
+        if zone.grid is not None:
+            origin = zone.grid.origin
+            update["grid"] = zone.grid.model_copy(
+                update={
+                    "origin": NormalizedPoint(
+                        x=min(max(origin.x + dx, 0.0), 1.0),
+                        y=min(max(origin.y + dy, 0.0), 1.0),
+                    )
+                }
+            )
+        zones.append(zone.model_copy(update=update))
+    return template.model_copy(update={"zones": tuple(zones)})
+
+
+class TestADisplacedTemplateThatStillRegistersIsNeverAPass:
+    """The hardest miscalibration case, and the one with no registration error.
+
+    When only the bubble geometry is wrong, every existing signal stays
+    clean: the markers are found, the transform is exact, no sampling window
+    falls off the page, and every group reads a confident BLANK because it is
+    sampling bare paper. The verdict must still not be a pass - otherwise
+    Phase 4 endorses a template that will misread an entire batch.
+    """
+
+    @pytest.mark.parametrize("offset", [0.02, 0.05, 0.12])
+    def test_a_displaced_template_is_never_reported_as_passed(
+        self, tmp_path: Path, template: OmrTemplate, engine: RecognitionEngine, offset: float
+    ):
+        path = write_sheet(tmp_path, template)
+        displaced = shifted_zones(template, dx=offset, dy=offset)
+
+        result = engine.process(path, displaced)
+        report = evaluate_calibration(result, displaced)
+
+        # Registration itself genuinely succeeds - this is not the marker case.
+        assert result.registration is not RegistrationStatus.FAILED
+        assert report.status in (CalibrationStatus.NEEDS_REVIEW, CalibrationStatus.FAILED), (
+            f"a template displaced by {offset} of the page reported "
+            f"{report.status.value}, which an operator would read as safe to "
+            "run a batch with"
+        )
+
+    def test_the_identifier_read_from_the_wrong_place_is_not_silently_accepted(
+        self, tmp_path: Path, template: OmrTemplate, engine: RecognitionEngine
+    ):
+        path = write_sheet(tmp_path, template)
+        displaced = shifted_zones(template, dx=0.02, dy=0.02)
+        result = engine.process(path, displaced)
+        report = evaluate_calibration(result, displaced)
+
+        # The correctly matched template reads this sheet as "120317".
+        assert result.identifier_value != "120317"
+        assert report.status is not CalibrationStatus.PASSED
+        assert any(item.code == "NO_MARKS_DETECTED" for item in report.findings)
+
+    def test_the_same_scan_with_the_matching_template_still_passes(
+        self, tmp_path: Path, template: OmrTemplate, engine: RecognitionEngine
+    ):
+        # The control: the rule above must not fire on a correct template, or
+        # it would simply be refusing everything.
+        path = write_sheet(tmp_path, template)
+        report = evaluate_calibration(engine.process(path, template), template)
+        assert report.status in (
+            CalibrationStatus.PASSED, CalibrationStatus.PASSED_WITH_WARNINGS
+        )
+        assert not any(item.code == "NO_MARKS_DETECTED" for item in report.findings)
+        assert report.groups_with_marks > 0
+
+
+class TestOverlayGeometryComesFromTheSampler:
+    """Spec section 48: the displayed geometry is the engine's own, not a copy.
+
+    Covers an identifier bubble, a set-code bubble and a question bubble,
+    because a geometry error can be confined to one kind of zone.
+    """
+
+    def representative_bubbles(self, result):
+        """One bubble from the identifier, the set code and a question block."""
+        chosen = {}
+        for bubble in result.bubbles:
+            if bubble.zone_id == result.identifier_zone_id:
+                chosen.setdefault("identifier", bubble)
+            elif bubble.zone_id == result.set_code_zone_id:
+                chosen.setdefault("set_code", bubble)
+            else:
+                chosen.setdefault("question", bubble)
+        return chosen
+
+    def test_every_bubble_reports_the_region_that_was_actually_sampled(
+        self, tmp_path: Path, template: OmrTemplate, engine: RecognitionEngine
+    ):
+        path = write_sheet(tmp_path, template)
+        result = engine.process(path, template)
+        chosen = self.representative_bubbles(result)
+        assert set(chosen) == {"identifier", "set_code", "question"}
+
+        ratio = BubbleMetricsConfig().sample_radius_ratio
+        for kind, bubble in chosen.items():
+            assert bubble.sample_half_width == pytest.approx(
+                bubble.width / 2.0 * ratio
+            ), f"{kind} bubble reports a sampling window it was not measured over"
+            assert bubble.sample_half_height == pytest.approx(bubble.height / 2.0 * ratio)
+            # And it is genuinely a different region from the printed bubble,
+            # so an overlay cannot draw one while meaning the other.
+            assert bubble.sample_half_width < bubble.width / 2.0
+
+    def test_the_reported_window_follows_the_samplers_configuration(
+        self, tmp_path: Path, template: OmrTemplate
+    ):
+        # The shared-data-path proof: change what the *sampler* does and the
+        # reported geometry must change with it. A GUI-side reimplementation
+        # using the default ratio would pass the test above and fail this one.
+        path = write_sheet(tmp_path, template)
+        narrow = RecognitionEngine(
+            RecognitionOptions(
+                with_preview=False,
+                keep_bubble_measurements=True,
+                metrics=BubbleMetricsConfig(sample_radius_ratio=0.4),
+            )
+        )
+        result = narrow.process(path, template)
+        bubble = result.bubbles[0]
+        assert bubble.sample_half_width == pytest.approx(bubble.width / 2.0 * 0.4)
+
+    def test_a_bubble_centre_is_the_centre_the_sampler_measured_at(
+        self, tmp_path: Path, template: OmrTemplate, engine: RecognitionEngine
+    ):
+        # `BubbleView.x/y` is copied from `BubbleMeasurement.center_x/y` - the
+        # value `measure_bubble` was called with - so a bubble the overlay
+        # draws is at the position the fill ratio beside it was read from.
+        path = write_sheet(tmp_path, template)
+        result = engine.process(path, template)
+        for bubble in self.representative_bubbles(result).values():
+            assert 0.0 < bubble.x < result.canonical_width
+            assert 0.0 < bubble.y < result.canonical_height
 
 
 class TestSmallOffsetsAreToleratedButLargeOnesAreNot:

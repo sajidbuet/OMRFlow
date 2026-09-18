@@ -74,6 +74,56 @@ class TestValidation:
             )
 
 
+class TestReportedSampleGeometry:
+    """The sampled region must travel with the measurement.
+
+    Anything that draws "what recognition measured" - the Phase 4 calibration
+    overlay above all - has to read the ellipse that was actually sampled. It
+    is deliberately smaller than the printed bubble, so drawing the printed
+    size and calling it the sampling window would show an operator a region
+    the engine never looked at while appearing entirely convincing.
+    """
+
+    def test_the_sampled_half_axes_are_the_configured_fraction_of_the_printed_ones(self):
+        config = BubbleMetricsConfig()
+        result = measure_bubble(
+            blank_page(), center_x=100, center_y=100, width_px=BUBBLE, height_px=24,
+            config=config,
+        )
+        assert result.sample_half_width == pytest.approx(
+            BUBBLE / 2 * config.sample_radius_ratio
+        )
+        assert result.sample_half_height == pytest.approx(
+            24 / 2 * config.sample_radius_ratio
+        )
+
+    def test_the_sampled_region_is_strictly_smaller_than_the_printed_bubble(self):
+        result = measure_bubble(
+            blank_page(), center_x=100, center_y=100, width_px=BUBBLE, height_px=BUBBLE
+        )
+        assert 0.0 < result.sample_half_width < BUBBLE / 2
+        assert 0.0 < result.sample_half_height < BUBBLE / 2
+
+    def test_a_custom_sample_ratio_is_reflected_in_what_is_reported(self):
+        config = BubbleMetricsConfig(sample_radius_ratio=0.5)
+        result = measure_bubble(
+            blank_page(), center_x=100, center_y=100, width_px=BUBBLE, height_px=BUBBLE,
+            config=config,
+        )
+        assert result.sample_half_width == pytest.approx(BUBBLE / 2 * 0.5)
+
+    def test_an_unusable_measurement_still_reports_where_it_tried_to_sample(self):
+        # "The window that could not be measured" is precisely what a
+        # calibration overlay needs to show for an off-page bubble.
+        page = blank_page(width=200, height=200)
+        result = measure_bubble(
+            page, center_x=-400.0, center_y=-400.0, width_px=BUBBLE, height_px=BUBBLE
+        )
+        assert result.usable is False
+        assert result.sample_half_width > 0.0
+        assert result.sample_half_height > 0.0
+
+
 class TestFillRatio:
     def test_a_bare_printed_ring_reads_as_empty(self):
         page = blank_page()

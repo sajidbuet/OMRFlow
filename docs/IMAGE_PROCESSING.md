@@ -743,6 +743,17 @@ Per bubble:
 | Ink threshold | Halfway (`ink_fraction` 0.5) between local paper and page ink, clamped to 35-130 grey levels. |
 | `fill_ratio` | Fraction of the interior sample darker than that threshold. |
 | Usability | `False` when fewer than `min_sample_pixels` (9) interior pixels are available - a bubble whose sample runs off the page edge is reported unusable, never guessed. |
+| Sampled extent | `sample_half_width` / `sample_half_height`, recorded at the moment the interior mask is built and reported on every return path, unusable ones included. |
+
+**The sampled region is smaller than the printed bubble, and that difference
+is load-bearing for anything that draws it.** On the repository's real sample,
+a printed 36.0 px bubble is measured over a 22.3 px ellipse - about 38 per cent
+of the area. Anything showing an operator "the region recognition measured"
+must read `sample_half_width`/`sample_half_height`; drawing the printed size
+instead shows a region 2.6x too large, which makes a template whose windows
+are half off the printed bubbles still look enclosed. The Phase 4 calibration
+overlay draws both, as separate and separately-labelled layers
+(`docs/calibration_workflow.md`).
 
 **Why the threshold is local and relative.** Two problems that an absolute
 threshold gets wrong in opposite directions:

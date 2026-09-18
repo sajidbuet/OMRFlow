@@ -101,6 +101,26 @@ Colour alone is not enough - it fails for a colour-blind user, in a screenshot
 printed in grey, and in the review workflow's own "what is wrong with this
 sheet" question. The symbol says which."""
 
+SAMPLE_WINDOW_COLOR = QColor(0, 110, 200, 200)
+"""Blue: the elliptical interior the sampler actually read for a bubble.
+
+Drawn from :attr:`~omr_scanner.services.recognition_models.BubbleView.sample_half_width`
+and its ``height`` counterpart - the region ``fill_ratio`` was computed over -
+never from the printed bubble size, which is larger (the printed ring is ink,
+so it is deliberately excluded; see :mod:`omr_scanner.imaging.metrics`). The
+distinction matters: an operator checking alignment must see where the engine
+looked, not where the bubble is printed."""
+
+BUBBLE_CENTER_COLOR = QColor(200, 0, 140)
+"""Magenta: the exact sampled centre of a bubble.
+
+The single most useful thing for spotting a systematically displaced template -
+a whole page of centres sitting consistently off the printed bubbles is
+immediately visible, where a ring that merely overlaps is not."""
+
+CENTER_MARK_PX = 2.5
+"""Half-length of the centre cross's arms, in canonical pixels."""
+
 EXPECTED_MARKER_COLOR = QColor(30, 100, 220)
 """Blue: where the template says a registration marker's centre should sit."""
 
@@ -148,6 +168,8 @@ class OverlayItem(QGraphicsItem):
         self.show_bubbles = True
         self.show_empty_bubbles = False
         self.show_markers = False
+        self.show_sample_windows = False
+        self.show_centers = False
         self.setZValue(10)
 
     def set_page_size(self, width: float, height: float) -> None:
@@ -194,6 +216,10 @@ class OverlayItem(QGraphicsItem):
             self._paint_zones(painter)
         if self.show_bubbles:
             self._paint_bubbles(painter)
+        if self.show_sample_windows:
+            self._paint_sample_windows(painter)
+        if self.show_centers:
+            self._paint_centers(painter)
         if self.show_markers:
             self._paint_markers(painter)
 
@@ -254,6 +280,45 @@ class OverlayItem(QGraphicsItem):
                 painter.drawText(
                     QPointF(rect.left() - bubble.width * 1.1, rect.bottom()), symbol
                 )
+
+    def _paint_sample_windows(self, painter: QPainter) -> None:
+        """Outline the ellipse the sampler actually read, for every bubble.
+
+        Deliberately a *different* shape from the one
+        :meth:`_paint_bubbles` draws: that one is the printed bubble, this one
+        is the interior the fill ratio was measured over, and it is smaller.
+        Both come straight off the
+        :class:`~omr_scanner.services.recognition_models.BubbleView` - nothing
+        here recomputes either.
+        """
+        pen = QPen(SAMPLE_WINDOW_COLOR, 1.0)
+        pen.setStyle(Qt.PenStyle.DotLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for bubble in self._bubbles:
+            half_x = bubble.sample_half_width
+            half_y = bubble.sample_half_height
+            if half_x <= 0.0 or half_y <= 0.0:
+                # The caller kept no per-bubble evidence, so there is no
+                # sampled region to draw. Drawing the printed bubble instead
+                # would be a plausible-looking lie.
+                continue
+            painter.drawEllipse(
+                QRectF(bubble.x - half_x, bubble.y - half_y, half_x * 2.0, half_y * 2.0)
+            )
+
+    def _paint_centers(self, painter: QPainter) -> None:
+        """Mark each bubble's sampled centre with a small cross."""
+        painter.setPen(QPen(BUBBLE_CENTER_COLOR, 1.2))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for bubble in self._bubbles:
+            x, y = bubble.x, bubble.y
+            painter.drawLine(
+                QPointF(x - CENTER_MARK_PX, y), QPointF(x + CENTER_MARK_PX, y)
+            )
+            painter.drawLine(
+                QPointF(x, y - CENTER_MARK_PX), QPointF(x, y + CENTER_MARK_PX)
+            )
 
     def _paint_markers(self, painter: QPainter) -> None:
         """Draw each registration marker's expected and detected position.
@@ -416,13 +481,22 @@ class ScanPreviewView(QGraphicsView):
         self._overlay.set_content(zones, bubbles, markers)
 
     def set_overlay_visible(
-        self, *, zones: bool, bubbles: bool, empty: bool, markers: bool = False
+        self,
+        *,
+        zones: bool,
+        bubbles: bool,
+        empty: bool,
+        markers: bool = False,
+        sample_windows: bool = False,
+        centers: bool = False,
     ) -> None:
         """Choose which overlay layers are drawn."""
         self._overlay.show_zones = zones
         self._overlay.show_bubbles = bubbles
         self._overlay.show_empty_bubbles = empty
         self._overlay.show_markers = markers
+        self._overlay.show_sample_windows = sample_windows
+        self._overlay.show_centers = centers
         self._overlay.update()
 
     @property
@@ -563,12 +637,15 @@ class ScanPreviewView(QGraphicsView):
 
 
 __all__ = [
+    "BUBBLE_CENTER_COLOR",
+    "CENTER_MARK_PX",
     "DETECTED_MARKER_CLOSE_COLOR",
     "DETECTED_MARKER_FAR_COLOR",
     "EMPTY_COLOR",
     "EXPECTED_MARKER_COLOR",
     "MARKER_MISMATCH_PX",
     "MULTIPLE_COLOR",
+    "SAMPLE_WINDOW_COLOR",
     "SELECTED_COLOR",
     "UNCERTAIN_COLOR",
     "UNREADABLE_COLOR",

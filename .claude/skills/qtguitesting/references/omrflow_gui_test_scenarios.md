@@ -121,7 +121,12 @@ that measures or captures the preview must also wait for
 | `runCalibrationButton`, `runAllCalibrationButton` | Register/measure the selected scan, or every scan |
 | `calibrationImageView` | The preview - a `ScanPreviewView`, same widget class as the Scan page |
 | `markerOverlayToggle`, `regionOverlayToggle`, `bubbleOverlayToggle`, `scoreOverlayToggle` | Overlay layers |
+| `sampleWindowOverlayToggle` | The **sampled** ellipse - smaller than the printed bubble, see below |
+| `bubbleCenterOverlayToggle` | The sampled centre of every bubble |
+| `calibrationViewModeCombo` | Registered page / Original scan |
 | `fieldFilterCombo` | All / Student ID / Set Code / Questions / Other fields |
+| `fieldDiagnosticsLabel` | Per-position Student ID / Set Code detail and flagged questions |
+| `thresholdStateLabel` | Whether the working thresholds match the template's saved ones |
 | `bubbleThresholdSlider`/`SpinBox`, `blankThreshold*`, `ambiguityMargin*`, `minConfidence*` | The four `RecognitionSettings` thresholds, working value |
 | `resetCalibrationButton` (to template), `resetToDefaultsButton`, `saveCalibrationButton`, `exportCalibrationReportButton` | Threshold lifecycle |
 | `calibrationStatusLabel`, `calibrationSummaryPanel` | Per-scan verdict and quality summary |
@@ -508,24 +513,49 @@ No `CalibrationWorker` run happens for this - `CalibrationSession.recompute()`
 executes synchronously on the GUI thread. A test that waits on `run_finished`
 for a threshold change will simply hang; don't.
 
-**Miscalibration is never a confident pass** - the load-bearing check. Shift
-every registration marker's centre by `+0.3` normalised (well past the default
-`search_radius=0.05`), run the same real scan against it:
+**The sampled region is not the printed bubble.** `BubbleView.width/height` is
+the *printed* bubble; `sample_half_width`/`sample_half_height` is the ellipse
+the sampler actually read, at `BubbleMetricsConfig.sample_radius_ratio` (0.62)
+of the printed half-axes - on the real sample, **22.3 x 22.3 px inside a
+printed 36.0 x 36.0 px bubble**. The `Sampling` overlay draws the second, the
+`Selections` overlay the first. Anything that draws one while meaning the other
+shows an operator a region recognition never looked at, which is the single
+most dangerous thing this page can do. Assert
+`0 < bubble.sample_half_width < bubble.width / 2`.
+
+**Miscalibration is never a confident pass** - the load-bearing check, and it
+has *two* distinct shapes:
 
 ```
+# 1. Markers displaced: registration itself fails.
+#    Shift every marker centre by +0.3 normalised (default search_radius=0.05).
 entry.result.registration is RegistrationStatus.FAILED
 entry.result.fields == ()          # nothing measured
 entry.result.answers == ()
 entry.result.bubbles == ()
 entry.report.status is CalibrationStatus.FAILED
+
+# 2. Only the ZONES displaced: registration SUCCEEDS and nothing falls off
+#    the page. Shift every zone's bounds and grid origin by +0.02 normalised.
+entry.result.registration is not RegistrationStatus.FAILED   # markers fine
+entry.report.bubbles_unusable == 0                            # all on-page
+entry.report.status in {NEEDS_REVIEW, FAILED}                 # still not a pass
 ```
 
-**Automated:** `tests/integration/test_calibration_workflow.py` (10 tests, real
-engine, real synthetic sheets, including the small-vs-large marker offset
-pair), `tests/gui/test_calibration_page.py` (26 tests, A-J), `tests/unit/test_calibration_service.py`
-(27 tests, the judgement rules in isolation) and
-`scripts/run_gui_smoke_tests.py` (object names, an end-to-end run against the
-real sample, and the mismatched-template check against the real template).
+The second case is the one every registration-level check is blind to: the
+sampling windows land on bare paper, so every group reads a *confident* blank.
+It is caught by `NO_MARKS_DETECTED` (nothing marked anywhere) or by
+`SYSTEMATIC_AMBIGUITY` (widespread review items), depending on how far the
+displacement falls. On the real sample at +0.02 the verdict is `needs_review`
+with "marks detected in 2 of 110 response positions".
+
+**Automated:** `tests/integration/test_calibration_workflow.py` (18 tests, real
+engine, real synthetic sheets, including both miscalibration shapes and the
+small-vs-large marker offset pair), `tests/gui/test_calibration_page.py`
+(37 tests, A-J), `tests/unit/test_calibration_service.py` (34 tests, the
+judgement rules in isolation) and `scripts/run_gui_smoke_tests.py` (object
+names, an end-to-end run against the real sample, both miscalibration checks,
+and the sampled-vs-printed geometry check).
 
 ---
 
@@ -566,13 +596,29 @@ devtools_benchmark_results.png
 calibration_loaded.png
 calibration_run_clean.png
 calibration_overlay_markers.png
+calibration_sampling_top.png
+calibration_sampling_middle.png
+calibration_sampling_bottom.png
 calibration_threshold_ambiguous.png
 calibration_mismatched_failed.png
+calibration_displaced_zones.png
+calibration_displaced_zoomed.png
 ```
 
 `scan_overlay_zoom.png` is the one worth reading closely: it is the answer area
 at 1:1 with the recognition overlay on top, so a template-to-scan mapping that
 is a few pixels out is visible. At fit scale it never is.
+
+The three `calibration_sampling_*.png` images are captured at the **top, middle
+and bottom** of the same sheet on purpose. A scale or perspective error
+accumulates down the page, so a template that looks perfectly aligned in the
+Student ID block can be most of a bubble out by question 100. Checking one
+region proves nothing about the others.
+
+`calibration_displaced_zoomed.png` is the counter-example to read beside them:
+same real scan, zones shifted by 2 per cent of the page, registration still
+succeeding - the sampled ellipses sit visibly below and right of the printed
+bubbles, and the verdict reads "Needs review" rather than a pass.
 
 These are diagnostic evidence, not baselines. Fonts, anti-aliasing, Qt styles and
 DPI differ between machines, so an ordinary unit test must never fail because two

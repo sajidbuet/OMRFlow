@@ -558,6 +558,32 @@ def _capture_calibration(_image: Path) -> list[Path]:
     harness.page.preview.centerOn(top_left.canonical_x, top_left.canonical_y)
     harness.process_events()
     written.append(_save(harness.page, "calibration_overlay_markers"))
+
+    # Geometry has to be checked in more than one place: a scale or
+    # perspective error accumulates across the page, so a template that looks
+    # perfect at the top can be a bubble off at the bottom. Capture the
+    # sampling/centre overlays at the top, middle and bottom of the sheet.
+    harness.page.marker_overlay_toggle.setChecked(False)
+    harness.page.sample_overlay_toggle.setChecked(True)
+    harness.page.center_overlay_toggle.setChecked(True)
+    harness.page.score_overlay_toggle.setChecked(True)
+    bubbles = sorted(entry.result.bubbles, key=lambda item: item.y)
+    regions = {
+        "top": bubbles[0],
+        "middle": bubbles[len(bubbles) // 2],
+        "bottom": bubbles[-1],
+    }
+    for where, bubble in regions.items():
+        harness.page.preview.zoom_to_actual_size()
+        harness.page.preview.centerOn(bubble.x, bubble.y)
+        harness.process_events()
+        print(
+            f"  sampling overlay ({where}): centre ({bubble.x:.1f}, {bubble.y:.1f}), "
+            f"sampled {bubble.sample_half_width * 2:.1f}x"
+            f"{bubble.sample_half_height * 2:.1f} px inside printed "
+            f"{bubble.width:.1f}x{bubble.height:.1f} px"
+        )
+        written.append(_save(harness.page, f"calibration_sampling_{where}"))
     harness.shutdown()
 
     threshold_harness = build_calibration_page()
@@ -595,6 +621,64 @@ def _capture_calibration(_image: Path) -> list[Path]:
     print(f"  mismatched template: status={failed_entry.report.status.value}")
     written.append(_save(failed_harness.page, "calibration_mismatched_failed"))
     failed_harness.shutdown()
+
+    # The harder case: only the bubble geometry is displaced, so registration
+    # succeeds and nothing falls off the page. This is the state that used to
+    # report a pass, and the screenshot is the evidence that it no longer does.
+    from omr_scanner.domain.geometry import NormalizedRect
+
+    zones = []
+    for zone in template.zones:
+        bounds = zone.bounds
+        update: dict = {
+            "bounds": NormalizedRect(
+                x=min(bounds.x + 0.02, 1.0 - bounds.width),
+                y=min(bounds.y + 0.02, 1.0 - bounds.height),
+                width=bounds.width,
+                height=bounds.height,
+            )
+        }
+        if zone.grid is not None:
+            origin = zone.grid.origin
+            update["grid"] = zone.grid.model_copy(
+                update={
+                    "origin": NormalizedPoint(
+                        x=min(origin.x + 0.02, 1.0), y=min(origin.y + 0.02, 1.0)
+                    )
+                }
+            )
+        zones.append(zone.model_copy(update=update))
+    displaced_path = OUTPUT_ROOT / "capture_displaced_calibration.omrt"
+    save_template(template.model_copy(update={"zones": tuple(zones)}), displaced_path)
+
+    displaced_harness = build_calibration_page(template_path=displaced_path)
+    displaced_harness.run_all()
+    displaced_entry = displaced_harness.page.state.entries[0]
+    displaced_harness.page.sample_overlay_toggle.setChecked(True)
+    displaced_harness.page.center_overlay_toggle.setChecked(True)
+    displaced_harness.page.score_overlay_toggle.setChecked(True)
+    print(
+        f"  displaced template: registration="
+        f"{displaced_entry.result.registration.value}, "
+        f"status={displaced_entry.report.status.value}, "
+        f"marks in {displaced_entry.report.groups_with_marks}/"
+        f"{displaced_entry.report.groups_total} positions"
+    )
+    displaced_harness.process_events()
+    written.append(_save(displaced_harness.page, "calibration_displaced_zones"))
+
+    identifier_bubbles = [
+        item
+        for item in displaced_entry.result.bubbles
+        if item.zone_id == displaced_entry.result.identifier_zone_id
+    ]
+    if identifier_bubbles:
+        target = identifier_bubbles[0]
+        displaced_harness.page.preview.zoom_to_actual_size()
+        displaced_harness.page.preview.centerOn(target.x, target.y)
+        displaced_harness.process_events()
+        written.append(_save(displaced_harness.page, "calibration_displaced_zoomed"))
+    displaced_harness.shutdown()
 
     return written
 

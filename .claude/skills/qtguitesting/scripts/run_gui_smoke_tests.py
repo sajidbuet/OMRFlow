@@ -605,6 +605,8 @@ def _check_calibration_page_object_names() -> CheckResult:
         "runCalibrationButton", "runAllCalibrationButton",
         "resetCalibrationButton", "saveCalibrationButton",
         "calibrationSummaryPanel", "calibrationStatusLabel", "bubbleDiagnosticPanel",
+        "sampleWindowOverlayToggle", "bubbleCenterOverlayToggle",
+        "calibrationViewModeCombo", "fieldDiagnosticsLabel", "thresholdStateLabel",
     ]
     missing = [name for name in required if harness.page.findChild(QObject, name) is None]
     ok = harness.page.objectName() == "calibrationPage" and not missing
@@ -684,6 +686,94 @@ def _check_a_mismatched_template_fails_calibration_not_a_false_pass() -> CheckRe
         and entry.result.bubbles == ()
     )
     detail = f"status={entry.report.status.value if entry.report else '?'}"
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_a_displaced_template_that_registers_is_not_a_false_pass() -> CheckResult:
+    """The harder miscalibration case, on the real sample sheet.
+
+    Only the bubble geometry is wrong here - the registration markers are
+    untouched, so Phase 1 rectifies the page perfectly, no sampling window
+    falls off it, and every group reads a confident BLANK from bare paper.
+    None of the registration-level checks can see this; the verdict must
+    still not be a pass.
+    """
+    from _harness import OUTPUT_ROOT, SAMPLE_TEMPLATE, build_calibration_page
+
+    from omr_scanner.domain.geometry import NormalizedPoint, NormalizedRect
+    from omr_scanner.services import CalibrationStatus, load_template, save_template
+
+    template = load_template(SAMPLE_TEMPLATE)
+    zones = []
+    for zone in template.zones:
+        bounds = zone.bounds
+        update: dict = {
+            "bounds": NormalizedRect(
+                x=min(bounds.x + 0.02, 1.0 - bounds.width),
+                y=min(bounds.y + 0.02, 1.0 - bounds.height),
+                width=bounds.width,
+                height=bounds.height,
+            )
+        }
+        if zone.grid is not None:
+            origin = zone.grid.origin
+            update["grid"] = zone.grid.model_copy(
+                update={
+                    "origin": NormalizedPoint(
+                        x=min(origin.x + 0.02, 1.0), y=min(origin.y + 0.02, 1.0)
+                    )
+                }
+            )
+        zones.append(zone.model_copy(update=update))
+    displaced = template.model_copy(update={"zones": tuple(zones)})
+
+    bad_path = OUTPUT_ROOT / "displaced_calibration.omrt"
+    save_template(displaced, bad_path)
+
+    harness = build_calibration_page(template_path=bad_path)
+    harness.run_all()
+    entry = harness.page.state.entries[0]
+    report = entry.report
+    result = entry.result
+    ok = (
+        report is not None
+        and result is not None
+        and result.registration.value != "registration_failed"
+        and report.status
+        in (CalibrationStatus.NEEDS_REVIEW, CalibrationStatus.FAILED)
+    )
+    detail = (
+        f"registration={result.registration.value if result else '?'}, "
+        f"status={report.status.value if report else '?'}, "
+        f"marks in {report.groups_with_marks if report else '?'}/"
+        f"{report.groups_total if report else '?'} positions"
+    )
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_the_overlay_shows_the_sampled_region_not_the_printed_bubble() -> CheckResult:
+    """The sampling overlay must describe the region recognition actually read."""
+    from _harness import build_calibration_page
+
+    harness = build_calibration_page()
+    harness.run_all()
+    entry = harness.page.state.entries[0]
+    bubbles = entry.result.bubbles if entry.result else ()
+    ok = bool(bubbles) and all(
+        0.0 < bubble.sample_half_width < bubble.width / 2.0
+        and 0.0 < bubble.sample_half_height < bubble.height / 2.0
+        for bubble in bubbles
+    )
+    sample = bubbles[0] if bubbles else None
+    detail = (
+        f"{len(bubbles)} bubbles; sampled ellipse "
+        f"{sample.sample_half_width * 2:.1f}x{sample.sample_half_height * 2:.1f} px "
+        f"inside printed {sample.width:.1f}x{sample.height:.1f} px"
+        if sample is not None
+        else "no bubbles measured"
+    )
     harness.shutdown()
     return ok, detail
 
@@ -779,6 +869,14 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "a mismatched template fails calibration, not a false pass",
                     _check_a_mismatched_template_fails_calibration_not_a_false_pass,
+                ),
+                (
+                    "a displaced template that still registers is not a false pass",
+                    _check_a_displaced_template_that_registers_is_not_a_false_pass,
+                ),
+                (
+                    "the overlay shows the sampled region, not the printed bubble",
+                    _check_the_overlay_shows_the_sampled_region_not_the_printed_bubble,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

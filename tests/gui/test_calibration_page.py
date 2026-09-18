@@ -166,6 +166,9 @@ class TestALaunch:
             "resetCalibrationButton", "saveCalibrationButton",
             "calibrationSummaryPanel", "calibrationStatusLabel",
             "bubbleDiagnosticPanel",
+            "sampleWindowOverlayToggle", "bubbleCenterOverlayToggle",
+            "calibrationViewModeCombo", "fieldDiagnosticsLabel",
+            "thresholdStateLabel",
         ]
         missing = [name for name in required if loaded_page.findChild(QObject, name) is None]
         assert not missing, missing
@@ -302,6 +305,105 @@ class TestDOverlayGeometryMatchesTheEngine:
             assert marker.canonical_y == pytest.approx(marker.expected_y, abs=1.0)
 
 
+    def test_the_sampling_overlay_draws_the_measured_region_not_the_printed_bubble(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        # The defect this guards: drawing the printed bubble and calling it
+        # the sampling window shows the operator a region recognition never
+        # read, while looking entirely convincing.
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+
+        loaded_page.sample_overlay_toggle.setChecked(True)
+        overlay = loaded_page.preview._overlay
+        assert overlay.show_sample_windows is True
+        for bubble in overlay._bubbles:
+            assert bubble.sample_half_width > 0.0
+            assert bubble.sample_half_width < bubble.width / 2.0
+            assert bubble.sample_half_height < bubble.height / 2.0
+
+    def test_the_centres_overlay_can_be_switched_on_independently(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+        overlay = loaded_page.preview._overlay
+        assert overlay.show_centers is False
+        loaded_page.center_overlay_toggle.setChecked(True)
+        assert overlay.show_centers is True
+
+    def test_the_overlay_and_the_image_stay_aligned_at_every_zoom_level(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        # A double transform - overlay coordinates converted once by the
+        # engine and again by the viewer - produces a display that looks
+        # nearly right and drifts with zoom. This pins the two frames
+        # together: the image pixel under a bubble's canonical centre must be
+        # the same point, in viewport coordinates, at any magnification.
+        from PySide6.QtCore import QPointF
+
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+
+        entry = loaded_page.state.entries[0]
+        preview = loaded_page.preview
+        background = preview._background
+        assert background is not None
+        scale = entry.result.preview_scale
+        bubble = entry.result.bubbles[0]
+
+        # The pixmap pixel that corresponds to this canonical coordinate.
+        pixmap_point = QPointF(bubble.x * scale, bubble.y * scale)
+        in_scene = background.mapToScene(pixmap_point)
+        assert in_scene.x() == pytest.approx(bubble.x, abs=0.01)
+        assert in_scene.y() == pytest.approx(bubble.y, abs=0.01)
+
+        for zoom in (0.25, 1.0, 4.0):
+            preview._apply_zoom(zoom)
+            from_overlay = preview.mapFromScene(QPointF(bubble.x, bubble.y))
+            from_image = preview.mapFromScene(background.mapToScene(pixmap_point))
+            assert from_overlay == from_image, f"overlay drifted from the image at {zoom}x"
+
+    def test_the_original_scan_view_shows_no_overlay(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        # Overlay coordinates are canonical-page pixels; the original scan is
+        # not in that frame. Drawing them over it would be wrong everywhere
+        # and plausible-looking.
+        from omr_scanner.gui.calibration.page import VIEW_MODE_ORIGINAL
+
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+
+        assert loaded_page.preview._overlay._bubbles
+        loaded_page.view_mode_combo.setCurrentText(VIEW_MODE_ORIGINAL)
+        assert loaded_page.overlay_is_drawable is False
+        assert loaded_page.preview._overlay._bubbles == ()
+        assert loaded_page.preview._overlay.show_bubbles is False
+
+        # Toggling a layer while in this view must not put it back.
+        loaded_page.center_overlay_toggle.setChecked(True)
+        assert loaded_page.preview._overlay._bubbles == ()
+
+    def test_clicking_in_the_original_view_does_not_report_a_bubble(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        from omr_scanner.gui.calibration.page import VIEW_MODE_ORIGINAL
+
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+        bubble = loaded_page.state.entries[0].result.bubbles[0]
+
+        loaded_page.view_mode_combo.setCurrentText(VIEW_MODE_ORIGINAL)
+        loaded_page._on_preview_clicked(bubble.x, bubble.y)
+        assert "registered page" in loaded_page.inspector_label.text().lower()
+
+
 # ----------------------------------------------------------------------
 # E. Click to inspect
 # ----------------------------------------------------------------------
@@ -348,6 +450,22 @@ class TestEClickToInspect:
             assert answer is not None, f"formatter invented question {number}"
             checked += 1
         assert checked > 0
+
+    def test_the_inspector_reports_the_sampled_window_and_the_printed_bubble(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+        bubble = loaded_page.state.entries[0].result.bubbles[0]
+        loaded_page._on_preview_clicked(bubble.x, bubble.y)
+
+        text = loaded_page.inspector_label.text()
+        assert "Sampling window" in text
+        assert "Printed bubble" in text
+        # The two must be reported as the different sizes they are.
+        assert f"{bubble.sample_half_width * 2.0:.1f}" in text
+        assert f"{bubble.width:.1f}" in text
 
     def test_clicking_empty_space_does_not_crash_or_change_the_inspector(
         self, qtbot, loaded_page: CalibrationPage, write_sheet
@@ -423,6 +541,17 @@ class TestGThresholdControls:
         assert after.status == "resolved"
         assert after.value == "A"
 
+    def test_the_page_says_whether_the_working_values_are_saved_or_not(
+        self, loaded_page: CalibrationPage
+    ):
+        # Spec sections 26 and 62: no ambiguous hidden state. The operator
+        # must never have to guess which of the two values is in force.
+        assert "saved values" in loaded_page.threshold_state_label.text().lower()
+        loaded_page.fill_spin.setValue(0.42)
+        assert "modified" in loaded_page.threshold_state_label.text().lower()
+        loaded_page.reset_to_template()
+        assert "saved values" in loaded_page.threshold_state_label.text().lower()
+
     def test_reset_to_defaults_restores_the_application_defaults(
         self, loaded_page: CalibrationPage
     ):
@@ -494,6 +623,64 @@ class TestHSavingCalibration:
 
 
 # ----------------------------------------------------------------------
+# H2. Field-level diagnostics
+# ----------------------------------------------------------------------
+class TestFieldDiagnostics:
+    def test_the_student_id_is_broken_down_position_by_position(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        # Spec section 20: not just the final ID string with no explanation.
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+
+        text = loaded_page.field_diagnostics_label.text()
+        identifier = loaded_page.state.entries[0].result.identifier
+        assert identifier is not None
+        assert identifier.label in text
+        # One line per printed position, each carrying its own evidence.
+        for character in identifier.characters:
+            assert f"{character.position + 1}:" in text
+        assert text.count("fill ") >= len(identifier.characters)
+
+    def test_the_set_code_is_reported_by_position_not_assumed_single(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        # Spec section 21: a set code may be multi-position and its symbols
+        # multi-character. The panel iterates whatever the template declares.
+        loaded_page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+
+        result = loaded_page.state.entries[0].result
+        set_code = result.set_code
+        assert set_code is not None
+        text = loaded_page.field_diagnostics_label.text()
+        assert set_code.label in text
+        for character in set_code.characters:
+            assert character.value in text or "(blank)" in text
+
+    def test_flagged_questions_are_listed_with_their_evidence(
+        self, qtbot, loaded_page: CalibrationPage, write_sheet
+    ):
+        # Spec section 22: which bubble, raw score, ambiguity - for the
+        # questions that actually need a look.
+        marks = {
+            "roll_number": dict(enumerate("120317")),
+            "set_code": {0: "A"},
+            "questions_0": {0: "B", 1: ("A", 0.35)},
+        }
+        loaded_page.add_scan_paths([write_sheet(marks)])
+        with qtbot.waitSignal(loaded_page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            loaded_page.run_selected()
+
+        text = loaded_page.field_diagnostics_label.text()
+        assert "Questions" in text
+        assert "Q2:" in text
+        assert "uncertain" in text
+
+
+# ----------------------------------------------------------------------
 # I. Multi-scan sample summary
 # ----------------------------------------------------------------------
 class TestIMultiScanSample:
@@ -546,6 +733,55 @@ class TestJMiscalibrationIsFlagged:
         assert entry.result.answers == ()
         assert page.calibration_status_label.text() == CalibrationStatus.FAILED.label
         assert page.sample_table.item(0, 5).text() == CalibrationStatus.FAILED.label
+
+    def test_a_displaced_template_that_still_registers_is_not_shown_as_passed(
+        self, qtbot, page: CalibrationPage, template: OmrTemplate, tmp_path: Path, write_sheet
+    ):
+        # The dangerous sibling of the marker case above: registration
+        # succeeds, nothing falls off the page, and every group reads a
+        # confident blank because the sampling windows sit on bare paper.
+        # The operator must not be shown a pass.
+        from omr_scanner.domain.geometry import NormalizedRect
+
+        zones = []
+        for zone in template.zones:
+            bounds = zone.bounds
+            update: dict = {
+                "bounds": NormalizedRect(
+                    x=min(bounds.x + 0.02, 1.0 - bounds.width),
+                    y=min(bounds.y + 0.02, 1.0 - bounds.height),
+                    width=bounds.width,
+                    height=bounds.height,
+                )
+            }
+            if zone.grid is not None:
+                origin = zone.grid.origin
+                update["grid"] = zone.grid.model_copy(
+                    update={
+                        "origin": NormalizedPoint(
+                            x=min(origin.x + 0.02, 1.0), y=min(origin.y + 0.02, 1.0)
+                        )
+                    }
+                )
+            zones.append(zone.model_copy(update=update))
+        displaced = template.model_copy(update={"zones": tuple(zones)})
+
+        bad_path = tmp_path / "displaced.omrt"
+        save_template(displaced, bad_path)
+        assert page.load_template_from(bad_path) is True
+        page.add_scan_paths([write_sheet()])
+        with qtbot.waitSignal(page.run_finished, timeout=WORKER_TIMEOUT_MS):
+            assert page.run_selected() is True
+
+        entry = page.state.entries[0]
+        assert entry.result.registration is not RegistrationStatus.FAILED
+        assert entry.report.status in (
+            CalibrationStatus.NEEDS_REVIEW, CalibrationStatus.FAILED
+        )
+        assert page.calibration_status_label.text() == entry.report.status.label
+        # And the summary tells the operator what to actually go and look at.
+        summary = page.calibration_summary_panel.text()
+        assert "Marks detected in 0 of" in summary
 
     def test_a_failed_scan_cannot_be_saved_as_a_passing_calibration(
         self, qtbot, monkeypatch: pytest.MonkeyPatch, page: CalibrationPage,

@@ -162,6 +162,15 @@ class BubbleMeasurement:
     Attributes:
         center_x: Sampled centre on the canonical page, in pixels.
         center_y: Sampled centre on the canonical page, in pixels.
+        sample_half_width: Horizontal half-axis of the elliptical interior
+            sample, in canonical pixels - ``width_px / 2 *
+            sample_radius_ratio``. Recorded rather than left implicit because
+            it is the region ``fill_ratio`` was actually computed over, and it
+            is *smaller* than the printed bubble (see the module docstring).
+            Anything that draws "what was measured" must use this, not the
+            printed size, or it shows the operator a region recognition never
+            looked at.
+        sample_half_height: Vertical half-axis of the same ellipse.
         fill_ratio: Fraction of the interior sample classified as ink, in
             ``[0, 1]``. This is the quantity
             :class:`~omr_scanner.domain.template.RecognitionSettings` thresholds
@@ -189,6 +198,8 @@ class BubbleMeasurement:
     contrast: float
     sample_pixels: int
     usable: bool
+    sample_half_width: float = 0.0
+    sample_half_height: float = 0.0
 
 
 def estimate_ink_level(
@@ -307,6 +318,11 @@ def measure_bubble(
     half_y = height_px / 2.0
     outer_x = half_x * settings.background_outer_ratio
     outer_y = half_y * settings.background_outer_ratio
+    # Computed once, here, and reported on every return path below - including
+    # the unusable ones, where "this is the region that could not be sampled"
+    # is exactly what a calibration overlay needs to draw.
+    sample_x = half_x * settings.sample_radius_ratio
+    sample_y = half_y * settings.sample_radius_ratio
 
     # Patch bounds are clamped to the page; the masks below are built in patch
     # coordinates so a clipped patch still measures the part that does exist.
@@ -324,6 +340,8 @@ def measure_bubble(
             contrast=0.0,
             sample_pixels=0,
             usable=False,
+            sample_half_width=sample_x,
+            sample_half_height=sample_y,
         )
 
     patch = image[y0:y1, x0:x1].astype(np.float32)
@@ -331,14 +349,7 @@ def measure_bubble(
     local_cy = center_y - y0
     patch_h, patch_w = patch.shape
 
-    interior = _elliptical_mask(
-        patch_h,
-        patch_w,
-        local_cx,
-        local_cy,
-        half_x * settings.sample_radius_ratio,
-        half_y * settings.sample_radius_ratio,
-    )
+    interior = _elliptical_mask(patch_h, patch_w, local_cx, local_cy, sample_x, sample_y)
     sample_pixels = int(interior.sum())
     if sample_pixels < settings.min_sample_pixels:
         return BubbleMeasurement(
@@ -350,6 +361,8 @@ def measure_bubble(
             contrast=0.0,
             sample_pixels=sample_pixels,
             usable=False,
+            sample_half_width=sample_x,
+            sample_half_height=sample_y,
         )
 
     outer = _elliptical_mask(patch_h, patch_w, local_cx, local_cy, outer_x, outer_y)
@@ -385,6 +398,8 @@ def measure_bubble(
         contrast=(paper_level - mean_value) / MAX_GREY,
         sample_pixels=sample_pixels,
         usable=True,
+        sample_half_width=sample_x,
+        sample_half_height=sample_y,
     )
 
 

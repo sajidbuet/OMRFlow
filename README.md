@@ -123,9 +123,14 @@ criteria.
   second, separate calculation:
   - marker, registration and bubble-geometry overlays drawn from the exact
     coordinates the recognition engine itself computed - asserted equal by
-    test, not merely eyeballed;
-  - click-to-inspect on any bubble (field, question, fill score, active
-    threshold, classification);
+    test, not merely eyeballed, with the **sampled** ellipse and the
+    **printed** bubble drawn as separate, separately-labelled layers because
+    they are genuinely different regions;
+  - registered-page and original-scan views, with overlays deliberately
+    restricted to the former (the only frame their coordinates apply to);
+  - click-to-inspect on any bubble (field, question, sampling window, fill
+    score, ink threshold, active threshold, classification), and per-position
+    Student ID / Set Code diagnostics that never assume a single character;
   - the four recognition thresholds (`fill_ratio_threshold`,
     `blank_ratio_threshold`, `ambiguity_margin`, `min_confidence`) adjustable
     by slider or exact value, reclassifying and updating the overlay and
@@ -437,17 +442,65 @@ Still open, and why Phase 3 is not marked complete:
   data to optimise against
 - [ ] Final Phase 3 regression sign-off once the above are addressed
 
+### Validating a template before a batch (Phase 4)
+
+Run this before trusting a template with a production batch. Full detail,
+including what each overlay means, is in
+[`docs/calibration_workflow.md`](docs/calibration_workflow.md).
+
+1. Create or load the template in the **Template** stage.
+2. Open **Calibrate**.
+3. Load **several representative real scans** — light and dark marking, pencil
+   and pen, a slightly skewed feed, more than one scanner if the batch will
+   use more than one. One perfect scan proves very little.
+4. **Run All Tests**.
+5. Verify registration: status, `Markers detected: 4 / 4`, orientation
+   resolved.
+6. Switch on the **Markers** overlay and confirm the detected marker squares
+   sit on the printed registration marks.
+7. Switch on **Sampling** and **Centres**, zoom to 100%, and verify the bubble
+   geometry at the **top, middle *and* bottom** of the page — a scale or
+   perspective error accumulates down the sheet, so a template that looks
+   perfect in the Student ID block can be most of a bubble out by the last
+   question.
+8. Inspect the **Student ID** block position by position in the field
+   diagnostics panel.
+9. Inspect the **Set Code** block the same way.
+10. Inspect question regions across the whole page, not just the first column.
+11. Click individual bubbles — one marked, one empty — and read their raw fill
+    scores against the active threshold.
+12. Adjust a threshold **only when the evidence calls for it**. A misplaced
+    region is a geometry problem; no threshold fixes it. Use **Edit Template**
+    to return to the designer instead.
+13. Re-run, and confirm the change holds across **every** representative scan.
+14. Review the warnings and findings on each scan.
+15. **Save to Template** — nothing is written until you do.
+16. Proceed to the **Scan** stage only once satisfied.
+
+> **What a successful calibration means.** That the scans you tested appear
+> geometrically and numerically suitable for this template. It is **not** a
+> guarantee of accuracy on every future sheet, and a calibration run against
+> synthetic scans establishes nothing about real-world accuracy at all.
+
 ### Phase 4 testing status
 
-Phase 4 (Template Calibration & Validation) is implemented and covered by 63
-automated tests (27 unit, 10 integration, 26 GUI), plus targeted
-`qtguitesting` smoke checks against the real sample sheet. Full detail is in
-[`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md).
+Phase 4 (Template Calibration & Validation) is implemented and covered by 89
+automated tests (34 unit, 18 integration, 37 GUI), plus `qtguitesting` smoke
+checks and screenshot inspection against the real sample sheet. Full detail is
+in [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md).
 
 Confirmed by the current automated suite:
 
 - [x] Overlay geometry matches the recognition engine's own computed
   coordinates exactly (asserted, not merely visually checked)
+- [x] The overlay draws the region the sampler **actually measured** — an
+  ellipse at 62% of the printed bubble's half-axes, recorded by the sampler
+  itself — as a layer distinct from the printed bubble outline, so an operator
+  checking alignment is never shown a region recognition did not read
+- [x] A template whose **bubble zones** are displaced but whose **markers
+  still register** is reported as needing review rather than passing — the
+  case no registration-level check can see, because every sampling window
+  lands on the page and every group reads a confident blank
 - [x] Threshold changes propagate to results, the overlay and the quality
   summary without repeating registration (asserted via unchanged measured
   fill values and unchanged registration output on a re-decide)

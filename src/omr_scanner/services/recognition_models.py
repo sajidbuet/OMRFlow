@@ -237,8 +237,21 @@ class BubbleView:
         label: The symbol this bubble stands for.
         x: Bubble centre on the canonical page.
         y: Bubble centre on the canonical page.
-        width: Printed bubble width in canonical pixels.
+        width: Printed bubble width in canonical pixels - the size of the ring
+            printed on the paper, **not** the region that was measured.
         height: Printed bubble height in canonical pixels.
+        sample_half_width: Horizontal half-axis of the elliptical interior the
+            sampler actually read, in canonical pixels. Deliberately smaller
+            than ``width / 2``: the printed ring is ink, so measuring the full
+            bubble would score an empty one as partly filled
+            (:mod:`omr_scanner.imaging.metrics`). Anything drawing "the region
+            recognition measured" must use this pair, and anything drawing
+            "the printed bubble" must use ``width``/``height``; showing one
+            and calling it the other is how a calibration overlay ends up
+            looking convincing while describing a region the engine never
+            read. Zero on a result whose caller did not keep the per-bubble
+            evidence.
+        sample_half_height: Vertical half-axis of the same ellipse.
         fill_ratio: Fraction of the sampled interior classified as ink - the
             quantity the fill threshold is expressed in.
         selected: Whether the decision layer counted this bubble as marked.
@@ -290,6 +303,8 @@ class BubbleView:
     sample_pixels: int = 0
     usable: bool = True
     rank: int = 0
+    sample_half_width: float = 0.0
+    sample_half_height: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

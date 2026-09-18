@@ -191,6 +191,107 @@ class TestSystematicAmbiguity:
         assert report.answers_multiple == 1
 
 
+class TestNothingMarkedAnywhere:
+    """The blind spot every other rule in this module misses.
+
+    A template whose *markers* still register but whose *bubble zones* are
+    displaced samples clean paper: no unusable bubbles, no ambiguity, no
+    alignment warning - and, before this rule, a "passed with warnings"
+    verdict over a sheet where every value had been read from the wrong
+    place. See ``NO_MARKS_REVIEW_THRESHOLD``.
+    """
+
+    def test_a_sheet_with_no_mark_anywhere_needs_review(self, template):
+        answers = tuple(
+            make_answer(number, "", "blank", needs_review=False) for number in range(1, 11)
+        )
+        result = make_result(answers=answers, fields=(), bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert report.status is CalibrationStatus.NEEDS_REVIEW
+        finding = next(item for item in report.findings if item.code == "NO_MARKS_DETECTED")
+        # The message must name both possible causes - claiming the template
+        # is wrong would be exactly the overconfidence this rule exists to
+        # avoid, in the opposite direction.
+        assert "blank" in finding.message.lower()
+        assert "template" in finding.message.lower()
+        assert report.groups_with_marks == 0
+        assert report.groups_total == 10
+
+    def test_one_mark_anywhere_is_enough_to_not_fire(self, template):
+        answers = (
+            make_answer(1, "B", "resolved"),
+            *(make_answer(number, "", "blank", needs_review=False) for number in range(2, 11)),
+        )
+        result = make_result(answers=answers, fields=(), bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert not any(item.code == "NO_MARKS_DETECTED" for item in report.findings)
+        assert report.groups_with_marks == 1
+
+    def test_a_mark_in_a_field_position_also_counts(self, template):
+        # The identifier alone being readable is evidence the geometry lands
+        # somewhere real, even when every question is blank.
+        answers = tuple(
+            make_answer(number, "", "blank", needs_review=False) for number in range(1, 11)
+        )
+        fields = (make_field("roll_number", "12", "resolved"),)
+        result = make_result(answers=answers, fields=fields, bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert not any(item.code == "NO_MARKS_DETECTED" for item in report.findings)
+        assert report.groups_with_marks == 2
+        assert report.groups_total == 12
+
+    def test_a_sheet_with_no_groups_at_all_does_not_fire(self, template):
+        result = make_result(answers=(), fields=(), bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert not any(item.code == "NO_MARKS_DETECTED" for item in report.findings)
+
+
+class TestAnswerCountsComeFromMarkStatus:
+    """Counts must read the engine's own classification, never the value string."""
+
+    def test_a_label_containing_a_hyphen_is_not_mistaken_for_a_double_mark(self, template):
+        # A set code or option printed "A-1" is one symbol, not two marks.
+        # Deriving "multiple" from the presence of the separator character
+        # would silently miscount it.
+        answers = (make_answer(1, "A-1", "resolved"),)
+        result = make_result(answers=answers, fields=(), bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert report.answers_multiple == 0
+        assert report.answers_single == 1
+
+    def test_a_blank_answer_that_needs_review_still_counts_as_blank(self, template):
+        # A faint smudge can leave a BLANK group below min_confidence. It is
+        # still blank; it is also worth a human's eye. Both are true.
+        answers = (make_answer(1, "", "blank", needs_review=True),)
+        result = make_result(answers=answers, fields=(), bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert report.answers_blank == 1
+        assert report.answers_needing_review == 1
+
+    def test_the_four_answer_counts_describe_the_same_sheet_consistently(self, template):
+        answers = (
+            make_answer(1, "B", "resolved"),
+            make_answer(2, "C", "resolved"),
+            make_answer(3, "", "blank", needs_review=False),
+            make_answer(4, "B-D", "multiple"),
+            make_answer(5, "", "uncertain"),
+        )
+        result = make_result(answers=answers, fields=(), bubbles=(), warnings=())
+        report = evaluate_calibration(result, template)
+        assert report.answers_total == 5
+        assert report.answers_single == 2
+        assert report.answers_blank == 1
+        assert report.answers_multiple == 1
+        # Needs-review overlaps the categories above by design: the multiple
+        # and the uncertain answer are both flagged. Subtracting it from the
+        # total to obtain "single" - which the quality summary used to do -
+        # double-counts them and under-reports the clean answers.
+        assert report.answers_needing_review == 2
+        assert report.answers_single != report.answers_total - (
+            report.answers_blank + report.answers_multiple + report.answers_needing_review
+        )
+
+
 class TestNearThreshold:
     def test_a_bubble_far_from_threshold_is_not_counted(self, template):
         threshold = template.recognition.fill_ratio_threshold
