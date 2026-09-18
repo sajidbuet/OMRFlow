@@ -91,6 +91,57 @@ examination processing.
   a `ScanHarness`, ten smoke checks, seven screenshot scenarios and four new
   documented scenarios.
 
+### Added — Phase 3 large-batch progress
+
+Batch processing is built for examination-scale runs (10,000+ scripts), and
+the Scan page now reports on one without changing shape as it grows.
+
+- **`omr_scanner.services.batch_progress`**: `BatchProgressTracker`,
+  `ProgressSnapshot`, `JobStatus`, `BatchState` and the shared duration/rate/
+  count formatters. Thread-safe, headless, and unit-testable with an injected
+  clock - the estimator has 57 tests including a 10,000-job simulation that
+  runs in under a second.
+- **A progress panel on the Scan page**: a bar driven by *finished* sheets
+  (a failed scan advances it, so a batch of damaged files cannot stall it),
+  completed/total counts with thousands separators, percentage to one decimal,
+  elapsed time on a monotonic clock, a smoothed estimate of the time
+  remaining, live throughput, an estimated finishing time, and
+  successful/needs-review/failed tallies in words.
+- **A smoothed ETA** from an exponential moving average over half-second
+  throughput samples, with a warm-up (about ten completed sheets, or a few
+  seconds of steady measurement) during which it says `Calculating...` rather
+  than extrapolating from one sample. A stall makes the estimate grow rather
+  than freeze; cancellation withdraws it; completion sets it to zero.
+- **`Preparing batch...`** as a distinct state, so the moments before the
+  first sheet do not read as a stalled bar at 0 / 10,000.
+- **Throttled repainting**: the tracker counts every completion, while the
+  window pulls a snapshot about five times a second. A machine finishing fifty
+  sheets a second no longer asks Qt to repaint fifty times a second. Scan-list
+  rows are buffered the same way and located through a path index, which turns
+  a long batch from quadratic into linear work in the GUI thread.
+- **Cancellation that responds immediately**: the button disables itself and
+  the panel says `Cancelling batch processing...` before any worker notices;
+  no new sheet starts; sheets already inside a worker finish cleanly rather
+  than being killed mid-write; everything already read is kept; and the final
+  state reports both halves ("6,342 processed · 3,658 not processed").
+- **A completion summary**: total duration and average speed, with the bar at
+  exactly 100% only when every sheet has reached a terminal state.
+- `BatchProgress` gained an `outcome` field, so a progress display can tally
+  successes, reviews and failures *as sheets finish* - which on a multicore
+  run is earlier than results are released in batch order.
+
+### Changed
+
+- A batch run no longer keeps the per-bubble evidence on results it retains
+  for export: on the repository's 100-question sample that is 6.7 KB per sheet
+  instead of 61.6 KB, or about **68 MB rather than 631 MB** across ten
+  thousand sheets. Nothing the page shows used it - the overlay comes from the
+  preview worker's own result - and switching diagnostics on keeps it, because
+  the diagnostic images are drawn from it.
+- `RecognitionOptions.keep_bubble_measurements=False` now omits the bubble
+  records entirely rather than blanking their fields, which is where the
+  memory actually is. No decision changes either way.
+
 ### Added — Phase 3 architectural hardening
 
 Phase 3 turned into a *replaceable* recognition subsystem, so that Phases 4 and

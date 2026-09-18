@@ -101,6 +101,12 @@ criteria.
     (**Automatic**, **Single core**, **Custom**) chosen in *File > Settings >
     Processing* and remembered between sessions. Results, output file names and
     CSV row order are identical to a single-core run on any number of cores;
+  - **large-batch progress tracking**: a progress bar driven by finished
+    sheets, completed/total counts and percentage, elapsed time, a smoothed
+    estimate of the time remaining, live throughput, per-outcome tallies
+    (successful / needs review / failed) and responsive cancellation — all
+    from a fixed-size panel that behaves the same for ten sheets or ten
+    thousand;
   - deterministic CSV export;
   - optional renaming of processed scans using the detected roll number, with
     safe duplicate-roll handling (`2103123.jpg`, `2103123_a.jpg`,
@@ -147,12 +153,52 @@ Recognition Engine v2 can replace it without rewriting them:
 - **Real-dataset validation pending.** Everything above is infrastructure;
   accuracy is still a Phase 3 open question.
 
+### Large-batch progress (Phase 3)
+
+The batch architecture is built for examination-scale runs — **10,000+ OMR
+scripts in a single batch** — and the Scan page reports on one without
+changing shape as it grows:
+
+```text
+Processing OMR scans...
+████████████████████░░░░░░░░░░░░  63.4%
+6,342 / 10,000 processed
+Elapsed 00:18:42 · Remaining ~00:10:47
+Speed 5.7 scans/sec · 12 workers · Finish ~15:42
+Successful 6,301 · Review 28 · Failed 13
+```
+
+- **Real-time completed / total count** and percentage, driven by *finished*
+  sheets — a scan that fails to read still advances the bar, so a batch full
+  of damaged files cannot stall it.
+- **Elapsed time** on a monotonic clock, so a system clock change cannot
+  corrupt it.
+- **Smoothed ETA** from recent measured throughput (an exponential moving
+  average), shown as `Calculating...` until there is enough evidence — never
+  an absurd estimate from the first sheet, and never presented as exact.
+- **Processing throughput**, and an estimated finishing time once the estimate
+  is stable.
+- **Success / needs-review / failure counters** that reconcile with the
+  processed count.
+- **Multicore-safe progress reporting**: worker processes never touch a
+  widget; completions are counted centrally, in one place, under one lock.
+- **Responsive cancellation**: the button disables itself at once, no new
+  sheet is started, sheets already in a worker finish cleanly rather than
+  being killed mid-write, and everything already read is kept.
+
+The interface is fixed-size — one progress bar and five labels whatever the
+batch length, repainted about five times a second rather than once per sheet —
+and a batch queues file paths, never images. Verified by a headless
+10,000-job simulation and by real batches of a few dozen sheets; **no
+10,000-scan real-world run has been timed**, so no performance limit is
+claimed.
+
 Details: [`docs/recognition_engine.md`](docs/recognition_engine.md).
 
 ### Phase 3 testing status
 
 Phase 3's functionality is implemented and exercised by an automated suite
-(1,935 tests passing at the time of writing, plus the repository-local
+(2,029 tests passing at the time of writing, plus the repository-local
 `qtguitesting` Qt GUI harness), but it has only been run end-to-end against
 **one real scanned sheet** (`examples/ECE-0000.png`) — validated with correct
 roll number, set code and all 100 answers — plus geometrically distorted copies
@@ -176,7 +222,7 @@ Confirmed by the current automated suite:
   never overwritten)
 - [x] CSV export validation (column order, question ordering, Unicode,
   escaping, duplicate-name recording, determinism)
-- [x] Automated Qt GUI validation using `qtguitesting` (20/20 smoke checks,
+- [x] Automated Qt GUI validation using `qtguitesting` (23/23 smoke checks,
   including the real sample recognised end-to-end through the GUI; three real
   defects were found this way and fixed)
 - [x] Multicore recognition validation (a batch read across worker processes
@@ -208,6 +254,12 @@ Confirmed by the current automated suite:
   written by default, and generating them provably does not change a result)
 - [x] Stored result fixtures for Phases 4-5 (11 scenarios, loadable with no
   recognition engine present)
+- [x] Large-batch progress tracking (headless 10,000-job simulation reaching
+  exactly 10,000/10,000 and 100%; ETA warm-up, smoothing, stall and
+  cancellation behaviour; counters reconciling with the batch report)
+- [x] Progress GUI validation (bar advances monotonically to exactly 100%, a
+  failed scan still advances it, no dialog per failed scan, cancellation is
+  immediate and honest, ten thousand rows create exactly one progress bar)
 
 Still open, and why Phase 3 is not marked complete:
 
@@ -216,8 +268,10 @@ Still open, and why Phase 3 is not marked complete:
   currently one real sheet plus geometric variants of it
 - [ ] Registration/alignment edge cases beyond Phase 1's documented limits
   (e.g. illumination gradients, rotation beyond ±15°, heavy cropping)
-- [ ] Batch-processing stress testing at realistic exam volumes (hundreds of
-  sheets); the largest measured run so far is 48 scans
+- [ ] Batch-processing stress testing at realistic exam volumes. The largest
+  *measured* run is 48 real scans; the 10,000-scan figure the architecture
+  targets has been exercised as a simulation of the progress and counting
+  path, not as ten thousand real recognitions
 - [ ] Multicore validation on hardware other than the 16-thread Windows
   development machine (core counts, memory limits and `spawn` behaviour all
   differ; Linux and macOS are untested)
@@ -283,7 +337,7 @@ omrflow "C:/Exams/Physics Midterm"     # open a project on start-up
 
 ```bash
 pip install -e ".[dev]"
-pytest                   # 1,900+ tests
+pytest                   # 2,000+ tests
 ruff check .
 mypy
 ```

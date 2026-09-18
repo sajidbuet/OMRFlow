@@ -295,15 +295,81 @@ registration_status, recognition_status, warning_count, Q1, Q2, ... QN
 
 ## 10. Performance and responsiveness
 
-Batches run off the GUI thread; the window stays responsive and reports
-`Completed 46 / 100 - 8 workers`. **Cancel** stops after the sheets currently
-being read - OpenCV will not be interrupted part-way through a warp, so "cancel"
-honestly means "finish what is in hand, then stop".
+### Watching a batch
+
+Batches run off the GUI thread, and the Processing panel reports on them:
+
+```text
+████████████████████░░░░░░░░░░░░  63.4%
+
+Processing OMR scans...
+6,342 / 10,000 processed
+Elapsed 00:18:42 · Remaining ~00:10:47
+Speed 5.7 scans/sec · 12 workers · Finish ~15:42
+Successful 6,301 · Review 28 · Failed 13
+```
+
+- **The bar counts finished sheets**, however they finished. A sheet that
+  could not be read is a *finished* sheet: counting only successes is how a
+  progress bar stalls at 97% for the rest of the afternoon while the last
+  three hundred corrupted files quietly fail.
+- **Remaining is an estimate**, and the `~` says so. It comes from recent
+  measured throughput, not from dividing elapsed time by sheets done, so one
+  slow sheet does not move it much and a genuine change of pace shows up
+  within a few seconds.
+- **It says "Calculating..." until it has evidence.** The first sheets of a
+  multicore run are unrepresentative - worker processes are starting, OpenCV
+  is loading - and an estimate from them is not cautious, it is wrong. Roughly
+  ten completed sheets, or a few seconds of steady measurement, and the
+  estimate appears.
+- **Before the first sheet** the panel says `Preparing batch...`, because
+  "0 / 10,000, remaining 00:00:00" reads like a broken bar rather than a
+  starting one.
+- **99.99% is not 100%.** With 9,999 of 10,000 done the bar is one short and
+  says so; only every sheet reaching a terminal state finishes it.
+
+A failed sheet never raises a dialog. It is counted in `Failed`, shown in the
+scan list with a reason, and written to the log - because a thousand-sheet
+batch with fifty bad files must not be fifty modal interruptions.
+
+### Cancelling
+
+**Cancel Processing** stops the run: no new sheet is started, and the ones
+already inside a worker finish rather than being killed part-way through
+writing a file. The button disables itself immediately and the panel switches
+to `Cancelling batch processing...`, with the remaining time replaced by
+`Cancelling...` - there is no honest estimate for "as long as the sheets in
+flight take".
+
+Everything already read is kept. The final state reports both halves:
+
+```text
+Batch cancelled.
+6,342 / 10,000 processed · 3,658 not processed
+Stopped after 00:18:42
+```
+
+### What a large batch costs
 
 The template is parsed once per run, not per field. Batch runs discard the
 rectified preview images (a hundred rectified pages is most of a gigabyte); the
 preview for the sheet being *looked at* is recreated on demand and a handful are
 cached.
+
+Only file paths are queued - never images. A sheet is loaded when a worker
+reaches it and released when it is done, so the memory a batch needs does not
+grow with its length.
+
+What *is* retained is one result per sheet, because the CSV export needs it.
+A batch run therefore also declines the per-bubble evidence, which the page
+never reads: on the repository's 100-question sample that is 6.7 KB per sheet
+instead of 61.6 KB - about **68 MB rather than 631 MB** across ten thousand
+sheets. Switching diagnostics on keeps the evidence, because the diagnostic
+images are drawn from it.
+
+The interface itself is fixed-size: one progress bar and five labels, whatever
+the batch length, repainted about five times a second rather than once per
+completed sheet.
 
 ### Reading several sheets at once
 

@@ -181,6 +181,11 @@ class BatchProgress:
             ``index + 1``. On a multicore run the sheets finish out of order, so
             a progress bar must count completions rather than trust the position
             of whichever sheet happened to finish last.
+        outcome: The scan's :class:`RecognitionOutcome` value on a terminal
+            event, or ``""``. Carried on the progress event - and not only on
+            the result - so that a progress display can count successes,
+            reviews and failures *as they finish*, which on a multicore run is
+            earlier than the results are released in batch order.
     """
 
     index: int
@@ -188,6 +193,7 @@ class BatchProgress:
     path: Path
     stage: BatchStage
     completed_count: int | None = None
+    outcome: str = ""
 
     @property
     def completed(self) -> int:
@@ -522,7 +528,15 @@ def _run_sequential(
         if on_result is not None:
             on_result(outcome)
         if on_progress is not None:
-            on_progress(BatchProgress(index, total, path, _stage_for(outcome)))
+            on_progress(
+                BatchProgress(
+                    index,
+                    total,
+                    path,
+                    _stage_for(outcome),
+                    outcome=outcome.outcome.value,
+                )
+            )
 
     return processed, False, 1
 
@@ -595,7 +609,12 @@ def _run_parallel(
                 )
                 on_progress(
                     BatchProgress(
-                        index, total, result.source_path, stage, completed_count=completed
+                        index,
+                        total,
+                        result.source_path,
+                        stage,
+                        completed_count=completed,
+                        outcome=result.outcome.value,
                     )
                 )
 

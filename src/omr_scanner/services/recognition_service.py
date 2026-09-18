@@ -746,6 +746,15 @@ def _build_views(
                 if index == decision.leading_index:
                     leaders.add(cell)
 
+    if not keep_measurements:
+        # Not merely zeroed - omitted. The bubble records *are* the memory: a
+        # hundred-question sheet has five hundred of them against a hundred
+        # answers, so a caller processing ten thousand sheets and keeping the
+        # results (the Scan page does, for the CSV) saves an order of
+        # magnitude by declining them. Every decision has already been made;
+        # this drops only the evidence for it.
+        return fields, answers, zones, ()
+
     bubbles: list[BubbleView] = []
     for zone in template.zones:
         grid = zone.grid

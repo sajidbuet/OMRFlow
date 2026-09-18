@@ -614,8 +614,9 @@ class TestFBatch:
         assert statuses["good.png"] == "Complete"
         assert statuses["corrupt.png"] in {"Error", "Registration failed"}
 
-        # And the summary counts it rather than hiding it.
-        assert "failed" in loaded_page.progress_label.text()
+        # And the summary counts it rather than hiding it - in the outcome
+        # line, which is where the success/review/failure tallies live.
+        assert "Failed 1" in loaded_page.progress_outcome_label.text()
 
     def test_processing_only_the_selected_rows_leaves_the_others_pending(
         self, qtbot, loaded_page: ScanPage, write_sheet

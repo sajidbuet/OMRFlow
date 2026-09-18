@@ -376,3 +376,34 @@ python -m omr_scanner.tools.benchmark_recognition out/dataset \
 Generated datasets, reports and diagnostics are git-ignored: the generator plus
 its seed reproduces them exactly, so the seed is worth committing and the
 gigabytes are not.
+
+### Large-batch progress and the ETA estimator
+
+`BatchProgressTracker` is tested headlessly with an injected clock
+(`tests/unit/test_batch_progress.py`, 57 tests), because an estimator that can
+only be exercised by watching a progress bar is an estimator nobody tests. The
+fake clock turns "does the estimate converge over twenty minutes" into a test
+that runs in microseconds and gives the same answer every time.
+
+Covered: warm-up (no estimate from one sample), multicore start-up (a slow
+first sheet must not dominate), steady and variable throughput, a sustained
+slowdown, a stall (the estimate grows rather than freezing, and never divides
+by zero), completion, cancellation, an empty batch, a single-sheet batch, a
+clock that goes backwards, and eight threads recording completions at once.
+
+The **10,000-job simulation** lives there too, and runs in well under a second:
+ten thousand completions with a realistic mixture of successes, reviews and
+failures, asserting that the counts reconcile exactly, the fraction reaches
+1.0, the estimate falls monotonically, and the tracker's memory does not grow
+with the job count.
+
+`tests/gui/test_batch_progress_gui.py` then checks what a person sees: the
+panel renders a constructed snapshot correctly (including "9,999 / 10,000 is
+not 100%"), a real twelve-sheet batch drives it to exactly 100%, a failed scan
+still advances it, no dialog appears for a bad file, cancellation is immediate
+in the interface and honest in the final state, and ten thousand rows produce
+exactly one progress bar.
+
+Do not generate ten thousand real images to test a progress bar. The
+simulation covers the counting and the estimate; a few dozen synthetic sheets
+cover the wiring.

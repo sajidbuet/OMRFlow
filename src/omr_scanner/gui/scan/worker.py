@@ -30,6 +30,19 @@ Threads and processes:
     it - so the pool belongs to a background thread, the signals still arrive on
     the main thread, and closing the page still shuts everything down through
     the same cancel-and-wait path.
+
+Progress, and why it is *pulled* rather than pushed:
+    A ten-thousand-sheet batch finishing eleven sheets a second would emit
+    eleven progress signals a second per worker if each completion were pushed
+    to the window. Instead this thread keeps the counts itself, in a
+    :class:`~omr_scanner.services.batch_progress.BatchProgressTracker`, and the
+    page reads a snapshot from it on its own timer, a few times a second. The
+    counting stays exact - every completion is recorded - while the number of
+    cross-thread events stops depending on how fast the machine is.
+
+    The tracker is thread-safe, which is what makes that safe: this thread
+    writes to it, the GUI thread reads from it, and neither waits for the other
+    for longer than an integer increment.
 """
 
 from __future__ import annotations
@@ -41,8 +54,11 @@ from PySide6.QtCore import QObject, QThread, Signal
 from omr_scanner.services import (
     BatchOptions,
     BatchProgress,
+    BatchProgressTracker,
     FilenameAllocator,
+    JobStatus,
     ProcessedScan,
+    RecognitionOutcome,
     ScanResult,
     process_batch,
     recognise_scan,
@@ -52,6 +68,20 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
     from omr_scanner.domain.template import OmrTemplate
+    from omr_scanner.services import ProgressSnapshot
+
+TERMINAL_OUTCOMES: dict[str, JobStatus] = {
+    RecognitionOutcome.COMPLETE.value: JobStatus.SUCCESS,
+    RecognitionOutcome.REVIEW.value: JobStatus.WARNING,
+    RecognitionOutcome.REGISTRATION_FAILED.value: JobStatus.FAILED,
+    RecognitionOutcome.ERROR.value: JobStatus.FAILED,
+}
+"""Which recognition outcomes count as which kind of finished job.
+
+A table rather than branching, and one that covers *every* outcome a finished
+sheet can have: a sheet that failed is still a sheet that finished, and if it
+were missing from here the progress bar would stall on a batch full of
+unreadable files - which is exactly the batch a user most wants to watch."""
 
 
 class BatchWorker(QThread):
@@ -74,6 +104,8 @@ class BatchWorker(QThread):
         workers: How many sheets to read at once. ``1`` keeps everything in this
             thread; more starts that many worker processes.
         parent: Optional Qt parent.
+        tracker: Progress tracker to count into. One is created when omitted;
+            a test passes its own with a fake clock and a short warm-up.
     """
 
     progress = Signal(object)
@@ -90,6 +122,7 @@ class BatchWorker(QThread):
         parent: QObject | None = None,
         *,
         workers: int = 1,
+        tracker: BatchProgressTracker | None = None,
     ) -> None:
         super().__init__(parent)
         self._paths = list(paths)
@@ -98,10 +131,22 @@ class BatchWorker(QThread):
         self._allocator = allocator
         self._workers = max(1, workers)
         self._cancelled = False
+        self._tracker = tracker if tracker is not None else BatchProgressTracker()
+        self._tracker.start(len(self._paths), workers=self._workers)
 
     def cancel(self) -> None:
         """Ask the run to stop after the sheets currently being read."""
         self._cancelled = True
+        self._tracker.request_cancel()
+
+    @property
+    def tracker(self) -> BatchProgressTracker:
+        """The run's progress tracker, safe to read from the GUI thread."""
+        return self._tracker
+
+    def progress_snapshot(self) -> ProgressSnapshot:
+        """Return the current progress, for the page's refresh timer."""
+        return self._tracker.snapshot()
 
     @property
     def cancelled(self) -> bool:
@@ -127,11 +172,22 @@ class BatchWorker(QThread):
                 workers=self._workers,
             )
         except Exception as exc:
+            self._tracker.fail()
             self.failed.emit(str(exc))
             return
+        self._tracker.finish(cancelled=report.cancelled)
         self.finished_report.emit(report)
 
     def _emit_progress(self, update: BatchProgress) -> None:
+        """Count the completion, then pass the event on.
+
+        Counting happens here, in the parent process, on one thread, under the
+        tracker's lock - never in a worker. That is what keeps the totals right
+        when eight sheets finish at the same instant.
+        """
+        status = TERMINAL_OUTCOMES.get(update.outcome)
+        if status is not None:
+            self._tracker.record(status)
         self.progress.emit(update)
 
     def _emit_result(self, processed: ProcessedScan) -> None:

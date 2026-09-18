@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
@@ -405,6 +406,65 @@ def _check_multicore_batch_matches_single_core(image: Path) -> CheckResult:
     )
 
 
+def _check_progress_panel_renders_a_large_batch() -> CheckResult:
+    """The progress readout describes a ten-thousand-sheet batch correctly."""
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.scan.page import ScanPage
+    from omr_scanner.services.batch_progress import BatchState, ProgressSnapshot
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
+    page = ScanPage(spec)
+    page._render_progress(
+        ProgressSnapshot(
+            state=BatchState.PROCESSING,
+            total=10_000,
+            successful=6_301,
+            warnings=28,
+            failed=13,
+            elapsed_seconds=1_122.0,
+            rate=5.65,
+            eta_seconds=647.0,
+            workers=12,
+        )
+    )
+    counts = page.progress_counts_label.text()
+    timing = page.progress_timing_label.text()
+    ok = (
+        counts == "6,342 / 10,000 processed"
+        and page.progress_bar.value() == 6_342
+        and page.progress_bar.format() == "63.4%"
+        and "Remaining ~00:10:47" in timing
+    )
+    page.close()
+    return ok, f"{counts} | {page.progress_bar.format()} | {timing}"
+
+
+def _check_progress_panel_has_no_per_scan_widgets() -> CheckResult:
+    """Ten thousand rows must not become ten thousand widgets."""
+    from pathlib import Path as _Path
+
+    from PySide6.QtWidgets import QProgressBar
+
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.scan.page import ScanEntry, ScanPage
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
+    page = ScanPage(spec)
+    page.state.entries.extend(
+        ScanEntry(path=_Path(f"scan{index:05d}.png")) for index in range(10_000)
+    )
+    started = time.perf_counter()
+    page._rebuild_scan_table()
+    elapsed = time.perf_counter() - started
+
+    bars = len(page.findChildren(QProgressBar))
+    rows = page.scan_table.rowCount()
+    page.close()
+    return bars == 1 and rows == 10_000, (
+        f"{rows:,} rows built in {elapsed:.2f}s with {bars} progress bar"
+    )
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -447,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         ("scan page constructs", _check_scan_page_constructs),
         ("settings dialog offers Processing", _check_settings_dialog_processing_section),
         ("settings dialog offers Diagnostics", _check_settings_dialog_diagnostics_section),
+        ("progress panel renders a large batch", _check_progress_panel_renders_a_large_batch),
+        ("no per-scan widgets at 10,000 rows", _check_progress_panel_has_no_per_scan_widgets),
     ]
 
     # The Scan checks drive the real template that describes the real sample.

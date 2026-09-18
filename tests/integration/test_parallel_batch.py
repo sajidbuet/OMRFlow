@@ -482,6 +482,91 @@ class TestCancellation:
         assert not multiprocessing.active_children()
 
 
+class TestProgressForADisplay:
+    """What a progress display can rely on while several workers run."""
+
+    def test_every_completion_carries_its_outcome(self, template, batch_of_six):
+        seen = []
+        process_batch(batch_of_six, template, workers=4, on_progress=seen.append)
+
+        # The outcome travels on the *progress* event, not only on the result,
+        # because on a multicore run the results are released in batch order
+        # and a counter that waited for them would lag behind the bar.
+        assert all(update.outcome for update in seen)
+        assert {update.outcome for update in seen} == {"complete"}
+
+    def test_the_counts_a_tracker_derives_match_the_final_report(
+        self, tmp_path, template, make_scan
+    ):
+        from omr_scanner.services.batch_progress import BatchProgressTracker, JobStatus
+
+        scans = tmp_path / "scans"
+        scans.mkdir(exist_ok=True)
+        paths = []
+        for index in range(8):
+            if index % 4 == 3:
+                bad = scans / f"bad{index}.png"
+                bad.write_bytes(b"not an image")
+                paths.append(bad)
+            else:
+                paths.append(make_scan(f"good{index}.png", roll=f"100000{index}"))
+
+        tracker = BatchProgressTracker()
+        tracker.start(len(paths), workers=4)
+        statuses = {
+            "complete": JobStatus.SUCCESS,
+            "review": JobStatus.WARNING,
+            "registration_failed": JobStatus.FAILED,
+            "error": JobStatus.FAILED,
+        }
+
+        def count(update) -> None:
+            status = statuses.get(update.outcome)
+            if status is not None:
+                tracker.record(status)
+
+        report = process_batch(paths, template, workers=4, on_progress=count)
+        tracker.finish()
+        snapshot = tracker.snapshot()
+
+        # Eight sheets finishing on four workers, counted once each - and the
+        # tally agrees with the report the batch itself produced.
+        assert snapshot.completed == report.total == 8
+        assert snapshot.successful == report.complete_count
+        assert snapshot.warnings == report.review_count
+        assert snapshot.failed == report.failed_count == 2
+        assert snapshot.fraction == 1.0
+
+    def test_a_cancelled_run_reports_fewer_completions_than_the_total(
+        self, template, batch_of_six
+    ):
+        from omr_scanner.services.batch_progress import BatchProgressTracker, JobStatus
+
+        tracker = BatchProgressTracker()
+        tracker.start(len(batch_of_six), workers=2)
+        done = {"n": 0}
+
+        def count(update) -> None:
+            if update.outcome:
+                tracker.record(JobStatus.SUCCESS)
+                done["n"] += 1
+
+        report = process_batch(
+            batch_of_six,
+            template,
+            workers=2,
+            on_progress=count,
+            should_cancel=lambda: done["n"] >= 2,
+        )
+        tracker.finish(cancelled=True)
+        snapshot = tracker.snapshot()
+
+        assert report.cancelled is True
+        assert snapshot.completed == done["n"]
+        assert snapshot.remaining == len(batch_of_six) - snapshot.completed
+        assert snapshot.eta_seconds is None
+
+
 class TestProcessHygiene:
     def test_no_worker_process_is_left_behind_after_a_normal_run(
         self, template, batch_of_six

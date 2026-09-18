@@ -8,6 +8,8 @@ versioned result contract with per-bubble evidence, diagnostics, headless
 tools, a synthetic dataset generator and a benchmark harness (§12). The phase
 stays in testing/stabilisation; recognition *accuracy* is unchanged and
 uncalibrated.
+**Updated:** 2026-09-18 — large-batch progress: a counting/ETA tracker,
+a progress panel, throttled repainting and responsive cancellation (§14).
 **Version:** 0.1.0.dev0
 **Environment verified on:** Windows 11, Python 3.12.7, PySide6 6.11.2, OpenCV
 5.0.0, NumPy 2.5.3
@@ -480,7 +482,78 @@ were asserted as readable rather than recorded as ambiguous.
 
 ---
 
-## 13. Phase 4 entry criteria
+## 14. Large-batch progress (2026-09-18)
+
+Built for examination-scale runs - 10,000+ scripts in one batch - without
+changing the recognition engine.
+
+### What was added
+
+| Module | Contents |
+|---|---|
+| `services/batch_progress.py` | `BatchProgressTracker` (thread-safe counting, EMA throughput, ETA with a warm-up), `ProgressSnapshot`, `JobStatus`, `BatchState`, and the shared `format_duration` / `format_rate` / `format_count`. |
+| `gui/scan/page.py` | The progress panel (`batchProgressPanel` and five labels), a 200 ms refresh timer, buffered row updates, a path-to-row index, the preparing state, cancellation UX and the completion summary. |
+| `gui/scan/worker.py` | `BatchWorker` owns the tracker, records every completion off the GUI thread, and exposes `progress_snapshot()`. |
+
+`BatchProgress` gained `outcome`, so successes, reviews and failures can be
+tallied as sheets *finish* - which on a multicore run is earlier than results
+are released in batch order.
+
+### The shape of it
+
+```text
+worker processes → batch_processor → BatchWorker(QThread) → tracker.record()
+                                                                  │
+                                      ScanPage QTimer (200 ms) ◄── snapshot()
+                                                                  │
+                                                          progress panel
+```
+
+Pulled, not pushed. A batch finishing fifty sheets a second updates fifty
+counters and repaints five times.
+
+### Four decisions worth carrying forward
+
+- **Every terminal state advances the bar.** A failed scan is a finished scan.
+  Counting only successes is how a bar stalls at 97% while three hundred
+  corrupt files quietly fail - and a batch of bad files is exactly the batch
+  someone is watching.
+- **Counting is central and locked.** Workers report; they never increment a
+  shared counter and never touch a widget. Eight simultaneous completions is
+  an ordinary case rather than a race, and a test drives eight threads through
+  it.
+- **The estimate is smoothed and warmed up.** An exponential moving average
+  over half-second samples, and nothing offered at all until about ten sheets
+  have finished. The failure this avoids is "1 / 10,000 - remaining 27 hours"
+  followed ten seconds later by "34 minutes"; the multicore start-up cost is
+  precisely the evidence that must not be believed.
+- **A snapshot is an immutable value.** A slow repaint cannot show a
+  half-updated batch, and the whole estimator is testable headlessly with a
+  fake clock - which is why it has 58 tests rather than a demonstration.
+
+### Memory
+
+A batch retains one result per sheet, because the CSV export needs it. It no
+longer retains the per-bubble evidence, which the page never reads: **6.7 KB
+per sheet instead of 61.6 KB**, or about 68 MB rather than 631 MB across ten
+thousand sheets. Diagnostics keep it, because the diagnostic images are drawn
+from it. Only paths are queued; images are loaded when a worker reaches them.
+
+### What was measured
+
+- A 10,000-job simulation reaches exactly 10,000 / 10,000 and 100.0%, with the
+  counters reconciling and the estimate falling monotonically, in under a
+  second.
+- 10,000 scan-list rows build in 0.28 s and produce exactly one progress bar.
+- Real batches of a dozen sheets drive the panel end to end, including a
+  corrupt file and a cancellation.
+
+**Not** measured: a real ten-thousand-scan recognition run. The largest timed
+batch remains 48 scans (§12), and no performance limit is claimed.
+
+---
+
+## 15. Phase 4 entry criteria
 
 **Already in place**
 

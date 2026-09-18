@@ -509,16 +509,20 @@ class TestEScanPageUsesTheSetting:
                 ProcessingSettings(mode=ProcessingMode.CUSTOM, worker_count=2)
             )
         )
-        seen: list[str] = []
+        seen: list[tuple[str, str]] = []
         loaded.progress_bar.valueChanged.connect(
-            lambda _value: seen.append(loaded.progress_label.text())
+            lambda _value: seen.append(
+                (loaded.progress_counts_label.text(), loaded.progress_rate_label.text())
+            )
         )
 
         with qtbot.waitSignal(loaded.batch_finished, timeout=BATCH_TIMEOUT_MS):
             assert loaded.process_all() is True
 
-        assert any("Completed 1 / 4" in text for text in seen), seen
-        assert any("2 workers" in text for text in seen), seen
+        # The counts line carries "n / total processed" and the rate line
+        # names the workers; the headline label says what the batch is doing.
+        assert any("/ 4 processed" in counts for counts, _rate in seen), seen
+        assert any("2 workers" in rate for _counts, rate in seen), seen
 
     def test_completion_is_reported_with_the_worker_count_and_the_time_taken(
         self, qtbot, window: MainWindow, loaded: ScanPage
@@ -531,9 +535,10 @@ class TestEScanPageUsesTheSetting:
         with qtbot.waitSignal(loaded.batch_finished, timeout=BATCH_TIMEOUT_MS):
             assert loaded.process_all() is True
 
-        summary = loaded.progress_label.text()
-        assert "4 processed" in summary
-        assert "2 worker(s)" in summary
+        assert loaded.progress_label.text() == "Batch processing complete."
+        assert "4 / 4 processed" in loaded.progress_counts_label.text()
+        assert "2 workers" in loaded.progress_rate_label.text()
+        assert "Completed in" in loaded.progress_timing_label.text()
         assert loaded.progress_bar.value() == loaded.progress_bar.maximum()
 
     def test_the_controls_come_back_after_a_multicore_run(

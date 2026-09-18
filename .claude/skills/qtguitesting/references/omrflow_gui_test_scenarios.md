@@ -53,7 +53,13 @@ Scene items are keyed by domain id: `canvas._scene.region_items["questions_0"]`,
 | `addScansButton`, `addFolderButton`, `clearScansButton` | Scans group |
 | `processAllButton`, `processSelectedButton`, `reprocessButton`, `cancelButton` | Processing group |
 | `workersLabel` | "124 scans - 8 parallel workers", above the Process buttons |
-| `progressBar`, `progressLabel` | Progress reporting |
+| `batchProgressPanel` | The progress readout as a whole |
+| `progressBar` | Driven by completed/total, never by a percentage |
+| `progressLabel` | The headline: Preparing / Processing / Complete / Cancelling |
+| `progressCountsLabel` | "6,342 / 10,000 processed" |
+| `progressTimingLabel` | "Elapsed 00:18:42 · Remaining ~00:10:47" |
+| `progressRateLabel` | "Speed 5.7 scans/sec · 12 workers" |
+| `progressOutcomeLabel` | "Successful 6,301 · Review 28 · Failed 13" |
 | `renameScansCheckBox`, `outputFolderButton`, `outputFolderLabel` | Output group |
 | `exportCsvButton` | CSV export |
 | `scanTable` | The scan list: Original file, Roll, Set, Status, Output file |
@@ -334,6 +340,38 @@ check).
 
 ---
 
+## Scenario 15 - Large-batch progress, ETA and cancellation
+
+The progress panel is a pure function of a
+`ProgressSnapshot`, so most of it is checked by constructing one and calling
+`page._render_progress(...)` - no ten-thousand-sheet batch required.
+
+**Invariants:**
+
+```
+6,342 / 10,000   -> bar value 6342, maximum 10000, format "63.4%"
+9,999 / 10,000   -> value != maximum   (never rounds up to finished)
+no ETA yet       -> "Remaining Calculating...", no "~" anywhere
+cancelling       -> "Remaining Cancelling...", Cancel disabled, label changed
+complete         -> value == maximum, "100.0%", "Completed in HH:MM:SS"
+10,000 rows      -> exactly one QProgressBar in the page
+```
+
+Then with a real batch of a dozen sheets: the bar advances monotonically, a
+failed scan still advances it, the outcome tallies add up to the processed
+count, and no `QMessageBox` appears for an unreadable file.
+
+**Throttling:** `_on_progress` must not touch a widget - fifty calls in a row
+leave the labels unchanged - and `_on_scan_done` must only mark its row dirty,
+with `_flush_dirty_rows()` doing the drawing.
+
+**Automated:** `tests/gui/test_batch_progress_gui.py`,
+`tests/unit/test_batch_progress.py` (the estimator, headless, including a
+10,000-job simulation), and `scripts/run_gui_smoke_tests.py` (panel rendering
+and the no-per-scan-widgets check).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -360,6 +398,8 @@ scan_duplicate_rolls.png
 scan_exported.png
 scan_multicore_four.png
 scan_multicore_single.png
+scan_progress_large_batch.png
+scan_progress_cancelling.png
 settings_processing_automatic.png
 settings_processing_single_core.png
 settings_processing_custom.png

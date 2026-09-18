@@ -350,6 +350,59 @@ def _capture_scan_exported(image: Path) -> list[Path]:
     return written
 
 
+def _capture_scan_progress(image: Path) -> list[Path]:
+    """The progress panel mid-batch and at completion, at ten-thousand scale.
+
+    Rendered from constructed snapshots rather than by processing ten thousand
+    sheets: the panel is a pure function of a snapshot, and the point of the
+    capture is to read the layout - do the numbers fit the column, is the
+    remaining time legible, is "Failed 13" visible without relying on colour.
+    """
+    from omr_scanner.services.batch_progress import BatchState, ProgressSnapshot
+
+    harness = build_scan_page([image])
+    page = harness.page
+
+    written: list[Path] = []
+    mid_batch = ProgressSnapshot(
+        state=BatchState.PROCESSING,
+        total=10_000,
+        successful=6_301,
+        warnings=28,
+        failed=13,
+        elapsed_seconds=1_122.0,
+        rate=5.65,
+        eta_seconds=647.0,
+        finish_wall_clock=None,
+        workers=12,
+    )
+    page._render_progress(mid_batch)
+    harness.process_events()
+    print(
+        f"  mid-batch: {page.progress_counts_label.text()} | "
+        f"{page.progress_bar.format()} | {page.progress_timing_label.text()}"
+    )
+    written.append(_save(page, "scan_progress_large_batch"))
+
+    page._render_progress(
+        ProgressSnapshot(
+            state=BatchState.CANCELLING,
+            total=10_000,
+            successful=6_301,
+            warnings=28,
+            failed=13,
+            elapsed_seconds=1_122.0,
+            rate=5.65,
+            workers=12,
+        )
+    )
+    harness.process_events()
+    written.append(_save(page, "scan_progress_cancelling"))
+
+    harness.shutdown()
+    return written
+
+
 def _capture_settings(_image: Path) -> list[Path]:
     """The Processing settings in each of its three modes.
 
@@ -429,6 +482,7 @@ SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "scan-duplicates": _capture_scan_duplicates,
     "scan-export": _capture_scan_exported,
     "scan-multicore": _capture_scan_multicore,
+    "scan-progress": _capture_scan_progress,
     "settings": _capture_settings,
 }
 

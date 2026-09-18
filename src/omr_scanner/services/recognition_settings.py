@@ -111,12 +111,20 @@ class RecognitionOptions:
             turn this off: only the sheet being looked at is ever shown.
         preview_max_dimension: Longest side of that preview, or ``None`` to keep
             the rectified page at full size.
-        keep_bubble_measurements: Keep the per-bubble evidence (fill ratio,
-            darkness, contrast, the threshold it was compared against) on the
-            result. On by default, because those numbers are what make a future
-            recalibration possible without re-reading every image, and because a
-            reviewer asking "why was this flagged?" needs them. Turning it off
-            drops roughly one small record per bubble.
+        keep_bubble_measurements: Keep the per-bubble records - position, fill
+            ratio, darkness, contrast, the threshold each was compared against
+            - on the result. On by default, because those numbers are what make
+            a future recalibration possible without re-reading every image,
+            what an overlay draws, and what a reviewer asking "why was this
+            flagged?" needs.
+
+            Turning it off omits the records entirely rather than blanking
+            them, because they *are* the weight: a hundred-question sheet
+            carries five hundred of them against a hundred answers. A caller
+            that keeps results for ten thousand sheets and only needs the
+            values - the Scan page, building a CSV - saves roughly an order of
+            magnitude of memory by declining them. No decision changes either
+            way.
         keep_quality_metrics: Measure the scan's brightness, contrast and
             sharpness. Cheap, diagnostic, and never consulted by a decision.
         diagnostics: Debug-image output; off unless asked for.

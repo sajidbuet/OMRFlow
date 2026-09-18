@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -70,14 +70,19 @@ from omr_scanner.services import (
     BatchOptions,
     BatchProgress,
     BatchReport,
+    BatchState,
     DiagnosticsOptions,
     FilenameAllocator,
     ProcessedScan,
+    ProgressSnapshot,
     RecognitionOptions,
     RecognitionOutcome,
     ScanResult,
     collect_scan_files,
     export_scan_results,
+    format_count,
+    format_duration,
+    format_rate,
     load_template,
 )
 
@@ -107,6 +112,14 @@ enough that a batch of hundreds cannot fill memory - the scan list holds
 results, never images."""
 
 TOOLBAR_ICON_SIZE_PX = 18
+
+PROGRESS_REFRESH_MS = 200
+"""How often the progress panel and the scan list are repainted, in milliseconds.
+
+Five refreshes a second: fast enough that the bar looks live and the Cancel
+button feels immediate, slow enough that a machine finishing fifty sheets a
+second asks Qt to repaint five times rather than fifty. The counters behind it
+update on *every* completed sheet - only the drawing is throttled."""
 
 WORKER_SHUTDOWN_TIMEOUT_MS = 30_000
 """How long the page waits for a cancelled batch to finish when it closes.
@@ -231,6 +244,21 @@ class ScanPage(WorkflowPage):
         self._allocator = FilenameAllocator(None)
         self._suppress_selection = False
 
+        # Row lookup by source path. A ten-thousand-sheet batch finishes ten
+        # sheets a second; searching the list for each one would be quadratic
+        # and would spend more time finding rows than reading pages.
+        self._row_by_path: dict[Path, int] = {}
+        # Rows whose contents have changed but which have not been redrawn
+        # yet. Flushed by the refresh timer, so the table is repainted a few
+        # times a second rather than once per completed sheet.
+        self._dirty_rows: set[int] = set()
+        self._last_snapshot = ProgressSnapshot()
+        self._final_report: BatchReport | None = None
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(PROGRESS_REFRESH_MS)
+        self._refresh_timer.timeout.connect(self._refresh_progress)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._build_controls())
         splitter.addWidget(self._build_centre())
@@ -323,21 +351,12 @@ class ScanPage(WorkflowPage):
         self.reprocess_button.clicked.connect(self.reprocess_all)
         process_layout.addWidget(self.reprocess_button)
 
-        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button = QPushButton("Cancel Processing")
         self.cancel_button.setObjectName("cancelButton")
         self.cancel_button.clicked.connect(self.cancel_processing)
         process_layout.addWidget(self.cancel_button)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setObjectName("progressBar")
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        process_layout.addWidget(self.progress_bar)
-
-        self.progress_label = QLabel("")
-        self.progress_label.setObjectName("progressLabel")
-        self.progress_label.setWordWrap(True)
-        process_layout.addWidget(self.progress_label)
+        process_layout.addWidget(self._build_progress_panel())
         layout.addWidget(process_box)
 
         # -- Output ----------------------------------------------------
@@ -372,6 +391,67 @@ class ScanPage(WorkflowPage):
         layout.addWidget(output_box)
 
         layout.addStretch(1)
+        return panel
+
+    def _build_progress_panel(self) -> QWidget:
+        """Build the batch progress readout.
+
+        Five short lines rather than a table of statistics: this sits in a
+        290-pixel column beside the sheet a user is reading, and the questions
+        it has to answer at a glance are "how far", "how long", "how fast" and
+        "how much went wrong". Every line has a stable ``objectName`` so the
+        GUI tests can read it without walking the widget tree.
+
+        Nothing here is per-scan. A batch of ten thousand sheets produces
+        exactly these widgets, which is the whole point: the alternative -
+        a row, a bar or a log line per sheet - is what makes large-batch
+        interfaces collapse.
+        """
+        panel = QWidget()
+        panel.setObjectName("batchProgressPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 2, 0, 0)
+        layout.setSpacing(2)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("progressBar")
+        # Driven by completed/total directly - no percentage conversion, so
+        # the widget can never round 9,999 of 10,000 up to a finished-looking
+        # bar. The format string carries the percentage instead.
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        layout.addWidget(self.progress_bar)
+
+        self.progress_label = QLabel("")
+        self.progress_label.setObjectName("progressLabel")
+        self.progress_label.setWordWrap(True)
+        layout.addWidget(self.progress_label)
+
+        self.progress_counts_label = QLabel("")
+        self.progress_counts_label.setObjectName("progressCountsLabel")
+        self.progress_counts_label.setWordWrap(True)
+        layout.addWidget(self.progress_counts_label)
+
+        self.progress_timing_label = QLabel("")
+        self.progress_timing_label.setObjectName("progressTimingLabel")
+        self.progress_timing_label.setWordWrap(True)
+        layout.addWidget(self.progress_timing_label)
+
+        self.progress_rate_label = QLabel("")
+        self.progress_rate_label.setObjectName("progressRateLabel")
+        self.progress_rate_label.setWordWrap(True)
+        layout.addWidget(self.progress_rate_label)
+
+        self.progress_outcome_label = QLabel("")
+        self.progress_outcome_label.setObjectName("progressOutcomeLabel")
+        self.progress_outcome_label.setWordWrap(True)
+        # Words, not colour alone: "Failed 13" has to be readable to someone
+        # who cannot distinguish the tint behind it.
+        self.progress_outcome_label.setToolTip(
+            "How the finished sheets ended: read cleanly, needing review, or unreadable."
+        )
+        layout.addWidget(self.progress_outcome_label)
         return panel
 
     def _build_centre(self) -> QWidget:
@@ -562,10 +642,19 @@ class ScanPage(WorkflowPage):
         one - the selected sheet is re-rendered on demand.
         """
         processing = self.state.processing
+        writes_diagnostics = processing.writes_diagnostics
         return RecognitionOptions(
             with_preview=False,
+            # The per-bubble evidence is roughly 90% of a result's memory - on
+            # a 100-question sheet, five hundred records against a hundred
+            # answers - and the page never reads it: the overlay comes from the
+            # preview worker's own fresh result, and the CSV exports values.
+            # Over ten thousand sheets that is the difference between about
+            # 600 MB and about 60 MB of retained results. Diagnostics *do* need
+            # it, so it is kept exactly when something will use it.
+            keep_bubble_measurements=writes_diagnostics,
             diagnostics=DiagnosticsOptions(
-                enabled=processing.writes_diagnostics,
+                enabled=writes_diagnostics,
                 directory=processing.diagnostics_dir,
             ),
         )
@@ -682,8 +771,20 @@ class ScanPage(WorkflowPage):
             How many scans were added. Files already in the list are skipped, so
             adding the same folder twice does not duplicate it.
         """
+        # Walking a folder of ten thousand files and building their rows takes
+        # a moment, and a window that says nothing during it looks stuck.
+        # `repaint()` rather than `processEvents()`: this paints one label
+        # synchronously without re-entering the event loop, so no stray click
+        # can arrive in the middle of rebuilding the list.
+        self.progress_label.setText("Preparing batch...")
+        self.progress_label.repaint()
+
         known = {entry.path.resolve() for entry in self.state.entries}
         added = 0
+        # Only the paths are collected here - never the images. Ten thousand
+        # scans is ten thousand short strings, which is the difference between
+        # a batch that starts instantly and one that runs the machine out of
+        # memory before it reads anything.
         for path in collect_scan_files(selection):
             resolved = path.resolve()
             if resolved in known:
@@ -697,19 +798,37 @@ class ScanPage(WorkflowPage):
             if self.scan_table.currentRow() < 0:
                 self.select_scan(0)
         _LOGGER.info("Added %d scan(s); list now holds %d", added, len(self.state.entries))
+        self.progress_label.setText("")
         self._refresh_controls()
         return added
 
     def clear_scans(self) -> None:
-        """Empty the scan list and the preview."""
+        """Empty the scan list, the preview and the progress readout."""
         if self._worker is not None and self._worker.isRunning():
             return
         self.state.entries.clear()
         self._preview_cache.clear()
+        self._final_report = None
+        self._last_snapshot = ProgressSnapshot()
         self._rebuild_scan_table()
         self.preview.clear()
         self._show_result(None)
+        self._reset_progress_panel()
         self._refresh_controls()
+
+    def _reset_progress_panel(self) -> None:
+        """Return the progress readout to its idle, nothing-to-report state."""
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        for label in (
+            self.progress_label,
+            self.progress_counts_label,
+            self.progress_timing_label,
+            self.progress_rate_label,
+            self.progress_outcome_label,
+        ):
+            label.setText("")
 
     def _default_scan_dir(self) -> Path:
         """Where the scan file dialogs should start."""
@@ -811,16 +930,19 @@ class ScanPage(WorkflowPage):
             recognition=self._engine_options(),
         )
         workers = self.planned_worker_count(len(paths))
-        self.progress_bar.setRange(0, len(paths))
-        self.progress_bar.setValue(0)
-        self.progress_label.setText(
-            f"Processing {len(paths)} scan(s) using {workers} worker(s)..."
-        )
+        self._final_report = None
+        # Everything before the first sheet is read is "preparing": the worker
+        # pool has to start, and showing "0 / 10,000, 0%, remaining 00:00:00"
+        # while that happens looks like a stalled run rather than a starting
+        # one.
+        self._show_preparing(len(paths))
+
         _LOGGER.info(
-            "Starting a batch of %d scan(s) with %d worker(s) (mode: %s)",
+            "Batch started: %d scan(s), %d worker(s), mode %s, diagnostics %s",
             len(paths),
             workers,
             self.state.processing.mode.value,
+            "on" if self.state.processing.writes_diagnostics else "off",
         )
 
         worker = BatchWorker(
@@ -837,65 +959,232 @@ class ScanPage(WorkflowPage):
         worker.failed.connect(self._on_batch_failed)
         self._worker = worker
         worker.start()
+        # The timer takes over from here. Deliberately not refreshed inline:
+        # "Preparing batch..." should survive until the first tick, which is
+        # roughly how long a worker pool takes to start.
+        self._refresh_timer.start()
         self._refresh_controls()
         return True
 
+    def _show_preparing(self, total: int) -> None:
+        """Put the panel into its "counting the work" state."""
+        self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
+        self.progress_label.setText("Preparing batch...")
+        self.progress_counts_label.setText(f"0 / {format_count(total)} processed")
+        self.progress_timing_label.setText("Elapsed --:-- · Remaining Calculating...")
+        self.progress_rate_label.setText("Speed --")
+        self.progress_outcome_label.setText("")
+
     def cancel_processing(self) -> None:
-        """Ask a running batch to stop after the sheet it is working on."""
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.cancel()
-            self.progress_label.setText("Cancelling after the current sheet...")
+        """Ask a running batch to stop after the sheets being read.
 
-    def _on_progress(self, update: BatchProgress) -> None:
-        """Update the progress bar. Runs on the GUI thread via a queued signal.
-
-        Counts completed sheets rather than naming "the file being processed":
-        with several workers there are several of those at once, and a count is
-        both true and the number a user actually wants.
+        The button is disabled immediately and the panel says so: a cancel that
+        leaves the button live invites a second click, and a second click on a
+        batch that is already stopping has nothing to do except confuse.
         """
-        self.progress_bar.setValue(update.completed)
-        workers = self._worker.workers if self._worker is not None else 1
-        self.progress_label.setText(
-            f"Completed {update.completed} / {update.total}"
-            f" - {workers} worker{'' if workers == 1 else 's'}"
-        )
+        if self._worker is None or not self._worker.isRunning():
+            return
+        self._worker.cancel()
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.setText("Cancelling...")
+        self.progress_label.setText("Cancelling batch processing...")
+        self.progress_timing_label.setText("Remaining: Cancelling...")
+        _LOGGER.info("Batch cancellation requested by the user")
+        self._refresh_progress()
+
+    # ------------------------------------------------------------------
+    # Progress rendering
+    # ------------------------------------------------------------------
+    def _on_progress(self, update: BatchProgress) -> None:
+        """React to one sheet finishing. Runs on the GUI thread.
+
+        Deliberately almost empty. The counting already happened in the worker
+        thread's tracker, and the widgets are repainted by
+        :meth:`_refresh_progress` on a timer - so a machine that finishes fifty
+        sheets a second does not ask Qt to repaint fifty times a second.
+        """
 
     def _on_scan_done(self, processed: ProcessedScan) -> None:
-        """Record one finished scan and refresh its row."""
-        for row, entry in enumerate(self.state.entries):
-            if entry.path == processed.source_path:
-                entry.processed = processed
-                self._update_scan_row(row, entry)
-                if row == self.scan_table.currentRow():
-                    self._show_result(processed)
-                break
+        """Record one finished scan and mark its row for redrawing.
+
+        The row is *not* redrawn here. It is added to a set that the refresh
+        timer flushes, which turns ten thousand individual table updates into
+        a few hundred batched ones.
+        """
+        row = self._row_by_path.get(processed.source_path)
+        if row is None:
+            return
+        self.state.entries[row].processed = processed
+        self._dirty_rows.add(row)
+
+    def _refresh_progress(self) -> None:
+        """Repaint the progress panel and any rows that have changed.
+
+        The single throttled point at which batch state reaches the screen.
+        Called by the refresh timer while a run is going, and directly at the
+        start and end of one so that neither is left waiting for a tick.
+        """
+        self._flush_dirty_rows()
+        if self._worker is None:
+            return
+        snapshot = self._worker.progress_snapshot()
+        self._last_snapshot = snapshot
+        self._render_progress(snapshot)
+
+    def _flush_dirty_rows(self) -> None:
+        """Redraw the scan-list rows that finished since the last refresh."""
+        if not self._dirty_rows:
+            return
+        rows = sorted(self._dirty_rows)
+        self._dirty_rows.clear()
+        self._suppress_selection = True
+        try:
+            for row in rows:
+                if 0 <= row < len(self.state.entries):
+                    self._update_scan_row(row, self.state.entries[row])
+        finally:
+            self._suppress_selection = False
+
+        current = self.scan_table.currentRow()
+        if current in rows and 0 <= current < len(self.state.entries):
+            self._show_result(self.state.entries[current].processed)
+
+    def _render_progress(self, snapshot: ProgressSnapshot) -> None:
+        """Write one progress snapshot into the panel's labels."""
+        total = snapshot.total
+        completed = snapshot.completed
+
+        if total > 0:
+            if self.progress_bar.maximum() != total:
+                self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(completed)
+            # One decimal, and computed from the exact counts rather than from
+            # the widget: 9,999 of 10,000 must not read as 100%.
+            self.progress_bar.setFormat(f"{snapshot.percent:.1f}%")
+            self.progress_counts_label.setText(
+                f"{format_count(completed)} / {format_count(total)} processed"
+            )
+
+        if snapshot.state is BatchState.PROCESSING:
+            self.progress_label.setText("Processing OMR scans...")
+
+        if snapshot.state in (BatchState.CANCELLING, BatchState.CANCELLED):
+            remaining = "Cancelling..."
+        elif not snapshot.has_eta:
+            # Warm-up, or a stall. Saying so is honest; a number derived from
+            # two completions would not be.
+            remaining = "Calculating..."
+        else:
+            remaining = f"~{format_duration(snapshot.eta_seconds)}"
+        self.progress_timing_label.setText(
+            f"Elapsed {format_duration(snapshot.elapsed_seconds)} · Remaining {remaining}"
+        )
+
+        rate = f"Speed {format_rate(snapshot.rate)}"
+        workers = f"{snapshot.workers} worker{'' if snapshot.workers == 1 else 's'}"
+        finish = ""
+        if snapshot.finish_wall_clock is not None and snapshot.state is BatchState.PROCESSING:
+            finish = f" · Finish ~{_clock_time(snapshot.finish_wall_clock)}"
+        self.progress_rate_label.setText(f"{rate} · {workers}{finish}")
+
+        self.progress_outcome_label.setText(
+            f"Successful {format_count(snapshot.successful)} · "
+            f"Review {format_count(snapshot.warnings)} · "
+            f"Failed {format_count(snapshot.failed)}"
+        )
 
     def _on_batch_finished(self, report: BatchReport) -> None:
         """Finish a run: summarise it and re-enable the controls."""
-        self.progress_bar.setValue(self.progress_bar.maximum())
-        summary = (
-            f"{report.total} processed - {report.complete_count} complete, "
-            f"{report.review_count} for review, {report.failed_count} failed"
-        )
-        if report.written_count:
-            summary += f", {report.written_count} file(s) written"
-        if report.cancelled:
-            summary += " (cancelled)"
-        summary += (
-            f" - {report.worker_count} worker(s), {report.elapsed_seconds:.1f}s"
-        )
-        self.progress_label.setText(summary)
+        self._refresh_timer.stop()
+        snapshot = self._worker.progress_snapshot() if self._worker is not None else None
+        self._flush_dirty_rows()
         self._worker = None
+        self._final_report = report
+
+        if snapshot is not None:
+            self._last_snapshot = snapshot
+        self._render_completion(report, self._last_snapshot)
+
+        _LOGGER.info(
+            "Batch %s: %d processed (%d complete, %d review, %d failed), "
+            "%d written, %d worker(s), %s, %s",
+            "cancelled" if report.cancelled else "completed",
+            report.total,
+            report.complete_count,
+            report.review_count,
+            report.failed_count,
+            report.written_count,
+            format_duration(report.elapsed_seconds),
+            format_rate(report.total / report.elapsed_seconds if report.elapsed_seconds else 0.0),
+        )
+
         self._refresh_controls()
         if self.scan_table.currentRow() >= 0:
             self.select_scan(self.scan_table.currentRow())
         self.batch_finished.emit(report)
 
+    def _render_completion(self, report: BatchReport, snapshot: ProgressSnapshot) -> None:
+        """Show the final state: exactly 100%, or an honest partial count."""
+        total = max(snapshot.total, report.total)
+        processed = report.total
+        if total > 0:
+            self.progress_bar.setRange(0, total)
+            self.progress_bar.setValue(processed)
+            self.progress_bar.setFormat(f"{(processed / total) * 100:.1f}%")
+
+        duration = format_duration(snapshot.elapsed_seconds or report.elapsed_seconds)
+        average = report.total / report.elapsed_seconds if report.elapsed_seconds > 0 else 0.0
+
+        if report.cancelled:
+            self.progress_label.setText("Batch cancelled.")
+            self.progress_counts_label.setText(
+                f"{format_count(processed)} / {format_count(total)} processed · "
+                f"{format_count(max(total - processed, 0))} not processed"
+            )
+            self.progress_timing_label.setText(f"Stopped after {duration}")
+        else:
+            self.progress_label.setText("Batch processing complete.")
+            self.progress_counts_label.setText(
+                f"{format_count(processed)} / {format_count(total)} processed"
+            )
+            self.progress_timing_label.setText(
+                f"Completed in {duration} · Remaining {format_duration(0)}"
+            )
+
+        written = (
+            f" · {format_count(report.written_count)} file(s) written"
+            if report.written_count
+            else ""
+        )
+        self.progress_rate_label.setText(
+            f"Average {format_rate(average)} · {report.worker_count} "
+            f"worker{'' if report.worker_count == 1 else 's'}{written}"
+        )
+        self.progress_outcome_label.setText(
+            f"Successful {format_count(report.complete_count)} · "
+            f"Review {format_count(report.review_count)} · "
+            f"Failed {format_count(report.failed_count)}"
+        )
+
+        self.cancel_button.setText("Cancel Processing")
+
     def _on_batch_failed(self, message: str) -> None:
-        """Report a run that could not proceed at all."""
+        """Report a run that could not proceed at all.
+
+        One dialog, and only for a batch that never ran. An individual sheet
+        that fails is counted, logged and shown in the list - never raised as a
+        dialog, because a thousand-sheet batch with fifty bad files would
+        otherwise produce fifty modal interruptions.
+        """
+        self._refresh_timer.stop()
         self._worker = None
-        self.progress_label.setText(f"Processing failed: {message}")
+        self.progress_label.setText("Unable to start batch processing.")
+        self.progress_timing_label.setText(message)
+        self.cancel_button.setText("Cancel Processing")
         self._refresh_controls()
+        _LOGGER.error("Batch could not start: %s", message)
         QMessageBox.warning(self, "Processing failed", message)
 
     # ------------------------------------------------------------------
@@ -1080,13 +1369,28 @@ class ScanPage(WorkflowPage):
     # Scan table
     # ------------------------------------------------------------------
     def _rebuild_scan_table(self) -> None:
-        """Rebuild the scan list from scratch."""
+        """Rebuild the scan list from scratch.
+
+        Also rebuilds the path-to-row index, which is what makes finishing one
+        sheet an O(1) update instead of a scan of the whole list - the
+        difference between linear and quadratic work over a ten-thousand-sheet
+        batch.
+
+        Updates are disabled around the rebuild so that Qt lays the table out
+        once rather than after every row.
+        """
         self._suppress_selection = True
+        self.scan_table.setUpdatesEnabled(False)
         try:
+            self._row_by_path = {
+                entry.path: row for row, entry in enumerate(self.state.entries)
+            }
+            self._dirty_rows.clear()
             self.scan_table.setRowCount(len(self.state.entries))
             for row, entry in enumerate(self.state.entries):
                 self._update_scan_row(row, entry)
         finally:
+            self.scan_table.setUpdatesEnabled(True)
             self._suppress_selection = False
 
     def _update_scan_row(self, row: int, entry: ScanEntry) -> None:
@@ -1164,7 +1468,10 @@ class ScanPage(WorkflowPage):
         self.process_all_button.setEnabled(has_template and has_scans and not running)
         self.process_selected_button.setEnabled(has_template and has_scans and not running)
         self.reprocess_button.setEnabled(has_template and has_results and not running)
-        self.cancel_button.setEnabled(running)
+        # Enabled only while a run is going *and* has not already been asked to
+        # stop: a second cancel has nothing left to do.
+        cancelling = self._last_snapshot.state is BatchState.CANCELLING
+        self.cancel_button.setEnabled(running and not cancelling)
         self.load_template_button.setEnabled(not running)
         self.rename_checkbox.setEnabled(not running)
         self.output_folder_button.setEnabled(not running)
@@ -1185,12 +1492,25 @@ class ScanPage(WorkflowPage):
         wait is generous because cancelling still lets the sheets already inside
         a worker finish, which is a second or two each.
         """
+        self._refresh_timer.stop()
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
             self._worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
         if self._preview_worker is not None and self._preview_worker.isRunning():
             self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
         super().closeEvent(event)  # type: ignore[arg-type]
+
+
+def _clock_time(epoch_seconds: float) -> str:
+    """Render a Unix timestamp as a local time of day, for "finish at ~".
+
+    Time of day only: a batch that will finish tomorrow is already being
+    described by its remaining duration, and a date here would be noise in a
+    290-pixel column.
+    """
+    from datetime import datetime
+
+    return datetime.fromtimestamp(epoch_seconds).strftime("%H:%M")
 
 
 __all__ = ["ScanEntry", "ScanPage", "ScanPageState"]

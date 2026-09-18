@@ -416,3 +416,37 @@ How many workers is a *user setting* (`AppConfig.processing`, see
 the Settings dialog's "workers this setting uses" and the run itself can never
 disagree. See `docs/scan_workflow.md` §10 for the modes, the measured
 throughput and the reasoning behind the automatic cap.
+
+### Progress: counted centrally, drawn on a timer
+
+```text
+worker processes ──► batch_processor ──► BatchWorker (QThread)
+   one page each        one progress            │
+                        event per sheet         │ tracker.record(status)
+                                                ▼
+                                    BatchProgressTracker   (thread-safe)
+                                    counters · EMA rate · ETA
+                                                │
+                                                │ snapshot()   ← pulled
+                                                ▼
+                                    ScanPage QTimer, every 200 ms
+                                                │
+                                                ▼
+                                       progress panel widgets
+```
+
+Three decisions, each aimed at the ten-thousand-sheet case:
+
+- **Counting happens in one place, under one lock.** Workers report; they
+  never increment a shared counter and never touch a widget. Eight sheets
+  finishing in the same instant is then an ordinary case rather than a race,
+  and the totals always reconcile with the report the batch produces.
+- **The GUI pulls, it does not get pushed.** A batch finishing fifty sheets a
+  second would otherwise ask Qt to repaint fifty times a second. The tracker
+  is updated on every completion - the counts are exact - and the window reads
+  a snapshot five times a second. Row updates are buffered the same way, and
+  rows are found through a path index rather than by searching the list, which
+  is what keeps a long batch linear rather than quadratic.
+- **A snapshot is a value.** `ProgressSnapshot` is immutable, so a slow repaint
+  can never show a half-updated batch, and the whole estimator can be tested
+  headlessly with a fake clock.

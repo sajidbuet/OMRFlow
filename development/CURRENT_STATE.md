@@ -169,6 +169,30 @@ and 1,607 MB respectively. Reproduce with
 - Eleven stored result fixtures in `tests/fixtures/recognition/` let Phases 4
   and 5 be written and tested with no engine present.
 
+### Large-batch progress (Phase 3)
+
+- `omr_scanner.services.batch_progress` counts terminal jobs and estimates the
+  time remaining: an exponential moving average over half-second throughput
+  samples, a warm-up during which it says "Calculating..." rather than
+  extrapolating from one sheet, and an estimate that grows during a stall
+  instead of freezing. Thread-safe, headless, and tested with an injected
+  clock - including a 10,000-job simulation that runs in under a second.
+- The Scan page shows a fixed-size panel whatever the batch length: bar,
+  completed/total, percentage to one decimal, elapsed, remaining, throughput,
+  estimated finish, and successful/review/failed tallies. A failed sheet
+  advances the bar; 9,999 of 10,000 never reads as 100%.
+- Counting happens once, in the parent process, under one lock; the window
+  *pulls* a snapshot five times a second rather than being pushed one per
+  completion. Scan-list rows are buffered the same way and located through a
+  path index, so a long batch is linear rather than quadratic work.
+- Cancellation disables its own button immediately, says so, lets sheets in
+  flight finish rather than killing them mid-write, and reports both halves of
+  what happened.
+- Batch runs decline the per-bubble evidence they never read: 6.7 KB per sheet
+  instead of 61.6 KB on the 100-question sample, about **68 MB rather than
+  631 MB** across ten thousand sheets. Diagnostics keep it, because the
+  diagnostic images are drawn from it.
+
 **Measured on a synthetic mixed dataset** (12 sheets from the real sample's
 template, seed 20260918): answer accuracy 0.951, roll and set code 1.000, blank
 detection 1.000, double marks 1.000, borderline marks handled acceptably 19/19.
@@ -277,6 +301,10 @@ perspective, JPEG compression and cropping is tabulated in
 - The multicore path has only been exercised on the 16-thread Windows
   development machine. Other core counts, memory limits and platforms
   (`spawn` on Linux and macOS) are untested.
+- **No ten-thousand-scan run has been timed end to end.** The architecture
+  targets that scale, and the counting, estimation and interface paths are
+  exercised by a 10,000-job simulation, but the largest *real* batch measured
+  is 48 scans. No performance limit is claimed.
 
 ### Elsewhere
 
@@ -294,16 +322,19 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-1935 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2029 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest         1935 passed, 1 skipped in 161.8s
+pytest         2029 passed, 1 skipped in 201.0s
 ruff check .   All checks passed
-mypy           Success: no issues found in 89 source files
+mypy           Success: no issues found in 90 source files
 ```
 
-96 of those are the multicore work: `tests/unit/test_processing_settings.py`
+96 of those are the multicore work, and a further 94 the large-batch
+progress work (`tests/unit/test_batch_progress.py`, 58, including a
+10,000-job simulation; `tests/gui/test_batch_progress_gui.py`, 33;
+progress reconciliation across workers in the parallel integration tests): `tests/unit/test_processing_settings.py`
 (29, worker-count policy on every plausible machine),
 `tests/integration/test_parallel_batch.py` (32, real worker processes: result
 consistency at 1/2/4 workers, batch ordering, duplicate-roll collisions, failure
@@ -315,7 +346,7 @@ The skip is structural: `tests/unit/test_qtguitesting_skill.py` parametrises
 over the skill's scripts and skips `_harness.py`, which is shared plumbing
 rather than a command a user runs.
 
-1206 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
+1300 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
 added **no** new mypy overrides, Ruff ignores or tool configuration changes.
 
 Phase 2 added **one** tool configuration change, not a suppressed check: the

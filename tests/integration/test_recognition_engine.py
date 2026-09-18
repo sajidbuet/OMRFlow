@@ -190,12 +190,23 @@ class TestWhatAResultReports:
         assert all(bubble.rank == 0 for bubble in selected)
 
     def test_the_evidence_can_be_dropped_when_it_is_not_wanted(self, scan: Path, template):
+        """Dropped means *omitted*, because the records are the memory.
+
+        A hundred-question sheet carries five hundred bubble records against a
+        hundred answers, so a caller that keeps results for ten thousand sheets
+        - the Scan page, building a CSV - saves roughly an order of magnitude
+        by declining them. Blanking the fields would have saved nothing.
+        """
         options = RecognitionOptions(with_preview=False, keep_bubble_measurements=False)
-        result = RecognitionEngine(options).process(scan, template)
-        assert result.bubbles
-        assert all(bubble.ink_threshold == 0.0 for bubble in result.bubbles)
-        # The decision is unaffected - only the reporting.
-        assert result.identifier_value == "120317"
+        lean = RecognitionEngine(options).process(scan, template)
+        full = RecognitionEngine(RecognitionOptions(with_preview=False)).process(scan, template)
+
+        assert lean.bubbles == ()
+        assert full.bubbles
+        # The decision is unaffected - only what is reported about it.
+        assert lean.identifier_value == full.identifier_value == "120317"
+        assert lean.answers == full.answers
+        assert lean.fields == full.fields
 
     def test_a_readable_sheet_reports_ok_or_a_named_reservation(self, scan: Path, template):
         result = RecognitionEngine().process(scan, template)
