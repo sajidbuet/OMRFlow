@@ -30,11 +30,23 @@ from omr_scanner.config.paths import (
     user_config_dir,
     user_log_dir,
 )
+from omr_scanner.config.processing import (
+    AUTOMATIC_WORKER_LIMIT,
+    MAX_CONFIGURABLE_WORKERS,
+    ProcessingMode,
+    ProcessingSettings,
+    detected_cpu_count,
+)
 
 __all__ = [
+    "AUTOMATIC_WORKER_LIMIT",
+    "MAX_CONFIGURABLE_WORKERS",
     "AppConfig",
+    "ProcessingMode",
+    "ProcessingSettings",
     "app_config_file",
     "app_log_file",
+    "detected_cpu_count",
     "load_app_config",
     "save_app_config",
     "user_config_dir",

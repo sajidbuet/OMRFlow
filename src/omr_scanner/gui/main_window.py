@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner import APPLICATION_NAME, __version__
-from omr_scanner.config import AppConfig, load_app_config, save_app_config
+from omr_scanner.config import AppConfig, ProcessingSettings, load_app_config, save_app_config
 from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
@@ -54,6 +54,7 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.scan.page import ScanPage
+from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 from omr_scanner.services import ProjectSession, create_project, open_project
 
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):
         self._build_menus()
         self._build_status_bar()
         self._broadcast_project_change()
+        self._broadcast_config_change()
 
     # ------------------------------------------------------------------
     # Construction
@@ -277,6 +279,17 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        self.settings_action = QAction("&Settings...", self)
+        self.settings_action.setObjectName("settingsAction")
+        self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
+        self.settings_action.setStatusTip(
+            "Application preferences, including how many CPU workers batch processing uses"
+        )
+        self.settings_action.triggered.connect(self.show_settings)
+        file_menu.addAction(self.settings_action)
+
+        file_menu.addSeparator()
+
         self.exit_action = QAction("E&xit", self)
         self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         self.exit_action.triggered.connect(self.close)
@@ -300,6 +313,11 @@ class MainWindow(QMainWindow):
     def session(self) -> ProjectSession | None:
         """The open project session, or ``None`` when no project is open."""
         return self._session
+
+    @property
+    def config(self) -> AppConfig:
+        """The application configuration this window is working from."""
+        return self._config
 
     def create_project_at(self, parent_directory: Path, name: str) -> bool:
         """Create a project and open it, replacing any currently open project.
@@ -380,6 +398,32 @@ class MainWindow(QMainWindow):
     def _show_about(self) -> None:
         """Show the About dialog: identity, authorship and licence."""
         AboutDialog(self).exec()
+
+    def show_settings(self) -> None:
+        """Open the Settings dialog and apply whatever the user accepted."""
+        dialog = SettingsDialog(self._config, self)
+        if dialog.exec() == SettingsDialog.DialogCode.Accepted:
+            self.apply_processing_settings(dialog.processing_settings())
+
+    def apply_processing_settings(self, processing: ProcessingSettings) -> None:
+        """Adopt an edited Processing section, leaving every other setting alone."""
+        self.apply_config(self._config.with_processing(processing))
+
+    def apply_config(self, config: AppConfig) -> None:
+        """Adopt an edited configuration: persist it and tell the pages.
+
+        Separate from :meth:`show_settings` for the reason every command on this
+        window is: the dialog is untestable offscreen, the behaviour is not.
+        """
+        self._config = config
+        self._persist_config()
+        self._broadcast_config_change()
+
+    def _broadcast_config_change(self) -> None:
+        """Push settings that pages act on down to the pages that act on them."""
+        scan_page = self._pages.get("scan")
+        if isinstance(scan_page, ScanPage):
+            scan_page.set_processing_settings(self._config.processing)
 
     # ------------------------------------------------------------------
     # Internal state propagation

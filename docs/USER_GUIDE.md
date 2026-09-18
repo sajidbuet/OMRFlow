@@ -74,7 +74,9 @@ Select **3. Scan** to read filled sheets against a template.
 2. **Add Scan(s)...** for individual images, or **Add Folder...** to take every
    supported image in a folder (PNG, JPEG, TIFF, BMP; anything else is ignored).
 3. **Process All**, or select rows and **Process Selected**. The window stays
-   usable while it runs, and **Cancel** stops after the sheet in progress.
+   usable while it runs, shows `Completed 46 / 100`, and **Cancel** stops after
+   the sheets in progress. The line above the buttons says how the next run will
+   be shared out, for example `124 scans - 8 parallel workers`.
 4. Click a row to review it: the corrected sheet with the recognition overlay in
    the middle, and every recognised field and answer on the right. Zoom, fit,
    100% and pan all work, and the overlay layers toggle independently.
@@ -97,6 +99,24 @@ What to look for when reviewing:
 Full detail - supported formats, the recognition conventions, the duplicate
 naming rule, the CSV columns and the known limitations - is in
 `docs/scan_workflow.md`.
+
+## Using more of your computer (or less)
+
+**File > Settings > Processing** decides how many sheets OMRFlow reads at the
+same time.
+
+- **Automatic** (the default) picks a sensible number for your computer and
+  leaves it room to stay responsive. Most people never need to change this.
+- **Single core** reads one sheet at a time. Slower, but the gentlest on memory
+  and the easiest to follow if you are investigating a problem.
+- **Custom** lets you set the number yourself, up to the CPU threads your
+  machine reports. The dialog shows both "Detected CPU threads" and how many
+  workers the current setting will actually use.
+
+Reading sheets in parallel never changes *what* is recognised, only how long it
+takes. The results, the file names and the CSV come out in the same order
+whichever setting you choose, and no scan is ever overwritten. Your choice is
+remembered between sessions.
 
 ## Creating a project
 
@@ -144,8 +164,9 @@ same.
 
 ## Where OMRFlow keeps your settings
 
-Your preferences - log level, recent projects, the folder new projects start in -
-live in `omrflow.config.json` in your account's application data folder
+Your preferences - log level, recent projects, the folder new projects start in,
+and the Processing mode - live in `omrflow.config.json` in your account's
+application data folder
 (`%APPDATA%\OMRFlow` on Windows). Deleting that file loses only preferences, not
 project data.
 

@@ -52,6 +52,7 @@ Scene items are keyed by domain id: `canvas._scene.region_items["questions_0"]`,
 | `loadTemplateButton`, `templateNameLabel` | Template group |
 | `addScansButton`, `addFolderButton`, `clearScansButton` | Scans group |
 | `processAllButton`, `processSelectedButton`, `reprocessButton`, `cancelButton` | Processing group |
+| `workersLabel` | "124 scans - 8 parallel workers", above the Process buttons |
 | `progressBar`, `progressLabel` | Progress reporting |
 | `renameScansCheckBox`, `outputFolderButton`, `outputFolderLabel` | Output group |
 | `exportCsvButton` | CSV export |
@@ -63,6 +64,22 @@ Scene items are keyed by domain id: `canvas._scene.region_items["questions_0"]`,
 | `overlayZonesCheckBox`, `overlayBubblesCheckBox`, `overlayEmptyCheckBox` | Overlay layers |
 | `previewStatusLabel` | Page size and registration status |
 | `resultFieldsTable`, `resultAnswersTable`, `resultSummaryLabel` | Recognised values panel |
+
+### Settings dialog (Phase 3, multicore)
+
+| `objectName` | Widget |
+| --- | --- |
+| `settingsDialog` | The dialog itself (`File > Settings...`, `settingsAction`) |
+| `processingSettingsGroup` | The Processing section |
+| `processingModeCombo` | Automatic / Single core / Custom |
+| `workerCountSpinBox` | Parallel workers; range is `1 .. detected CPU threads` |
+| `detectedCpuLabel`, `activeWorkersLabel` | The two computed read-outs |
+| `processingExplanationLabel` | One sentence explaining the selected mode |
+
+Construct `SettingsDialog(config, cpu_count=N)` with an explicit `cpu_count` -
+the offered range depends on the machine, and fixing it is the only way an
+assertion about that range means the same thing on two computers. Never
+`exec()` it.
 
 **Never sleep waiting for a batch.** `ScanPage.batch_finished` carries the
 `BatchReport`; wait on it (`qtbot.waitSignal`, or `ScanHarness.run_batch()` in
@@ -288,6 +305,35 @@ summary rather than aborting.
 
 ---
 
+## Scenario 14 - Processing settings and multicore batches
+
+Open `File > Settings...`. Select each mode in `processingModeCombo` and watch
+`workerCountSpinBox` and `activeWorkersLabel`.
+
+**Invariants:**
+
+```
+Automatic     selector disabled, active = min(cpu - 1, 8)
+Single core   selector disabled, active = 1
+Custom        selector enabled,  active = the spin box value
+range         1 .. detected CPU threads; 0 and cpu+1 unreachable
+```
+
+Then, on the Scan page with several scans imported, process them once in Single
+core and once in Custom and compare.
+
+**Invariant:** the scan list, every recognised value and every output name are
+identical; rows stay in import order; `progressBar` advances monotonically to
+the row count; `progressLabel` reports `Completed n / N` and the worker count;
+no worker process survives the run.
+
+**Automated:** `tests/gui/test_processing_settings_gui.py`,
+`tests/integration/test_parallel_batch.py`, and `scripts/run_gui_smoke_tests.py`
+(the settings section, multicore/single-core equality, and the orphan-process
+check).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -312,6 +358,11 @@ scan_overlay_zoom.png
 scan_overlay_all_bubbles.png
 scan_duplicate_rolls.png
 scan_exported.png
+scan_multicore_four.png
+scan_multicore_single.png
+settings_processing_automatic.png
+settings_processing_single_core.png
+settings_processing_custom.png
 ```
 
 `scan_overlay_zoom.png` is the one worth reading closely: it is the answer area

@@ -1,8 +1,8 @@
 # Current state
 
-**Updated:** 2026-09-16
+**Updated:** 2026-09-17
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 complete. Phase 4 not started.
+**Current phase:** Phase 3 implemented; testing and stabilisation in progress. Phase 4 not started.
 
 Update this file at the end of every phase.
 
@@ -128,6 +128,21 @@ bubbles total), built and validated through the real generator functions
   overlay, a results panel, and CSV export. It imports no `cv2`, `numpy`,
   `imaging` or `recognition`, enforced by the same executable layering test as
   the rest of the GUI.
+- **Multicore batch recognition.** `omr_scanner.services.parallel_batch` reads
+  several sheets at once in a `ProcessPoolExecutor` (`spawn` on every platform),
+  one complete page per worker; `batch_processor` keeps naming, copying and
+  recording in the main process, in batch order, so results, duplicate-roll
+  suffixes and CSV rows are identical on any number of cores. The worker count
+  is a user setting (`omr_scanner.config.processing`: Automatic / Single core /
+  Custom) edited in `File > Settings > Processing` and persisted in
+  `omrflow.config.json`; automatic mode leaves one logical CPU free and stops at
+  8 workers, a cap taken from measurement, not assumption.
+
+**Measured throughput** (48 copies of the real sample, 16 logical CPUs /
+8 physical cores, Windows 11): 3.44 scans/s on one worker, 11.63 on eight
+(3.38x), then *down* to 10.02 on sixteen; peak resident memory 127 MB, 855 MB
+and 1,607 MB respectively. Reproduce with
+`python scripts/benchmark_batch.py --scans 48 --workers 1,2,4,8,12,16`.
 
 **Measured on the real sample** (`examples/ECE-0000.png`, an actual scan with
 handwritten marks, printed option glyphs and non-white paper): roll `00000000`,
@@ -209,10 +224,17 @@ perspective, JPEG compression and cropping is tabulated in
 - **No PDF input.** Deliberate - the brief ruled out adding a dependency for it
   in this phase.
 - **Renaming only copies.** There is no move/rename-in-place mode.
-- Recognition is single-threaded per sheet and sheets are processed in sequence;
-  there is no parallelism across cores.
-- "Cancel" stops after the sheet in progress, not instantly: OpenCV will not be
-  interrupted part-way through a warp.
+- Recognition is single-threaded *within* a sheet; parallelism is across sheets
+  only, so a batch of one gains nothing from extra workers.
+- "Cancel" stops after the sheets in progress, not instantly: OpenCV will not be
+  interrupted part-way through a warp, so with N workers up to N more sheets
+  finish after Cancel is pressed.
+- Worker start-up is not free. Each worker is a fresh interpreter importing
+  NumPy and OpenCV, so a handful of sheets can be *slower* on four workers than
+  on one; the benefit begins at a few dozen.
+- The multicore path has only been exercised on the 16-thread Windows
+  development machine. Other core counts, memory limits and platforms
+  (`spawn` on Linux and macOS) are untested.
 
 ### Elsewhere
 
@@ -230,20 +252,28 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-1612 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+1708 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest         1612 passed, 1 skipped in 45.6s
+pytest         1708 passed, 1 skipped in 114.6s
 ruff check .   All checks passed
-mypy           Success: no issues found in 76 source files
+mypy           Success: no issues found in 79 source files
 ```
+
+96 of those are the multicore work: `tests/unit/test_processing_settings.py`
+(29, worker-count policy on every plausible machine),
+`tests/integration/test_parallel_batch.py` (32, real worker processes: result
+consistency at 1/2/4 workers, batch ordering, duplicate-roll collisions, failure
+isolation, cancellation, no orphan processes) and
+`tests/gui/test_processing_settings_gui.py` (35, the Settings dialog, its
+persistence and a multicore batch driven through the GUI).
 
 The skip is structural: `tests/unit/test_qtguitesting_skill.py` parametrises
 over the skill's scripts and skips `_harness.py`, which is shared plumbing
 rather than a command a user runs.
 
-883 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
+979 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
 added **no** new mypy overrides, Ruff ignores or tool configuration changes.
 
 Phase 2 added **one** tool configuration change, not a suppressed check: the

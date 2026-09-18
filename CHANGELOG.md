@@ -10,7 +10,8 @@ Versions below 1.0 make no compatibility promises.
 
 Phase 3 - batch scanning and recognition. A user can now read filled answer
 sheets against a template: import one or many scans, have them rectified and
-recognised, review the result with an overlay, optionally file the images under
+recognised - concurrently across CPU cores, if the machine has them - review the
+result with an overlay, optionally file the images under
 their detected roll numbers, and export CSV. Recognition has been validated
 against one real scanned sheet and geometric variants of it, **not** against a
 corpus of independently filled papers; this build must not be used for
@@ -54,10 +55,41 @@ examination processing.
 - `examples/templates/ece_0000_sample.omrt` and
   `scripts/build_ece0000_template.py`: a template describing the repository's
   real sample sheet, built through the real generators.
-- 883 tests, including `tests/gui/test_scan_page.py` (the ten Scan workflows)
-  and `tests/integration/test_sample_sheet_recognition.py` (the real scan).
-- The `qtguitesting` skill now covers the Scan page: a `ScanHarness`, five smoke
-  checks, five screenshot scenarios and three new documented scenarios.
+- **Configurable multicore batch recognition.** `process_batch(..., workers=N)`
+  reads several sheets at once through
+  `omr_scanner.services.parallel_batch.recognise_in_parallel`, a
+  `ProcessPoolExecutor` using `spawn` on every platform, with one complete page
+  per worker process. Recognition results come back to the main process, which
+  keeps naming, copying and recording strictly in batch order behind a single
+  `FilenameAllocator` - so duplicate roll numbers, the scan list and the CSV are
+  identical on any number of cores, and no two workers can ever choose the same
+  output file name. Progress counts completions, so the bar advances steadily
+  rather than waiting on the slowest sheet.
+- `omr_scanner.config.processing`: `ProcessingMode` (Automatic / Single core /
+  Custom) and `ProcessingSettings`, nested into `AppConfig.processing` and
+  persisted in `omrflow.config.json`. Automatic leaves one logical CPU free and
+  stops at 8 workers - a cap taken from measurement (throughput peaks at the
+  physical core count and falls beyond it, while memory keeps climbing by about
+  95 MB per worker); no run ever starts more workers than there are scans.
+- `File > Settings...` (`omr_scanner.gui.settings_dialog.SettingsDialog`): the
+  Processing section, with the detected CPU-thread count and the number of
+  workers the current setting will actually use. The Scan page shows the same
+  thing for the list in front of you ("124 scans - 8 parallel workers") and
+  reports `Completed 46 / 100 - 8 workers` while running.
+- `scripts/benchmark_batch.py`: measures batch throughput at several worker
+  counts on the machine it is run on, and prints what it measured. Results for
+  the development machine are recorded in `docs/scan_workflow.md` §10.
+- `multiprocessing.freeze_support()` in `main()`, so a frozen Windows build
+  starts workers rather than recursive copies of the application.
+- 979 tests, including `tests/gui/test_scan_page.py` (the ten Scan workflows),
+  `tests/integration/test_sample_sheet_recognition.py` (the real scan),
+  `tests/integration/test_parallel_batch.py` (real worker processes: result
+  consistency at 1/2/4 workers, ordering, duplicate-roll collisions, failure
+  isolation, no orphan processes) and
+  `tests/gui/test_processing_settings_gui.py`.
+- The `qtguitesting` skill now covers the Scan page and the Processing settings:
+  a `ScanHarness`, nine smoke checks, seven screenshot scenarios and four new
+  documented scenarios.
 
 ### Fixed — Phase 3
 
@@ -65,6 +97,12 @@ examination processing.
   rendered. Finishing a batch re-selects the current row, so a user who also
   clicked that row got two workers, and the late one re-applied the preview -
   resetting a zoom they had just set.
+- The Settings dialog no longer reverts other preferences. It returned a whole
+  `AppConfig` rebuilt from the snapshot taken when it opened, so accepting it
+  discarded anything that had changed meanwhile - a project opened while the
+  dialog was up disappeared from the recent list. It now returns only its own
+  `ProcessingSettings`, which the main window merges into the current
+  configuration.
 
 ### Added — Phase 2
 

@@ -141,6 +141,7 @@ Before adding a constant, decide which of these it is:
 | Kind | Home | Module |
 |---|---|---|
 | Application default, per user | `omrflow.config.json` | `omr_scanner.config.app_config` |
+| Machine capability, per user | `omrflow.config.json` (`processing`) | `omr_scanner.config.processing` |
 | Project metadata | `<project>/project.json` | `omr_scanner.domain.project` |
 | Sheet design | the `.omrt` document | `omr_scanner.domain.template` |
 | Recognition threshold | `recognition` block inside the template | `omr_scanner.domain.template` |

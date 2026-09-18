@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import multiprocessing
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -67,6 +68,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     Returns:
         ``0`` on a clean exit, ``1`` when start-up failed.
     """
+    # Batch recognition reads sheets in worker processes, and a frozen Windows
+    # build re-runs this executable to start each one. Without this call that
+    # child would start a second copy of the application instead of a worker -
+    # recursively. It does nothing at all when running from source.
+    multiprocessing.freeze_support()
+
     arguments = build_argument_parser().parse_args(argv)
 
     config = load_app_config()

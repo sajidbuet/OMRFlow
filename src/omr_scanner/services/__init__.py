@@ -24,7 +24,9 @@ Phase status:
     template's geometry to the imaging layer. Phase 3 adds the scan workflow:
     :mod:`omr_scanner.services.recognition_service` (one sheet, end to end),
     :mod:`omr_scanner.services.batch_processor` (many of them, with progress and
-    per-file error isolation), :mod:`omr_scanner.services.filename_manager`
+    per-file error isolation), :mod:`omr_scanner.services.parallel_batch` (the
+    worker-process pool that reads several sheets at once),
+    :mod:`omr_scanner.services.filename_manager`
     (collision-free output names), :mod:`omr_scanner.services.scan_import`
     (what the user selected) and :mod:`omr_scanner.services.scan_export` (the
     results CSV). Conflict, attendance, scoring and Excel/PDF reporting services
@@ -42,6 +44,7 @@ from omr_scanner.services.batch_processor import (
     BatchReport,
     BatchStage,
     ProcessedScan,
+    finalise_scan,
     plan_output_name,
     process_batch,
     process_scan,
@@ -128,6 +131,7 @@ __all__ = [
     "detect_registration_markers",
     "duplicate_suffix",
     "export_scan_results",
+    "finalise_scan",
     "is_project_directory",
     "is_supported_scan",
     "list_templates",

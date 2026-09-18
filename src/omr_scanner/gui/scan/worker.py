@@ -20,8 +20,16 @@ What does NOT belong here:
 Cancellation:
     Cooperative, by a flag the worker polls between files. A batch cannot be
     interrupted mid-file - OpenCV will not be stopped part-way through a warp -
-    so "cancel" means "stop after the current sheet", which is the honest
-    behaviour and takes at most a second or two.
+    so "cancel" means "stop after the sheets currently being read", which is the
+    honest behaviour and takes at most a second or two.
+
+Threads and processes:
+    This thread is the GUI's bridge to the batch, not the thing that does the
+    reading. When the user's settings ask for more than one worker, the batch
+    itself starts a pool of worker *processes* and this thread simply waits on
+    it - so the pool belongs to a background thread, the signals still arrive on
+    the main thread, and closing the page still shuts everything down through
+    the same cancel-and-wait path.
 """
 
 from __future__ import annotations
@@ -63,6 +71,8 @@ class BatchWorker(QThread):
         options: What the user chose in the Scan page.
         allocator: Name allocator; pass the page's own so that names stay unique
             across several runs in one session.
+        workers: How many sheets to read at once. ``1`` keeps everything in this
+            thread; more starts that many worker processes.
         parent: Optional Qt parent.
     """
 
@@ -78,22 +88,30 @@ class BatchWorker(QThread):
         options: BatchOptions,
         allocator: FilenameAllocator | None = None,
         parent: QObject | None = None,
+        *,
+        workers: int = 1,
     ) -> None:
         super().__init__(parent)
         self._paths = list(paths)
         self._template = template
         self._options = options
         self._allocator = allocator
+        self._workers = max(1, workers)
         self._cancelled = False
 
     def cancel(self) -> None:
-        """Ask the run to stop after the file it is working on."""
+        """Ask the run to stop after the sheets currently being read."""
         self._cancelled = True
 
     @property
     def cancelled(self) -> bool:
         """Whether cancellation has been requested."""
         return self._cancelled
+
+    @property
+    def workers(self) -> int:
+        """How many sheets this run reads at once."""
+        return self._workers
 
     def run(self) -> None:
         """Process the batch. Runs on the worker thread; touches no widget."""
@@ -106,6 +124,7 @@ class BatchWorker(QThread):
                 on_progress=self._emit_progress,
                 on_result=self._emit_result,
                 should_cancel=lambda: self._cancelled,
+                workers=self._workers,
             )
         except Exception as exc:
             self.failed.emit(str(exc))

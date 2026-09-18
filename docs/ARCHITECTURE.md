@@ -134,10 +134,15 @@ renaming a class cannot silently change a persisted status.
 
 | Scope | Lives in | Example |
 |---|---|---|
-| Application, per user | `omrflow.config.json` in the platform config directory | log level, recent projects |
+| Application, per user | `omrflow.config.json` in the platform config directory | log level, recent projects, CPU workers (`processing`) |
 | Project | `<project>/project.json` | project name, id, timestamps |
 | Template | the `.omrt` document | page geometry, zones, bubble grids |
 | Recognition | nested inside the template (`recognition`) | fill threshold, confidence floor |
+
+The worker count is application configuration rather than project or template
+configuration because it describes the *machine*, not the examination: the same
+batch read on a laptop and on a workstation must produce the same results, and
+only the time taken may differ.
 
 Recognition thresholds belong to the template, not to the application, because
 they are only meaningful for the sheet design and print quality they were tuned
@@ -267,6 +272,7 @@ ScanPage.load_template_from   -> services.template_service.load_template
 ScanPage.add_scan_paths       -> services.scan_import.collect_scan_files
 ScanPage.process_all          -> gui.scan.worker.BatchWorker  (a QThread)
                                    -> services.batch_processor.process_batch
+                                        -> services.parallel_batch (worker processes)
                                         -> services.recognition_service.recognise_scan
                                         -> services.filename_manager.FilenameAllocator
                                    -> Qt signals back to the GUI thread
@@ -297,10 +303,80 @@ user-facing description.
 
 ## Concurrency
 
-Phase 0 is single-threaded. From Phase 5, batch processing runs in worker
-threads; the rules that keep that safe are set now:
+Phase 0 is single-threaded. From Phase 3, batch recognition runs off the GUI
+thread and, when the user's settings allow it, across several CPU cores; the
+rules that keep that safe are:
 
-- Services must not touch Qt objects, so they can run off the GUI thread.
+- Services must not touch Qt objects, so they can run off the GUI thread - and,
+  for the same reason, inside a worker *process*.
 - A `ProjectDatabase` session is short-lived and scoped to one operation.
 - The main window must never block on a long operation; progress arrives through
   signals.
+
+### Multicore batch recognition (Phase 3)
+
+```text
+              Qt main process
+                     │
+   ScanPage ── BatchWorker (QThread) ── batch_processor.process_batch
+                     │                            │
+              progress/results                    │  workers > 1
+              back as Qt signals                  ▼
+                                        parallel_batch.recognise_in_parallel
+                                                   │
+                                      ProcessPoolExecutor (spawn)
+                                    ┌──────┬──────┬──────┬──────┐
+                                    W1     W2     W3     W4  ... WN
+                                     │      │      │      │
+                                    OMR    OMR    OMR    OMR     ← one page each
+                                     └──────┴──┬───┴──────┘
+                                               ▼
+                                     RecognitionResult objects
+                                    (completion order, indexed)
+                                               │
+                                               ▼
+                               batch_processor, in the main process:
+                                 re-orders into batch order
+                                        │
+                                 FilenameAllocator  ← the single allocator
+                                        │
+                                 copy into the output folder
+                                        │
+                                 BatchReport -> CSV / scan list
+```
+
+Four properties follow from that shape, and each is the reason for it:
+
+- **One page per worker.** The whole pipeline for one sheet - load, register,
+  measure, interpret - runs inside one process. Nothing is shared and nothing is
+  mutated across processes, so the answer cannot depend on how the work was
+  divided.
+- **Filename assignment is centralised.** Workers return recognition results and
+  nothing else. If each worker named its own file, two sheets that legitimately
+  recognise to the same roll number would both choose `2103123.jpg` and one
+  would silently overwrite the other - a lost script, the worst failure this
+  application has. One allocator, in one process, called in batch order, makes
+  that impossible rather than unlikely.
+- **Order is restored before anything is named or recorded.** Results arrive out
+  of order and are buffered until their predecessor has landed, so the duplicate
+  suffixes (`_a`, `_b`, ...), the scan list and the CSV come out in scan-list
+  order on any number of cores. Progress, by contrast, counts *completions*, so
+  the bar advances steadily instead of waiting on the slowest sheet.
+- **Only serialisable data crosses the boundary.** The template (a Pydantic
+  model) is sent to each worker once, when the pool starts; each task carries an
+  index and a path; each result is plain data - no Qt objects, no open handles,
+  no NumPy arrays (batch runs discard previews anyway).
+
+The pool uses the `spawn` start method on every platform, not the Linux default:
+forking a process that already owns a Qt event loop and OpenCV thread pools is
+unsafe, and a code path only exercised on Linux is not the one that runs on
+Windows. Spawn re-imports the package in each child, which is why every entry
+point is guarded by `if __name__ == "__main__":` and why `main()` calls
+`multiprocessing.freeze_support()` - without either, a worker would start a
+second copy of the application.
+
+How many workers is a *user setting* (`AppConfig.processing`, see
+[Configuration layers](#configuration-layers)), resolved by one pure function so
+the Settings dialog's "workers this setting uses" and the run itself can never
+disagree. See `docs/scan_workflow.md` §10 for the modes, the measured
+throughput and the reasoning behind the automatic cap.

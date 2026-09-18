@@ -345,6 +345,7 @@ def build_scan_page(
     template_path: Path | None = None,
     output_dir: Path | None = None,
     rename: bool = False,
+    processing: object | None = None,
 ) -> ScanHarness:
     """Build a Scan page with a template loaded and ``scans`` imported.
 
@@ -361,6 +362,9 @@ def build_scan_page(
         output_dir: Folder for renamed copies. Defaults to a fresh directory
             under ``test-output/gui/``.
         rename: Switch on roll-number renaming.
+        processing: A `ProcessingSettings` to drive the page with, for the
+            multicore scenarios. ``None`` leaves the page on its default
+            (Automatic), which is what a fresh installation uses.
 
     Returns:
         The harness, already laid out.
@@ -391,6 +395,8 @@ def build_scan_page(
     page.add_scan_paths(selected)
     page.set_output_directory(destination)
     page.rename_checkbox.setChecked(rename)
+    if processing is not None:
+        page.set_processing_settings(processing)
 
     harness = ScanHarness(page=page, template_path=template, output_dir=destination)
     harness.settle()

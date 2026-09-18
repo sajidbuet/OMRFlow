@@ -294,6 +294,100 @@ def _check_scan_preview_renders(image: Path) -> CheckResult:
     return ok, detail
 
 
+def _check_settings_dialog_processing_section() -> CheckResult:
+    """File > Settings offers the Processing section and its three modes."""
+    from omr_scanner.config import AppConfig
+    from omr_scanner.config.processing import ProcessingMode
+    from omr_scanner.gui.settings_dialog import SettingsDialog
+
+    # Constructed, never `exec()`d - see `_check_dialogs_instantiate`.
+    dialog = SettingsDialog(AppConfig(), cpu_count=8)
+    labels = [dialog.mode_combo.itemText(i) for i in range(dialog.mode_combo.count())]
+
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findText("Custom"))
+    custom_enabled = dialog.worker_spin.isEnabled()
+    dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findText("Automatic"))
+    automatic_disabled = not dialog.worker_spin.isEnabled()
+
+    ok = (
+        labels == ["Automatic", "Single core", "Custom"]
+        and custom_enabled
+        and automatic_disabled
+        and dialog.worker_spin.maximum() == 8
+        and dialog.selected_mode is ProcessingMode.AUTOMATIC
+    )
+    return ok, (
+        f"modes {labels}, worker range {dialog.worker_spin.minimum()}-"
+        f"{dialog.worker_spin.maximum()}, automatic uses "
+        f"{dialog.active_label.text()} worker(s)"
+    )
+
+
+def _check_scan_page_reports_its_worker_plan(image: Path) -> CheckResult:
+    """The Scan page says how many workers the next run will use."""
+    from omr_scanner.config.processing import ProcessingMode, ProcessingSettings
+
+    harness = build_scan_page(
+        [image],
+        processing=ProcessingSettings(mode=ProcessingMode.SINGLE_CORE),
+    )
+    text = harness.page.workers_label.text()
+    planned = harness.page.planned_worker_count()
+    harness.shutdown()
+    return planned == 1, f"single core plans {planned} worker(s); label reads '{text}'"
+
+
+def _check_multicore_batch_matches_single_core(image: Path) -> CheckResult:
+    """Two copies of the real sample read identically on one core and on two."""
+    import shutil
+
+    from _harness import OUTPUT_ROOT
+
+    from omr_scanner.config.processing import ProcessingMode, ProcessingSettings
+
+    folder = OUTPUT_ROOT / "scan_multicore_inputs"
+    folder.mkdir(parents=True, exist_ok=True)
+    copies = []
+    for index in range(2):
+        destination = folder / f"IMG_{index + 1:03d}{image.suffix}"
+        shutil.copyfile(image, destination)
+        copies.append(destination)
+
+    def run(processing: object) -> tuple[list[tuple[str, str]], object]:
+        harness = build_scan_page(copies, processing=processing)
+        report = harness.run_batch()
+        values = [
+            (item.result.identifier_value, item.result.outcome.value)
+            for item in report.processed
+        ]
+        harness.shutdown()
+        return values, report
+
+    single, single_report = run(ProcessingSettings(mode=ProcessingMode.SINGLE_CORE))
+    parallel, parallel_report = run(
+        ProcessingSettings(mode=ProcessingMode.CUSTOM, worker_count=2)
+    )
+    ok = single == parallel and parallel_report.worker_count == 2
+    return ok, (
+        f"1 worker {single_report.elapsed_seconds:.2f}s, "
+        f"{parallel_report.worker_count} workers "
+        f"{parallel_report.elapsed_seconds:.2f}s, identical results: "
+        f"{single == parallel}"
+    )
+
+
+def _check_no_worker_processes_are_left_behind() -> CheckResult:
+    """Nothing from a finished batch is still running."""
+    import multiprocessing
+
+    children = multiprocessing.active_children()
+    return not children, (
+        "no worker processes remain"
+        if not children
+        else f"{len(children)} worker process(es) still running"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run every check, print a report, and return a shell exit code."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -322,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         ("orientation detection runs", lambda: _check_orientation_detection(args.image)),
         ("page header is compact", lambda: _check_page_header_is_compact(args.image)),
         ("scan page constructs", _check_scan_page_constructs),
+        ("settings dialog offers Processing", _check_settings_dialog_processing_section),
     ]
 
     # The Scan checks drive the real template that describes the real sample.
@@ -340,6 +435,15 @@ def main(argv: list[str] | None = None) -> int:
                     lambda: _check_scan_recognises_the_real_sample(args.image),
                 ),
                 ("scan preview renders", lambda: _check_scan_preview_renders(args.image)),
+                (
+                    "scan page reports its worker plan",
+                    lambda: _check_scan_page_reports_its_worker_plan(args.image),
+                ),
+                (
+                    "multicore reads the same as single core",
+                    lambda: _check_multicore_batch_matches_single_core(args.image),
+                ),
+                ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]
         )
     else:

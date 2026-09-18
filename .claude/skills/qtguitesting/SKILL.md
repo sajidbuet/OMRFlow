@@ -139,6 +139,9 @@ python .claude/skills/qtguitesting/scripts/capture_gui_states.py
 # Only the Scan page's states (template loaded, processed, duplicates, export).
 python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only scan-processed
 
+# The Processing settings in all three modes, and a multicore vs single-core run.
+python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only settings --only scan-multicore
+
 # Geometry of the template's regions, as JSON.
 python .claude/skills/qtguitesting/scripts/dump_gui_geometry.py --scenario question-region
 

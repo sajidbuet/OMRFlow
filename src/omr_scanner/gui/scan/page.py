@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.config.processing import ProcessingSettings, detected_cpu_count
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
@@ -104,6 +105,13 @@ enough that a batch of hundreds cannot fill memory - the scan list holds
 results, never images."""
 
 TOOLBAR_ICON_SIZE_PX = 18
+
+WORKER_SHUTDOWN_TIMEOUT_MS = 30_000
+"""How long the page waits for a cancelled batch to finish when it closes.
+
+Long enough for every busy worker to finish the sheet it is holding - a cancel
+does not interrupt a sheet mid-warp - so the worker pool is always torn down
+before the application exits and no stray process outlives the window."""
 
 STATUS_LABELS: dict[str, str] = {
     RecognitionOutcome.PENDING.value: "Pending",
@@ -179,6 +187,9 @@ class ScanPageState:
         entries: The scan list, in processing order.
         output_dir: Where renamed copies are written, or ``None``.
         rename_enabled: Whether recognised sheets are copied under new names.
+        processing: How many CPU workers a run may use. Set from the application
+            settings by the main window; the default is what a page built
+            without one uses.
     """
 
     template: OmrTemplate | None = None
@@ -186,6 +197,7 @@ class ScanPageState:
     entries: list[ScanEntry] = field(default_factory=list)
     output_dir: Path | None = None
     rename_enabled: bool = False
+    processing: ProcessingSettings = field(default_factory=ProcessingSettings)
 
 
 class ScanPage(WorkflowPage):
@@ -280,6 +292,19 @@ class ScanPage(WorkflowPage):
         # -- Processing ------------------------------------------------
         process_box = QGroupBox("Processing")
         process_layout = QVBoxLayout(process_box)
+
+        # What the current setting means for the list as it stands, beside the
+        # button that will act on it - so the answer to "why is this taking so
+        # long" is on screen before the run starts, not buried in Settings.
+        self.workers_label = QLabel("")
+        self.workers_label.setObjectName("workersLabel")
+        self.workers_label.setWordWrap(True)
+        self.workers_label.setToolTip(
+            "How many sheets are read at the same time. Change this in "
+            "File > Settings > Processing."
+        )
+        process_layout.addWidget(self.workers_label)
+
         self.process_all_button = QPushButton(load_icon("scan-line"), "Process All")
         self.process_all_button.setObjectName("processAllButton")
         self.process_all_button.clicked.connect(self.process_all)
@@ -513,6 +538,48 @@ class ScanPage(WorkflowPage):
         self._session = session
 
     # ------------------------------------------------------------------
+    # Processing settings
+    # ------------------------------------------------------------------
+    def set_processing_settings(self, processing: ProcessingSettings) -> None:
+        """Adopt the application's processing preference.
+
+        Called by the main window at start-up and whenever the user accepts the
+        Settings dialog. A run already under way keeps the worker count it
+        started with; changing the setting mid-batch and having half the sheets
+        read differently would make a run impossible to reason about.
+        """
+        self.state.processing = processing
+        self._refresh_worker_label()
+
+    def planned_worker_count(self, item_count: int | None = None) -> int:
+        """How many workers a run over ``item_count`` scans would use now.
+
+        Args:
+            item_count: Scans in the run. Defaults to the whole list.
+
+        Returns:
+            The same number the batch processor will arrive at, because it comes
+            from the same function.
+        """
+        count = len(self.state.entries) if item_count is None else item_count
+        return self.state.processing.resolve_worker_count(count)
+
+    def _refresh_worker_label(self) -> None:
+        """Say what the next run will do, in scans and workers."""
+        total = len(self.state.entries)
+        if total == 0:
+            self.workers_label.setText(
+                f"{detected_cpu_count()} CPU threads detected - no scans added yet"
+            )
+            return
+        workers = self.planned_worker_count(total)
+        sheets = "scan" if total == 1 else "scans"
+        self.workers_label.setText(
+            f"{total} {sheets} - "
+            f"{workers} parallel worker{'' if workers == 1 else 's'}"
+        )
+
+    # ------------------------------------------------------------------
     # Template
     # ------------------------------------------------------------------
     def _prompt_load_template(self) -> None:
@@ -723,11 +790,27 @@ class ScanPage(WorkflowPage):
             rename_with_identifier=self.state.rename_enabled,
             with_preview=False,
         )
+        workers = self.planned_worker_count(len(paths))
         self.progress_bar.setRange(0, len(paths))
         self.progress_bar.setValue(0)
-        self.progress_label.setText(f"Processing 0 of {len(paths)}...")
+        self.progress_label.setText(
+            f"Processing {len(paths)} scan(s) using {workers} worker(s)..."
+        )
+        _LOGGER.info(
+            "Starting a batch of %d scan(s) with %d worker(s) (mode: %s)",
+            len(paths),
+            workers,
+            self.state.processing.mode.value,
+        )
 
-        worker = BatchWorker(list(paths), self.state.template, options, self._allocator, self)
+        worker = BatchWorker(
+            list(paths),
+            self.state.template,
+            options,
+            self._allocator,
+            self,
+            workers=workers,
+        )
         worker.progress.connect(self._on_progress)
         worker.scan_done.connect(self._on_scan_done)
         worker.finished_report.connect(self._on_batch_finished)
@@ -744,11 +827,17 @@ class ScanPage(WorkflowPage):
             self.progress_label.setText("Cancelling after the current sheet...")
 
     def _on_progress(self, update: BatchProgress) -> None:
-        """Update the progress bar. Runs on the GUI thread via a queued signal."""
+        """Update the progress bar. Runs on the GUI thread via a queued signal.
+
+        Counts completed sheets rather than naming "the file being processed":
+        with several workers there are several of those at once, and a count is
+        both true and the number a user actually wants.
+        """
         self.progress_bar.setValue(update.completed)
+        workers = self._worker.workers if self._worker is not None else 1
         self.progress_label.setText(
-            f"Processing {min(update.completed + 1, update.total)} of {update.total}: "
-            f"{update.path.name}"
+            f"Completed {update.completed} / {update.total}"
+            f" - {workers} worker{'' if workers == 1 else 's'}"
         )
 
     def _on_scan_done(self, processed: ProcessedScan) -> None:
@@ -772,6 +861,9 @@ class ScanPage(WorkflowPage):
             summary += f", {report.written_count} file(s) written"
         if report.cancelled:
             summary += " (cancelled)"
+        summary += (
+            f" - {report.worker_count} worker(s), {report.elapsed_seconds:.1f}s"
+        )
         self.progress_label.setText(summary)
         self._worker = None
         self._refresh_controls()
@@ -1059,17 +1151,25 @@ class ScanPage(WorkflowPage):
         self.export_csv_button.setEnabled(has_results and not running)
         self.previous_action.setEnabled(has_scans)
         self.next_action.setEnabled(has_scans)
+        self._refresh_worker_label()
 
     # ------------------------------------------------------------------
     # Qt overrides
     # ------------------------------------------------------------------
     def closeEvent(self, event: object) -> None:
-        """Stop any running worker before the page disappears."""
+        """Stop any running worker before the page disappears.
+
+        Waiting matters more now than it did single-threaded: the batch thread
+        owns a pool of worker processes, and letting the application exit while
+        it still exists is how orphaned Python processes are left behind. The
+        wait is generous because cancelling still lets the sheets already inside
+        a worker finish, which is a second or two each.
+        """
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
-            self._worker.wait(5000)
+            self._worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
         if self._preview_worker is not None and self._preview_worker.isRunning():
-            self._preview_worker.wait(5000)
+            self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
         super().closeEvent(event)  # type: ignore[arg-type]
 
 

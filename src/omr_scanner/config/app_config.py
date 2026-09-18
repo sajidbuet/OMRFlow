@@ -33,6 +33,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from omr_scanner.config.paths import app_config_file
+from omr_scanner.config.processing import ProcessingSettings
 from omr_scanner.errors import ConfigurationError
 from omr_scanner.utils.json_io import read_json, write_json_atomic
 
@@ -55,6 +56,9 @@ class AppConfig(BaseModel):
         recent_projects: Most recently opened project directories, newest first.
         default_projects_root: Folder the "New project" dialog starts in.
         max_recent_projects: Upper bound on ``recent_projects``.
+        processing: How many CPU workers batch recognition may use. A machine
+            property rather than an examination property, which is why it
+            belongs to the per-user document and not to a project or a template.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -64,6 +68,7 @@ class AppConfig(BaseModel):
     recent_projects: tuple[Path, ...] = ()
     default_projects_root: Path | None = None
     max_recent_projects: int = Field(default=DEFAULT_MAX_RECENT_PROJECTS, ge=1, le=50)
+    processing: ProcessingSettings = ProcessingSettings()
 
     def log_level_value(self) -> int:
         """Return :attr:`log_level` as a :mod:`logging` numeric level."""
@@ -96,6 +101,10 @@ class AppConfig(BaseModel):
         resolved = project_dir.resolve()
         remaining = tuple(path for path in self.recent_projects if path != resolved)
         return self.model_copy(update={"recent_projects": remaining})
+
+    def with_processing(self, processing: ProcessingSettings) -> AppConfig:
+        """Return a copy carrying ``processing``; the receiver is unchanged."""
+        return self.model_copy(update={"processing": processing})
 
 
 def load_app_config(path: Path | None = None, *, strict: bool = False) -> AppConfig:

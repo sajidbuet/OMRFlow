@@ -319,6 +319,10 @@ class ScanResult:
         source_width: Source scan width in pixels.
         source_height: Source scan height in pixels.
         elapsed_seconds: Wall-clock duration of the whole operation.
+        registration_seconds: Time spent loading and rectifying the page.
+        recognition_seconds: Time spent measuring bubbles and interpreting them.
+            Diagnostic only - the two never have to add up to
+            :attr:`elapsed_seconds`, which also covers building the preview.
     """
 
     source_path: Path
@@ -341,6 +345,8 @@ class ScanResult:
     source_width: int = 0
     source_height: int = 0
     elapsed_seconds: float = 0.0
+    registration_seconds: float = 0.0
+    recognition_seconds: float = 0.0
 
     # ------------------------------------------------------------------
     # Convenience accessors used by the GUI, the CSV export and the tests
@@ -724,8 +730,10 @@ def recognise_scan(
             canonical_width=template.page.canonical_width_px,
             canonical_height=template.page.canonical_height_px,
             elapsed_seconds=time.perf_counter() - started,
+            registration_seconds=time.perf_counter() - started,
         )
 
+    registered_at = time.perf_counter()
     page = alignment.normalized_image
     canonical_height, canonical_width = int(page.shape[0]), int(page.shape[1])
 
@@ -747,6 +755,7 @@ def recognise_scan(
         if not isinstance(zone.field, IgnoredFieldDefinition)
     }
     recognition = recognise_template(template, measurements)
+    recognised_at = time.perf_counter()
 
     fields, answers, zones, bubbles = _build_views(
         template,
@@ -774,6 +783,13 @@ def recognise_scan(
         recognition.review_count,
         recognition.multiple_mark_count,
         recognition.blank_answer_count,
+    )
+    _LOGGER.debug(
+        "Scan %s timing: registration=%.3fs recognition=%.3fs total=%.3fs",
+        path.name,
+        registered_at - started,
+        recognised_at - registered_at,
+        time.perf_counter() - started,
     )
 
     return ScanResult(
@@ -804,6 +820,8 @@ def recognise_scan(
         source_width=source_width,
         source_height=source_height,
         elapsed_seconds=time.perf_counter() - started,
+        registration_seconds=registered_at - started,
+        recognition_seconds=recognised_at - registered_at,
     )
 
 

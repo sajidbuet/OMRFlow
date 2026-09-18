@@ -92,6 +92,11 @@ criteria.
     reads, shown in the GUI and carried into the export rather than silently
     resolved;
   - a recognition preview/overlay over the corrected sheet;
+  - **configurable multicore batch recognition**: several independent sheets
+    read concurrently, one whole page per CPU worker, with the processing mode
+    (**Automatic**, **Single core**, **Custom**) chosen in *File > Settings >
+    Processing* and remembered between sessions. Results, output file names and
+    CSV row order are identical to a single-core run on any number of cores;
   - deterministic CSV export;
   - optional renaming of processed scans using the detected roll number, with
     safe duplicate-roll handling (`2103123.jpg`, `2103123_a.jpg`,
@@ -105,7 +110,7 @@ criteria.
 ### Phase 3 testing status
 
 Phase 3's functionality is implemented and exercised by an automated suite
-(1,612 tests passing at the time of writing, plus the repository-local
+(1,708 tests passing at the time of writing, plus the repository-local
 `qtguitesting` Qt GUI harness), but it has only been run end-to-end against
 **one real scanned sheet** (`examples/ECE-0000.png`) — validated with correct
 roll number, set code and all 100 answers — plus geometrically distorted copies
@@ -129,9 +134,28 @@ Confirmed by the current automated suite:
   never overwritten)
 - [x] CSV export validation (column order, question ordering, Unicode,
   escaping, duplicate-name recording, determinism)
-- [x] Automated Qt GUI validation using `qtguitesting` (16/16 smoke checks,
-  including the real sample recognised end-to-end through the GUI; two real
+- [x] Automated Qt GUI validation using `qtguitesting` (20/20 smoke checks,
+  including the real sample recognised end-to-end through the GUI; three real
   defects were found this way and fixed)
+- [x] Multicore recognition validation (a batch read across worker processes
+  produces the same results, in the same order, as one read on a single core;
+  also checked through the GUI on the real sample)
+- [x] Single-core vs multicore result consistency (the same dataset processed
+  at 1, 2 and 4 workers exports **byte-identical** CSVs — values, statuses,
+  confidences, output names and row order)
+- [x] Parallel duplicate-roll collision testing (eight sheets recognising to
+  one roll number, read on four workers, produce `2103123.png`, `_a` ... `_g`;
+  nothing overwritten, every CSV row naming the file actually written)
+- [x] Worker failure isolation (corrupt, missing and unregistrable images fail
+  individually; a worker process that dies outright becomes one failed scan,
+  not a failed batch; no worker process outlives a run, a cancellation or the
+  window)
+- [x] Multicore GUI responsiveness (the event loop keeps delivering queued
+  progress signals throughout a four-worker run; the progress bar advances
+  monotonically to the scan count and the completion summary is shown)
+- [x] Performance benchmarking (48 real scans at 1/2/4/8/12/16 workers, with
+  peak memory; measured results and the reasoning behind the automatic worker
+  cap are recorded in `docs/scan_workflow.md` §10)
 
 Still open, and why Phase 3 is not marked complete:
 
@@ -141,7 +165,10 @@ Still open, and why Phase 3 is not marked complete:
 - [ ] Registration/alignment edge cases beyond Phase 1's documented limits
   (e.g. illumination gradients, rotation beyond ±15°, heavy cropping)
 - [ ] Batch-processing stress testing at realistic exam volumes (hundreds of
-  sheets)
+  sheets); the largest measured run so far is 48 scans
+- [ ] Multicore validation on hardware other than the 16-thread Windows
+  development machine (core counts, memory limits and `spawn` behaviour all
+  differ; Linux and macOS are untested)
 - [ ] Final Phase 3 regression sign-off once the above are addressed
 
 ### Development philosophy
@@ -193,7 +220,7 @@ omrflow "C:/Exams/Physics Midterm"     # open a project on start-up
 
 ```bash
 pip install -e ".[dev]"
-pytest                   # 1,600+ tests
+pytest                   # 1,700+ tests
 ruff check .
 mypy
 ```
@@ -213,6 +240,9 @@ python -m omr_scanner.tools.make_test_sheet scan.png --rotate 6 --perspective 0.
 
 # Align it, print what was measured, and write diagnostic overlays
 python -m omr_scanner.tools.align_image scan.png --output aligned.png --debug debug/
+
+# Measure batch throughput on this machine at several worker counts
+python scripts/benchmark_batch.py --scans 48 --workers 1,2,4,8
 ```
 
 ---
@@ -227,13 +257,15 @@ OMRflow/
 ├── src/omr_scanner/
 │   ├── main.py               entry point: CLI, logging, start-up
 │   ├── errors.py             application exception hierarchy
-│   ├── config/               per-user settings and platform paths
+│   ├── config/               per-user settings, platform paths and the
+│   │                         CPU-worker policy (Phase 3)
 │   ├── domain/               pure models: project, geometry, template,
 │   │                         template_authoring (region generation, Phase 2)
 │   ├── database/             SQLite schema, migrations, sessions
 │   ├── services/             workflows the GUI calls: alignment, template,
-│   │                         recognition, batch processing, filename
-│   │                         allocation, scan import/export (Phase 3)
+│   │                         recognition, batch processing (incl. the
+│   │                         multicore worker pool), filename allocation,
+│   │                         scan import/export (Phase 3)
 │   ├── gui/                  PySide6 window and workflow pages
 │   │   ├── template_designer/  interactive .omrt editor (Phase 2)
 │   │   └── scan/                scan/recognition workflow page (Phase 3,
@@ -316,6 +348,17 @@ is blank, and multiple marks on one question are reported with both kept (for
 example `B-D`), never collapsed to a single answer. A roll number or set code
 that could not be read reliably is flagged rather than filed under a guessed
 value.
+
+**Multicore batch processing** *(Phase 3, implemented; testing in progress)*.
+Independent sheets are read concurrently, one complete page per CPU worker
+process, while the Qt interface stays in the main process and stays responsive.
+The processing mode is a user setting - **Automatic** (OMRFlow chooses,
+leaving the machine room to breathe), **Single core** (deterministic
+troubleshooting, low-memory machines, benchmark baselines) or **Custom** (a
+worker count of your own, up to the CPU threads detected). Parallel execution
+never changes what is recognised: output names are assigned centrally, in batch
+order, by a single allocator in the main process, so duplicate roll numbers,
+the scan list and the CSV come out identically however the work was divided.
 
 **Batch scanning, export and safe renaming** *(Phase 3, implemented; testing
 in progress)*. Import one scan or a whole folder; process in the background

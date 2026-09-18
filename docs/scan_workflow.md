@@ -20,6 +20,9 @@ for how the modules fit together, see [`ARCHITECTURE.md`](ARCHITECTURE.md).
    choose an **Output Folder**.
 6. **Export CSV**.
 
+How many sheets are read at once is set in **File > Settings > Processing** and
+is remembered between sessions; see [§10](#10-performance-and-responsiveness).
+
 Nothing is written anywhere until step 5 or 6. Processing alone never touches a
 file on disk.
 
@@ -292,15 +295,67 @@ registration_status, recognition_status, warning_count, Q1, Q2, ... QN
 
 ## 10. Performance and responsiveness
 
-Batches run on a worker thread; the window stays responsive and reports
-progress, the current file name and a completed/total count. **Cancel** stops
-after the sheet in progress - OpenCV will not be interrupted part-way through a
-warp, so "cancel" honestly means "finish this one, then stop".
+Batches run off the GUI thread; the window stays responsive and reports
+`Completed 46 / 100 - 8 workers`. **Cancel** stops after the sheets currently
+being read - OpenCV will not be interrupted part-way through a warp, so "cancel"
+honestly means "finish what is in hand, then stop".
 
 The template is parsed once per run, not per field. Batch runs discard the
 rectified preview images (a hundred rectified pages is most of a gigabyte); the
 preview for the sheet being *looked at* is recreated on demand and a handful are
 cached.
+
+### Reading several sheets at once
+
+**File > Settings > Processing** decides how many sheets OMRFlow reads
+concurrently. Each sheet is read from start to finish inside one worker - load,
+register, measure, interpret - so the work divides cleanly and nothing is
+shared.
+
+| Mode | What it does | Use it when |
+|---|---|---|
+| **Automatic** *(default)* | OMRFlow picks the count: one logical CPU is left free for the window and the operating system, and it never exceeds 8 | normally |
+| **Single core** | Exactly one sheet at a time, no worker processes at all | debugging, a low-memory machine, a benchmark baseline, reproducing a report exactly |
+| **Custom** | The number you choose, from 1 to this machine's logical CPU count | you know your machine and want to cap or raise it |
+
+The Scan page shows what the setting means for the list in front of you -
+`124 scans - 8 parallel workers` - and never starts more workers than there are
+scans: three sheets on a 32-thread machine use three workers, not thirty-one.
+
+**Parallel processing never changes what is recognised.** Recognition is pure:
+the same image and the same template give the same answer wherever it runs. The
+scan list, the duplicate-name suffixes and the CSV all come out in scan-list
+order regardless of which sheet finished first, because names are assigned - and
+files copied - in the main process, in batch order, after the reading is done.
+The automated suite asserts this by processing the same dataset at 1, 2 and 4
+workers and comparing the exported CSVs byte for byte.
+
+### Measured throughput
+
+48 copies of `examples/ECE-0000.png` (2480x3508), development machine, 16
+logical CPUs / 8 physical cores, Windows 11, reproduced with
+`python scripts/benchmark_batch.py --scans 48 --workers 1,2,4,8,12,16`:
+
+| Workers | Seconds | Scans/s | Speed-up | Peak RAM (all processes) |
+|---|---|---|---|---|
+| 1 | 13.95 | 3.44 | 1.00x | 127 MB |
+| 2 | 8.81 | 5.45 | 1.58x | - |
+| 4 | 5.54 | 8.67 | 2.52x | - |
+| 8 | 4.13 | 11.63 | **3.38x** | 855 MB |
+| 12 | 4.44 | 10.80 | 3.14x | - |
+| 16 | 4.79 | 10.02 | 2.91x | 1,607 MB |
+
+Throughput peaks at eight workers - the machine's physical core count - and
+*falls* beyond it, while memory keeps rising by roughly 95 MB per worker. That
+is why Automatic mode is capped at 8: past that point a batch costs more memory
+and finishes no sooner. A user who knows their own hardware can still ask for
+more in Custom mode.
+
+Two caveats on these numbers. They are one machine, one sheet design and one
+scanner resolution; and a *small* batch is dominated by worker start-up (each
+worker is a fresh Python process importing NumPy and OpenCV), so a handful of
+sheets can be slower on four cores than on one. Measure your own batch sizes
+before assuming.
 
 ---
 
@@ -315,7 +370,10 @@ cached.
 * Cropping more than about 5% of the page width into the margin fails, by
   design.
 * Only square registration markers are exercised.
-* One sheet at a time within a batch; there is no parallelism across cores.
+* Multicore batches parallelise across *sheets*, never within one: a single
+  scan takes as long as it always did, and a batch of one gains nothing.
+* Cancelling cannot interrupt a sheet already inside a worker; with N workers,
+  up to N sheets finish after Cancel is pressed.
 * Validation rests on one real scanned sheet plus geometrically distorted
   copies of it, and on synthetic pages. **A larger corpus of real, independently
   filled sheets has not been processed**, so the accuracy numbers are not

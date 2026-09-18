@@ -350,6 +350,72 @@ def _capture_scan_exported(image: Path) -> list[Path]:
     return written
 
 
+def _capture_settings(_image: Path) -> list[Path]:
+    """The Processing settings in each of its three modes.
+
+    Three images, because the difference between them is exactly what a reader
+    needs to check: whether the worker selector is enabled, and whether the
+    "workers this setting uses" line agrees with the mode.
+    """
+    from omr_scanner.config import AppConfig
+    from omr_scanner.config.processing import detected_cpu_count
+    from omr_scanner.gui.settings_dialog import SettingsDialog
+
+    written: list[Path] = []
+    for label, name in (
+        ("Automatic", "settings_processing_automatic"),
+        ("Single core", "settings_processing_single_core"),
+        ("Custom", "settings_processing_custom"),
+    ):
+        # The real dialog on the real machine: the CPU count shown is this
+        # computer's, which is the number a reader is checking.
+        dialog = SettingsDialog(AppConfig(), cpu_count=detected_cpu_count())
+        dialog.mode_combo.setCurrentIndex(dialog.mode_combo.findText(label))
+        if label == "Custom":
+            dialog.worker_spin.setValue(min(4, dialog.worker_spin.maximum()))
+        dialog.adjustSize()
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.processEvents()
+        print(
+            f"  {label}: {dialog.active_label.text()} worker(s), "
+            f"selector {'enabled' if dialog.worker_spin.isEnabled() else 'disabled'}"
+        )
+        written.append(_save(dialog, name))
+    return written
+
+
+def _capture_scan_multicore(image: Path) -> list[Path]:
+    """Four copies of the sample processed on four workers, then on one.
+
+    What the two images are for: the progress line should report completions and
+    the worker count, and the scan list should come out in the same order with
+    the same values either way.
+    """
+    from omr_scanner.config.processing import ProcessingMode, ProcessingSettings
+
+    written: list[Path] = []
+    scans = _duplicate_scan_copies(image, 4)
+    for processing, name in (
+        (ProcessingSettings(mode=ProcessingMode.CUSTOM, worker_count=4), "scan_multicore_four"),
+        (ProcessingSettings(mode=ProcessingMode.SINGLE_CORE), "scan_multicore_single"),
+    ):
+        harness = build_scan_page(scans, processing=processing)
+        report = harness.run_batch()
+        harness.page.select_scan(0)
+        harness.await_preview()
+        harness.page.preview.fit_to_window()
+        harness.process_events()
+        print(
+            f"  {report.worker_count} worker(s): {report.total} scans in "
+            f"{report.elapsed_seconds:.2f}s - "
+            f"{[item.result.identifier_value for item in report.processed]}"
+        )
+        written.append(_save(harness.page, name))
+        harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
     "loaded": _capture_loaded,
@@ -362,6 +428,8 @@ SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "scan-processed": _capture_scan_processed,
     "scan-duplicates": _capture_scan_duplicates,
     "scan-export": _capture_scan_exported,
+    "scan-multicore": _capture_scan_multicore,
+    "settings": _capture_settings,
 }
 
 

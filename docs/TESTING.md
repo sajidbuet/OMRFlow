@@ -289,3 +289,36 @@ To add one, follow the anonymisation procedure above, then:
    the fixture into a real accuracy measurement rather than a smoke test.
 4. Mark the test skipped when the file is absent, so a developer without the
    fixture can still run the suite.
+
+---
+
+## Testing multicore batch processing (Phase 3)
+
+Multiprocessing is tested in three layers, because the three questions it raises
+are answered at different levels and only one of them needs a process at all.
+
+| Layer | File | Answers |
+|---|---|---|
+| Pure logic | `unit/test_processing_settings.py` | How many workers does each mode ask for - on 1, 2, 4, 8, 16, 32, 128 logical CPUs, for a batch of 0, 1, 3 or 500 scans? Does the setting survive the configuration file? |
+| Real processes | `integration/test_parallel_batch.py` | Do 1, 2 and 4 workers read the same thing? Does the batch order survive out-of-order completion? Do eight sheets claiming one roll number all keep their file? Does one corrupt image fail alone? Is any worker process left behind? |
+| The GUI | `gui/test_processing_settings_gui.py` | Can each mode be selected, does the worker selector refuse invalid values, is the choice still there after a restart, does a batch run in the chosen mode while the window stays responsive? |
+
+Three rules keep this suite honest and fast:
+
+- **Pass `cpu_count` explicitly** in the logic and GUI tests. The offered range
+  and the automatic count depend on the machine; a test that read the real CPU
+  count would assert something different on every runner, which is the same as
+  asserting nothing.
+- **Never assert a duration.** A throughput assertion fails when the machine is
+  busy and teaches nobody anything. `scripts/benchmark_batch.py` measures
+  instead, prints what it measured, and leaves the judgement to a person; its
+  recorded results are in `docs/scan_workflow.md` §10.
+- **Keep the datasets small.** Six to eight synthetic sheets is enough to expose
+  a coordination bug, and every worker is a fresh interpreter importing NumPy
+  and OpenCV - a large dataset would make the suite slow without making it
+  stricter.
+
+The consistency check is the one that matters most: the same dataset is
+processed at one, two and four workers and the exported CSVs are compared **byte
+for byte**. If parallel execution ever changed a recognised value, a confidence,
+an output name or a row order, that comparison is what fails.
