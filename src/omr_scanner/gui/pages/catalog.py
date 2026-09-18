@@ -71,6 +71,28 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         ),
     ),
     WorkflowPageSpec(
+        key="calibration",
+        title="Calibrate",
+        summary=(
+            "Test the template against representative real scans and tune "
+            "recognition thresholds before running a batch."
+        ),
+        phase=4,
+        implemented=True,
+        details=(
+            "Load one or more representative scans and run the existing "
+            "recognition pipeline on them in diagnostic mode.",
+            "Inspect registration, detected/expected marker positions, bubble "
+            "sampling geometry and per-bubble fill scores.",
+            "Adjust recognition thresholds and see recognition update "
+            "immediately, without repeating registration.",
+            "Get an explicit validation status - passed, passed with "
+            "warnings, needs review, or failed - never a confident-looking "
+            "result from a template that does not actually match the scan.",
+            "Save the working thresholds back to the template once satisfied.",
+        ),
+    ),
+    WorkflowPageSpec(
         key="scan",
         title="Scan",
         summary="Import scanned sheets, normalise them and run recognition.",

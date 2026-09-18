@@ -111,6 +111,38 @@ the scripts). Selecting a row starts a *separate* `PreviewWorker`, so anything
 that measures or captures the preview must also wait for
 `ScanPreviewView.has_page` - note it is a **property**, not a method.
 
+### Calibration page (Phase 4)
+
+| `objectName` | Widget |
+| --- | --- |
+| `calibrationPage` | The page itself |
+| `testScanList` | Representative scans |
+| `addTestScanButton`, `addTestScanFolderButton`, `removeTestScanButton`, `clearTestScansButton` | Sample management |
+| `runCalibrationButton`, `runAllCalibrationButton` | Register/measure the selected scan, or every scan |
+| `calibrationImageView` | The preview - a `ScanPreviewView`, same widget class as the Scan page |
+| `markerOverlayToggle`, `regionOverlayToggle`, `bubbleOverlayToggle`, `scoreOverlayToggle` | Overlay layers |
+| `fieldFilterCombo` | All / Student ID / Set Code / Questions / Other fields |
+| `bubbleThresholdSlider`/`SpinBox`, `blankThreshold*`, `ambiguityMargin*`, `minConfidence*` | The four `RecognitionSettings` thresholds, working value |
+| `resetCalibrationButton` (to template), `resetToDefaultsButton`, `saveCalibrationButton`, `exportCalibrationReportButton` | Threshold lifecycle |
+| `calibrationStatusLabel`, `calibrationSummaryPanel` | Per-scan verdict and quality summary |
+| `calibrationSampleSummaryLabel`, `calibrationSampleTable` | Aggregate, multi-scan summary |
+| `bubbleDiagnosticPanel`, `bubbleInspectorLabel` | Click-to-inspect one bubble |
+| `advancedDiagnosticsButton`, `advancedDiagnosticsPanel` | Registration residuals, homography-derived numbers |
+
+**Never sleep waiting for a run.** `CalibrationPage.run_finished` fires once
+every scan a `run_selected()`/`run_all()` call touched has been attempted -
+wait on it (`qtbot.waitSignal`, or `CalibrationHarness.run_all()` in the
+scripts) exactly as the Scan page's `batch_finished` is awaited. A **threshold
+change never starts a worker** - `session.recompute()` runs synchronously on
+the GUI thread - so a test asserting immediate feedback must *not* wait on
+`run_finished` for it.
+
+**`.isVisible()` is unreliable for a page under test.** A page built with
+`qtbot.addWidget(page)` and never `.show()`n reports every descendant as
+invisible regardless of its own `setVisible` state, because Qt folds in the
+(also-hidden) top-level ancestor. Use `widget.isVisibleTo(page)` instead - see
+`tests/gui/test_calibration_page.py`.
+
 ---
 
 ## Scenario 1 - Load the sample
@@ -437,6 +469,66 @@ one end-to-end generate-and-benchmark against the real template).
 
 ---
 
+## Scenario 17 - Calibration (Phase 4)
+
+Load `examples/ece_0000_sample.omrt` and `examples/ECE-0000.png` into the
+Calibration page, register and measure it, adjust a threshold, then repeat
+against a deliberately mismatched template.
+
+**The clean path:**
+
+```
+load template -> add the real sample -> run_selected()
+  -> entry.result.registration != FAILED
+  -> len(entry.result.markers) == 4
+  -> entry.report.status in {PASSED, PASSED_WITH_WARNINGS}
+```
+
+**Overlay geometry is exact, not approximate** - the major Phase 4 requirement.
+For every bubble the overlay draws, `(overlay bubble.x, overlay bubble.y) ==
+(result bubble.x, result bubble.y)`: the page never recomputes a position, it
+reads `entry.result.bubbles` straight from the engine. Same for markers -
+`marker.canonical_x/y` is the *detected* marker reprojected through the
+engine's own fitted transform, `marker.expected_x/y` is the template's own
+declared centre in canonical pixels, and on a clean scan the two are within
+about a pixel of each other (`MARKER_MISMATCH_PX = 3.0` is where the overlay
+switches from green to red).
+
+**Threshold feedback is immediate and never re-registers:**
+
+```
+before = entry.result.answer(N)     # e.g. status "uncertain", faint mark
+page.fill_spin.setValue(before.top_fill - 0.05)
+after = entry.result.answer(N)      # same top_fill, different status/value
+after.canonical_width == before.canonical_width   # registration untouched
+after.markers == before.markers
+```
+
+No `CalibrationWorker` run happens for this - `CalibrationSession.recompute()`
+executes synchronously on the GUI thread. A test that waits on `run_finished`
+for a threshold change will simply hang; don't.
+
+**Miscalibration is never a confident pass** - the load-bearing check. Shift
+every registration marker's centre by `+0.3` normalised (well past the default
+`search_radius=0.05`), run the same real scan against it:
+
+```
+entry.result.registration is RegistrationStatus.FAILED
+entry.result.fields == ()          # nothing measured
+entry.result.answers == ()
+entry.result.bubbles == ()
+entry.report.status is CalibrationStatus.FAILED
+```
+
+**Automated:** `tests/integration/test_calibration_workflow.py` (10 tests, real
+engine, real synthetic sheets, including the small-vs-large marker offset
+pair), `tests/gui/test_calibration_page.py` (26 tests, A-J), `tests/unit/test_calibration_service.py`
+(27 tests, the judgement rules in isolation) and
+`scripts/run_gui_smoke_tests.py` (object names, an end-to-end run against the
+real sample, and the mismatched-template check against the real template).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -471,6 +563,11 @@ settings_processing_custom.png
 devtools_generate_dialog.png
 devtools_benchmark_mode.png
 devtools_benchmark_results.png
+calibration_loaded.png
+calibration_run_clean.png
+calibration_overlay_markers.png
+calibration_threshold_ambiguous.png
+calibration_mismatched_failed.png
 ```
 
 `scan_overlay_zoom.png` is the one worth reading closely: it is the answer area

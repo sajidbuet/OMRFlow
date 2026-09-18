@@ -3,9 +3,11 @@
 Version 1 - implemented in Phase 0 by `omr_scanner.domain.template`, loaded and
 saved by `omr_scanner.services.template_service`. Phase 2 added the interactive
 designer that *produces* these documents
-(`omr_scanner.gui.template_designer`, `docs/template_designer.md`) plus one
-additive field (`reference_image`, below); everything else on this page is
-unchanged since Phase 0.
+(`omr_scanner.gui.template_designer`, `docs/template_designer.md`) plus two
+additive fields (`reference_image`, `default_bubble_radius`, below). Phase 4
+added one more (`calibration`, below), for the Calibration workflow
+(`docs/calibration_workflow.md`); everything else on this page is unchanged
+since Phase 0.
 
 A template is a single UTF-8 JSON document with the extension `.omrt`. JSON was
 chosen over a binary format so that templates diff cleanly in version control and
@@ -48,7 +50,8 @@ OmrTemplate
 │   └── recognition         RecognitionSettings override, or null
 ├── recognition             RecognitionSettings (template defaults)
 ├── reference_image         path to the source sheet image, or null (Phase 2)
-└── default_bubble_radius   default bubble radius, or null (Phase 2)
+├── default_bubble_radius   default bubble radius, or null (Phase 2)
+└── calibration             CalibrationRecord (Phase 4)
 ```
 
 ### `reference_image` - *added in Phase 2*
@@ -110,6 +113,35 @@ above: a document written before this field existed has no
 `default_bubble_radius` key, loads with the field `None`, and keeps exactly the
 geometry it was saved with - the fallback matches the bubble width every Phase 2
 region dialog originally hard-coded.
+
+### `calibration` - CalibrationRecord, *added in Phase 4*
+
+| Field | Type | Meaning |
+|---|---|---|
+| `calibration.validated_at` | string | ISO-8601 UTC timestamp of the last completed calibration run, or `""` when the template has never been calibrated. |
+| `calibration.sample_count` | integer | How many representative scans that run tested. |
+| `calibration.engine_version` | string | `ENGINE_VERSION` at the time of the run. |
+| `calibration.status` | string | The run's verdict (`passed`, `passed_with_warnings`, `needs_review`, `failed` - `omr_scanner.services.calibration_service.CalibrationStatus`). |
+| `calibration.geometry_fingerprint` | string | `OmrTemplate.geometry_fingerprint()` at the time of the run - a hash of `page`, `registration_markers`, `orientation_marker` and `zones` (excluding `recognition`). |
+| `calibration.recognition_fingerprint` | string | `OmrTemplate.recognition_fingerprint()` at the time of the run - a hash of the template-level `recognition` and every zone's own override. |
+
+Recorded by the Calibration workflow's "Save to Template" action
+(`docs/calibration_workflow.md`), never by anything in Phase 1-3. Its purpose
+is a single question: *is this record still true of the document it is
+attached to* - `OmrTemplate.is_calibration_current()` answers it by comparing
+the two stored fingerprints against freshly computed ones. A geometry edit (a
+moved zone, a resized bubble) and a settings edit (a retuned threshold)
+invalidate a calibration for different reasons, which is why there are two
+fingerprints rather than one hash of the whole document - `name`,
+`description`, `created_at`/`modified_at` and every other field are
+deliberately excluded from both, so renaming a template does not by itself
+invalidate a calibration that never looked at either.
+
+Additive and optional, under the same versioning rule as `reference_image` and
+`default_bubble_radius` above: a document written before Phase 4 has no
+`calibration` key and loads with the default `CalibrationRecord()`, whose
+`validated_at` is `""` - "never calibrated", which is the truth for such a
+document, not an error.
 
 ### `page` - PageGeometry
 

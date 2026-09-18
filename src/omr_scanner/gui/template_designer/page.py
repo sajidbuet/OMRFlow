@@ -643,6 +643,23 @@ class TemplateDesignerPage(WorkflowPage):
             return
         self._load_template_file(Path(path_str))
 
+    def open_template_at(self, path: Path) -> bool:
+        """Open ``path`` directly, without a file dialog.
+
+        The "Edit Template" shortcut another workflow stage (Phase 4
+        calibration) offers.
+
+        Returns:
+            ``True`` when ``path`` is now the open document. Unsaved changes
+            are confirmed exactly as :meth:`open_template` confirms them.
+        """
+        if not self._confirm_discard_changes():
+            return False
+        self._load_template_file(path)
+        return (
+            self._designer_state is not None and self._designer_state.template_path == path
+        )
+
     def _load_template_file(self, path: Path) -> None:
         try:
             template = load_template(path)

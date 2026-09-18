@@ -403,6 +403,128 @@ def build_scan_page(
     return harness
 
 
+@dataclass(frozen=True, slots=True)
+class CalibrationHarness:
+    """A Calibration page with a template loaded and scans added, ready to run.
+
+    Attributes:
+        page: The real `CalibrationPage`.
+        template_path: The ``.omrt`` it loaded.
+    """
+
+    page: object
+    template_path: Path
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting. See `DesignerHarness`."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def settle(self) -> None:
+        """Give the page real laid-out geometry without showing a window."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        widget: QWidget = self.page  # type: ignore[assignment]
+        widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        widget.show()
+        widget.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.process_events()
+
+    def run_all(self, *, timeout_ms: int = 120_000) -> None:
+        """Register and measure every added scan, waiting on ``run_finished``.
+
+        The same real-``QThread``-plus-pumped-event-loop shape as
+        `ScanHarness.run_batch`, for the same reason: the worker is real, so a
+        fixed sleep would be both slower than necessary and unreliable.
+
+        Raises:
+            RuntimeError: The run did not start.
+            TimeoutError: It did not finish inside ``timeout_ms``.
+        """
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        # `run_finished` carries no payload (see the page docstring), so the
+        # callback takes no argument either - unlike `ScanHarness.run_batch`,
+        # which connects straight to `received.append` because
+        # `batch_finished` *does* carry the `BatchReport`.
+        done = {"finished": False}
+
+        def mark_done() -> None:
+            done["finished"] = True
+
+        self.page.run_finished.connect(mark_done)
+        try:
+            if not self.page.run_all():
+                raise RuntimeError(
+                    "calibration did not start - is a template loaded and a scan added?"
+                )
+            clock = QElapsedTimer()
+            clock.start()
+            while not done["finished"]:
+                QApplication.processEvents()
+                if clock.elapsed() > timeout_ms:
+                    raise TimeoutError(f"calibration run did not finish within {timeout_ms} ms")
+        finally:
+            self.page.run_finished.disconnect(mark_done)
+        self.process_events()
+
+    def shutdown(self) -> None:
+        """Stop the page's background thread before the process exits.
+
+        See `ScanHarness.shutdown` for why this matters on Windows.
+        """
+        self.page.close()
+        self.process_events()
+
+
+def build_calibration_page(
+    scans: list[Path] | None = None, *, template_path: Path | None = None
+) -> CalibrationHarness:
+    """Build a Calibration page with a template loaded and ``scans`` added.
+
+    Uses the page's own public commands - ``load_template_from``,
+    ``add_scan_paths`` - exactly as `build_scan_page` does, and for the same
+    reason (`docs/TESTING.md`).
+
+    Args:
+        scans: Images to add; the repository sample by default.
+        template_path: The ``.omrt`` to read them with; the sample's own by
+            default.
+
+    Returns:
+        The harness, already laid out.
+
+    Raises:
+        FileNotFoundError: The template or a scan does not exist.
+        RuntimeError: The template could not be loaded.
+    """
+    from omr_scanner.gui.calibration.page import CalibrationPage
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+
+    template = template_path if template_path is not None else SAMPLE_TEMPLATE
+    if not template.is_file():
+        raise FileNotFoundError(f"Template not found: {template}")
+    selected = list(scans) if scans is not None else [SAMPLE_SHEET]
+    for path in selected:
+        if not path.is_file():
+            raise FileNotFoundError(f"Scan not found: {path}")
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "calibration")
+    page = CalibrationPage(spec)
+    page.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    if not page.load_template_from(template):
+        raise RuntimeError(f"Could not load the template: {template}")
+    page.add_scan_paths(selected)
+
+    harness = CalibrationHarness(page=page, template_path=template)
+    harness.settle()
+    return harness
+
+
 def orientation_search_rect() -> tuple[float, float, float, float]:
     """A plausible hand-drawn search rectangle around the sample's dash, in px.
 

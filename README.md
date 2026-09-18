@@ -18,17 +18,20 @@ human verification + reproducible result processing**
 ## Development Status
 
 > **Pre-release. Phases 0-2 of 11 are complete; Phase 3 (Recognition Engine
-> v1) is implemented and architecturally stabilised, and is undergoing
-> testing.**
+> v1) and Phase 4 (Template Calibration & Validation) are implemented and
+> undergoing testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
-> canonical page, has an interactive designer for building that template, and
-> can now read the marks on a filled-in sheet, name/export the results, and
-> file the processed images by roll number. None of the Phase 3 workflow has
-> been validated on more than one real printed sheet.
+> canonical page, has an interactive designer for building that template, can
+> now read the marks on a filled-in sheet, name/export the results, and file
+> the processed images by roll number, and can calibrate a saved template
+> against representative real scans before a batch is run. None of the Phase 3
+> recognition pipeline has been validated on more than one real printed sheet.
 > **Do not use it for examination processing.**
 >
 > **Phase 3 v1 is architecturally stabilized but recognition accuracy remains
-> under active validation pending a large real-world OMR dataset.**
+> under active validation pending a large real-world OMR dataset. Phase 4
+> makes that validation safer and more systematic to perform on whatever real
+> scans an operator has - it does not perform the validation itself.**
 
 OMRFlow is being developed incrementally, in the defined phases listed in
 [`development/ROADMAP.md`](development/ROADMAP.md). Each phase is implemented,
@@ -45,7 +48,7 @@ validated against a broad, real-world set of filled sheets.
 | 1 | OMR geometry & alignment engine | Complete | Complete | ✅ Complete |
 | 2 | Template data model & template designer core | Complete | Complete | ✅ Complete |
 | 3 | Recognition Engine v1: bubble mapping, recognition, batch scanning, renaming & CSV export | Implemented & architecturally hardened | In progress | 🧪 Testing |
-| 4 | Template calibration & validation | Pending | Not started | ⏳ Pending |
+| 4 | Template calibration & validation | Implemented | In progress | 🧪 Testing |
 | 5 | Batch scan processing pipeline (persistence, resume) | Pending | Not started | ⏳ Pending |
 | 6 | Conflict detection & human resolution | Pending | Not started | ⏳ Pending |
 | 7 | Candidate & attendance reconciliation | Pending | Not started | ⏳ Pending |
@@ -113,9 +116,37 @@ criteria.
     `2103123_b.jpg`, ...) and unresolved/uncertain roll numbers left
     unrenamed rather than misnamed;
   - per-sheet error isolation, so one bad file does not abort a batch.
-- A PySide6 application shell with the eight workflow stages; **Project**,
-  **Template** and **Scan** are implemented, and the remaining stages state
-  which phase will implement them.
+- **Template calibration & validation** (Phase 4, *implemented, testing in
+  progress*): load a saved template, add one or more representative real
+  scans, and run them through Phase 3's own registration and recognition in a
+  diagnostic mode that shows every intermediate measurement rather than a
+  second, separate calculation:
+  - marker, registration and bubble-geometry overlays drawn from the exact
+    coordinates the recognition engine itself computed - asserted equal by
+    test, not merely eyeballed;
+  - click-to-inspect on any bubble (field, question, fill score, active
+    threshold, classification);
+  - the four recognition thresholds (`fill_ratio_threshold`,
+    `blank_ratio_threshold`, `ambiguity_margin`, `min_confidence`) adjustable
+    by slider or exact value, reclassifying and updating the overlay and
+    quality summary immediately, without repeating registration;
+  - non-destructive calibration: a working value separate from the template's
+    saved value, applied only on an explicit *Save to Template*;
+  - a four-state validation verdict per scan and per sample - **Validation
+    Passed**, **Validation Passed With Warnings**, **Needs Review**,
+    **Calibration Failed** - and a template whose registration markers no
+    longer match the scan is reported `Calibration Failed`, with no answers
+    at all, rather than a plausible wrong result;
+  - the Scan page shows a non-blocking notice when the loaded template has
+    never been calibrated, or has been edited since it last was.
+
+  Calibrating against representative scans is **not** the same as validating
+  Phase 3's real-world accuracy at scale; see
+  [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md) and
+  [`docs/calibration_workflow.md`](docs/calibration_workflow.md).
+- A PySide6 application shell with the nine workflow stages; **Project**,
+  **Template**, **Calibrate** and **Scan** are implemented, and the remaining
+  stages state which phase will implement them.
 
 ### Phase 3 architectural hardening
 
@@ -406,6 +437,57 @@ Still open, and why Phase 3 is not marked complete:
   data to optimise against
 - [ ] Final Phase 3 regression sign-off once the above are addressed
 
+### Phase 4 testing status
+
+Phase 4 (Template Calibration & Validation) is implemented and covered by 63
+automated tests (27 unit, 10 integration, 26 GUI), plus targeted
+`qtguitesting` smoke checks against the real sample sheet. Full detail is in
+[`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md).
+
+Confirmed by the current automated suite:
+
+- [x] Overlay geometry matches the recognition engine's own computed
+  coordinates exactly (asserted, not merely visually checked)
+- [x] Threshold changes propagate to results, the overlay and the quality
+  summary without repeating registration (asserted via unchanged measured
+  fill values and unchanged registration output on a re-decide)
+- [x] A deliberately mismatched template is reported `Calibration Failed`,
+  with no fields, answers or bubbles at all - verified against the real
+  scanned sheet as well as synthetic ones
+- [x] Small marker offsets are tolerated and large ones are flagged, using
+  tolerances derived from the template's own measured geometry rather than
+  assumed numbers
+- [x] Non-destructive threshold adjustment (working value vs. saved value;
+  reset to template, reset to defaults, explicit save)
+- [x] Template staleness detection (an edited template's saved calibration is
+  correctly invalidated; the Scan page shows the resulting warning)
+- [x] Per-scan and per-sample (aggregate) quality summaries, worst-status-wins
+  aggregation
+- [x] Backward compatibility: a template saved before this phase loads with no
+  recorded calibration, rather than failing to load
+- [x] Automated Qt GUI validation using `qtguitesting` (30/30 smoke checks,
+  including the real sample sheet scoring `passed_with_warnings` and a
+  deliberately mismatched template scoring `failed`)
+- [x] Full pre-existing Phase 1-3 recognition, batch and benchmark suites pass
+  unchanged after the one isolated, behaviour-preserving refactor this phase
+  made to `recognition_service` (see
+  [`development/PHASE_03_HANDOFF.md`](development/PHASE_03_HANDOFF.md))
+
+Still open, and why Phase 4 is not marked complete:
+
+- [ ] Calibrating a template against representative scans has **not** been
+  shown to make Phase 3's underlying recognition accurate - it makes
+  mis-registration and mis-calibration visible and correctable, which is a
+  different, narrower claim
+- [ ] No real corpus of *deliberately* miscalibrated templates exists yet to
+  validate the calibration-judgement thresholds (5% unusable bubbles, 30%
+  systematic ambiguity) against; they are reasoned defaults, documented as
+  such
+- [ ] A score-distribution histogram was not built; a simpler, documented
+  textual separation label is used instead, per the phase's own brief
+  permitting a simpler alternative where a fitted statistical measure could
+  not be justified on the data available
+
 ### Development philosophy
 
 OMRFlow follows an incremental development process. Major functionality is
@@ -428,6 +510,7 @@ phases surface real requirements.
 Current detail: [`development/CURRENT_STATE.md`](development/CURRENT_STATE.md).
 Plan: [`development/ROADMAP.md`](development/ROADMAP.md).
 Phase 3 handoff: [`development/PHASE_03_HANDOFF.md`](development/PHASE_03_HANDOFF.md).
+Phase 4 handoff: [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md).
 
 ---
 
@@ -537,9 +620,13 @@ OMRflow/
 │   ├── services/             workflows the GUI calls: alignment, template,
 │   │                         recognition, batch processing (incl. the
 │   │                         multicore worker pool), filename allocation,
-│   │                         scan import/export (Phase 3)
+│   │                         scan import/export (Phase 3), calibration
+│   │                         verdicts (Phase 4)
 │   ├── gui/                  PySide6 window and workflow pages
 │   │   ├── template_designer/  interactive .omrt editor (Phase 2)
+│   │   ├── calibration/         calibrate a saved template against real
+│   │   │                        scans before a batch (Phase 4, testing in
+│   │   │                        progress)
 │   │   ├── scan/                scan/recognition workflow page, incl.
 │   │   │                        benchmark mode (Phase 3, testing in progress)
 │   │   └── devtools/            Tools > Developer / Testing: dataset
@@ -593,6 +680,7 @@ OMRflow/
 | [`docs/IMAGE_PROCESSING.md`](docs/IMAGE_PROCESSING.md) | The alignment and recognition pipeline: algorithms, accuracy, failure modes and limits |
 | [`docs/scan_workflow.md`](docs/scan_workflow.md) | The Scan / recognition workflow: importing, batch processing, renaming and CSV export (Phase 3) |
 | [`docs/recognition_engine.md`](docs/recognition_engine.md) | The recognition subsystem for developers: the engine API, the `ScanResult` contract, diagnostics, synthetic datasets and the benchmark harness (Phase 3) |
+| [`docs/calibration_workflow.md`](docs/calibration_workflow.md) | The Calibration workflow: procedure, overlay layers, thresholds, validation status and how to recognise a bad calibration (Phase 4) |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
@@ -603,9 +691,9 @@ OMRflow/
 
 The following describes the finished system. Each capability is tagged with
 the phase that delivers it and its current state; anything tagged **planned**
-does not exist yet. Phase 3 items are implemented but still "testing in
-progress" in the sense described in [Development Status](#development-status)
-above.
+does not exist yet. Phase 3 and Phase 4 items are implemented but still
+"testing in progress" in the sense described in
+[Development Status](#development-status) above.
 
 **Template designer** *(Phase 2, implemented)*. Load a reference sheet, draw
 recognition zones, define the four registration markers and the orientation
@@ -650,6 +738,16 @@ processed scans into an output folder named after the detected roll number,
 with duplicate rolls safely suffixed (`2103123.jpg`, `2103123_a.jpg`,
 `2103123_b.jpg`, ...) so no file is ever overwritten, and unresolved rolls left
 unrenamed rather than misnamed. See `docs/scan_workflow.md`.
+
+**Template calibration & validation** *(Phase 4, implemented; testing in
+progress)*. Verify a saved template against representative real scans before
+running a batch, reusing Phase 3's own registration and recognition rather
+than a second engine: marker/registration/bubble-geometry overlays drawn from
+the engine's own coordinates, per-bubble score inspection, non-destructive
+threshold tuning with immediate reclassification, and a four-state validation
+verdict (Passed / Passed with Warnings / Needs Review / Calibration Failed)
+that reports a mis-registered or mis-calibrated template as failed rather than
+producing a confident-looking wrong result. See `docs/calibration_workflow.md`.
 
 **Conflict resolution** *(planned, Phase 6)*. A review interface showing the
 original sheet, the normalised sheet, the highlighted field, the zoomed region

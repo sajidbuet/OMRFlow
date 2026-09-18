@@ -195,12 +195,31 @@ class MarkerView:
         x: Marker centre in source-image pixels.
         y: Marker centre in source-image pixels.
         score: Selection score in ``[0, 1]``.
+        canonical_x: The same detected centre, mapped through the fitted
+            homography into canonical pixels - the frame every zone and bubble
+            overlay is drawn in. Zero when the transform was never computed
+            (a failed registration carries no markers at all).
+        canonical_y: As ``canonical_x``.
+        expected_x: Where the template says this role's marker centre should
+            sit, in canonical pixels - a property of the template alone, not
+            of this scan. Comparing it with ``canonical_x`` is what a
+            calibration overlay draws as "expected" versus "detected"
+            (:mod:`omr_scanner.services.calibration_service`); with only four
+            correspondences the homography fits them almost exactly, so a
+            visible gap here says more about *how* the fit was constrained
+            than about geometric error - see
+            :attr:`~omr_scanner.services.recognition_models.ScanQuality.mean_reprojection_error_px`.
+        expected_y: As ``expected_x``.
     """
 
     role: str
     x: float
     y: float
     score: float
+    canonical_x: float = 0.0
+    canonical_y: float = 0.0
+    expected_x: float = 0.0
+    expected_y: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

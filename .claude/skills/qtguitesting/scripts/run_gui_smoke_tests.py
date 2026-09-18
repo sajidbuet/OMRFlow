@@ -592,6 +592,102 @@ def _check_benchmark_dialog_constructs() -> CheckResult:
     )
 
 
+def _check_calibration_page_object_names() -> CheckResult:
+    """Every stable selector the calibration scenario reference lists exists."""
+    from _harness import build_calibration_page
+    from PySide6.QtCore import QObject
+
+    harness = build_calibration_page()
+    required = [
+        "testScanList", "calibrationImageView", "markerOverlayToggle",
+        "bubbleOverlayToggle", "scoreOverlayToggle", "regionOverlayToggle",
+        "bubbleThresholdSpinBox", "bubbleThresholdSlider",
+        "runCalibrationButton", "runAllCalibrationButton",
+        "resetCalibrationButton", "saveCalibrationButton",
+        "calibrationSummaryPanel", "calibrationStatusLabel", "bubbleDiagnosticPanel",
+    ]
+    missing = [name for name in required if harness.page.findChild(QObject, name) is None]
+    ok = harness.page.objectName() == "calibrationPage" and not missing
+    harness.shutdown()
+    return ok, (
+        f"{len(required)} stable objectName(s) present"
+        if not missing
+        else f"missing objectName(s): {', '.join(missing)}"
+    )
+
+
+def _check_calibration_runs_and_scores_the_real_sample() -> CheckResult:
+    """Run calibration end to end on the real sample sheet and template.
+
+    The one calibration check that exercises the whole feature: registration,
+    marker/expected geometry, bubble measurement, the calibration verdict and
+    the quality summary, all against `examples/ECE-0000.png`.
+    """
+    from _harness import build_calibration_page
+
+    harness = build_calibration_page()
+    harness.run_all()
+    entry = harness.page.state.entries[0]
+    result = entry.result
+    report = entry.report
+    ok = (
+        result is not None
+        and report is not None
+        and result.registration.value != "registration_failed"
+        and len(result.markers) == 4
+        and report.status.value in ("passed", "passed_with_warnings")
+    )
+    detail = (
+        f"status={report.status.value if report else '?'}, "
+        f"markers={len(result.markers) if result else 0}/4, "
+        f"bubbles={len(result.bubbles) if result else 0}, "
+        f"near-threshold={report.near_threshold_count if report else '?'}"
+    )
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_a_mismatched_template_fails_calibration_not_a_false_pass() -> CheckResult:
+    """The load-bearing Phase 4 check: a bad template is never a confident pass."""
+    from _harness import OUTPUT_ROOT, SAMPLE_TEMPLATE, build_calibration_page
+
+    from omr_scanner.domain.geometry import NormalizedPoint
+    from omr_scanner.services import CalibrationStatus, load_template, save_template
+
+    template = load_template(SAMPLE_TEMPLATE)
+    mismatched = template.model_copy(
+        update={
+            "registration_markers": tuple(
+                marker.model_copy(
+                    update={
+                        "center": NormalizedPoint(
+                            x=min(marker.center.x + 0.3, 1.0),
+                            y=min(marker.center.y + 0.3, 1.0),
+                        )
+                    }
+                )
+                for marker in template.registration_markers
+            )
+        }
+    )
+    bad_path = OUTPUT_ROOT / "mismatched_calibration.omrt"
+    save_template(mismatched, bad_path)
+
+    harness = build_calibration_page(template_path=bad_path)
+    harness.run_all()
+    entry = harness.page.state.entries[0]
+    ok = (
+        entry.report is not None
+        and entry.report.status is CalibrationStatus.FAILED
+        and entry.result is not None
+        and entry.result.answers == ()
+        and entry.result.bubbles == ()
+    )
+    detail = f"status={entry.report.status.value if entry.report else '?'}"
+    harness.shutdown()
+    return ok, detail
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -674,6 +770,15 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "generate and benchmark end to end",
                     _check_generate_and_benchmark_end_to_end,
+                ),
+                ("calibration page object names", _check_calibration_page_object_names),
+                (
+                    "calibration runs and scores the real sample",
+                    _check_calibration_runs_and_scores_the_real_sample,
+                ),
+                (
+                    "a mismatched template fails calibration, not a false pass",
+                    _check_a_mismatched_template_fails_calibration_not_a_false_pass,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

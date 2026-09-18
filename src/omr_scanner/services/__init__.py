@@ -58,6 +58,17 @@ from omr_scanner.services.batch_progress import (
     format_duration,
     format_rate,
 )
+from omr_scanner.services.calibration_service import (
+    CalibrationFinding,
+    CalibrationReport,
+    CalibrationSampleReport,
+    CalibrationStatus,
+    aggregate_calibration,
+    apply_calibration,
+    evaluate_calibration,
+    separation_label,
+    write_calibration_report,
+)
 from omr_scanner.services.filename_manager import (
     FilenameAllocator,
     duplicate_suffix,
@@ -104,6 +115,7 @@ from omr_scanner.services.recognition_models import (
     ZoneView,
 )
 from omr_scanner.services.recognition_service import (
+    CalibrationSession,
     RecognitionEngine,
     recognise_scan,
 )
@@ -138,6 +150,11 @@ __all__ = [
     "BatchStage",
     "BatchState",
     "BubbleView",
+    "CalibrationFinding",
+    "CalibrationReport",
+    "CalibrationSampleReport",
+    "CalibrationSession",
+    "CalibrationStatus",
     "CharacterView",
     "DecodedImage",
     "DetectedMarker",
@@ -162,13 +179,16 @@ __all__ = [
     "StageTimings",
     "StatusCode",
     "ZoneView",
+    "aggregate_calibration",
     "alignment_config_from_template",
+    "apply_calibration",
     "collect_scan_files",
     "create_project",
     "decode_image_file",
     "detect_orientation_marker_in_region",
     "detect_registration_markers",
     "duplicate_suffix",
+    "evaluate_calibration",
     "export_scan_results",
     "finalise_scan",
     "format_count",
@@ -191,5 +211,7 @@ __all__ = [
     "sanitise_stem",
     "save_image",
     "save_template",
+    "separation_label",
+    "write_calibration_report",
     "write_diagnostics",
 ]

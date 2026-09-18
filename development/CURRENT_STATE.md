@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-18
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and now measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 not started.
 
 Update this file at the end of every phase.
 
@@ -11,7 +11,7 @@ Update this file at the end of every phase.
 ### Application shell and projects (Phase 0)
 
 - The application starts (`python -m omr_scanner` or `omrflow`) and shows the
-  main window with eight workflow stages, a status bar, File and Help menus.
+  main window with nine workflow stages, a status bar, File and Help menus.
 - A project can be created: a folder containing `project.json`,
   `database.sqlite` and the seven standard sub-directories.
 - A project can be closed and reopened, with its identity and metadata intact.
@@ -253,6 +253,56 @@ sheets: dot, slash and stroke mark styles. Measured fill ratios: filled bubble
 real-dataset calibration, not a number to tune against**, and not evidence of
 real-world accuracy.
 
+### Template Calibration & Validation (Phase 4)
+
+- A ninth workflow stage, **Calibrate**, between Template and Scan: load a
+  saved template, add one or more representative real scans, and run the
+  existing Phase 3 pipeline against them in diagnostic mode - never a second
+  recognition engine.
+- `RecognitionEngine.open_session()` returns a `CalibrationSession` that
+  registers and measures a scan once; `session.recompute(template)` re-decides
+  the cached measurements against a different `RecognitionSettings` with no
+  file read, no marker detection and no perspective warp. A threshold slider
+  therefore reclassifies, updates the overlay and updates the quality summary
+  synchronously, on the GUI thread - measured at roughly 9 ms per recompute on
+  a 100-question synthetic sheet, against 70-80 ms for the registration it
+  does not repeat.
+- The overlay draws `ScanResult.bubbles` and `ScanResult.markers` unchanged;
+  `MarkerView` gained `canonical_x/y` (the detected marker reprojected through
+  the fitted homography) and `expected_x/y` (the template's own declared
+  centre), both already in canonical pixels, so "expected vs detected" is
+  drawn from the same computation the engine used to rectify the page, not a
+  second one.
+- `services.calibration_service.evaluate_calibration` derives an explicit
+  four-state verdict - passed / passed with warnings / needs review / failed -
+  from signals Phase 3 already computes: registration status, alignment
+  warnings (split into geometry-class and cosmetic), the fraction of bubbles
+  whose sampling window could not be measured, and the fraction of checked
+  positions needing review. A sample's status is the worst of its scans, never
+  an average.
+- **The fail-safe, proven rather than assumed.** A template whose registration
+  markers are shifted past their `search_radius` fails to register; `ScanResult`
+  for a failed registration carries no fields, answers or bubbles at all (true
+  since Phase 3, by construction), so the calibration verdict can only ever be
+  `FAILED` for it - never a plausible-looking wrong answer. Checked at the unit
+  level, the integration level (synthetic), the GUI level, and against the real
+  sample and template through `qtguitesting`.
+- A small additive template field records a calibration run
+  (`docs/TEMPLATE_FORMAT.md`, "`calibration`") and is invalidated the moment
+  the template's geometry *or* its recognition settings move - tracked as two
+  separate content hashes so the two kinds of change are distinguished. Every
+  template saved before Phase 4 loads unchanged, simply "never calibrated".
+- The Scan page shows a small, non-blocking warning when a loaded template has
+  never been calibrated or has gone stale; it never blocks *Process All*.
+
+**Measured on the real sample** (`examples/ECE-0000.png`, its own template):
+calibration status `Validation passed with warnings` (a pre-existing marker
+alignment warning, not a Phase 4 finding), 4/4 markers detected within 0 px of
+their expected canonical position, all 100 answers single-marked, 0 flagged.
+A deliberately mismatched template (every marker shifted 0.3 normalised) run
+against the same real scan: `Registration: FAILED`, `Markers detected: 0 / 4`,
+0 fields/answers/bubbles, calibration status `FAILED` - not a degraded pass.
+
 ## What does not exist
 
 No conflict resolution, attendance reconciliation, answer-key handling, scoring,
@@ -366,14 +416,25 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2094 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2158 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest         2094 passed, 1 skipped in 182.5s
-ruff check .   All checks passed
-mypy           Success: no issues found in 98 source files
+pytest -m "not gui"   1576 passed, 1 skipped in 88.9s
+pytest -m gui         582 passed in [long-running; real QThreads and a real recognition engine]
+ruff check .          All checks passed
+mypy                  Success: no issues found in 102 source files
 ```
+
+63 of those are Phase 4 (Template Calibration & Validation): `tests/unit/test_calibration_service.py`
+(27, the four-state judgement rules against hand-built results),
+`tests/integration/test_calibration_workflow.py` (10, the real engine against
+real templates and synthetic sheets, including the mismatched-marker and
+small-vs-large-offset pairs) and `tests/gui/test_calibration_page.py` (26,
+A-J, the whole workflow through the page's public commands). Confirmed
+end-to-end against the real sample and its real template through
+`scripts/run_gui_smoke_tests.py` (30/30 checks) and by inspecting the
+screenshots `scripts/capture_gui_states.py --only calibration` produces.
 
 96 of those are the multicore work, and a further 94 the large-batch
 progress work (`tests/unit/test_batch_progress.py`, 58, including a

@@ -322,6 +322,12 @@ class ScanPage(WorkflowPage):
         self.template_name_label.setObjectName("templateNameLabel")
         self.template_name_label.setWordWrap(True)
         template_layout.addWidget(self.template_name_label)
+
+        self.calibration_warning_label = QLabel("")
+        self.calibration_warning_label.setObjectName("calibrationWarningLabel")
+        self.calibration_warning_label.setWordWrap(True)
+        self.calibration_warning_label.setStyleSheet("color: #9A6A00;")
+        template_layout.addWidget(self.calibration_warning_label)
         layout.addWidget(template_box)
 
         # -- Scans -----------------------------------------------------
@@ -783,6 +789,14 @@ class ScanPage(WorkflowPage):
         self.template_name_label.setText(
             f"<b>{template.name}</b><br>{path.name}<br>"
             f"{len(template.zones)} region(s), {questions} question(s)"
+        )
+        self.calibration_warning_label.setText(
+            ""
+            if template.is_calibration_current()
+            else (
+                "⚠ Not validated against representative scans since its last "
+                "change. Consider running Calibration before a large batch."
+            )
         )
         _LOGGER.info("Scan page loaded template '%s' from %s", template.name, path)
         self._refresh_controls()

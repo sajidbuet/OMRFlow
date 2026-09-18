@@ -35,6 +35,7 @@ from _harness import (
     SAMPLE_TEMPLATE,
     DesignerHarness,
     add_question_region,
+    build_calibration_page,
     build_designer,
     build_empty_designer,
     build_scan_page,
@@ -527,6 +528,77 @@ def _capture_developer_tools(_image: Path) -> list[Path]:
     return written
 
 
+def _capture_calibration(_image: Path) -> list[Path]:
+    """The Calibration page against the real sample: clean, then mismatched.
+
+    Five images: the page as loaded, the page after a clean run (registered,
+    quality summary populated), the marker overlay at a zoom close enough to
+    read the expected/detected labels, a deliberately faint mark sitting in
+    the ambiguous band, and the same page against a template whose markers do
+    not match the scan - the load-bearing Phase 4 state, where the status must
+    read FAILED rather than a plausible-looking pass.
+    """
+    written: list[Path] = []
+
+    harness = build_calibration_page()
+    harness.process_events()
+    written.append(_save(harness.page, "calibration_loaded"))
+
+    harness.run_all()
+    entry = harness.page.state.entries[0]
+    print(
+        f"  clean run: status={entry.report.status.value if entry.report else '?'}, "
+        f"markers={len(entry.result.markers) if entry.result else 0}/4"
+    )
+    written.append(_save(harness.page, "calibration_run_clean"))
+
+    harness.page.marker_overlay_toggle.setChecked(True)
+    top_left = next(m for m in entry.result.markers if m.role == "top_left")
+    harness.page.preview.zoom_to_actual_size()
+    harness.page.preview.centerOn(top_left.canonical_x, top_left.canonical_y)
+    harness.process_events()
+    written.append(_save(harness.page, "calibration_overlay_markers"))
+    harness.shutdown()
+
+    threshold_harness = build_calibration_page()
+    threshold_harness.run_all()
+    threshold_harness.page.fill_spin.setValue(0.3)
+    threshold_harness.process_events()
+    written.append(_save(threshold_harness.page, "calibration_threshold_ambiguous"))
+    threshold_harness.shutdown()
+
+    from omr_scanner.domain.geometry import NormalizedPoint
+    from omr_scanner.services import load_template, save_template
+
+    template = load_template(SAMPLE_TEMPLATE)
+    mismatched = template.model_copy(
+        update={
+            "registration_markers": tuple(
+                marker.model_copy(
+                    update={
+                        "center": NormalizedPoint(
+                            x=min(marker.center.x + 0.3, 1.0),
+                            y=min(marker.center.y + 0.3, 1.0),
+                        )
+                    }
+                )
+                for marker in template.registration_markers
+            )
+        }
+    )
+    bad_path = OUTPUT_ROOT / "capture_mismatched_calibration.omrt"
+    save_template(mismatched, bad_path)
+
+    failed_harness = build_calibration_page(template_path=bad_path)
+    failed_harness.run_all()
+    failed_entry = failed_harness.page.state.entries[0]
+    print(f"  mismatched template: status={failed_entry.report.status.value}")
+    written.append(_save(failed_harness.page, "calibration_mismatched_failed"))
+    failed_harness.shutdown()
+
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
     "loaded": _capture_loaded,
@@ -543,6 +615,7 @@ SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "scan-progress": _capture_scan_progress,
     "settings": _capture_settings,
     "devtools": _capture_developer_tools,
+    "calibration": _capture_calibration,
 }
 
 

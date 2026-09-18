@@ -17,6 +17,85 @@ against one real scanned sheet and geometric variants of it, **not** against a
 corpus of independently filled papers; this build must not be used for
 examination processing.
 
+### Added — Phase 4
+
+Template Calibration & Validation. A user can now verify and tune a saved
+template against representative real scans, before trusting it with a batch,
+entirely by reusing Phase 3's own registration and recognition - not a second
+engine. Full detail: `development/PHASE_04_HANDOFF.md`;
+operator procedure: `docs/calibration_workflow.md`.
+
+- **`omr_scanner.gui.calibration`**: a new workflow stage, **Calibrate**,
+  between Template and Scan. Load a template, add or remove test scans (PNG,
+  JPEG, TIFF, BMP), step through them, and run one or all through the existing
+  pipeline in a diagnostic mode. A layered overlay over the rectified page:
+  detected-vs-expected registration markers, bubble-sampling geometry, and
+  recognised selections/scores, each independently toggled. Click any bubble
+  for its field, question, centre, sampling window, raw score, active
+  threshold and classification. A field filter (All / Student ID / Set Code /
+  Questions / Markers) narrows what is shown.
+- **`omr_scanner.services.recognition_service.CalibrationSession`**: opens a
+  scan once - load, register, measure - and can then be asked to re-decide
+  against a *different* `RecognitionSettings` as many times as needed without
+  repeating any of that work. Built by splitting the existing `_recognise`
+  pipeline at its natural measure/decide boundary; the full pre-existing
+  recognition, batch and benchmark test suites pass unchanged, which is the
+  evidence nothing about ordinary recognition moved.
+- **Four adjustable recognition thresholds**, and no others invented for this
+  phase: `fill_ratio_threshold`, `blank_ratio_threshold`, `ambiguity_margin`,
+  `min_confidence` - each a slider plus an exact numeric field. Changing one
+  reclassifies every open scan, updates the overlay and the quality summary,
+  and starts no worker thread and repeats no registration.
+- **Non-destructive calibration.** A working value distinct from the
+  template's saved value; *Reset to Template*, *Reset to Defaults* (the two
+  kept visibly separate) and an explicit *Save to Template* that names the
+  status about to be recorded before it writes anything.
+- **`omr_scanner.services.calibration_service`**: `evaluate_calibration` - a
+  four-state verdict per scan (`CalibrationStatus`: **Validation Passed** /
+  **Validation Passed With Warnings** / **Needs Review** / **Calibration
+  Failed**), built only from measurable Phase 3 signals already on
+  `ScanResult` - registration status, geometry-class alignment warnings, the
+  fraction of unusable bubbles, systematic ambiguity, near-threshold marks -
+  never an arbitrary or invented check. `aggregate_calibration` rolls a
+  sample up worst-status-wins. `write_calibration_report` writes a JSON
+  report that says, in the file itself, what it does and does not prove.
+- **Registration failure is judged first and alone.** If the existing marker
+  detector cannot register a scan, every other calibration check is skipped
+  and the verdict is `Calibration Failed` with no fields, answers or bubbles
+  at all - never a plausible-looking wrong result from an unregistered page.
+  Verified against a deliberately mismatched template on the real sample
+  sheet as well as synthetic ones.
+- **`OmrTemplate.calibration`**: one additive field (`CalibrationRecord`)
+  recording when a template was last calibrated, against how many scans, and
+  two content fingerprints (geometry, recognition settings). A later edit to
+  either invalidates the record automatically
+  (`OmrTemplate.is_calibration_current()`); documents saved before this phase
+  load unchanged. The Scan page shows a non-blocking notice - never a block -
+  when the loaded template has never been calibrated or has gone stale.
+- **`MarkerView`** gained `canonical_x/y` (a detected marker reprojected
+  through the same fitted homography that rectified the page) and
+  `expected_x/y` (the template's own declared marker centre, in the same
+  coordinate space) - both additive, both computed once from existing
+  geometry, never a second calculation.
+- **`ScanPreviewView`** (already used by the Scan page) gained marker-overlay
+  painting and a `clicked_scene_point` signal, reused by the Calibration page
+  rather than a second image-viewer component; the Scan page's own behaviour
+  is unchanged.
+- 63 new tests: 27 unit (`test_calibration_service.py`), 10 integration
+  (`test_calibration_workflow.py`, against the real `RecognitionEngine` and
+  real templates) and 26 GUI (`test_calibration_page.py`), including a
+  cross-check that the on-screen question-number label always agrees with the
+  number the engine itself recognised. The `qtguitesting` skill gained a
+  `CalibrationHarness`, three smoke checks (object names, a clean run against
+  the real sample, a mismatched-template run against the real sample) and
+  five documented screenshot scenarios.
+
+**Calibrating a template against representative scans is not the same as
+validating Phase 3's real-world recognition accuracy at scale.** This phase
+makes that validation safer and more systematic to carry out on whatever real
+scans an operator has; it is not a substitute for validating against a broad,
+independently filled corpus, which remains Phase 3's own open item.
+
 ### Added — Phase 3
 
 - `omr_scanner.imaging.metrics`: per-bubble measurement. An elliptical interior

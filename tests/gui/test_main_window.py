@@ -60,10 +60,14 @@ def test_navigation_switches_the_visible_page(window: MainWindow):
 
 
 def test_unimplemented_pages_say_so(window: MainWindow):
-    # Index 3 ("Resolve"): Phase 2 replaced the Template placeholder and Phase 3
-    # replaced the Scan one, so this check walks forward to whichever stage is
-    # still honestly unimplemented.
-    resolve_page = window.stack.widget(3)
+    # Phase 2 replaced the Template placeholder, Phase 3 the Scan one and
+    # Phase 4 the Calibration one, so this check walks forward - by key,
+    # never a hard-coded index - to whichever stage is still honestly
+    # unimplemented.
+    resolve_index = next(
+        index for index, spec in enumerate(WORKFLOW_PAGES) if spec.key == "resolve"
+    )
+    resolve_page = window.stack.widget(resolve_index)
     texts = [label.text() for label in resolve_page.findChildren(QLabel)]
 
     assert resolve_page.spec.key == "resolve"
@@ -81,11 +85,23 @@ def test_template_page_is_no_longer_a_placeholder(window: MainWindow):
 
 
 def test_scan_page_is_no_longer_a_placeholder(window: MainWindow):
-    scan_page = window.stack.widget(2)
+    scan_index = next(index for index, spec in enumerate(WORKFLOW_PAGES) if spec.key == "scan")
+    scan_page = window.stack.widget(scan_index)
 
     assert scan_page.spec.key == "scan"
     assert scan_page.spec.is_implemented
     assert scan_page.objectName() == "scanPage"
+
+
+def test_calibration_page_is_no_longer_a_placeholder(window: MainWindow):
+    calibration_index = next(
+        index for index, spec in enumerate(WORKFLOW_PAGES) if spec.key == "calibration"
+    )
+    calibration_page = window.stack.widget(calibration_index)
+
+    assert calibration_page.spec.key == "calibration"
+    assert calibration_page.spec.is_implemented
+    assert calibration_page.objectName() == "calibrationPage"
 
 
 class TestAboutMenuAction:

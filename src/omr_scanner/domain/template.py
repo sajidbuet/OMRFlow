@@ -28,6 +28,7 @@ Specification:
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -205,6 +206,57 @@ class RecognitionSettings(BaseModel):
                 "otherwise no measurement could ever be ambiguous"
             )
         return self
+
+
+class CalibrationRecord(BaseModel):
+    """What the last completed Phase 4 calibration run found, if any.
+
+    Declared here, next to :class:`RecognitionSettings`, because the two
+    questions it answers are "were these thresholds actually checked against a
+    real scan" and "against what geometry" - both properties of *this*
+    template, not of the application. Nothing in Phase 1-3 reads this; only the
+    calibration workflow writes it and only the Scan page's stale-validation
+    warning reads it (``docs/calibration_workflow.md``).
+
+    Attributes:
+        validated_at: ISO-8601 UTC timestamp of the run that produced this
+            record, or ``""`` when the template has never been calibrated -
+            which is the default for every template loaded before Phase 4 and
+            for one freshly created in the designer.
+        sample_count: How many representative scans were tested.
+        engine_version: Which :data:`~omr_scanner.services.recognition_models.ENGINE_VERSION`
+            produced the run. A record from an older engine is not necessarily
+            wrong, but it was not tested against *this* one.
+        status: The calibration status the run concluded with (a
+            :class:`~omr_scanner.services.calibration_service.CalibrationStatus`
+            value, stored as plain text so this module never imports the
+            services layer - see ``docs/ARCHITECTURE.md``).
+        geometry_fingerprint: :meth:`OmrTemplate.geometry_fingerprint` at the
+            time of the run.
+        recognition_fingerprint: :meth:`OmrTemplate.recognition_fingerprint` at
+            the time of the run.
+
+    Why two fingerprints and not one:
+        A geometry change (a moved zone, a resized bubble) and a settings
+        change (a retuned threshold) invalidate a validation for different
+        reasons, and a future message to the operator ("the template's
+        geometry changed since this was validated" versus "the thresholds
+        changed since this was validated") should be able to say which.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    validated_at: str = ""
+    sample_count: int = Field(default=0, ge=0)
+    engine_version: str = ""
+    status: str = ""
+    geometry_fingerprint: str = ""
+    recognition_fingerprint: str = ""
+
+    @property
+    def is_recorded(self) -> bool:
+        """Whether this template has ever been through calibration at all."""
+        return bool(self.validated_at)
 
 
 class BubbleOverride(BaseModel):
@@ -539,6 +591,16 @@ class OmrTemplate(BaseModel):
     such a document's geometry is unaffected.
     """
 
+    calibration: CalibrationRecord = CalibrationRecord()
+    """The last Phase 4 calibration run against this template, if any.
+
+    Additive, like :attr:`reference_image` and :attr:`default_bubble_radius`:
+    a document written before Phase 4 loads with the default
+    ``CalibrationRecord()``, whose :attr:`~CalibrationRecord.is_recorded` is
+    ``False`` - "never calibrated", which is the truth for such a document,
+    not an error.
+    """
+
     @property
     def default_bubble_size(self) -> NormalizedSize:
         """The default bubble bounding size implied by :attr:`default_bubble_radius`.
@@ -600,3 +662,98 @@ class OmrTemplate(BaseModel):
     def effective_recognition(self, zone: Zone) -> RecognitionSettings:
         """Return the recognition settings that apply to ``zone``."""
         return zone.recognition if zone.recognition is not None else self.recognition
+
+    # ------------------------------------------------------------------
+    # Calibration fingerprints (Phase 4)
+    # ------------------------------------------------------------------
+    def geometry_fingerprint(self) -> str:
+        """Return a stable hash of everything a bubble's position depends on.
+
+        Covers :attr:`page`, :attr:`registration_markers`, :attr:`orientation_marker`
+        and :attr:`zones` - nothing else. Deliberately excludes ``name``,
+        ``description``, ``created_at``/``modified_at`` and :attr:`recognition`
+        (template-level *and* per-zone), so that renaming a template, or
+        retuning a threshold, does not by itself invalidate a calibration that
+        never looked at geometry in the first place - see
+        :meth:`recognition_fingerprint` for the settings half of that
+        distinction.
+
+        A change here means every bubble sampling window Phase 4 showed the
+        operator may now be wrong, which is exactly the condition
+        :meth:`is_calibration_current` exists to catch (``docs/calibration_workflow.md``).
+        """
+        payload = {
+            "page": self.page.model_dump(mode="json"),
+            "registration_markers": [
+                marker.model_dump(mode="json") for marker in self.registration_markers
+            ],
+            "orientation_marker": self.orientation_marker.model_dump(mode="json"),
+            "zones": [
+                zone.model_dump(mode="json", exclude={"recognition"})
+                for zone in self.zones
+            ],
+        }
+        return _stable_hash(payload)
+
+    def recognition_fingerprint(self) -> str:
+        """Return a stable hash of every recognition threshold in effect.
+
+        Covers the template-level :attr:`recognition` and every zone's own
+        override, so a calibration run is invalidated the moment *any*
+        threshold a sheet is actually read with changes - including one set on
+        a single zone, which :meth:`geometry_fingerprint` does not see.
+        """
+        payload = {
+            "recognition": self.recognition.model_dump(mode="json"),
+            "zone_overrides": {
+                zone.id: zone.recognition.model_dump(mode="json")
+                for zone in self.zones
+                if zone.recognition is not None
+            },
+        }
+        return _stable_hash(payload)
+
+    def is_calibration_current(self) -> bool:
+        """Whether :attr:`calibration` still describes this template.
+
+        ``False`` for a template that has never been calibrated at all - see
+        :attr:`CalibrationRecord.is_recorded` - and for one whose geometry or
+        recognition settings have moved since the recorded run.
+        """
+        record = self.calibration
+        if not record.is_recorded:
+            return False
+        return (
+            record.geometry_fingerprint == self.geometry_fingerprint()
+            and record.recognition_fingerprint == self.recognition_fingerprint()
+        )
+
+    def with_calibration(self, record: CalibrationRecord) -> OmrTemplate:
+        """Return a copy of this template carrying a new calibration record.
+
+        A plain, documented use of ``model_copy`` - the same mechanism the
+        template designer already uses for every edit - so that recording a
+        calibration result never touches anything else about the document.
+        """
+        return self.model_copy(update={"calibration": record})
+
+
+def _stable_hash(payload: object) -> str:
+    """Return a short, deterministic hash of a JSON-safe structure.
+
+    ``json.dumps(..., sort_keys=True)`` makes dictionary key order irrelevant,
+    which matters here because Pydantic's own ``model_dump`` order is an
+    implementation detail, not part of the format - two structurally identical
+    templates must fingerprint the same regardless of how their fields happen
+    to have been declared. SHA-256 rather than Python's built-in ``hash()``
+    because the latter is salted per process and would make a fingerprint
+    written by one run unrecognisable to the next.
+
+    Sixteen hex characters (64 bits) is not cryptographic - nothing here is a
+    security boundary - only enough to make an accidental collision between
+    two different templates practically impossible.
+    """
+    import json
+
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]

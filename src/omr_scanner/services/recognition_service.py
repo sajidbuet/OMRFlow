@@ -63,6 +63,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy as np
@@ -70,6 +71,7 @@ import numpy as np
 from omr_scanner.domain.template import IgnoredFieldDefinition
 from omr_scanner.errors import ImagingError, OMRScannerError
 from omr_scanner.imaging.alignment import align_sheet
+from omr_scanner.imaging.geometry import apply_transform
 from omr_scanner.imaging.metrics import (
     BubbleMeasurement,
     BubbleMetricsConfig,
@@ -77,6 +79,7 @@ from omr_scanner.imaging.metrics import (
     ink_threshold,
     measure_bubbles,
 )
+from omr_scanner.imaging.models import Point
 from omr_scanner.recognition.fields import recognise_template, zone_groups
 from omr_scanner.recognition.models import FieldStatus, MarkStatus
 from omr_scanner.services.alignment_service import alignment_config_from_template, load_scan_image
@@ -113,7 +116,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from numpy.typing import NDArray
 
     from omr_scanner.domain.template import OmrTemplate, Zone
-    from omr_scanner.imaging.models import AlignmentResult
+    from omr_scanner.imaging.models import AlignmentResult, RegistrationMarkerDetection
     from omr_scanner.recognition.models import SheetRecognition
 
 _LOGGER = logging.getLogger(__name__)
@@ -168,6 +171,32 @@ class RecognitionEngine:
             its files.
         """
         return _recognise(image_path, template, self.options)
+
+    def open_session(self, image_path: Path, template: OmrTemplate) -> CalibrationSession:
+        """Register and measure one sheet, ready for repeated re-decision.
+
+        For the calibration workflow (Phase 4): load the sheet once, and let
+        the caller re-apply :attr:`~omr_scanner.domain.template.OmrTemplate.recognition`
+        as many times as it likes - one call per slider movement - without
+        registering or measuring again. See :class:`CalibrationSession`.
+
+        Args:
+            image_path: Image file to read.
+            template: The template to register and measure against. Every
+                later :meth:`CalibrationSession.recompute` must be given a
+                template with the *same geometry* as this one; only its
+                recognition settings may differ.
+
+        Returns:
+            The session. Registration failures are captured, not raised: a
+            session for a sheet that could not be registered still opens, and
+            simply reports that failure from every ``recompute`` call.
+        """
+        try:
+            measured = _measure_sheet(image_path, template, self.options)
+        except _SheetMeasurementError as early:
+            return CalibrationSession(None, early.result, self.options)
+        return CalibrationSession(measured, None, self.options)
 
     def describe(self) -> str:
         """One line identifying this engine, for a log or a report header."""
@@ -255,6 +284,81 @@ def _recognise(
     data, because that is what makes the boundary in the module docstring real:
     replacing the measurement stage, or the decision stage, means replacing one
     function here rather than unpicking a single long one.
+
+    The split runs one level deeper than that sentence used to describe: load,
+    align and measure happen in :func:`_measure_sheet`, and decide, build and
+    present happen in :func:`_decide_and_build`. That is not cosmetic - it is
+    the seam :class:`CalibrationSession` holds onto, because re-deciding a
+    cached measurement under a different threshold must not repeat the
+    registration that produced it.
+    """
+    try:
+        measured = _measure_sheet(path, template, options)
+    except _SheetMeasurementError as early:
+        return early.result
+    return _decide_and_build(measured, template, options)
+
+
+@dataclass(frozen=True, slots=True)
+class _MeasuredSheet:
+    """Everything a recognition-settings change is not allowed to repeat.
+
+    Attributes:
+        source_path: The image that was read.
+        image: The original scan, as loaded (grayscale).
+        alignment: The Phase 1 registration result.
+        page: The rectified page, exactly ``canonical_width`` x
+            ``canonical_height``.
+        page_ink: The page's estimated solid-ink grey level.
+        measurements: Every zone's bubble measurements, keyed by ``(row,
+            column)`` - the quantity :func:`~omr_scanner.recognition.fields.recognise_template`
+            turns into values, and the only thing a threshold change may act
+            on again.
+        canonical_width: Canonical page width in pixels.
+        canonical_height: Canonical page height in pixels.
+        source_width: Source scan width in pixels.
+        source_height: Source scan height in pixels.
+        timings: Load, register and measure durations, already finished -
+            :func:`_decide_and_build` adds its own decide/present durations to
+            these rather than restarting the clock, so a session's later
+            recomputes report only the (small) cost they actually paid.
+    """
+
+    source_path: Path
+    image: NDArray[np.uint8]
+    alignment: AlignmentResult
+    page: NDArray[np.uint8]
+    page_ink: float
+    measurements: dict[str, dict[tuple[int, int], BubbleMeasurement]]
+    canonical_width: int
+    canonical_height: int
+    source_width: int
+    source_height: int
+    timings: StageTimings
+
+
+class _SheetMeasurementError(Exception):
+    """Internal control-flow signal: the sheet could not be measured at all.
+
+    Carries the finished :class:`ScanResult` that fully describes why - a
+    failed load or a failed registration - so that both the ordinary one-shot
+    path and :class:`CalibrationSession` report the same failure the same
+    way, once, rather than each deciding separately what it means.
+    """
+
+    def __init__(self, result: ScanResult) -> None:
+        super().__init__(result.registration_message or result.error_code)
+        self.result = result
+
+
+def _measure_sheet(
+    path: Path, template: OmrTemplate, options: RecognitionOptions
+) -> _MeasuredSheet:
+    """Load, register and measure one sheet.
+
+    Raises:
+        _SheetMeasurementError: The file could not be loaded or the page could not be
+            registered. Carries the failed :class:`ScanResult`.
     """
     started = time.perf_counter()
     clock = _StageClock(started)
@@ -264,15 +368,17 @@ def _recognise(
         image = load_scan_image(path, color=False)
     except OMRScannerError as exc:
         _LOGGER.warning("Scan %s could not be loaded: %s", path.name, exc)
-        return _failed_result(
-            path,
-            template=identity,
-            outcome=RecognitionOutcome.ERROR,
-            message=exc.user_message,
-            error_code=getattr(exc, "code", "") or "",
-            timings=clock.finish(),
-            has_zones=bool(template.zones),
-        )
+        raise _SheetMeasurementError(
+            _failed_result(
+                path,
+                template=identity,
+                outcome=RecognitionOutcome.ERROR,
+                message=exc.user_message,
+                error_code=getattr(exc, "code", "") or "",
+                timings=clock.finish(),
+                has_zones=bool(template.zones),
+            )
+        ) from exc
     clock.mark("load")
 
     source_height, source_width = int(image.shape[0]), int(image.shape[1])
@@ -282,19 +388,21 @@ def _recognise(
     except ImagingError as exc:
         _LOGGER.info("Scan %s failed registration (%s): %s", path.name, exc.code, exc)
         clock.mark("register")
-        return _failed_result(
-            path,
-            template=identity,
-            outcome=RecognitionOutcome.REGISTRATION_FAILED,
-            message=exc.user_message,
-            error_code=exc.code,
-            timings=clock.finish(),
-            has_zones=bool(template.zones),
-            source_width=source_width,
-            source_height=source_height,
-            canonical_width=template.page.canonical_width_px,
-            canonical_height=template.page.canonical_height_px,
-        )
+        raise _SheetMeasurementError(
+            _failed_result(
+                path,
+                template=identity,
+                outcome=RecognitionOutcome.REGISTRATION_FAILED,
+                message=exc.user_message,
+                error_code=exc.code,
+                timings=clock.finish(),
+                has_zones=bool(template.zones),
+                source_width=source_width,
+                source_height=source_height,
+                canonical_width=template.page.canonical_width_px,
+                canonical_height=template.page.canonical_height_px,
+            )
+        ) from exc
     clock.mark("register")
 
     page = alignment.normalized_image
@@ -319,16 +427,49 @@ def _recognise(
     }
     clock.mark("measure")
 
-    recognition = recognise_template(template, measurements)
+    return _MeasuredSheet(
+        source_path=path,
+        image=image,
+        alignment=alignment,
+        page=page,
+        page_ink=page_ink,
+        measurements=measurements,
+        canonical_width=canonical_width,
+        canonical_height=canonical_height,
+        source_width=source_width,
+        source_height=source_height,
+        timings=clock.finish(),
+    )
+
+
+def _decide_and_build(
+    measured: _MeasuredSheet, template: OmrTemplate, options: RecognitionOptions
+) -> ScanResult:
+    """Turn a measured sheet into a result, against ``template``'s settings.
+
+    This is the part of the pipeline a recognition-*settings* change is
+    allowed to repeat cheaply: it reads ``measured.measurements`` - already
+    sampled pixels - and ``template.recognition`` (template-level and any
+    per-zone override), never the image. Calling this twice with two
+    templates that differ only in :attr:`~omr_scanner.domain.template.OmrTemplate.recognition`
+    is exactly what :class:`CalibrationSession.recompute` does, and exactly
+    why this function takes the already-measured sheet as a separate
+    argument instead of loading and registering it itself.
+    """
+    identity = _TemplateIdentity.of(template)
+    path = measured.source_path
+    clock = _StageClock(time.perf_counter())
+
+    recognition = recognise_template(template, measured.measurements)
     clock.mark("decide")
 
     fields, answers, zones, bubbles = _build_views(
         template,
         recognition,
-        measurements,
-        canonical_width=canonical_width,
-        canonical_height=canonical_height,
-        ink_level=page_ink,
+        measured.measurements,
+        canonical_width=measured.canonical_width,
+        canonical_height=measured.canonical_height,
+        ink_level=measured.page_ink,
         metrics_config=options.metrics,
         keep_measurements=options.keep_bubble_measurements,
     )
@@ -336,15 +477,22 @@ def _recognise(
     preview: DecodedImage | None = None
     preview_scale = 1.0
     if options.with_preview:
-        preview, preview_scale = _downscaled_preview(page, options.preview_max_dimension)
+        preview, preview_scale = _downscaled_preview(
+            measured.page, options.preview_max_dimension
+        )
 
     quality = (
-        _scan_quality(alignment, page, source_width=source_width, source_height=source_height)
+        _scan_quality(
+            measured.alignment,
+            measured.page,
+            source_width=measured.source_width,
+            source_height=measured.source_height,
+        )
         if options.keep_quality_metrics
         else None
     )
 
-    warnings = tuple(warning.value for warning in alignment.warnings)
+    warnings = tuple(warning.value for warning in measured.alignment.warnings)
     registration = _registration_status(warnings)
     needs_review = recognition.review_count > 0
     outcome = RecognitionOutcome.REVIEW if needs_review else RecognitionOutcome.COMPLETE
@@ -365,7 +513,16 @@ def _recognise(
         has_zones=bool(template.zones),
     )
     clock.mark("present")
-    timings = clock.finish()
+    local_timings = clock.finish()
+    base = measured.timings
+    timings = StageTimings(
+        load=base.load,
+        register=base.register,
+        measure=base.measure,
+        decide=local_timings.decide,
+        present=local_timings.present,
+        total=base.total + local_timings.total,
+    )
 
     result = ScanResult(
         source_path=path,
@@ -381,20 +538,15 @@ def _recognise(
         zones=zones,
         bubbles=bubbles,
         markers=tuple(
-            MarkerView(
-                role=str(detection.role.value),
-                x=detection.center.x,
-                y=detection.center.y,
-                score=detection.score,
-            )
-            for detection in alignment.corner_markers
+            _marker_view(detection, template, measured.alignment)
+            for detection in measured.alignment.corner_markers
         ),
         preview=preview,
         preview_scale=preview_scale,
-        canonical_width=canonical_width,
-        canonical_height=canonical_height,
-        source_width=source_width,
-        source_height=source_height,
+        canonical_width=measured.canonical_width,
+        canonical_height=measured.canonical_height,
+        source_width=measured.source_width,
+        source_height=measured.source_height,
         elapsed_seconds=timings.total,
         template_id=identity.identifier,
         template_name=identity.name,
@@ -436,11 +588,138 @@ def _recognise(
         write_diagnostics(
             result,
             options.diagnostics,
-            original=image,
-            registered=page,
+            original=measured.image,
+            registered=measured.page,
         )
 
     return result
+
+
+def _marker_view(
+    detection: RegistrationMarkerDetection, template: OmrTemplate, alignment: AlignmentResult
+) -> MarkerView:
+    """Build one marker's view, with its canonical and expected positions.
+
+    ``canonical_x/y`` is the *detected* centre, mapped through the same
+    homography that produced :attr:`_MeasuredSheet.page` - the fitted
+    transform is what makes the rectified page, so reprojecting the marker
+    that fitted it is not a second computation, only the same one applied to
+    one more point. ``expected_x/y`` needs no transform at all: it is simply
+    the template's own declared marker centre, scaled onto the canonical page
+    it already describes.
+    """
+    role = detection.role
+    canonical = apply_transform(alignment.transform_matrix, [detection.center])[0]
+    expected_marker = template.marker_by_role(role)
+    expected = Point(
+        x=expected_marker.center.x * template.page.canonical_width_px,
+        y=expected_marker.center.y * template.page.canonical_height_px,
+    )
+    return MarkerView(
+        role=str(role.value),
+        x=detection.center.x,
+        y=detection.center.y,
+        score=detection.score,
+        canonical_x=canonical.x,
+        canonical_y=canonical.y,
+        expected_x=expected.x,
+        expected_y=expected.y,
+    )
+
+
+class CalibrationSession:
+    """One scan, registered and measured once; settings re-applied at will.
+
+    Purpose:
+        Give the calibration workflow (Phase 4) "change a threshold, see the
+        effect at once" without asking it to understand, or duplicate,
+        anything about registration or bubble sampling. A session is what
+        :meth:`RecognitionEngine.open_session` returns; nothing else
+        constructs one.
+
+    What a session may *not* do:
+        Change geometry. :meth:`recompute` re-decides the measurements this
+        session already took against a new template's turn
+        :class:`~omr_scanner.domain.template.RecognitionSettings`; it never
+        re-measures. Passing a template whose zones, grids or page differ
+        from the one this session was opened with produces a result read
+        against measurements taken for different bubbles - which is exactly
+        the geometry edit Phase 4 defers to the Template Designer
+        (``docs/calibration_workflow.md``) rather than perform itself.
+
+    A failed registration is cached too: :meth:`recompute` on a sheet that
+    could not be registered returns the same failed result every time,
+    because no recognition setting could have changed why.
+    """
+
+    def __init__(
+        self,
+        measured: _MeasuredSheet | None,
+        failure: ScanResult | None,
+        options: RecognitionOptions,
+    ) -> None:
+        self._measured = measured
+        self._failure = failure
+        self._options = options
+
+    @property
+    def source_path(self) -> Path:
+        """The scan this session was opened for."""
+        if self._measured is not None:
+            return self._measured.source_path
+        if self._failure is None:  # pragma: no cover - constructor invariant
+            raise RuntimeError("A session must carry either a measurement or a failure")
+        return self._failure.source_path
+
+    @property
+    def registered(self) -> bool:
+        """Whether the sheet could be registered at all.
+
+        ``False`` means every call to :meth:`recompute` will return the same
+        failed result - there is no threshold that fixes a page that could not
+        be rectified.
+        """
+        return self._measured is not None
+
+    def recompute(self, template: OmrTemplate) -> ScanResult:
+        """Decide this session's cached measurements against ``template``.
+
+        Args:
+            template: The **same** template this session was opened with,
+                possibly carrying different recognition settings
+                (template-level or per-zone). Its zones and grids must
+                describe the same geometry; see the class docstring.
+
+        Returns:
+            The result. Costs one pass over the cached measurements - no file
+            read, no marker detection, no perspective warp - which is what
+            makes it safe to call once per slider movement.
+        """
+        if self._measured is None:
+            if self._failure is None:  # pragma: no cover - constructor invariant
+                raise RuntimeError("A session must carry either a measurement or a failure")
+            return self._failure
+        return _decide_and_build(self._measured, template, self._options)
+
+    def original_preview(self, max_dimension: int | None = None) -> DecodedImage:
+        """A display copy of the scan **before** registration.
+
+        For the calibration viewer's "Original Scan" mode
+        (``docs/calibration_workflow.md``): the page as it arrived, with none
+        of Phase 1's correction applied, so a printer margin or a skewed feed
+        is visible for what it is rather than already straightened out.
+
+        Raises:
+            RuntimeError: The session's registration failed, so there is no
+                cached scan to preview - callers should read
+                :attr:`registered` first.
+        """
+        if self._measured is None:
+            raise RuntimeError(
+                "This session's registration failed; there is no scan cached to preview"
+            )
+        image, _scale = _downscaled_preview(self._measured.image, max_dimension)
+        return image
 
 
 class _StageClock:
@@ -1002,6 +1281,7 @@ __all__ = [
     "RESULT_SCHEMA_VERSION",
     "AnswerView",
     "BubbleView",
+    "CalibrationSession",
     "CharacterView",
     "DiagnosticsOptions",
     "FieldView",

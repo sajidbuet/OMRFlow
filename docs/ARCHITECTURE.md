@@ -52,9 +52,9 @@ above it.
 | `omr_scanner.imaging` | Pixel algorithms: preprocessing, marker detection, orientation, perspective rectification *(Phase 1)*, bubble metrics *(Phase 3)*. | Qt, database, project layout knowledge, value interpretation, file I/O, `.omrt` knowledge. |
 | `omr_scanner.recognition` | Turning measurements into logical values with confidence, missing/multiple-mark handling *(Phase 3)*. Conflict resolution is Phase 6. | Pixel access, OpenCV, persistence, Qt. |
 | `omr_scanner.database` | Schema, migrations, engine and session lifetime. | Workflow logic, Qt, OpenCV. |
-| `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results. Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
+| `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results, judge a calibration run (`calibration_service`, Phase 4). Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
 | `omr_scanner.reporting` | CSV/XLSX/PDF generation. *(reserved - Phase 9)* | Result calculation, Qt. |
-| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.scan` (Phase 3) is the batch scanning workspace, including benchmark mode; `gui.devtools` (Phase 3) is the Tools > Developer / Testing front end to `evaluation`. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
+| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.calibration` (Phase 4) verifies and tunes a template against representative scans before a batch; `gui.scan` (Phase 3) is the batch scanning workspace, including benchmark mode; `gui.devtools` (Phase 3) is the Tools > Developer / Testing front end to `evaluation`. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
 | `omr_scanner.evaluation` | Judging the engine: the ground-truth schema, the named test cases and dataset planner, the renderer, the benchmark and its error categories, and the benchmark session *(Phase 3)*. Sits *above* services, beside the GUI. | Qt; any recognition of its own - a benchmark that re-implements the engine measures itself. |
 | `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
 | `omr_scanner.config` | Per-user application settings and platform directory resolution. | Project or template settings. |
@@ -336,6 +336,50 @@ owns each modal file dialog and contains no logic, while the command beside it
 tests and the `qtguitesting` scripts drive the second group, so nothing has to
 interact with a native file dialog. See `docs/scan_workflow.md` for the
 user-facing description.
+
+## The Calibration workflow (Phase 4)
+
+`omr_scanner.gui.calibration` verifies a template against representative
+scans and tunes its recognition thresholds - it is deliberately **not** a
+second recognition engine:
+
+```text
+CalibrationPage.load_template_from  -> services.template_service.load_template
+CalibrationPage.add_scan_paths      -> services.scan_import.collect_scan_files
+CalibrationPage.run_all             -> gui.calibration.worker.CalibrationWorker  (a QThread)
+                                          -> services.recognition_service.RecognitionEngine.open_session
+                                               -> CalibrationSession (load + register + measure, once)
+CalibrationPage._on_threshold_changed -> CalibrationSession.recompute()   (GUI thread, no worker)
+                                          -> services.calibration_service.evaluate_calibration
+CalibrationPage.save_to_template     -> services.calibration_service.apply_calibration
+                                          -> services.template_service.save_template
+```
+
+Two decisions worth carrying forward:
+
+- **Measurement is separated from decision, one level below where Phase 3
+  already separates them.** `RecognitionEngine.process()` does load, register,
+  measure, decide and present in one call; `open_session()` splits it at the
+  measure/decide boundary, returning a `CalibrationSession` that caches the
+  measured-but-undecided bubbles. `recompute()` re-runs only decide-and-present
+  against a *new* `RecognitionSettings` - never against new pixels - which is
+  what makes a threshold slider's "immediate feedback" genuinely immediate
+  rather than a smaller re-registration. This is a Phase 3 change (see below),
+  not a Phase 4 duplicate of Phase 3.
+- **The overlay draws exactly what the engine measured, never an
+  approximation.** `MarkerView` carries the detected marker reprojected
+  through the fitted homography (`canonical_x/y`) and the template's own
+  declared centre (`expected_x/y`), both already in canonical pixels; the
+  bubble overlay draws `ScanResult.bubbles` unchanged. The GUI layer performs
+  no geometry of its own beyond a click-to-bubble hit test against those same
+  coordinates.
+
+A template that fails to register produces a `ScanResult` with no fields,
+answers or bubbles at all - by construction, in the one code path every
+registration failure goes through - so `evaluate_calibration` cannot describe
+such a scan as anything but `CalibrationStatus.FAILED`. There is no separate
+"is this template safe" heuristic to keep in sync with the engine's own
+failure handling. See `docs/calibration_workflow.md`.
 
 ## Concurrency
 

@@ -14,6 +14,14 @@ a progress panel, throttled repainting and responsive cancellation (§14).
 dataset generator with named test cases, and a recognition benchmark that runs
 inside the Scan page and reports per test-case category (§16). Recognition
 *accuracy* is unchanged and still uncalibrated.
+**Updated:** 2026-09-18 — Phase 4 (Template Calibration & Validation) built on
+top of this phase and made one isolated, behaviour-preserving change to it:
+`recognition_service._recognise` was split at the measure/decide boundary
+(`_measure_sheet` / `_decide_and_build`) so a new `CalibrationSession` can
+re-decide cached measurements without repeating registration, and `MarkerView`
+gained two additive coordinate pairs. See `development/PHASE_04_HANDOFF.md`
+§4 for the full account; the existing recognition/batch/benchmark test suites
+pass unchanged, which is the evidence that no recognised value moved.
 **Version:** 0.1.0.dev0
 **Environment verified on:** Windows 11, Python 3.12.7, PySide6 6.11.2, OpenCV
 5.0.0, NumPy 2.5.3

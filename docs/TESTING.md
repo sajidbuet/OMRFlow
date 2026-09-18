@@ -426,3 +426,70 @@ exactly one progress bar.
 Do not generate ten thousand real images to test a progress bar. The
 simulation covers the counting and the estimate; a few dozen synthetic sheets
 cover the wiring.
+
+## Testing the Calibration workflow (Phase 4)
+
+Three levels, and the reason for each mirrors the recognition-testing table
+above:
+
+| Level | Where | Asserts |
+|---|---|---|
+| The judgement rules | `tests/unit/test_calibration_service.py` (27 tests) | Every threshold and boundary `evaluate_calibration` uses - unusable-bubble fractions, geometry-class vs. cosmetic alignment warnings, the systematic-ambiguity fraction, the near-threshold band - against hand-built `ScanResult`s, so the *rules* are tested independently of anything that would ordinarily produce one. |
+| The real pipeline | `tests/integration/test_calibration_workflow.py` (10 tests) | Real templates, real synthetic renders, the real `RecognitionEngine`: a deliberately displaced-marker template fails to register and produces `CalibrationStatus.FAILED`; a small marker offset (inside the default `search_radius`) still registers; a threshold change on a real `CalibrationSession` flips a real classification while the raw score and the registration stay untouched; saving and reloading a calibration round-trips; editing recognition settings afterwards invalidates it; a template document with no `calibration` key (pre-Phase-4) still loads. |
+| The GUI | `tests/gui/test_calibration_page.py` (26 tests, A-J) | The whole workflow through `CalibrationPage`'s public commands - load, add scans, run, overlay geometry matching the engine's own bubble and marker coordinates exactly, click-to-inspect, field filtering, threshold controls (including that a threshold change starts **no** worker), reset/defaults, save-and-stale-detection, the multi-scan sample summary, and the mismatched-template failure path end to end. |
+
+**The major Phase 4 geometry test.** Overlay coordinates must equal the
+engine's own, not merely be close to them:
+
+```python
+overlay._bubbles  ==  {(b.zone_id, b.row, b.column) for b in result.bubbles}
+one.x == matching_result_bubble.x   # exact, not approximate
+```
+
+and a dedicated cross-check
+(`test_the_question_number_formatter_agrees_with_the_engines_own_numbering`)
+walks every bubble the page would ever label "Question N" and asserts that
+`N` names a question the engine actually recognised - the safety net for the
+one place the calibration page *does* do a presentation-level calculation
+(reading `QuestionBlockFieldDefinition`'s own row/column convention to build
+a label), so that calculation can never silently drift from what `zone_groups`
+means by the same convention.
+
+**The load-bearing test.** A template whose registration markers are shifted
+well past their `search_radius` must come back `CalibrationStatus.FAILED`
+with **no** fields, answers or bubbles at all - never a plausible wrong
+answer:
+
+```python
+result.registration is RegistrationStatus.FAILED
+result.fields == ()
+result.answers == ()
+result.bubbles == ()
+report.status is CalibrationStatus.FAILED
+```
+
+Exercised at the unit level (hand-built), the integration level (a real
+mismatched template against a real rendered sheet) and the GUI level (the
+same, through the page), and again in
+`scripts/run_gui_smoke_tests.py` against the **real** sample and template
+(`examples/ECE-0000.png` / `examples/templates/ece_0000_sample.omrt`) - the
+only place in the whole suite where this specific failure mode is proven
+against a genuine scanned sheet rather than a synthetic render.
+
+**Threshold propagation, without repeating registration.** The same synthetic
+sheet is measured once (`RecognitionEngine.open_session`), then decided twice
+against two different `RecognitionSettings`:
+
+```python
+before = session.recompute(template).answer(N)      # e.g. "uncertain", faint mark
+after  = session.recompute(looser_template).answer(N)
+after.top_fill == before.top_fill                   # raw score unchanged
+after.value != before.value                          # classification changed
+after.canonical_width == before.canonical_width       # never re-registered
+```
+
+**`.isVisible()` and waiting on a run.** See the qtguitesting scenario
+reference (`.claude/skills/qtguitesting/references/omrflow_gui_test_scenarios.md`,
+"Calibration page") for two gotchas specific to this page: `.isVisible()` is
+unreliable on a page that was never `.show()`n, and `CalibrationPage.run_finished`
+carries no payload, unlike `ScanPage.batch_finished`.

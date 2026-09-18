@@ -51,6 +51,7 @@ from omr_scanner.config import AppConfig, ProcessingSettings, load_app_config, s
 from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
+from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
@@ -167,6 +168,10 @@ class MainWindow(QMainWindow):
                 page = project_page
             elif spec.key == "template":
                 page = TemplateDesignerPage(spec)
+            elif spec.key == "calibration":
+                calibration_page = CalibrationPage(spec)
+                calibration_page.edit_template_requested.connect(self.edit_template)
+                page = calibration_page
             elif spec.key == "scan":
                 page = ScanPage(spec)
             else:
@@ -465,6 +470,42 @@ class MainWindow(QMainWindow):
                 self.navigation.setCurrentRow(row)
                 return True
         return False
+
+    def edit_template(self, path: Path) -> bool:
+        """Open ``path`` in the Template Designer stage.
+
+        The "Edit Template" shortcut the calibration page offers when a
+        region is physically misplaced - calibration tunes recognition
+        settings, it does not edit geometry (``docs/calibration_workflow.md``).
+
+        Returns:
+            ``True`` when the Template stage now shows ``path``.
+        """
+        template_page = self._pages.get("template")
+        if not isinstance(template_page, TemplateDesignerPage):
+            return False
+        opened = template_page.open_template_at(path)
+        if opened:
+            self.show_page("template")
+        return opened
+
+    def start_calibration(self, template_path: Path | None = None) -> bool:
+        """Show the Calibration stage, optionally loading a template first.
+
+        Args:
+            template_path: Template to load. When omitted, the stage keeps
+                whatever it already had loaded.
+
+        Returns:
+            ``True`` unless a ``template_path`` was given and failed to load.
+        """
+        calibration_page = self._pages.get("calibration")
+        if not isinstance(calibration_page, CalibrationPage):
+            return False
+        self.show_page("calibration")
+        if template_path is not None:
+            return calibration_page.load_template_from(template_path)
+        return True
 
     def generate_dataset(self) -> None:
         """Ask what synthetic dataset to make, then make it.

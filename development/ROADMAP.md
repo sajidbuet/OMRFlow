@@ -14,9 +14,9 @@ that cannot be tested.
 | 0 | Architecture & Repository Foundation | **Complete** |
 | 1 | OMR Geometry & Alignment Engine | **Complete** |
 | 2 | Template Data Model & Template Designer Core | **Complete** |
-| 3 | Bubble Mapping & Recognition Engine | Not started |
-| 4 | Template Calibration & Validation | Not started |
-| 5 | Batch Scan Processing Pipeline | Not started |
+| 3 | Bubble Mapping & Recognition Engine | Implemented; testing in progress - see `development/PHASE_03_HANDOFF.md` |
+| 4 | Template Calibration & Validation | Implemented; testing in progress - see `development/PHASE_04_HANDOFF.md` |
+| 5 | Batch Scan Processing Pipeline | Not started (Phase 3 already delivers batch *processing*; Phase 5 adds *persistence* and resume) |
 | 6 | Conflict Detection & Human Resolution | Not started |
 | 7 | Candidate & Attendance Reconciliation | Not started |
 | 8 | Answer-Key & Scoring Engine | Not started |
@@ -112,19 +112,21 @@ snap-to-grid or align/distribute tools. See
 **Purpose.** Convert a canonical sheet plus a template into field values with
 confidence.
 
-**Deliverables.** `imaging.metrics` (per-bubble fill measurements);
-`recognition.decide` (measurement -> marked/unmarked/ambiguous);
-`recognition.fields` (numeric, alphanumeric, set code, question blocks);
-explicit missing-mark and multiple-mark representation; confidence scoring.
+**Delivered as** `imaging.metrics` (per-bubble fill measurements),
+`recognition.decide` (measurement -> marked/unmarked/ambiguous/multiple),
+`recognition.fields` (numeric, alphanumeric, set code, question blocks),
+`services.recognition_service` (the one door into the pipeline,
+`RecognitionEngine`/`ScanResult`), batch processing with a multicore worker
+pool, large-batch progress tracking, and the `gui.scan` workspace. Confidence
+is a bounded decision score, never a probability; every threshold comes from
+the template. Full detail, including what remains open: `development/PHASE_03_HANDOFF.md`.
 
-**Major tests.** Synthetic sheets with known marks, including light, heavy,
-partial, crossed-out, multiple and absent marks; threshold behaviour at the
-boundaries; relative-darkness handling for uniformly light sheets; confidence
-falls where a human would also hesitate.
-
-**Exit criteria.** Recognition accuracy measured on the synthetic corpus;
-ambiguity is never silently resolved; all thresholds come from the template, none
-from code.
+**Exit criteria - partially met.** Recognition is architecturally stable and
+measured on a large synthetic corpus and one real scanned sheet (plus
+geometric variants of it); ambiguity is never silently resolved and every
+threshold comes from the template. **Not yet met:** validation against a
+broad, independently filled real corpus - the condition under which this
+phase will be marked complete.
 
 ---
 
@@ -133,16 +135,27 @@ from code.
 **Purpose.** Let a user verify and tune a template against real scans before
 processing a whole batch.
 
-**Deliverables.** Test-scan workflow; diagnostic overlays (detected markers,
-bubble windows, per-bubble scores); threshold adjustment with immediate feedback;
-recognition quality summary for a sample.
+**Delivered as** `gui.calibration` (the workflow stage: test-scan management,
+marker/bubble/region overlays, click-to-inspect, field filtering, the four
+`RecognitionSettings` threshold controls with immediate reclassification, a
+per-scan and per-sample quality summary), `services.recognition_service.CalibrationSession`
+(Phase 3's own measure/decide split, extended so a threshold change never
+repeats registration), and `services.calibration_service` (the four-state
+validation verdict - passed / passed with warnings / needs review / failed -
+and its documented, tested rules). A small additive template field
+(`calibration`, `docs/TEMPLATE_FORMAT.md`) records a run and is invalidated by
+a later geometry or settings change. Full detail: `development/PHASE_04_HANDOFF.md`;
+operator procedure: `docs/calibration_workflow.md`.
 
-**Major tests.** Overlay geometry matches computed bubble centres; threshold
-changes propagate to results; a miscalibrated template is reported as such rather
-than producing confident nonsense.
-
-**Exit criteria.** An operator can tell whether a template is correct *before*
-processing a batch, and has a documented procedure for doing so.
+**Exit criteria - met.** Overlay geometry matches the recognition engine's own
+computed coordinates exactly (asserted, not merely visually checked); a
+threshold change propagates to results, the overlay and the quality summary
+without repeating registration; a deliberately mismatched template is reported
+`CalibrationStatus.FAILED`, with no fields, answers or bubbles at all, rather
+than a plausible wrong result - verified against a real scanned sheet as well
+as synthetic ones. Calibrating a template against synthetic or even real
+representative scans is **not** the same as validating Phase 3's real-world
+accuracy at scale; that remains Phase 3's own open item.
 
 ---
 

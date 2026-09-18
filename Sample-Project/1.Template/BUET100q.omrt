@@ -1,0 +1,375 @@
+{
+  "format": "omrflow-template",
+  "format_version": 1,
+  "template_id": "838b2ecf-310f-4cfd-8779-7d4b6ed67540",
+  "name": "100q",
+  "description": "",
+  "created_with": "0.1.0.dev0",
+  "created_at": "2026-09-18T12:44:25.526399Z",
+  "modified_at": "2026-09-18T12:51:15.722986Z",
+  "page": {
+    "width_mm": 210.0,
+    "height_mm": 297.0,
+    "canonical_width_px": 2480,
+    "canonical_height_px": 3508
+  },
+  "registration_markers": [
+    {
+      "role": "top_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.04114051571145213,
+        "y": 0.07140653606761586
+      },
+      "size": {
+        "width": 0.017338709677419354,
+        "height": 0.012542759407069556
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "top_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.9532525991105727,
+        "y": 0.07346149559860651
+      },
+      "size": {
+        "width": 0.017338709677419354,
+        "height": 0.01282782212086659
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.9491717183180286,
+        "y": 0.9132200347635553
+      },
+      "size": {
+        "width": 0.017338709677419354,
+        "height": 0.011972633979475485
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.03707711605788853,
+        "y": 0.9092177281323423
+      },
+      "size": {
+        "width": 0.017741935483870968,
+        "height": 0.011972633979475485
+      },
+      "search_radius": 0.05
+    }
+  ],
+  "orientation_marker": {
+    "shape": "filled_rectangle",
+    "center": {
+      "x": 0.08101168724305569,
+      "y": 0.09474966742558748
+    },
+    "size": {
+      "width": 0.03810319742717088,
+      "height": 0.015153941389033946
+    },
+    "expected_near": "top_left",
+    "search_radius": 0.05
+  },
+  "zones": [
+    {
+      "id": "student_id",
+      "label": "Roll",
+      "bounds": {
+        "x": 0.09125220339840544,
+        "y": 0.2692427248204199,
+        "width": 0.1477172836416698,
+        "height": 0.1338756557222007
+      },
+      "field": {
+        "type": "numeric",
+        "symbols": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "character_count": 8,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.0993167195274377,
+          "y": 0.2749439790963606
+        },
+        "row_pitch": 0.01360812746336881,
+        "column_pitch": 0.01879832162622933,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "set_code",
+      "label": "Set",
+      "bounds": {
+        "x": 0.28024730965137024,
+        "y": 0.26968137021163685,
+        "width": 0.03562844520508714,
+        "height": 0.13344649614192633
+      },
+      "field": {
+        "type": "set_code",
+        "symbols": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "character_count": 2,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.2883118257804025,
+          "y": 0.27538262448757755
+        },
+        "row_pitch": 0.013560443065560547,
+        "column_pitch": 0.019499412947022628,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#8E24AA",
+      "recognition": null
+    },
+    {
+      "id": "questions_0_0",
+      "label": "Questions 1-20",
+      "bounds": {
+        "x": 0.12764790785257177,
+        "y": 0.62245797461862,
+        "width": 0.07237745557328526,
+        "height": 0.2667115555291051
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 1,
+        "question_count": 20,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions_0"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.13571242398160402,
+          "y": 0.6281592288945607
+        },
+        "row_pitch": 0.01343731826195914,
+        "column_pitch": 0.018749474438406914,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_0_1",
+      "label": "Questions 21-40",
+      "bounds": {
+        "x": 0.2962618100963386,
+        "y": 0.6228517799982757,
+        "width": 0.07341701404450254,
+        "height": 0.2669320320121682
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 21,
+        "question_count": 20,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions_0"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.30432632622537087,
+          "y": 0.6285530342742164
+        },
+        "row_pitch": 0.013448922287383515,
+        "column_pitch": 0.019095993928812675,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_0_2",
+      "label": "Questions 41-60",
+      "bounds": {
+        "x": 0.46915158555135045,
+        "y": 0.6238452160264529,
+        "width": 0.07237745557328526,
+        "height": 0.2669358358056587
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 41,
+        "question_count": 20,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions_0"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.4772161016803827,
+          "y": 0.6295464703023936
+        },
+        "row_pitch": 0.01344912248704091,
+        "column_pitch": 0.018749474438406914,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_0_3",
+      "label": "Questions 61-80",
+      "bounds": {
+        "x": 0.63767077742419,
+        "y": 0.6248694361521235,
+        "width": 0.07237745557328526,
+        "height": 0.2667115555291051
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 61,
+        "question_count": 20,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions_0"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.6457352935532222,
+          "y": 0.6305706904280642
+        },
+        "row_pitch": 0.01343731826195914,
+        "column_pitch": 0.018749474438406914,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    },
+    {
+      "id": "questions_0_4",
+      "label": "Questions 81-100",
+      "bounds": {
+        "x": 0.8090268923635744,
+        "y": 0.6253119004379025,
+        "width": 0.07276728999999178,
+        "height": 0.2668879367155555
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 81,
+        "question_count": 20,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions_0"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.8170914084926066,
+          "y": 0.6310131547138432
+        },
+        "row_pitch": 0.013446601482298636,
+        "column_pitch": 0.018879419247309088,
+        "bubble_size": {
+          "width": 0.016129032258064516,
+          "height": 0.011402508551881414
+        },
+        "overrides": []
+      },
+      "display_color": "#2E7D32",
+      "recognition": null
+    }
+  ],
+  "recognition": {
+    "fill_ratio_threshold": 0.55,
+    "blank_ratio_threshold": 0.25,
+    "ambiguity_margin": 0.12,
+    "min_confidence": 0.6
+  },
+  "reference_image": "ECE-0000.png",
+  "default_bubble_radius": 0.011,
+  "calibration": {
+    "validated_at": "",
+    "sample_count": 0,
+    "engine_version": "",
+    "status": "",
+    "geometry_fingerprint": "",
+    "recognition_fingerprint": ""
+  }
+}

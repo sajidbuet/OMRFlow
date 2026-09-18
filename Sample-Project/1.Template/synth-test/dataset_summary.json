@@ -1,0 +1,71 @@
+{
+  "dataset": "synthetic",
+  "dataset_version": "1",
+  "created_at": "2026-09-18T12:52:18+00:00",
+  "generator": {
+    "generator_version": "2.0",
+    "dataset_schema_version": "1.0",
+    "seed": 20260918,
+    "count": 50,
+    "requested_count": 50,
+    "profile": "stress",
+    "families": [
+      "mixed",
+      "geometry",
+      "markers",
+      "image_quality"
+    ],
+    "prefix": "SYN",
+    "template_id": "838b2ecf-310f-4cfd-8779-7d4b6ed67540",
+    "template_name": "100q",
+    "template_version": 1,
+    "dpi": 150,
+    "page_pixels": [
+      1240,
+      1754
+    ],
+    "page_size_from": "physical",
+    "image_format": "jpg",
+    "jpeg_quality": 92,
+    "cancelled": false
+  },
+  "image_count": 50,
+  "expected_failures": 3,
+  "tag_counts": {
+    "BLUR": 5,
+    "BRIGHTNESS": 3,
+    "CONTRAST": 2,
+    "ERASED_MARK": 1,
+    "EXPECTED_FAILURE": 3,
+    "FAINT_MARK": 1,
+    "ILLUMINATION": 3,
+    "JPEG_ARTIFACTS": 1,
+    "MARKERS_MISSING_MANY": 1,
+    "MARKER_DAMAGED": 2,
+    "MARKER_EXTRA": 1,
+    "MARKER_FAINT": 1,
+    "MARKER_MISSING": 1,
+    "MIXED_DEFECTS": 4,
+    "MULTIPLE_ANSWER": 1,
+    "NOISE": 4,
+    "ORIENTATION_FAINT": 1,
+    "ORIENTATION_MISSING": 1,
+    "PARTIAL_STUDENT_ID": 1,
+    "PERSPECTIVE_MILD": 1,
+    "PERSPECTIVE_MODERATE": 2,
+    "PERSPECTIVE_SEVERE": 1,
+    "QUARTER_TURN": 3,
+    "ROTATION_MILD": 3,
+    "ROTATION_MODERATE": 3,
+    "ROTATION_SEVERE": 2,
+    "SCALE": 5,
+    "SPECKLE": 2,
+    "TRANSLATION": 5
+  },
+  "duplicate_groups": {
+    "groups": 0,
+    "sheets": 0,
+    "sizes": {}
+  },
+  "notes": "Synthetic data. Measures regression consistency and controlled edge-case handling; not evidence of real-world recognition accuracy."
+}

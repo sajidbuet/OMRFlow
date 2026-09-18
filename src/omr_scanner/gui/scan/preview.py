@@ -3,12 +3,14 @@
 Purpose:
     Show the rectified sheet and, over it, exactly what the recogniser measured:
     where each zone was read, which bubble in each group was taken as the
-    answer, and which groups need a human.
+    answer, which groups need a human, and - when asked - where the
+    registration markers were expected and found (Phase 4 calibration).
 
 Responsibilities:
     * :class:`ScanPreviewView` - a zoomable, pannable view of one page.
-    * :class:`OverlayItem` - one graphics item that paints every zone rectangle
-      and every bubble, rather than several hundred separate items.
+    * :class:`OverlayItem` - one graphics item that paints every zone rectangle,
+      every bubble and, optionally, the registration markers, rather than
+      several hundred separate items.
 
 What does NOT belong here:
     * Any recognition logic. This widget is handed plain
@@ -30,9 +32,10 @@ Coordinates:
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -58,7 +61,7 @@ from PySide6.QtWidgets import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
-    from omr_scanner.services import BubbleView, DecodedImage, ZoneView
+    from omr_scanner.services import BubbleView, DecodedImage, MarkerView, ZoneView
 
 ZOOM_STEP = 1.25
 MIN_ZOOM = 0.02
@@ -98,6 +101,30 @@ Colour alone is not enough - it fails for a colour-blind user, in a screenshot
 printed in grey, and in the review workflow's own "what is wrong with this
 sheet" question. The symbol says which."""
 
+EXPECTED_MARKER_COLOR = QColor(30, 100, 220)
+"""Blue: where the template says a registration marker's centre should sit."""
+
+DETECTED_MARKER_CLOSE_COLOR = QColor(0, 150, 60)
+"""Green: the detected marker, reprojected into canonical pixels, landed close
+to where it was expected - registration behaving the way it should."""
+
+DETECTED_MARKER_FAR_COLOR = QColor(200, 30, 40)
+"""Red: the detected marker landed a noticeable distance from where it was
+expected, which is worth a look even though registration itself succeeded."""
+
+MARKER_MISMATCH_PX = 3.0
+"""How far a detected marker's canonical position may sit from its expected
+one, in canonical pixels, before the calibration overlay calls it out in
+:data:`DETECTED_MARKER_FAR_COLOR` rather than :data:`DETECTED_MARKER_CLOSE_COLOR`.
+
+With exactly four correspondences the fitted homography reproduces its own
+four points almost exactly (``docs/IMAGE_PROCESSING.md`` -
+:attr:`~omr_scanner.services.recognition_models.ScanQuality.mean_reprojection_error_px`
+is typically a small fraction of a pixel), so any visible gap here is a
+property of the fit being *forced* through markers that do not sit quite where
+printed - not of measurement noise. A few pixels is generous against that
+baseline and still catches a genuinely displaced marker."""
+
 
 class OverlayItem(QGraphicsItem):
     """Paints every zone rectangle and every bubble of one recognition result.
@@ -116,9 +143,11 @@ class OverlayItem(QGraphicsItem):
         self._page = QRectF(0, 0, 1, 1)
         self._zones: tuple[ZoneView, ...] = ()
         self._bubbles: tuple[BubbleView, ...] = ()
+        self._markers: tuple[MarkerView, ...] = ()
         self.show_zones = True
         self.show_bubbles = True
         self.show_empty_bubbles = False
+        self.show_markers = False
         self.setZValue(10)
 
     def set_page_size(self, width: float, height: float) -> None:
@@ -127,11 +156,26 @@ class OverlayItem(QGraphicsItem):
         self._page = QRectF(0, 0, max(width, 1.0), max(height, 1.0))
 
     def set_content(
-        self, zones: Sequence[ZoneView], bubbles: Sequence[BubbleView]
+        self,
+        zones: Sequence[ZoneView],
+        bubbles: Sequence[BubbleView],
+        markers: Sequence[MarkerView] = (),
     ) -> None:
-        """Replace what the overlay draws."""
+        """Replace what the overlay draws.
+
+        Args:
+            zones: Zone rectangles.
+            bubbles: Measured bubbles.
+            markers: Registration markers, with their canonical and expected
+                positions (:attr:`~omr_scanner.services.recognition_models.MarkerView.canonical_x`
+                and :attr:`~omr_scanner.services.recognition_models.MarkerView.expected_x`,
+                and their ``y`` counterparts). Empty for a page that never
+                registered - there is nothing in canonical pixels to draw a
+                marker at.
+        """
         self._zones = tuple(zones)
         self._bubbles = tuple(bubbles)
+        self._markers = tuple(markers)
         self.update()
 
     def boundingRect(self) -> QRectF:
@@ -150,6 +194,8 @@ class OverlayItem(QGraphicsItem):
             self._paint_zones(painter)
         if self.show_bubbles:
             self._paint_bubbles(painter)
+        if self.show_markers:
+            self._paint_markers(painter)
 
     def _paint_zones(self, painter: QPainter) -> None:
         """Outline each zone in its template colour, tinted by its status."""
@@ -209,6 +255,49 @@ class OverlayItem(QGraphicsItem):
                     QPointF(rect.left() - bubble.width * 1.1, rect.bottom()), symbol
                 )
 
+    def _paint_markers(self, painter: QPainter) -> None:
+        """Draw each registration marker's expected and detected position.
+
+        Both are drawn in canonical pixels - the same frame every zone and
+        bubble is drawn in - because both already are: ``expected_x/y`` is the
+        template's own declared marker centre and ``canonical_x/y`` is the
+        detected marker reprojected through the fitted transform
+        (:mod:`omr_scanner.services.recognition_service`). Neither is
+        recomputed here.
+        """
+        half = 9.0
+        for marker in self._markers:
+            expected = QPointF(marker.expected_x, marker.expected_y)
+            ex, ey = expected.x(), expected.y()
+            painter.setPen(QPen(EXPECTED_MARKER_COLOR, 2.0))
+            painter.drawLine(QPointF(ex - half, ey), QPointF(ex + half, ey))
+            painter.drawLine(QPointF(ex, ey - half), QPointF(ex, ey + half))
+
+            if marker.canonical_x == 0.0 and marker.canonical_y == 0.0:
+                continue  # No successful registration to compare against.
+            detected = QPointF(marker.canonical_x, marker.canonical_y)
+            distance = math.hypot(detected.x() - expected.x(), detected.y() - expected.y())
+            color = (
+                DETECTED_MARKER_CLOSE_COLOR
+                if distance <= MARKER_MISMATCH_PX
+                else DETECTED_MARKER_FAR_COLOR
+            )
+            painter.setPen(QPen(color, 2.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRectF(detected.x() - half, detected.y() - half, half * 2, half * 2))
+
+            if distance > MARKER_MISMATCH_PX:
+                painter.drawLine(expected, detected)
+
+            font = QFont(painter.font())
+            font.setPointSizeF(max(half * 1.1, 10.0))
+            painter.setFont(font)
+            painter.setPen(QPen(color))
+            painter.drawText(
+                QPointF(detected.x() + half + 2.0, detected.y() - half),
+                f"{marker.role.replace('_', ' ')} ({distance:.1f}px)",
+            )
+
 
 class ScanPreviewView(QGraphicsView):
     """A zoomable, pannable view of one rectified scan and its overlay.
@@ -218,9 +307,18 @@ class ScanPreviewView(QGraphicsView):
     pans once the drag passes Qt's own drag-distance threshold - below which it
     is still an ordinary right-click.
 
+    Signals:
+        clicked_scene_point: ``(float, float)`` canonical-page coordinates of a
+            plain left click - the same frame every zone, bubble and marker is
+            drawn in. Emitted for the calibration viewer's click-to-inspect
+            (``docs/calibration_workflow.md``); the Scan page does not connect
+            to it and is unaffected by its existence.
+
     Args:
         parent: Optional Qt parent.
     """
+
+    clicked_scene_point = Signal(float, float)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -309,16 +407,22 @@ class ScanPreviewView(QGraphicsView):
         self.viewport().update()
 
     def set_overlay(
-        self, zones: Sequence[ZoneView], bubbles: Sequence[BubbleView]
+        self,
+        zones: Sequence[ZoneView],
+        bubbles: Sequence[BubbleView],
+        markers: Sequence[MarkerView] = (),
     ) -> None:
         """Replace the overlay content."""
-        self._overlay.set_content(zones, bubbles)
+        self._overlay.set_content(zones, bubbles, markers)
 
-    def set_overlay_visible(self, *, zones: bool, bubbles: bool, empty: bool) -> None:
+    def set_overlay_visible(
+        self, *, zones: bool, bubbles: bool, empty: bool, markers: bool = False
+    ) -> None:
         """Choose which overlay layers are drawn."""
         self._overlay.show_zones = zones
         self._overlay.show_bubbles = bubbles
         self._overlay.show_empty_bubbles = empty
+        self._overlay.show_markers = markers
         self._overlay.update()
 
     @property
@@ -387,7 +491,14 @@ class ScanPreviewView(QGraphicsView):
         super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """Middle button pans immediately; the right button waits for a drag."""
+        """Middle button pans immediately; the right button waits for a drag.
+
+        A plain left click emits :attr:`clicked_scene_point` in canonical-page
+        coordinates before being passed on - Qt's own click handling on an
+        empty scene does nothing with it, so nothing about the Scan page's
+        behaviour changes; only a listener that actually connects (the
+        calibration viewer's bubble inspector) sees anything.
+        """
         if event.button() == Qt.MouseButton.MiddleButton:
             self._start_pan(event.position().toPoint(), event.button())
             event.accept()
@@ -396,6 +507,9 @@ class ScanPreviewView(QGraphicsView):
             self._right_press = event.position().toPoint()
             event.accept()
             return
+        if event.button() == Qt.MouseButton.LeftButton and self.has_page:
+            point = self.mapToScene(event.position().toPoint())
+            self.clicked_scene_point.emit(point.x(), point.y())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -449,7 +563,11 @@ class ScanPreviewView(QGraphicsView):
 
 
 __all__ = [
+    "DETECTED_MARKER_CLOSE_COLOR",
+    "DETECTED_MARKER_FAR_COLOR",
     "EMPTY_COLOR",
+    "EXPECTED_MARKER_COLOR",
+    "MARKER_MISMATCH_PX",
     "MULTIPLE_COLOR",
     "SELECTED_COLOR",
     "UNCERTAIN_COLOR",
