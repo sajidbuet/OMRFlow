@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import cv2
@@ -107,6 +108,38 @@ _LINE_THICKNESS_PX = 2
 """Stroke width for hollow decoy shapes, in canonical pixels."""
 
 
+class MarkStyle(StrEnum):
+    """How a candidate's mark was made.
+
+    Real candidates do not all shade neatly inside the ring, and a recognition
+    engine that has only ever seen a concentric disc has been tested on the easy
+    case. These are the shapes that actually turn up on collected sheets,
+    modelled just far enough to exercise the *measurement* - none of them is an
+    attempt at photorealistic handwriting, which would be a graphics project
+    rather than a recognition one.
+    """
+
+    FILL = "fill"
+    """A shaded disc covering ``fill`` of the measurable interior. The default,
+    and what the instructions on a sheet ask for."""
+
+    RING = "ring"
+    """The bubble circled rather than filled - a thick outline with a hollow
+    middle, which defeats a naive centre-pixel test."""
+
+    TICK = "tick"
+    """A check mark through the bubble."""
+
+    CROSS = "cross"
+    """Two diagonal strokes."""
+
+    SCRIBBLE = "scribble"
+    """A hurried back-and-forth scrawl, covering the bubble unevenly."""
+
+    DOT = "dot"
+    """A small spot: a stray pen touch, or an answer barely begun."""
+
+
 @dataclass(frozen=True, slots=True)
 class AnswerBubbleSpec:
     """One printed answer bubble, optionally marked.
@@ -132,6 +165,23 @@ class AnswerBubbleSpec:
             Present because it is the *reason* an empty bubble contains ink, and
             a measurement test that omits it is testing an easier problem than
             the real one.
+        style: How the mark was made; see :class:`MarkStyle`. Every style other
+            than :attr:`MarkStyle.FILL` interprets ``fill`` as "how much of the
+            bubble the stroke covers", which is approximate by nature - the
+            point of these is that the *measurement* meets an uneven, partial,
+            off-centre mark, not that the shape is reproducible to the pixel.
+        intensity: Darkness of the mark, ``0`` (invisible) to ``1`` (solid
+            black). A hard pencil on a bright scanner lands near ``0.4``; a
+            ballpoint at ``1.0``. Separate from ``fill`` because *how much* of a
+            bubble is covered and *how dark* the covering is are two different
+            failures, and a real engine has to survive both.
+        offset_x: Mark centre displacement, as a fraction of the bubble's half
+            width. ``0.5`` puts the mark half a radius to the right - a
+            candidate marking between two bubbles.
+        offset_y: The same, vertically.
+        size_scale: Multiplies the mark's size. Below ``1`` an undersized mark
+            that a generous sample might miss; above ``1`` one that spills over
+            the printed ring into its neighbours.
     """
 
     center: NormalizedPoint
@@ -139,6 +189,11 @@ class AnswerBubbleSpec:
     height: float
     fill: float = 0.0
     symbol: str = ""
+    style: MarkStyle = MarkStyle.FILL
+    intensity: float = 1.0
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    size_scale: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,16 +647,14 @@ def _draw_answer_bubbles(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> 
         position = (round(center.x), round(center.y))
 
         if bubble.fill > 0.0:
-            # Area scales with the square of the radius, so covering a fraction
-            # `fill` of the sample disc needs a radius of sqrt(fill) times it.
-            # A complete mark covers the whole printed bubble, ring included,
-            # exactly as a pen does.
-            scale = 1.0 if bubble.fill >= 1.0 else sample_ratio * math.sqrt(bubble.fill)
-            mark_axes = (
-                max(1, round(half_x * scale)),
-                max(1, round(half_y * scale)),
+            _draw_mark(
+                image,
+                bubble,
+                center=(center.x, center.y),
+                half_x=half_x,
+                half_y=half_y,
+                sample_ratio=sample_ratio,
             )
-            cv2.ellipse(image, position, mark_axes, 0, 0, 360, _INK, thickness=cv2.FILLED)
         elif bubble.symbol:
             # The symbol only matters on an *unmarked* bubble; a mark covers it.
             scale = max(axes) / 14.0
@@ -620,6 +673,92 @@ def _draw_answer_bubbles(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> 
             )
 
         cv2.ellipse(image, position, axes, 0, 0, 360, _INK, thickness=_LINE_THICKNESS_PX)
+
+
+def _draw_mark(
+    image: NDArray[np.uint8],
+    bubble: AnswerBubbleSpec,
+    *,
+    center: tuple[float, float],
+    half_x: float,
+    half_y: float,
+    sample_ratio: float,
+) -> None:
+    """Draw one candidate's mark in the style the specification asks for.
+
+    Split out of :func:`_draw_answer_bubbles` because the geometry of *where*
+    bubbles go and the geometry of *what a mark looks like* are two different
+    problems, and one function doing both was already the longest in this
+    module.
+    """
+    grey = _mark_grey(bubble.intensity)
+    # Area scales with the square of the radius, so covering a fraction `fill`
+    # of the sample disc needs a radius of sqrt(fill) times it. A complete mark
+    # covers the whole printed bubble, ring included, exactly as a pen does.
+    coverage = 1.0 if bubble.fill >= 1.0 else sample_ratio * math.sqrt(bubble.fill)
+    scale = coverage * bubble.size_scale
+    radius_x = max(1.0, half_x * scale)
+    radius_y = max(1.0, half_y * scale)
+    position = (
+        round(center[0] + bubble.offset_x * half_x),
+        round(center[1] + bubble.offset_y * half_y),
+    )
+    axes = (max(1, round(radius_x)), max(1, round(radius_y)))
+    # One stroke width for every line-based style, proportional to the bubble so
+    # that a mark looks the same at 150 and 300 dpi.
+    stroke = max(1, round(min(half_x, half_y) * 0.45))
+
+    match bubble.style:
+        case MarkStyle.FILL:
+            cv2.ellipse(image, position, axes, 0, 0, 360, grey, thickness=cv2.FILLED)
+        case MarkStyle.RING:
+            cv2.ellipse(image, position, axes, 0, 0, 360, grey, thickness=stroke)
+        case MarkStyle.DOT:
+            spot = (max(1, round(radius_x * 0.35)), max(1, round(radius_y * 0.35)))
+            cv2.ellipse(image, position, spot, 0, 0, 360, grey, thickness=cv2.FILLED)
+        case MarkStyle.TICK:
+            points = [
+                (position[0] - axes[0], position[1]),
+                (position[0] - axes[0] // 3, position[1] + axes[1]),
+                (position[0] + axes[0], position[1] - axes[1]),
+            ]
+            cv2.polylines(
+                image, [np.array(points, dtype=np.int32)], False, grey, stroke, cv2.LINE_AA
+            )
+        case MarkStyle.CROSS:
+            cv2.line(
+                image,
+                (position[0] - axes[0], position[1] - axes[1]),
+                (position[0] + axes[0], position[1] + axes[1]),
+                grey,
+                stroke,
+                cv2.LINE_AA,
+            )
+            cv2.line(
+                image,
+                (position[0] - axes[0], position[1] + axes[1]),
+                (position[0] + axes[0], position[1] - axes[1]),
+                grey,
+                stroke,
+                cv2.LINE_AA,
+            )
+        case MarkStyle.SCRIBBLE:
+            # Three passes back and forth, each a little lower: what a hurried
+            # candidate's pen actually leaves inside a bubble.
+            points = []
+            for step in range(4):
+                y = position[1] - axes[1] + round(2 * axes[1] * step / 3)
+                x = position[0] + (axes[0] if step % 2 else -axes[0])
+                points.append((x, y))
+            cv2.polylines(
+                image, [np.array(points, dtype=np.int32)], False, grey, stroke, cv2.LINE_AA
+            )
+
+
+def _mark_grey(intensity: float) -> int:
+    """Return the grey level a mark of ``intensity`` is drawn in."""
+    clamped = min(max(intensity, 0.0), 1.0)
+    return round(_PAPER - clamped * (_PAPER - _INK))
 
 
 def _draw_answer_frames(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> None:

@@ -1,14 +1,20 @@
 """Recognising one scanned sheet, end to end.
 
 Purpose:
-    Join the three halves of Phase 3 into the single operation the rest of the
-    application asks for: "read this image with this template". Alignment
-    (Phase 1), bubble measurement (:mod:`omr_scanner.imaging.metrics`) and
-    interpretation (:mod:`omr_scanner.recognition`) each know nothing about the
-    others; this module is where they meet.
+    Be the one door into Phase 3. Alignment (Phase 1), bubble measurement
+    (:mod:`omr_scanner.imaging.metrics`) and interpretation
+    (:mod:`omr_scanner.recognition`) each know nothing about the others; this
+    module is where they meet, and it is the only thing the rest of the
+    application - the Scan page, the batch processor, a future review or scoring
+    phase - is permitted to know about.
 
 Responsibilities:
-    * :func:`recognise_scan` - load, align, measure, interpret, and report.
+    * :class:`RecognitionEngine` - the stable entry point: "read this image with
+      this template". Holds its options, so a batch configures once and reads
+      many.
+    * :func:`recognise_scan` - the same thing as one function call, kept because
+      most callers read exactly one sheet and because it is the signature the
+      rest of the repository already uses.
     * Translate every result into **plain data** - strings, floats, bytes - so
       that the Scan page can display it without importing ``numpy``,
       ``omr_scanner.imaging`` or ``omr_scanner.recognition``, all of which are
@@ -19,11 +25,23 @@ Responsibilities:
 What does NOT belong here:
     * Any pixel algorithm or decision threshold of its own. Both come from the
       layers below, and every threshold ultimately from the template.
+    * The result vocabulary, which is
+      :mod:`omr_scanner.services.recognition_models`, so that a consumer can
+      depend on the shape of a result without importing the engine that fills
+      it - which is what lets Phase 4 be written and tested against stored
+      results before Recognition Engine v2 exists.
     * File naming, copying or CSV writing; those are
       :mod:`omr_scanner.services.filename_manager`,
       :mod:`omr_scanner.services.batch_processor` and
-      :mod:`omr_scanner.reporting.scan_csv`.
+      :mod:`omr_scanner.services.scan_export`.
     * Qt of any kind.
+
+Replaceability, which is the point of the boundary:
+    A future engine may threshold differently, measure differently or register
+    differently. As long as it returns a
+    :class:`~omr_scanner.services.recognition_models.ScanResult` and stamps its
+    own :attr:`engine_version`, nothing above this line has to change - and a
+    benchmark can put the two versions side by side on one dataset.
 
 Coordinate systems, in one place:
     Three frames are in play and confusing them is the classic OMR bug.
@@ -43,10 +61,9 @@ Coordinate systems, in one place:
 from __future__ import annotations
 
 import logging
+import math
 import time
-from dataclasses import dataclass, field
-from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy as np
 
@@ -57,12 +74,38 @@ from omr_scanner.imaging.metrics import (
     BubbleMeasurement,
     BubbleMetricsConfig,
     estimate_ink_level,
+    ink_threshold,
     measure_bubbles,
 )
 from omr_scanner.recognition.fields import recognise_template, zone_groups
 from omr_scanner.recognition.models import FieldStatus, MarkStatus
 from omr_scanner.services.alignment_service import alignment_config_from_template, load_scan_image
 from omr_scanner.services.marker_detection_service import DecodedImage
+from omr_scanner.services.recognition_models import (
+    ENGINE_NAME,
+    ENGINE_VERSION,
+    RESULT_SCHEMA_VERSION,
+    AnswerView,
+    BubbleView,
+    CharacterView,
+    FieldView,
+    MarkerView,
+    RecognitionOutcome,
+    RegistrationStatus,
+    ScanQuality,
+    ScanResult,
+    StageTimings,
+    StatusCode,
+    ZoneView,
+    derive_status_codes,
+    utc_timestamp,
+)
+from omr_scanner.services.recognition_settings import (
+    DEFAULT_PREVIEW_MAX_DIMENSION,
+    DEFAULT_QUALITY_SAMPLE_MAX_DIMENSION,
+    DiagnosticsOptions,
+    RecognitionOptions,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
@@ -70,341 +113,442 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from numpy.typing import NDArray
 
     from omr_scanner.domain.template import OmrTemplate, Zone
+    from omr_scanner.imaging.models import AlignmentResult
     from omr_scanner.recognition.models import SheetRecognition
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_PREVIEW_MAX_DIMENSION = 1400
-"""Longest side of the preview image handed to the GUI, in pixels.
 
-A rectified A4 page at 300 dpi is about 8 MB as grayscale bytes; a batch of a
-hundred would be most of a gigabyte held for no reason, because only the
-selected scan is ever on screen. Downscaling the *preview* costs nothing in
-accuracy - every measurement was already taken at full resolution, and every
-overlay coordinate stays in canonical pixels, which the GUI scales anyway."""
+class RecognitionEngine:
+    """Reads sheets. The stable interface every other layer calls.
 
+    Callers construct one, configure it once, and hand it images and templates.
+    They are not expected to know - and must not depend on - how a bubble is
+    sampled, how the page is rectified, or where a threshold comes from.
 
-class RegistrationStatus(StrEnum):
-    """How well the sheet could be mapped onto the template's canonical page."""
-
-    REGISTERED = "registered"
-    """Four markers found, orientation resolved, no warnings."""
-
-    REGISTERED_WITH_WARNING = "registered_with_warning"
-    """Usable, but something was closer to its limit than is comfortable - a
-    faint orientation mark, a marker touching the image border, an unusual
-    aspect ratio. The values are reported; the sheet is worth a look."""
-
-    FAILED = "registration_failed"
-    """The page could not be rectified. No values are produced at all: a sheet
-    that was not registered cannot be measured, and inventing answers from an
-    unaligned image is exactly the confidently-wrong result this pipeline
-    exists to avoid."""
-
-
-class RecognitionOutcome(StrEnum):
-    """The overall outcome of reading one scan, as shown in the scan list."""
-
-    PENDING = "pending"
-    """Imported but not processed yet."""
-
-    COMPLETE = "complete"
-    """Every field and question resolved cleanly."""
-
-    REVIEW = "review"
-    """Read, but something needs a human: a blank, a double mark, a faint one."""
-
-    REGISTRATION_FAILED = "registration_failed"
-    """The page could not be aligned; see
-    :attr:`ScanResult.registration_message`."""
-
-    ERROR = "error"
-    """The file could not be read at all, or an unexpected failure occurred."""
-
-
-@dataclass(frozen=True, slots=True)
-class MarkerView:
-    """One registration marker, in the **source** scan's own pixels.
+    Args:
+        options: Engine options; the defaults read a sheet with a preview and
+            keep the per-bubble evidence.
 
     Attributes:
-        role: Canonical corner role (``"top_left"`` ...), as a plain string.
-        x: Marker centre in source-image pixels.
-        y: Marker centre in source-image pixels.
-        score: Selection score in ``[0, 1]``.
+        options: The options this engine was built with; immutable.
+
+    Example:
+        >>> engine = RecognitionEngine()                       # doctest: +SKIP
+        >>> result = engine.process(Path("scan.png"), template)  # doctest: +SKIP
+        >>> result.identifier_value                              # doctest: +SKIP
+        '2103123'
+
+    Thread and process safety:
+        An engine holds no mutable state between calls, so one instance may be
+        shared by several threads and pickled into a worker process. That is not
+        an accident: it is what makes the multicore batch path (see
+        :mod:`omr_scanner.services.parallel_batch`) safe to write.
     """
 
-    role: str
-    x: float
-    y: float
-    score: float
+    name = ENGINE_NAME
+    version = ENGINE_VERSION
+    schema_version = RESULT_SCHEMA_VERSION
 
+    def __init__(self, options: RecognitionOptions | None = None) -> None:
+        self.options = options if options is not None else RecognitionOptions()
 
-@dataclass(frozen=True, slots=True)
-class BubbleView:
-    """One measured bubble, in canonical pixels, ready to draw.
+    def process(self, image_path: Path, template: OmrTemplate) -> ScanResult:
+        """Read one scanned sheet.
 
-    Attributes:
-        zone_id: The zone the bubble belongs to.
-        row: Row index within the zone's bubble grid.
-        column: Column index within the zone's bubble grid.
-        label: The symbol this bubble stands for.
-        x: Bubble centre on the canonical page.
-        y: Bubble centre on the canonical page.
-        width: Printed bubble width in canonical pixels.
-        height: Printed bubble height in canonical pixels.
-        fill_ratio: Measured ink fraction in ``[0, 1]``.
-        selected: Whether the decision layer counted this bubble as marked.
-        leading: Whether this was the darkest bubble of its group, selected or
-            not. Lets the overlay show what an uncertain group nearly said, and
-            gives each group exactly one anchor for its attention glyph.
-        group_status: Status of the response group this bubble belongs to, as
-            the string value of
-            :class:`~omr_scanner.recognition.models.MarkStatus`. Lets the GUI
-            colour a bubble by *why* its group needs attention without knowing
-            anything about the recognition package.
-    """
+        Args:
+            image_path: Image file to read.
+            template: The template describing the sheet.
 
-    zone_id: str
-    row: int
-    column: int
-    label: str
-    x: float
-    y: float
-    width: float
-    height: float
-    fill_ratio: float
-    selected: bool
-    leading: bool
-    group_status: str
-
-
-@dataclass(frozen=True, slots=True)
-class ZoneView:
-    """One template zone projected onto the canonical page, ready to draw.
-
-    Attributes:
-        zone_id: Template zone id.
-        label: Human readable zone name.
-        field_type: Field type as a plain string.
-        x: Left edge on the canonical page, in pixels.
-        y: Top edge on the canonical page, in pixels.
-        width: Width in canonical pixels.
-        height: Height in canonical pixels.
-        color: The zone's ``#RRGGBB`` display colour from the template.
-        status: Field status (or the worst question status inside a question
-            block), as a plain string.
-    """
-
-    zone_id: str
-    label: str
-    field_type: str
-    x: float
-    y: float
-    width: float
-    height: float
-    color: str
-    status: str
-
-
-@dataclass(frozen=True, slots=True)
-class CharacterView:
-    """One character position of a recognised field.
-
-    Attributes:
-        position: Zero-based printed position within the field.
-        value: The symbol, ``""`` when blank, or ``"2-7"`` when doubly marked.
-        status: :class:`~omr_scanner.recognition.models.MarkStatus` value.
-        top_fill: Highest fill ratio in the group.
-        margin: Separation between the darkest bubble and the next.
-        confidence: Bounded confidence in ``[0, 1]``; see
-            :func:`omr_scanner.recognition.decide.decide_group`.
-    """
-
-    position: int
-    value: str
-    status: str
-    top_fill: float
-    margin: float
-    confidence: float
-
-
-@dataclass(frozen=True, slots=True)
-class FieldView:
-    """One recognised non-question field, as the GUI shows it.
-
-    Attributes:
-        zone_id: Template zone id.
-        label: Human readable name.
-        field_type: Field type as a plain string.
-        value: Assembled value; ``"?"`` marks an unresolved position and ``"_"``
-            a blank one.
-        status: :class:`~omr_scanner.recognition.models.FieldStatus` value.
-        needs_review: Whether any position should be shown to a human.
-        characters: Per-position detail.
-    """
-
-    zone_id: str
-    label: str
-    field_type: str
-    value: str
-    status: str
-    needs_review: bool
-    characters: tuple[CharacterView, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class AnswerView:
-    """One recognised question, as the GUI shows it.
-
-    Attributes:
-        number: Printed question number.
-        zone_id: The question block it came from.
-        value: ``""``, ``"B"``, or ``"B-D"`` for a double mark.
-        status: :class:`~omr_scanner.recognition.models.MarkStatus` value.
-        needs_review: Whether this answer should be queued for a human.
-        top_fill: Highest fill ratio among the options.
-        margin: Separation between the darkest option and the next.
-        confidence: Bounded confidence in ``[0, 1]``.
-    """
-
-    number: int
-    zone_id: str
-    value: str
-    status: str
-    needs_review: bool
-    top_fill: float
-    margin: float
-    confidence: float
-
-    @property
-    def display_value(self) -> str:
-        """What to show in a compact list: the value, or ``"?"`` when unresolved.
-
-        A blank answer shows as an empty cell, a resolved one as its label, a
-        double mark as ``"B-D"``, and anything the engine could not decide as
-        ``"?"`` - the convention the Phase 3 brief specifies for the on-screen
-        indicator, while the exported value keeps the detail.
+        Returns:
+            The result. Never raises for a bad sheet: a file that cannot be
+            read, a page that cannot be registered and an unexpected internal
+            failure all come back as a :class:`ScanResult` carrying an outcome,
+            a status code and a message, because a batch must survive any one of
+            its files.
         """
-        if self.status in (MarkStatus.UNCERTAIN.value, MarkStatus.UNREADABLE.value):
-            return "?" if not self.value else f"{self.value}?"
-        return self.value
+        return _recognise(image_path, template, self.options)
+
+    def describe(self) -> str:
+        """One line identifying this engine, for a log or a report header."""
+        return f"{self.name} {self.version} (result schema {self.schema_version})"
 
 
-@dataclass(frozen=True, slots=True)
-class ScanResult:
-    """Everything known about one processed scan.
+def recognise_scan(
+    path: Path,
+    template: OmrTemplate,
+    *,
+    options: RecognitionOptions | None = None,
+    metrics_config: BubbleMetricsConfig | None = None,
+    with_preview: bool = True,
+    preview_max_dimension: int | None = DEFAULT_PREVIEW_MAX_DIMENSION,
+    diagnostics: DiagnosticsOptions | None = None,
+) -> ScanResult:
+    """Read one scanned sheet with one template.
 
-    Attributes:
-        source_path: The image that was read.
-        outcome: Overall outcome for the scan list.
-        registration: How well the page was rectified.
-        registration_message: Plain-language explanation, empty when the
-            registration was clean.
-        warnings: Alignment warnings, as plain strings.
-        error_code: Stable machine-readable failure code from
-            :class:`~omr_scanner.errors.ImagingError`, or ``""``.
-        fields: Recognised non-question fields, in template order.
-        answers: Recognised questions, ordered by number.
-        identifier_zone_id: Which field is the candidate identifier, if any.
-        set_code_zone_id: Which field is the set code, if any.
-        zones: Zone rectangles for the overlay.
-        bubbles: Measured bubbles for the overlay.
-        markers: Registration markers, in *source* pixels.
-        preview: Downscaled rectified page for display, or ``None`` when the
-            caller did not ask for one.
-        preview_scale: ``preview`` pixels per canonical pixel, so the GUI can
-            map canonical overlay coordinates onto the preview.
-        canonical_width: Canonical page width in pixels.
-        canonical_height: Canonical page height in pixels.
-        source_width: Source scan width in pixels.
-        source_height: Source scan height in pixels.
-        elapsed_seconds: Wall-clock duration of the whole operation.
-        registration_seconds: Time spent loading and rectifying the page.
-        recognition_seconds: Time spent measuring bubbles and interpreting them.
-            Diagnostic only - the two never have to add up to
-            :attr:`elapsed_seconds`, which also covers building the preview.
+    The function form of :meth:`RecognitionEngine.process`, kept because most
+    callers read a single sheet and because this is the signature the rest of
+    the repository already uses.
+
+    Args:
+        path: Image file to read.
+        template: The template describing the sheet.
+        options: Engine options. When given, it supplies every setting and the
+            individual keyword arguments below are ignored except where they
+            were explicitly passed.
+        metrics_config: Bubble sampling tuning; defaults apply when omitted.
+        with_preview: Produce a display image of the rectified page. Batch
+            processing turns this off - only the selected scan is ever shown,
+            and a hundred full-page previews is a gigabyte held for nothing.
+        preview_max_dimension: Longest side of that preview.
+        diagnostics: Debug-image output; off unless asked for.
+
+    Returns:
+        The result; see :meth:`RecognitionEngine.process`.
     """
+    resolved = _resolve_options(
+        options,
+        metrics_config=metrics_config,
+        with_preview=with_preview,
+        preview_max_dimension=preview_max_dimension,
+        diagnostics=diagnostics,
+    )
+    return _recognise(path, template, resolved)
 
-    source_path: Path
-    outcome: RecognitionOutcome
-    registration: RegistrationStatus
-    registration_message: str = ""
-    warnings: tuple[str, ...] = ()
-    error_code: str = ""
-    fields: tuple[FieldView, ...] = ()
-    answers: tuple[AnswerView, ...] = ()
-    identifier_zone_id: str | None = None
-    set_code_zone_id: str | None = None
-    zones: tuple[ZoneView, ...] = ()
-    bubbles: tuple[BubbleView, ...] = ()
-    markers: tuple[MarkerView, ...] = ()
-    preview: DecodedImage | None = field(default=None, repr=False)
-    preview_scale: float = 1.0
-    canonical_width: int = 0
-    canonical_height: int = 0
-    source_width: int = 0
-    source_height: int = 0
-    elapsed_seconds: float = 0.0
-    registration_seconds: float = 0.0
-    recognition_seconds: float = 0.0
 
-    # ------------------------------------------------------------------
-    # Convenience accessors used by the GUI, the CSV export and the tests
-    # ------------------------------------------------------------------
-    def field_view(self, zone_id: str | None) -> FieldView | None:
-        """Return the field for ``zone_id``, or ``None``."""
-        if zone_id is None:
-            return None
-        return next((item for item in self.fields if item.zone_id == zone_id), None)
+def _resolve_options(
+    options: RecognitionOptions | None,
+    *,
+    metrics_config: BubbleMetricsConfig | None,
+    with_preview: bool,
+    preview_max_dimension: int | None,
+    diagnostics: DiagnosticsOptions | None,
+) -> RecognitionOptions:
+    """Fold the legacy keyword arguments into one options object.
 
-    @property
-    def identifier(self) -> FieldView | None:
-        """The candidate identifier field (roll number), when there is one."""
-        return self.field_view(self.identifier_zone_id)
+    Both spellings exist on purpose: ``options=`` is the one a new caller should
+    use, and the individual keywords are what the existing callers in this
+    repository (and any test written against them) already pass. Rather than
+    deprecating them loudly and breaking working code, they are folded in here,
+    in one place, where the precedence is visible: an explicit ``options``
+    wins, and the keywords fill in what it did not say.
+    """
+    if options is not None:
+        return options
+    return RecognitionOptions(
+        metrics=metrics_config if metrics_config is not None else BubbleMetricsConfig(),
+        with_preview=with_preview,
+        preview_max_dimension=preview_max_dimension,
+        diagnostics=diagnostics if diagnostics is not None else DiagnosticsOptions(),
+    )
 
-    @property
-    def set_code(self) -> FieldView | None:
-        """The set-code field, when there is one."""
-        return self.field_view(self.set_code_zone_id)
 
-    @property
-    def identifier_value(self) -> str:
-        """The identifier as recognised, or ``""`` when the template has none."""
-        found = self.identifier
-        return found.value if found is not None else ""
+# ----------------------------------------------------------------------
+# The pipeline
+# ----------------------------------------------------------------------
+def _recognise(
+    path: Path, template: OmrTemplate, options: RecognitionOptions
+) -> ScanResult:
+    """Load, align, measure, interpret and report one sheet.
 
-    @property
-    def set_code_value(self) -> str:
-        """The set code as recognised, or ``""``."""
-        found = self.set_code
-        return found.value if found is not None else ""
+    Split into named stages that each do one thing and hand the next one plain
+    data, because that is what makes the boundary in the module docstring real:
+    replacing the measurement stage, or the decision stage, means replacing one
+    function here rather than unpicking a single long one.
+    """
+    started = time.perf_counter()
+    clock = _StageClock(started)
+    identity = _TemplateIdentity.of(template)
 
-    @property
-    def identifier_is_reliable(self) -> bool:
-        """Whether the identifier may be used as a file name.
+    try:
+        image = load_scan_image(path, color=False)
+    except OMRScannerError as exc:
+        _LOGGER.warning("Scan %s could not be loaded: %s", path.name, exc)
+        return _failed_result(
+            path,
+            template=identity,
+            outcome=RecognitionOutcome.ERROR,
+            message=exc.user_message,
+            error_code=getattr(exc, "code", "") or "",
+            timings=clock.finish(),
+            has_zones=bool(template.zones),
+        )
+    clock.mark("load")
 
-        True only when the sheet registered *and* every character position of
-        the identifier resolved. A roll number with one uncertain digit is not
-        a file name; it is a review item.
-        """
-        found = self.identifier
-        return (
-            self.registration is not RegistrationStatus.FAILED
-            and found is not None
-            and found.status == FieldStatus.RESOLVED.value
+    source_height, source_width = int(image.shape[0]), int(image.shape[1])
+
+    try:
+        alignment = align_sheet(image, config=alignment_config_from_template(template))
+    except ImagingError as exc:
+        _LOGGER.info("Scan %s failed registration (%s): %s", path.name, exc.code, exc)
+        clock.mark("register")
+        return _failed_result(
+            path,
+            template=identity,
+            outcome=RecognitionOutcome.REGISTRATION_FAILED,
+            message=exc.user_message,
+            error_code=exc.code,
+            timings=clock.finish(),
+            has_zones=bool(template.zones),
+            source_width=source_width,
+            source_height=source_height,
+            canonical_width=template.page.canonical_width_px,
+            canonical_height=template.page.canonical_height_px,
+        )
+    clock.mark("register")
+
+    page = alignment.normalized_image
+    canonical_height, canonical_width = int(page.shape[0]), int(page.shape[1])
+
+    # The "what does solid ink look like on this page" estimate is a property of
+    # the page, not of a zone, so it is measured once and shared: measuring it
+    # per zone would let a zone whose bubbles are all empty set a threshold from
+    # its own printed glyphs and read them as marks.
+    page_ink = estimate_ink_level(page, config=options.metrics)
+    measurements = {
+        zone.id: _zone_measurements(
+            page,
+            zone,
+            canonical_width=canonical_width,
+            canonical_height=canonical_height,
+            ink_level=page_ink,
+            metrics_config=options.metrics,
+        )
+        for zone in template.zones
+        if not isinstance(zone.field, IgnoredFieldDefinition)
+    }
+    clock.mark("measure")
+
+    recognition = recognise_template(template, measurements)
+    clock.mark("decide")
+
+    fields, answers, zones, bubbles = _build_views(
+        template,
+        recognition,
+        measurements,
+        canonical_width=canonical_width,
+        canonical_height=canonical_height,
+        ink_level=page_ink,
+        metrics_config=options.metrics,
+        keep_measurements=options.keep_bubble_measurements,
+    )
+
+    preview: DecodedImage | None = None
+    preview_scale = 1.0
+    if options.with_preview:
+        preview, preview_scale = _downscaled_preview(page, options.preview_max_dimension)
+
+    quality = (
+        _scan_quality(alignment, page, source_width=source_width, source_height=source_height)
+        if options.keep_quality_metrics
+        else None
+    )
+
+    warnings = tuple(warning.value for warning in alignment.warnings)
+    registration = _registration_status(warnings)
+    needs_review = recognition.review_count > 0
+    outcome = RecognitionOutcome.REVIEW if needs_review else RecognitionOutcome.COMPLETE
+    identifier = next(
+        (item for item in fields if item.zone_id == recognition.identifier_zone_id), None
+    )
+    set_code = next(
+        (item for item in fields if item.zone_id == recognition.set_code_zone_id), None
+    )
+    status_codes = derive_status_codes(
+        outcome=outcome,
+        registration=registration,
+        error_code="",
+        identifier=identifier,
+        set_code=set_code,
+        answers=answers,
+        fields_=fields,
+        has_zones=bool(template.zones),
+    )
+    clock.mark("present")
+    timings = clock.finish()
+
+    result = ScanResult(
+        source_path=path,
+        outcome=outcome,
+        registration=registration,
+        registration_message=_describe_warnings(warnings),
+        warnings=warnings,
+        status_codes=status_codes,
+        fields=fields,
+        answers=answers,
+        identifier_zone_id=recognition.identifier_zone_id,
+        set_code_zone_id=recognition.set_code_zone_id,
+        zones=zones,
+        bubbles=bubbles,
+        markers=tuple(
+            MarkerView(
+                role=str(detection.role.value),
+                x=detection.center.x,
+                y=detection.center.y,
+                score=detection.score,
+            )
+            for detection in alignment.corner_markers
+        ),
+        preview=preview,
+        preview_scale=preview_scale,
+        canonical_width=canonical_width,
+        canonical_height=canonical_height,
+        source_width=source_width,
+        source_height=source_height,
+        elapsed_seconds=timings.total,
+        template_id=identity.identifier,
+        template_name=identity.name,
+        template_version=identity.version,
+        recognised_at=utc_timestamp(),
+        quality=quality,
+        timings=timings,
+    )
+
+    _LOGGER.info(
+        "Scan %s: engine=%s registration=%s warnings=%d review_items=%d "
+        "multiple=%d blank=%d status=%s in %.3fs",
+        path.name,
+        ENGINE_VERSION,
+        registration.value,
+        len(warnings),
+        recognition.review_count,
+        recognition.multiple_mark_count,
+        recognition.blank_answer_count,
+        ",".join(status_codes),
+        timings.total,
+    )
+    _LOGGER.debug(
+        "Scan %s timing: load=%.3fs register=%.3fs measure=%.3fs decide=%.3fs present=%.3fs",
+        path.name,
+        timings.load,
+        timings.register,
+        timings.measure,
+        timings.decide,
+        timings.present,
+    )
+
+    if options.diagnostics.enabled:
+        # Imported here, not at module scope: the diagnostics module draws with
+        # OpenCV, and a normal run must not pay for importing a renderer it will
+        # never call.
+        from omr_scanner.services.recognition_diagnostics import write_diagnostics
+
+        write_diagnostics(
+            result,
+            options.diagnostics,
+            original=image,
+            registered=page,
         )
 
-    @property
-    def review_count(self) -> int:
-        """How many fields and answers need a human decision."""
-        return sum(item.needs_review for item in self.fields) + sum(
-            answer.needs_review for answer in self.answers
+    return result
+
+
+class _StageClock:
+    """Accumulates per-stage durations without littering the pipeline with time.
+
+    One object rather than a scatter of ``t0 = perf_counter()`` pairs, so that
+    adding a stage is one call and the timings can never disagree about where
+    the boundaries are.
+    """
+
+    __slots__ = ("_previous", "_stages", "_started")
+
+    def __init__(self, started: float) -> None:
+        self._started = started
+        self._previous = started
+        self._stages: dict[str, float] = {}
+
+    def mark(self, stage: str) -> None:
+        """Record everything since the last mark as ``stage``."""
+        now = time.perf_counter()
+        self._stages[stage] = self._stages.get(stage, 0.0) + (now - self._previous)
+        self._previous = now
+
+    def finish(self) -> StageTimings:
+        """Return the timings, including the total elapsed time."""
+        return StageTimings(
+            load=self._stages.get("load", 0.0),
+            register=self._stages.get("register", 0.0),
+            measure=self._stages.get("measure", 0.0),
+            decide=self._stages.get("decide", 0.0),
+            present=self._stages.get("present", 0.0),
+            total=time.perf_counter() - self._started,
         )
 
-    @property
-    def warning_count(self) -> int:
-        """Alignment warnings plus items needing review - the scan list's number."""
-        return len(self.warnings) + self.review_count
+
+class _TemplateIdentity:
+    """The three identifying values a result records about its template.
+
+    Extracted once, defensively: a result must still be produced when the
+    template is unusual, and reaching into ``template.page`` in the middle of a
+    failure path is how a reporting bug turns into a crashed batch.
+    """
+
+    __slots__ = ("identifier", "name", "version")
+
+    def __init__(self, identifier: str, name: str, version: int) -> None:
+        self.identifier = identifier
+        self.name = name
+        self.version = version
+
+    @classmethod
+    def of(cls, template: OmrTemplate) -> _TemplateIdentity:
+        """Read the identity from a template."""
+        return cls(
+            identifier=str(getattr(template, "template_id", "")),
+            name=str(getattr(template, "name", "")),
+            version=int(getattr(template, "format_version", 0)),
+        )
+
+
+def _failed_result(
+    path: Path,
+    *,
+    template: _TemplateIdentity,
+    outcome: RecognitionOutcome,
+    message: str,
+    error_code: str,
+    timings: StageTimings,
+    has_zones: bool,
+    source_width: int = 0,
+    source_height: int = 0,
+    canonical_width: int = 0,
+    canonical_height: int = 0,
+) -> ScanResult:
+    """Build the result that stands for "this sheet could not be read".
+
+    One constructor for every failure path, so that a failed result is as fully
+    described as a successful one - same engine stamp, same timestamp, same
+    status codes - instead of being a stub that later phases have to special
+    case.
+    """
+    return ScanResult(
+        source_path=path,
+        outcome=outcome,
+        registration=RegistrationStatus.FAILED,
+        registration_message=message,
+        error_code=error_code,
+        status_codes=derive_status_codes(
+            outcome=outcome,
+            registration=RegistrationStatus.FAILED,
+            error_code=error_code,
+            identifier=None,
+            set_code=None,
+            answers=(),
+            fields_=(),
+            has_zones=has_zones,
+        ),
+        source_width=source_width,
+        source_height=source_height,
+        canonical_width=canonical_width,
+        canonical_height=canonical_height,
+        elapsed_seconds=timings.total,
+        template_id=template.identifier,
+        template_name=template.name,
+        template_version=template.version,
+        recognised_at=utc_timestamp(),
+        timings=timings,
+    )
 
 
 def _downscaled_preview(
@@ -493,6 +637,9 @@ def _build_views(
     *,
     canonical_width: int,
     canonical_height: int,
+    ink_level: float,
+    metrics_config: BubbleMetricsConfig,
+    keep_measurements: bool = True,
 ) -> tuple[
     tuple[FieldView, ...],
     tuple[AnswerView, ...],
@@ -559,12 +706,14 @@ def _build_views(
         for zone in template.zones
     )
 
-    # Which bubbles the decision layer selected, and how each group ended up.
-    # `zone_groups` yields groups in the same order the recognition layer
-    # decided them, so the two zip together without any lookup key.
+    # Which bubbles the decision layer selected, how each group ended up, and
+    # where each bubble ranked inside its group. `zone_groups` yields groups in
+    # the same order the recognition layer decided them, so the two zip together
+    # without any lookup key.
     selected_cells: dict[str, set[tuple[int, int]]] = {}
     leading_cells: dict[str, set[tuple[int, int]]] = {}
     cell_status: dict[str, dict[tuple[int, int], str]] = {}
+    cell_rank: dict[str, dict[tuple[int, int], int]] = {}
     field_groups = {item.zone_id: item.groups for item in recognition.fields}
 
     for zone in template.zones:
@@ -582,7 +731,14 @@ def _build_views(
         chosen = selected_cells.setdefault(zone.id, set())
         statuses = cell_status.setdefault(zone.id, {})
         leaders = leading_cells.setdefault(zone.id, set())
+        ranks = cell_rank.setdefault(zone.id, {})
         for group, decision in zip(zone_groups(zone), decisions, strict=True):
+            order = sorted(
+                range(len(group.cells)),
+                key=lambda index: -decision.readings[index].fill_ratio,
+            )
+            for position, index in enumerate(order):
+                ranks[group.cells[index]] = position
             for index, cell in enumerate(group.cells):
                 statuses[cell] = decision.status.value
                 if index in decision.selected:
@@ -602,6 +758,11 @@ def _build_views(
         }
         zone_measure = measurements.get(zone.id, {})
         for (row, column), measurement in sorted(zone_measure.items()):
+            evidence = (
+                _bubble_evidence(measurement, ink_level=ink_level, config=metrics_config)
+                if keep_measurements
+                else _EMPTY_EVIDENCE
+            )
             bubbles.append(
                 BubbleView(
                     zone_id=zone.id,
@@ -616,10 +777,55 @@ def _build_views(
                     selected=(row, column) in selected_cells.get(zone.id, set()),
                     leading=(row, column) in leading_cells.get(zone.id, set()),
                     group_status=cell_status.get(zone.id, {}).get((row, column), ""),
+                    rank=cell_rank.get(zone.id, {}).get((row, column), 0),
+                    mean_darkness=evidence.mean_darkness,
+                    contrast=evidence.contrast,
+                    paper_level=evidence.paper_level,
+                    ink_threshold=evidence.ink_threshold,
+                    sample_pixels=evidence.sample_pixels,
+                    usable=evidence.usable,
                 )
             )
 
     return fields, answers, zones, tuple(bubbles)
+
+
+class _Evidence(NamedTuple):
+    """The measured numbers a bubble view carries alongside its fill ratio."""
+
+    mean_darkness: float
+    contrast: float
+    paper_level: float
+    ink_threshold: float
+    sample_pixels: int
+    usable: bool
+
+
+_EMPTY_EVIDENCE = _Evidence(0.0, 0.0, 0.0, 0.0, 0, True)
+"""What a bubble carries when the caller asked not to keep the evidence."""
+
+
+def _bubble_evidence(
+    measurement: BubbleMeasurement,
+    *,
+    ink_level: float,
+    config: BubbleMetricsConfig,
+) -> _Evidence:
+    """Return the measured evidence behind one bubble, ready for a view.
+
+    The threshold is recomputed rather than stored by the measurement because it
+    is a *derived* quantity - local paper level, the page's ink level and the
+    configured fraction - and duplicating it inside every measurement would make
+    the imaging layer responsible for a value only a report cares about.
+    """
+    return _Evidence(
+        mean_darkness=measurement.mean_darkness,
+        contrast=measurement.contrast,
+        paper_level=measurement.paper_level,
+        ink_threshold=ink_threshold(measurement.paper_level, ink_level, config),
+        sample_pixels=measurement.sample_pixels,
+        usable=measurement.usable,
+    )
 
 
 _STATUS_SEVERITY: dict[str, int] = {
@@ -666,175 +872,139 @@ def _describe_warnings(warnings: tuple[str, ...]) -> str:
     return f"Registered, but with reservations: {readable}."
 
 
-def recognise_scan(
-    path: Path,
-    template: OmrTemplate,
+# ----------------------------------------------------------------------
+# Scan quality: measured, reported, never consulted
+# ----------------------------------------------------------------------
+def _scan_quality(
+    alignment: AlignmentResult,
+    page: NDArray[np.uint8],
     *,
-    metrics_config: BubbleMetricsConfig | None = None,
-    with_preview: bool = True,
-    preview_max_dimension: int | None = DEFAULT_PREVIEW_MAX_DIMENSION,
-) -> ScanResult:
-    """Read one scanned sheet with one template.
-
-    Never raises for a bad sheet: a file that cannot be read, a page that cannot
-    be registered and an unexpected internal failure all come back as a
-    :class:`ScanResult` carrying an outcome and a message, because a batch must
-    survive any one of its files.
-
-    Args:
-        path: Image file to read.
-        template: The template describing the sheet.
-        metrics_config: Bubble sampling tuning; defaults apply when omitted.
-        with_preview: Produce a display image of the rectified page. Batch
-            processing turns this off - only the selected scan is ever shown,
-            and a hundred full-page previews is a gigabyte held for nothing.
-        preview_max_dimension: Longest side of that preview.
-
-    Returns:
-        The result. ``outcome`` is
-        :attr:`RecognitionOutcome.REGISTRATION_FAILED` or
-        :attr:`RecognitionOutcome.ERROR` when nothing could be read.
-    """
-    started = time.perf_counter()
-    settings = metrics_config if metrics_config is not None else BubbleMetricsConfig()
-
-    try:
-        image = load_scan_image(path, color=False)
-    except OMRScannerError as exc:
-        _LOGGER.warning("Scan %s could not be loaded: %s", path.name, exc)
-        return ScanResult(
-            source_path=path,
-            outcome=RecognitionOutcome.ERROR,
-            registration=RegistrationStatus.FAILED,
-            registration_message=exc.user_message,
-            error_code=getattr(exc, "code", "") or "",
-            elapsed_seconds=time.perf_counter() - started,
-        )
-
-    source_height, source_width = int(image.shape[0]), int(image.shape[1])
-
-    try:
-        alignment = align_sheet(image, config=alignment_config_from_template(template))
-    except ImagingError as exc:
-        _LOGGER.info(
-            "Scan %s failed registration (%s): %s", path.name, exc.code, exc
-        )
-        return ScanResult(
-            source_path=path,
-            outcome=RecognitionOutcome.REGISTRATION_FAILED,
-            registration=RegistrationStatus.FAILED,
-            registration_message=exc.user_message,
-            error_code=exc.code,
-            source_width=source_width,
-            source_height=source_height,
-            canonical_width=template.page.canonical_width_px,
-            canonical_height=template.page.canonical_height_px,
-            elapsed_seconds=time.perf_counter() - started,
-            registration_seconds=time.perf_counter() - started,
-        )
-
-    registered_at = time.perf_counter()
-    page = alignment.normalized_image
-    canonical_height, canonical_width = int(page.shape[0]), int(page.shape[1])
-
-    # The "what does solid ink look like on this page" estimate is a property of
-    # the page, not of a zone, so it is measured once and shared: measuring it
-    # per zone would let a zone whose bubbles are all empty set a threshold from
-    # its own printed glyphs and read them as marks.
-    page_ink = estimate_ink_level(page, config=settings)
-    measurements = {
-        zone.id: _zone_measurements(
-            page,
-            zone,
-            canonical_width=canonical_width,
-            canonical_height=canonical_height,
-            ink_level=page_ink,
-            metrics_config=settings,
-        )
-        for zone in template.zones
-        if not isinstance(zone.field, IgnoredFieldDefinition)
-    }
-    recognition = recognise_template(template, measurements)
-    recognised_at = time.perf_counter()
-
-    fields, answers, zones, bubbles = _build_views(
-        template,
-        recognition,
-        measurements,
-        canonical_width=canonical_width,
-        canonical_height=canonical_height,
+    source_width: int,
+    source_height: int,
+) -> ScanQuality:
+    """Summarise how good this scan was, for diagnosis rather than judgement."""
+    metrics = alignment.metrics
+    rotation, skew, perspective = _transform_geometry(
+        alignment.transform_matrix, width=source_width, height=source_height
     )
-
-    preview: DecodedImage | None = None
-    preview_scale = 1.0
-    if with_preview:
-        preview, preview_scale = _downscaled_preview(page, preview_max_dimension)
-
-    warnings = tuple(warning.value for warning in alignment.warnings)
-    registration = _registration_status(warnings)
-    needs_review = recognition.review_count > 0
-    outcome = RecognitionOutcome.REVIEW if needs_review else RecognitionOutcome.COMPLETE
-
-    _LOGGER.info(
-        "Scan %s: registration=%s warnings=%d review_items=%d multiple=%d blank=%d",
-        path.name,
-        registration.value,
-        len(warnings),
-        recognition.review_count,
-        recognition.multiple_mark_count,
-        recognition.blank_answer_count,
-    )
-    _LOGGER.debug(
-        "Scan %s timing: registration=%.3fs recognition=%.3fs total=%.3fs",
-        path.name,
-        registered_at - started,
-        recognised_at - registered_at,
-        time.perf_counter() - started,
-    )
-
-    return ScanResult(
-        source_path=path,
-        outcome=outcome,
-        registration=registration,
-        registration_message=_describe_warnings(warnings),
-        warnings=warnings,
-        fields=fields,
-        answers=answers,
-        identifier_zone_id=recognition.identifier_zone_id,
-        set_code_zone_id=recognition.set_code_zone_id,
-        zones=zones,
-        bubbles=bubbles,
-        markers=tuple(
-            MarkerView(
-                role=str(detection.role.value),
-                x=detection.center.x,
-                y=detection.center.y,
-                score=detection.score,
-            )
-            for detection in alignment.corner_markers
-        ),
-        preview=preview,
-        preview_scale=preview_scale,
-        canonical_width=canonical_width,
-        canonical_height=canonical_height,
+    brightness, contrast, sharpness = _image_statistics(page)
+    return ScanQuality(
+        marker_count=len(alignment.corner_markers),
+        min_marker_score=metrics.min_marker_score,
+        mean_reprojection_error_px=metrics.mean_reprojection_error_px,
+        max_reprojection_error_px=metrics.max_reprojection_error_px,
+        aspect_ratio_deviation=metrics.aspect_ratio_deviation,
+        quadrilateral_area_ratio=metrics.quadrilateral_area_ratio,
+        quarter_turns=alignment.orientation.quarter_turns,
+        rotation_degrees=rotation,
+        skew_degrees=skew,
+        perspective_strength=perspective,
+        orientation_confidence=metrics.orientation_confidence,
+        orientation_assumed=alignment.orientation.assumed,
         source_width=source_width,
         source_height=source_height,
-        elapsed_seconds=time.perf_counter() - started,
-        registration_seconds=registered_at - started,
-        recognition_seconds=recognised_at - registered_at,
+        brightness=brightness,
+        contrast=contrast,
+        sharpness=sharpness,
+        working_scale=metrics.working_scale,
     )
+
+
+def _transform_geometry(
+    matrix: NDArray[np.float64], *, width: int, height: int
+) -> tuple[float, float, float]:
+    """Estimate rotation, skew and perspective strength from the homography.
+
+    The affine part of the matrix is decomposed the standard way: the first
+    column's angle is the rotation, and the departure of the two columns from
+    perpendicularity is the skew. The projective row is scaled by the page's own
+    size, which turns it into "how many times the scale changes across the
+    page" - a number that means the same thing at any resolution, unlike the raw
+    coefficients.
+
+    These are *descriptions of the correction that was applied*, not error
+    measurements. A page photographed at an angle produces a large perspective
+    strength and a perfectly good result.
+    """
+    a, b = float(matrix[0, 0]), float(matrix[0, 1])
+    c, d = float(matrix[1, 0]), float(matrix[1, 1])
+
+    rotation = math.degrees(math.atan2(c, a))
+    # Fold into [-45, 45]: whole quarter turns are reported separately, and a
+    # 90-degree "rotation" here would be that, not a skewed page.
+    while rotation > 45.0:
+        rotation -= 90.0
+    while rotation < -45.0:
+        rotation += 90.0
+
+    column_x = math.hypot(a, c)
+    column_y = math.hypot(b, d)
+    if column_x <= 0.0 or column_y <= 0.0:
+        skew = 0.0
+    else:
+        cosine = (a * b + c * d) / (column_x * column_y)
+        skew = 90.0 - math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+    scale = float(matrix[2, 2]) or 1.0
+    perspective = (
+        abs(float(matrix[2, 0])) * max(width, 1) + abs(float(matrix[2, 1])) * max(height, 1)
+    ) / abs(scale)
+    return rotation, skew, perspective
+
+
+def _image_statistics(page: NDArray[np.uint8]) -> tuple[float, float, float]:
+    """Return ``(brightness, contrast, sharpness)`` of the rectified page.
+
+    Computed on a bounded downsample so the cost does not grow with scanner
+    resolution: these are summaries for a human reading a report, and a
+    half-resolution page has the same mean and a proportional Laplacian
+    variance.
+    """
+    import cv2  # local import: only this diagnostic path needs OpenCV
+
+    sample: NDArray[np.uint8] = page
+    longest = max(int(page.shape[0]), int(page.shape[1]))
+    if longest > DEFAULT_QUALITY_SAMPLE_MAX_DIMENSION:
+        factor = DEFAULT_QUALITY_SAMPLE_MAX_DIMENSION / float(longest)
+        sample = cast(
+            "NDArray[np.uint8]",
+            cv2.resize(
+                page,
+                (
+                    max(round(int(page.shape[1]) * factor), 1),
+                    max(round(int(page.shape[0]) * factor), 1),
+                ),
+                interpolation=cv2.INTER_AREA,
+            ),
+        )
+
+    values = sample.astype(np.float32)
+    brightness = float(values.mean()) / 255.0
+    contrast = float(values.std()) / 255.0
+    laplacian = cv2.Laplacian(sample, cv2.CV_32F)
+    sharpness = float(laplacian.var()) / (255.0 * 255.0)
+    return brightness, contrast, sharpness
 
 
 __all__ = [
     "DEFAULT_PREVIEW_MAX_DIMENSION",
+    "ENGINE_NAME",
+    "ENGINE_VERSION",
+    "RESULT_SCHEMA_VERSION",
     "AnswerView",
     "BubbleView",
     "CharacterView",
+    "DiagnosticsOptions",
     "FieldView",
     "MarkerView",
+    "RecognitionEngine",
+    "RecognitionOptions",
     "RecognitionOutcome",
     "RegistrationStatus",
+    "ScanQuality",
     "ScanResult",
+    "StageTimings",
+    "StatusCode",
     "ZoneView",
     "recognise_scan",
 ]

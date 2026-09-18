@@ -20,12 +20,13 @@ same as "the result is correct". The architecture is therefore optimised for:
 ## Layers
 
 ```text
-┌──────────────────────────────────────────────┐
-│  gui          PySide6 windows, pages, dialogs│
-└───────────────────────┬──────────────────────┘
-                        │ calls
-┌───────────────────────▼──────────────────────┐
-│  services     application workflows          │
+┌───────────────────────────────┐  ┌───────────────────────────────┐
+│  gui    PySide6 windows,      │  │  evaluation   QA: ground truth│
+│         pages, dialogs        │  │  + benchmarks over results    │
+└───────────────┬───────────────┘  └───────────────┬───────────────┘
+                │ calls                            │ drives
+┌───────────────▼──────────────────────────────────▼──────────────┐
+│  services     application workflows                             │
 └───┬───────────┬───────────┬───────────┬──────┘
     │           │           │           │
 ┌───▼────┐ ┌────▼─────┐ ┌───▼──────┐ ┌──▼────────┐
@@ -54,6 +55,7 @@ above it.
 | `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results. Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
 | `omr_scanner.reporting` | CSV/XLSX/PDF generation. *(reserved - Phase 9)* | Result calculation, Qt. |
 | `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.scan` (Phase 3) is the batch scanning workspace. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
+| `omr_scanner.evaluation` | Judging the engine: the ground-truth schema, the synthetic dataset generator, the benchmark and its error categories *(Phase 3)*. Sits *above* services, beside the GUI. | Qt; any recognition of its own - a benchmark that re-implements the engine measures itself. |
 | `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
 | `omr_scanner.config` | Per-user application settings and platform directory resolution. | Project or template settings. |
 | `omr_scanner.utils` | Dependency-light helpers (atomic JSON, logging setup). | Domain vocabulary, any other OMRFlow layer. |
@@ -206,6 +208,40 @@ each step:
 signals, so that no widget is ever touched from a worker thread and no
 recognition code ever imports Qt.
 
+### Recognition is a replaceable subsystem
+
+Phase 3 is deliberately reachable through one door and describable in one type:
+
+```text
+RecognitionEngine.process(image_path, template) -> ScanResult
+```
+
+Everything above that line - the Scan page, the batch processor, Phase 4's
+review queue, Phase 8's scoring - depends on the *call* and the *shape of the
+answer*, and on nothing else. No consumer thresholds a pixel, walks a contour
+or knows what a homography is.
+
+Three properties make the substitution real rather than aspirational:
+
+- **The result is plain data.** Strings, numbers, booleans, tuples. That is why
+  the GUI can consume it while being forbidden `cv2`, `numpy`, `imaging` and
+  `recognition`, and why a result can be written to JSON, stored as a fixture
+  and read back by a phase that has no engine at all.
+- **The result is versioned.** `engine_version` says which behaviour produced
+  it; `schema_version` says which shape it was written in. A benchmark can put
+  v1 and v2 side by side on one dataset; a stored result stays readable.
+- **Measurement is separated from decision.** `imaging.metrics` measures a
+  bubble; `recognition.decide` decides what it means; the thresholds come from
+  the template. Recalibrating means changing the third of those, and the
+  per-bubble evidence kept on every result means a new threshold can be
+  *evaluated* without re-reading a single image.
+
+The `evaluation` package exists to hold that honest: it consumes the same
+public `ScanResult` a later phase will consume. If a benchmark ever needed a
+private detail of the engine, that detail would belong on the result - and the
+pressure to notice is exactly why the layer is separate. See
+`docs/recognition_engine.md`.
+
 ### Why the recognition modules are split three ways
 
 `recognition.models` holds the vocabulary (`MarkStatus`, `FieldStatus`,
@@ -273,7 +309,7 @@ ScanPage.add_scan_paths       -> services.scan_import.collect_scan_files
 ScanPage.process_all          -> gui.scan.worker.BatchWorker  (a QThread)
                                    -> services.batch_processor.process_batch
                                         -> services.parallel_batch (worker processes)
-                                        -> services.recognition_service.recognise_scan
+                                        -> services.recognition_service.RecognitionEngine
                                         -> services.filename_manager.FilenameAllocator
                                    -> Qt signals back to the GUI thread
 ScanPage.select_scan          -> gui.scan.worker.PreviewWorker

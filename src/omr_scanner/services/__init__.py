@@ -73,7 +73,14 @@ from omr_scanner.services.project_service import (
     open_project,
     read_project_metadata,
 )
-from omr_scanner.services.recognition_service import (
+from omr_scanner.services.recognition_diagnostics import (
+    render_overlay,
+    write_diagnostics,
+)
+from omr_scanner.services.recognition_models import (
+    ENGINE_NAME,
+    ENGINE_VERSION,
+    RESULT_SCHEMA_VERSION,
     AnswerView,
     BubbleView,
     CharacterView,
@@ -81,9 +88,19 @@ from omr_scanner.services.recognition_service import (
     MarkerView,
     RecognitionOutcome,
     RegistrationStatus,
+    ScanQuality,
     ScanResult,
+    StageTimings,
+    StatusCode,
     ZoneView,
+)
+from omr_scanner.services.recognition_service import (
+    RecognitionEngine,
     recognise_scan,
+)
+from omr_scanner.services.recognition_settings import (
+    DiagnosticsOptions,
+    RecognitionOptions,
 )
 from omr_scanner.services.scan_export import export_scan_results, render_scan_results
 from omr_scanner.services.scan_import import (
@@ -99,7 +116,10 @@ from omr_scanner.services.template_service import (
 )
 
 __all__ = [
+    "ENGINE_NAME",
+    "ENGINE_VERSION",
     "ORIENTATION_DEBUG_IMAGE_NAME",
+    "RESULT_SCHEMA_VERSION",
     "SUPPORTED_SCAN_SUFFIXES",
     "AnswerView",
     "BatchOptions",
@@ -110,6 +130,7 @@ __all__ = [
     "CharacterView",
     "DecodedImage",
     "DetectedMarker",
+    "DiagnosticsOptions",
     "FieldView",
     "FilenameAllocator",
     "MarkerDetectionOutcome",
@@ -119,9 +140,14 @@ __all__ = [
     "OrientationSearchConfig",
     "ProcessedScan",
     "ProjectSession",
+    "RecognitionEngine",
+    "RecognitionOptions",
     "RecognitionOutcome",
     "RegistrationStatus",
+    "ScanQuality",
     "ScanResult",
+    "StageTimings",
+    "StatusCode",
     "ZoneView",
     "alignment_config_from_template",
     "collect_scan_files",
@@ -144,8 +170,10 @@ __all__ = [
     "process_scan",
     "read_project_metadata",
     "recognise_scan",
+    "render_overlay",
     "render_scan_results",
     "sanitise_stem",
     "save_image",
     "save_template",
+    "write_diagnostics",
 ]

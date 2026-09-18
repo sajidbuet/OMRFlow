@@ -359,6 +359,32 @@ before assuming.
 
 ---
 
+## 10b. Diagnostics, when something reads wrongly
+
+**File > Settings > Diagnostics** writes, for every sheet processed, the scan
+as loaded, the corrected page, an annotated overlay of what was decided, a
+second overlay with every measured bubble labelled by its fill ratio, and the
+full result as JSON - each scan in its own folder.
+
+It is off by default and should stay off for ordinary work: it is several
+full-page images per sheet, which on a real batch is gigabytes. Switching it on
+does nothing until a folder is chosen, so it cannot scatter debug files into a
+project.
+
+The same thing is available without the GUI, which is usually easier when
+investigating one sheet:
+
+```bash
+python -m omr_scanner.tools.recognise scan047.jpg --template sheet.omrt \
+    --diagnostics out/diagnostics --verbose
+```
+
+See [`recognition_engine.md`](recognition_engine.md) for the developer-facing
+detail: the result schema, the per-bubble evidence, the synthetic dataset
+generator and the benchmark harness.
+
+---
+
 ## 11. Known limitations
 
 * **PDF input is not supported** (§2).

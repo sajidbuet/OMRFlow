@@ -32,6 +32,11 @@ FORBIDDEN_IMPORTS: dict[str, tuple[str, ...]] = {
     "reporting": ("PySide6", "omr_scanner.gui", "cv2"),
     "database": ("PySide6", "cv2", "omr_scanner.gui", "omr_scanner.services"),
     "services": ("PySide6", "omr_scanner.gui"),
+    # The QA layer sits *above* services: it may drive the whole engine, but it
+    # is never part of the application a user runs, so it must not touch Qt -
+    # and nothing below it may import it, which the per-layer rules above
+    # already enforce by omission.
+    "evaluation": ("PySide6", "omr_scanner.gui"),
     # Developer command line tools sit beside the GUI, not below it: they may
     # call any service or algorithm, but importing a widget would make them
     # depend on a display.

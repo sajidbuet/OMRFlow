@@ -88,8 +88,83 @@ examination processing.
   isolation, no orphan processes) and
   `tests/gui/test_processing_settings_gui.py`.
 - The `qtguitesting` skill now covers the Scan page and the Processing settings:
-  a `ScanHarness`, nine smoke checks, seven screenshot scenarios and four new
+  a `ScanHarness`, ten smoke checks, seven screenshot scenarios and four new
   documented scenarios.
+
+### Added — Phase 3 architectural hardening
+
+Phase 3 turned into a *replaceable* recognition subsystem, so that Phases 4 and
+5 can be built against it now and a future Recognition Engine v2 can replace it
+without rewriting them. Details in `docs/recognition_engine.md`.
+
+- **A stable recognition API.**
+  `omr_scanner.services.recognition_service.RecognitionEngine` -
+  `engine.process(image_path, template) -> ScanResult` - is the single entry
+  point; no caller above it needs to know about thresholds, contours or
+  homographies. `recognise_scan()` remains supported and delegates to the same
+  pipeline.
+- **`omr_scanner.services.recognition_models`**: the result vocabulary, split
+  out of the engine so a consumer can depend on the *shape* of a result without
+  importing the engine that fills it. Adds to `ScanResult`: the engine name and
+  version, the template's id/name/format version, a UTC timestamp,
+  machine-readable `status_codes`, per-stage `timings` and a `ScanQuality`
+  record (marker scores, reprojection error, corrected rotation and skew,
+  perspective strength, brightness, contrast, sharpness). `to_dict()` /
+  `from_dict()` serialise a result to JSON, refusing a newer schema version
+  rather than misreading it.
+- **Raw per-bubble measurements on every result.** `BubbleView` now carries
+  `mean_darkness`, `contrast`, `paper_level`, the `ink_threshold` it was
+  compared against, `sample_pixels`, `usable` and its `rank` within its group -
+  so a future recalibration can ask "what would a threshold of 0.6 have
+  decided?" arithmetically, without re-reading a single image.
+- **`StatusCode`**: `OK`, `LOW_CONFIDENCE`, `BLANK`, `MULTIPLE_MARK`,
+  `AMBIGUOUS`, `ALIGNMENT_WARNING`, `ALIGNMENT_FAILED`, `ORIENTATION_FAILED`,
+  `MARKER_NOT_FOUND`, `ROLL_UNREADABLE`, `SET_UNREADABLE`, `INVALID_TEMPLATE`,
+  `IMAGE_LOAD_ERROR`, `PROCESSING_ERROR` - derived from the values, so they can
+  never disagree with the result they describe. A consumer branches on these,
+  never on an English message.
+- **`omr_scanner.services.recognition_settings`**: `RecognitionOptions` and
+  `DiagnosticsOptions` - engine-level options (sampling, preview, what evidence
+  to keep, debug output) in one immutable, picklable object. Thresholds stay in
+  the template, where they belong.
+- **`omr_scanner.services.recognition_diagnostics`**: a headless annotated
+  overlay (`render_overlay`) and the staged debug dump per scan - the original,
+  the rectified page, the decision overlay, a measurement overlay and the
+  result as JSON. Off by default; a write failure costs the diagnostics, never
+  the scan; and a test asserts that producing them changes no recognised value.
+  Switchable from *File > Settings > Diagnostics* or `--diagnostics`.
+- **Headless tools.** `python -m omr_scanner.tools.recognise` reads one scan or
+  a folder with no GUI, writing JSON results, overlays or diagnostics, on one
+  or many workers. A test proves it: recognition runs in a fresh interpreter
+  where no `PySide6` module is ever imported.
+- **`omr_scanner.evaluation`**, a QA layer *above* services: the ground-truth
+  schema shared by synthetic and real datasets
+  (`SheetGroundTruth`, `DatasetManifest`), a reproducible synthetic dataset
+  generator, and a benchmark harness.
+- **Synthetic dataset generator** (`python -m omr_scanner.tools.make_dataset`):
+  renders labelled sheets *from a real template*, with five difficulty profiles
+  and controlled defects - mark styles (fill, ring, tick, cross, scribble, dot,
+  each with its own coverage, darkness, offset and size), geometry, exposure,
+  blur, noise, JPEG artefacts, and structural damage such as a missing marker
+  or a cropped page. Ground truth is written beside every image and records the
+  defects injected; a seed reproduces a dataset byte for byte.
+- **Benchmark harness**
+  (`python -m omr_scanner.tools.benchmark_recognition`): scores recognition
+  against ground truth, classifies every disagreement (`FALSE_MARK`,
+  `FALSE_BLANK`, `WRONG_OPTION`, `MISSED_MULTIPLE_MARK`,
+  `FALSE_MULTIPLE_MARK`, `ROLL_ERROR`, `SET_ERROR`, `ALIGNMENT_ERROR`,
+  `PROCESSING_FAILURE`), writes `summary.json` and `errors.csv`, compares a run
+  against a stored baseline, and offers a fill-threshold sweep that reports
+  without changing anything.
+- **Stored result fixtures** in `tests/fixtures/recognition/`: eleven scenarios
+  a later phase must handle, loadable with no recognition engine present, built
+  by `scripts/build_recognition_fixtures.py`.
+- **`local_test_data/`**: the documented, git-ignored home for a real
+  validation corpus, using the same layout and schema as a synthetic dataset so
+  one benchmark command serves both. Nothing is uploaded, ever.
+- 227 further tests (1,935 in the repository), covering the result contract,
+  the fixtures, the evaluation harness, the engine as a subsystem, the dataset
+  generator and the three command line tools.
 
 ### Fixed — Phase 3
 

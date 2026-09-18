@@ -67,12 +67,12 @@ from omr_scanner.services.recognition_service import (
     ScanResult,
     recognise_scan,
 )
+from omr_scanner.services.recognition_settings import RecognitionOptions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable, Generator, Sequence
 
     from omr_scanner.domain.template import OmrTemplate
-    from omr_scanner.imaging.metrics import BubbleMetricsConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,12 +87,13 @@ Short enough that "Cancel" feels immediate, long enough that waiting costs
 nothing measurable next to reading a page."""
 
 _WORKER_TEMPLATE: OmrTemplate | None = None
-_WORKER_METRICS: BubbleMetricsConfig | None = None
+_WORKER_OPTIONS: RecognitionOptions | None = None
 """Per-process state, set once by :func:`worker_initialise`.
 
-The template is sent to each worker exactly once when the pool starts, not once
-per sheet: it is the same document for every page of a batch, and re-sending
-(and re-validating) it a thousand times would cost more than some of the pages."""
+The template and the engine options are sent to each worker exactly once when
+the pool starts, not once per sheet: they are the same for every page of a
+batch, and re-sending (and re-validating) them a thousand times would cost more
+than some of the pages."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,17 +116,19 @@ class WorkerOutcome:
 
 
 def worker_initialise(
-    template: OmrTemplate, metrics_config: BubbleMetricsConfig | None
+    template: OmrTemplate, options: RecognitionOptions | None = None
 ) -> None:
     """Prepare one worker process. Runs once per process, in that process.
 
     Args:
         template: The template every task in this batch is read with.
-        metrics_config: Bubble sampling tuning, or ``None`` for the defaults.
+        options: Engine options, or ``None`` for the defaults. Immutable, so
+            every worker reads with exactly the settings the parent chose and
+            no worker can change another's.
     """
-    global _WORKER_TEMPLATE, _WORKER_METRICS
+    global _WORKER_TEMPLATE, _WORKER_OPTIONS
     _WORKER_TEMPLATE = template
-    _WORKER_METRICS = metrics_config
+    _WORKER_OPTIONS = options if options is not None else RecognitionOptions()
 
     # A worker has no log configuration of its own, so anything it logged would
     # reach the console through logging's "last resort" handler - interleaved
@@ -168,12 +171,10 @@ def worker_recognise(index: int, path: Path) -> WorkerOutcome:
         )
 
     try:
-        result = recognise_scan(
-            path,
-            _WORKER_TEMPLATE,
-            metrics_config=_WORKER_METRICS,
-            with_preview=False,
-        )
+        options = _WORKER_OPTIONS if _WORKER_OPTIONS is not None else RecognitionOptions()
+        # A preview is a picture for a screen this process does not have, and
+        # pickling one back to the parent would dominate the transfer cost.
+        result = recognise_scan(path, _WORKER_TEMPLATE, options=options.with_preview_disabled())
     except Exception as exc:
         return WorkerOutcome(
             index=index,
@@ -203,7 +204,7 @@ def recognise_in_parallel(
     template: OmrTemplate,
     *,
     workers: int,
-    metrics_config: BubbleMetricsConfig | None = None,
+    options: RecognitionOptions | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> Generator[tuple[int, ScanResult], None, None]:
     """Recognise every scan in ``paths`` across ``workers`` processes.
@@ -216,7 +217,8 @@ def recognise_in_parallel(
             from
             :meth:`omr_scanner.config.processing.ProcessingSettings.resolve_worker_count`,
             which has already capped it to the batch size.
-        metrics_config: Bubble sampling tuning, or ``None`` for the defaults.
+        options: Engine options, or ``None`` for the defaults. Sent to each
+            worker once, when the pool starts.
         should_cancel: Polled as results arrive. When it returns ``True``, work
             not yet started is cancelled, the pool is shut down, and iteration
             stops - sheets already inside a worker are allowed to finish, since
@@ -239,7 +241,7 @@ def recognise_in_parallel(
         max_workers=workers,
         mp_context=context,
         initializer=worker_initialise,
-        initargs=(template, metrics_config),
+        initargs=(template, options),
     )
     try:
         for index, path in enumerate(paths):

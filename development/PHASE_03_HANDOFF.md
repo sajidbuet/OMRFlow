@@ -3,6 +3,11 @@
 **Implemented:** 2026-09-16
 **Updated:** 2026-09-17 — configurable multicore batch recognition added
 (§§2, 4, 5, 6, 7, 9); the phase stays in testing/stabilisation.
+**Updated:** 2026-09-18 — architectural hardening: a stable recognition API, a
+versioned result contract with per-bubble evidence, diagnostics, headless
+tools, a synthetic dataset generator and a benchmark harness (§12). The phase
+stays in testing/stabilisation; recognition *accuracy* is unchanged and
+uncalibrated.
 **Version:** 0.1.0.dev0
 **Environment verified on:** Windows 11, Python 3.12.7, PySide6 6.11.2, OpenCV
 5.0.0, NumPy 2.5.3
@@ -403,17 +408,94 @@ Three defects were found by this process and fixed, not worked around:
 
 ---
 
-## 11. Phase 4 entry criteria
+## 12. Architectural hardening (2026-09-18)
+
+The goal of this increment was **not** accuracy. It was to make Phase 3 a
+subsystem that a later phase can depend on and a later engine can replace. No
+recognition decision changed; `ENGINE_VERSION` stays `1.0`.
+
+### What was added
+
+| Module | Contents |
+|---|---|
+| `services/recognition_models.py` | The result vocabulary, split out of the engine: `ScanResult`, its view types, `StatusCode`, `ScanQuality`, `StageTimings`, `to_dict`/`from_dict`, `ENGINE_VERSION`, `RESULT_SCHEMA_VERSION`. A consumer can now depend on the *shape* of a result without importing the engine that fills it. |
+| `services/recognition_settings.py` | `RecognitionOptions` and `DiagnosticsOptions`: engine-level options in one immutable, picklable object. No thresholds - those stay in the template. |
+| `services/recognition_diagnostics.py` | `render_overlay` (headless, OpenCV, no Qt) and `write_diagnostics` (the staged dump per scan). |
+| `evaluation/ground_truth.py` | `SheetGroundTruth`, `DatasetManifest` - one schema for synthetic and real data. |
+| `evaluation/synthetic_dataset.py` | Reproducible labelled datasets rendered from a real template, five profiles, controlled mark styles and defects. |
+| `evaluation/benchmark.py` | Scoring against ground truth, error categorisation, `summary.json` / `errors.csv`, baseline comparison. |
+| `tools/recognise.py` | Headless recognition: JSON, overlays, diagnostics, workers. |
+| `tools/make_dataset.py`, `tools/benchmark_recognition.py` | The two QA tools. |
+| `tests/fixtures/recognition/*.json` | Eleven stored results for Phases 4-5. |
+| `local_test_data/README.md` | The git-ignored home for a real corpus. |
+
+`RecognitionEngine` was added to `recognition_service.py` as the stable entry
+point; `recognise_scan()` delegates to the same pipeline and keeps working.
+
+### What changed on `ScanResult`
+
+Additive, every field defaulted: `status_codes`, `engine_name`,
+`engine_version`, `template_id`, `template_name`, `template_version`,
+`recognised_at`, `quality`, `timings`. `BubbleView` gained `mean_darkness`,
+`contrast`, `paper_level`, `ink_threshold`, `sample_pixels`, `usable`, `rank`.
+The one-day-old `registration_seconds`/`recognition_seconds` fields were
+superseded by `timings` (nothing outside the engine had read them).
+
+### Two decisions worth carrying forward
+
+- **The evidence travels with the decision.** Keeping every bubble's fill
+  ratio *and the threshold it was compared against* means a future
+  recalibration can be evaluated over stored JSON rather than by re-reading a
+  batch of images. It is also what a conflict-review screen needs in order to
+  show a human why something was flagged.
+- **The benchmark scores "flagging a borderline mark" as correct.** Ground
+  truth marks such questions `ambiguous`. Without that, a dataset punishes the
+  engine for exactly the caution it is designed to show, and the pressure is to
+  lower thresholds until nothing is ever flagged.
+
+### Measured on synthetic data
+
+12 sheets, mixed profile, from the real sample's template, seed 20260918:
+
+| Metric | Result |
+|---|---|
+| Answer accuracy | 0.951 (1028/1081) |
+| Roll / set code | 1.000 / 1.000 |
+| Blank detection | 1.000 (82/82) |
+| Double marks | 1.000 (46/46) |
+| Borderline marks handled acceptably | 19/19 |
+| Errors | 53, all `FALSE_BLANK` |
+
+Attributing those 53 to the mark style that was drawn: **ticks 33%** (19/58),
+circled bubbles 8% (4/51), plain fills 3.4%, crosses and scribbles 0%. The
+measurement is coverage-based, and a tick covers little of a bubble's interior.
+This is recorded as a finding for the real-dataset calibration, **not** acted
+on: tuning a threshold against synthetic ink would be optimising for the wrong
+data.
+
+Two defects in the *generator* were found and fixed by running this benchmark:
+double marks were labelled in the order they were drawn rather than printed
+order (making every correct reading look wrong), and deliberately faint marks
+were asserted as readable rather than recorded as ambiguous.
+
+---
+
+## 13. Phase 4 entry criteria
 
 **Already in place**
 
 - A `ProcessedScan` per sheet carrying the result, the chosen output name, what
   was written and why, ready to be persisted.
-- `RecognitionResult`-shaped values with explicit statuses, so a later phase can
-  ask "which sheets need a human?" without re-deriving it.
+- `ScanResult`, versioned and JSON-serialisable, with explicit statuses and
+  machine-readable status codes, so a later phase can ask "which sheets need a
+  human?" without re-deriving it - and can be developed against
+  `tests/fixtures/recognition/` with no recognition engine present.
+- A headless overlay renderer, so a review screen can *display* what was
+  decided rather than reimplementing the drawing.
 - A deterministic CSV whose base columns are stable and documented.
-- Ground-truth generation (`imaging.synthetic` with marked bubbles) and a real
-  validated sample, so a later phase can test against known answers.
+- Ground-truth generation (`evaluation.synthetic_dataset`) and a benchmark
+  harness, so a later phase can test against known answers and measure whether
+  a change helped.
 
 **Constraints to respect**
 
@@ -421,9 +503,17 @@ Three defects were found by this process and fixed, not worked around:
    `numpy`, `imaging` or `recognition`. Both are enforced by
    `tests/unit/test_architecture.py`.
 2. Recognition thresholds live in `RecognitionSettings`, in the template.
-3. A missing, multiple or uncertain reading is represented explicitly and never
+   `RecognitionOptions` is for what the *engine* does, never for what a mark
+   *is*.
+3. Consume recognition through `RecognitionEngine` / `ScanResult` only. If a
+   later phase needs something the result does not carry, add it to the result
+   - reaching into `imaging` or `recognition` from above would undo the whole
+   point of this boundary.
+4. Branch on `status_codes`, never on `registration_message` or any other
+   English sentence.
+5. A missing, multiple or uncertain reading is represented explicitly and never
    guessed at — and an unreliable identifier never becomes a file name.
-4. No scan image may ever be overwritten.
+6. No scan image may ever be overwritten.
 
 **The one thing to do before trusting this**
 

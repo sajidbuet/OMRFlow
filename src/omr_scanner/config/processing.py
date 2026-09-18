@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -110,6 +111,13 @@ class ProcessingSettings(BaseModel):
         worker_count: The number used by :attr:`ProcessingMode.CUSTOM`. Kept
             even while another mode is selected, so switching to Custom and back
             does not lose the number the user chose.
+        diagnostics_enabled: Write the recognition engine's staged debug images
+            for every sheet processed. Off by default and meant to stay that
+            way: it is three or four full-page images per scan, which on a real
+            batch is gigabytes written for nobody.
+        diagnostics_dir: Where those images go. Diagnostics stay off until this
+            is set, so switching them on can never scatter debug files through
+            a project folder.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -118,6 +126,13 @@ class ProcessingSettings(BaseModel):
     worker_count: int = Field(
         default=DEFAULT_CUSTOM_WORKERS, ge=1, le=MAX_CONFIGURABLE_WORKERS
     )
+    diagnostics_enabled: bool = False
+    diagnostics_dir: Path | None = None
+
+    @property
+    def writes_diagnostics(self) -> bool:
+        """Whether a run would actually write diagnostic images."""
+        return self.diagnostics_enabled and self.diagnostics_dir is not None
 
     def configured_worker_count(self, cpu_count: int | None = None) -> int:
         """Return the workers this setting asks for, ignoring the batch size.
@@ -160,6 +175,14 @@ class ProcessingSettings(BaseModel):
     def with_mode(self, mode: ProcessingMode) -> ProcessingSettings:
         """Return a copy using ``mode``; the receiver is unchanged."""
         return self.model_copy(update={"mode": mode})
+
+    def with_diagnostics(
+        self, *, enabled: bool, directory: Path | None
+    ) -> ProcessingSettings:
+        """Return a copy with the diagnostics choice applied."""
+        return self.model_copy(
+            update={"diagnostics_enabled": enabled, "diagnostics_dir": directory}
+        )
 
     def with_worker_count(self, workers: int) -> ProcessingSettings:
         """Return a copy whose custom worker count is ``workers``.

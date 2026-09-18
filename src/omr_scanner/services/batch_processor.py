@@ -57,6 +57,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from omr_scanner.imaging.metrics import BubbleMetricsConfig
 from omr_scanner.services.filename_manager import FilenameAllocator
 from omr_scanner.services.parallel_batch import recognise_in_parallel
 from omr_scanner.services.recognition_service import (
@@ -65,12 +66,12 @@ from omr_scanner.services.recognition_service import (
     ScanResult,
     recognise_scan,
 )
+from omr_scanner.services.recognition_settings import RecognitionOptions
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable, Sequence
 
     from omr_scanner.domain.template import OmrTemplate
-    from omr_scanner.imaging.metrics import BubbleMetricsConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,17 +102,38 @@ class BatchOptions:
             only the selected scan is ever shown, and a hundred rectified pages
             is a gigabyte held for nothing.
         metrics_config: Bubble sampling tuning, or ``None`` for the defaults.
+        recognition: Full engine options - diagnostics, what evidence to keep,
+            everything :class:`~omr_scanner.services.recognition_settings.RecognitionOptions`
+            covers. When given it supersedes ``metrics_config`` and
+            ``with_preview``, which remain for the callers (and tests) that
+            only ever needed those two.
     """
 
     output_dir: Path | None = None
     rename_with_identifier: bool = False
     with_preview: bool = False
     metrics_config: BubbleMetricsConfig | None = None
+    recognition: RecognitionOptions | None = None
 
     @property
     def writes_files(self) -> bool:
         """Whether this run will copy anything to disk."""
         return self.rename_with_identifier and self.output_dir is not None
+
+    def engine_options(self) -> RecognitionOptions:
+        """Return the engine options this run implies.
+
+        One place decides how the two spellings combine, so the sequential path
+        and the worker pool cannot disagree about what the user asked for.
+        """
+        if self.recognition is not None:
+            return self.recognition
+        return RecognitionOptions(
+            metrics=self.metrics_config
+            if self.metrics_config is not None
+            else BubbleMetricsConfig(),
+            with_preview=self.with_preview,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,12 +318,7 @@ def process_scan(
         The outcome. Never raises for a bad file: recognition reports its own
         failures, and a copy failure is recorded as a message on the result.
     """
-    result = recognise_scan(
-        path,
-        template,
-        metrics_config=options.metrics_config,
-        with_preview=options.with_preview,
-    )
+    result = recognise_scan(path, template, options=options.engine_options())
     return finalise_scan(result, options=options, allocator=allocator)
 
 
@@ -562,7 +579,7 @@ def _run_parallel(
         paths,
         template,
         workers=workers,
-        metrics_config=options.metrics_config,
+        options=options.engine_options(),
         should_cancel=should_cancel,
     )
     try:

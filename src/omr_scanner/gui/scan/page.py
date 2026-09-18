@@ -70,8 +70,10 @@ from omr_scanner.services import (
     BatchOptions,
     BatchProgress,
     BatchReport,
+    DiagnosticsOptions,
     FilenameAllocator,
     ProcessedScan,
+    RecognitionOptions,
     RecognitionOutcome,
     ScanResult,
     collect_scan_files,
@@ -551,6 +553,23 @@ class ScanPage(WorkflowPage):
         self.state.processing = processing
         self._refresh_worker_label()
 
+    def _engine_options(self) -> RecognitionOptions:
+        """Build the engine options a run should use.
+
+        The page owns no recognition settings of its own: it translates the
+        application's stored preferences into the options object the engine
+        takes, and nothing else. Previews are off because a batch never shows
+        one - the selected sheet is re-rendered on demand.
+        """
+        processing = self.state.processing
+        return RecognitionOptions(
+            with_preview=False,
+            diagnostics=DiagnosticsOptions(
+                enabled=processing.writes_diagnostics,
+                directory=processing.diagnostics_dir,
+            ),
+        )
+
     def planned_worker_count(self, item_count: int | None = None) -> int:
         """How many workers a run over ``item_count`` scans would use now.
 
@@ -789,6 +808,7 @@ class ScanPage(WorkflowPage):
             output_dir=self.state.output_dir,
             rename_with_identifier=self.state.rename_enabled,
             with_preview=False,
+            recognition=self._engine_options(),
         )
         workers = self.planned_worker_count(len(paths))
         self.progress_bar.setRange(0, len(paths))

@@ -7,6 +7,12 @@ Purpose:
 Modules:
     * ``align_image.py``    - normalise one scan and report what was measured.
     * ``make_test_sheet.py`` - render a synthetic sheet, optionally distorted.
+    * ``recognise.py``      - read one scan or a folder headlessly: JSON
+      results, an overlay, or the full staged diagnostic dump (Phase 3).
+    * ``make_dataset.py``   - generate a labelled synthetic dataset from a
+      template, reproducibly (Phase 3).
+    * ``benchmark_recognition.py`` - score recognition against a dataset's
+      ground truth and classify every disagreement (Phase 3).
 
 What does NOT belong here:
     * Anything a user is expected to run. These are development tools; the

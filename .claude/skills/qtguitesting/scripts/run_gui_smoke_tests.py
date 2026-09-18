@@ -323,6 +323,35 @@ def _check_settings_dialog_processing_section() -> CheckResult:
     )
 
 
+def _check_settings_dialog_diagnostics_section() -> CheckResult:
+    """The Diagnostics section is present, off by default, and needs a folder."""
+    from pathlib import Path as _Path
+
+    from omr_scanner.config import AppConfig
+    from omr_scanner.gui.settings_dialog import SettingsDialog
+
+    dialog = SettingsDialog(AppConfig(), cpu_count=8)
+    off_by_default = not dialog.diagnostics_checkbox.isChecked()
+    folder_disabled = not dialog.diagnostics_folder_button.isEnabled()
+
+    dialog.diagnostics_checkbox.setChecked(True)
+    folder_enabled = dialog.diagnostics_folder_button.isEnabled()
+    # Switched on with nowhere to write: the setting must stay inert.
+    inert_without_folder = not dialog.processing_settings().writes_diagnostics
+
+    dialog.set_diagnostics_directory(_Path("diagnostics"))
+    armed = dialog.processing_settings().writes_diagnostics
+
+    ok = all(
+        (off_by_default, folder_disabled, folder_enabled, inert_without_folder, armed)
+    )
+    return ok, (
+        f"off by default: {off_by_default}, folder button follows the checkbox: "
+        f"{folder_disabled and folder_enabled}, inert until a folder is chosen: "
+        f"{inert_without_folder}"
+    )
+
+
 def _check_scan_page_reports_its_worker_plan(image: Path) -> CheckResult:
     """The Scan page says how many workers the next run will use."""
     from omr_scanner.config.processing import ProcessingMode, ProcessingSettings
@@ -417,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         ("page header is compact", lambda: _check_page_header_is_compact(args.image)),
         ("scan page constructs", _check_scan_page_constructs),
         ("settings dialog offers Processing", _check_settings_dialog_processing_section),
+        ("settings dialog offers Diagnostics", _check_settings_dialog_diagnostics_section),
     ]
 
     # The Scan checks drive the real template that describes the real sample.

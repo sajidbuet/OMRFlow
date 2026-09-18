@@ -41,3 +41,26 @@ desktop.ini
 # demand and never a committed baseline - see
 # `.claude/skills/qtguitesting/SKILL.md`.
 /test-output/
+
+# Phase 3 evaluation artefacts.
+#
+# Generated synthetic datasets, benchmark reports, diagnostic dumps and
+# calibration output are all reproducible from the generator plus its seed
+# (`python -m omr_scanner.tools.make_dataset`), so the seed is worth committing
+# and the gigabytes are not. What *is* committed: the generator itself, the
+# manifests that record how a dataset was made, and the small result fixtures
+# in `tests/fixtures/recognition/`.
+/synthetic_dataset/
+/datasets/
+/benchmark_results/
+/diagnostics/
+/calibration/
+
+# Real-world validation data. Scans of real answer sheets carry candidate
+# identifiers and must never reach a public repository - see
+# `local_test_data/README.md` for the expected layout. The README itself is
+# committed; nothing inside the data folders is.
+/local_test_data/**
+!/local_test_data/README.md
+/real_dataset/
+/private_dataset/

@@ -17,14 +17,18 @@ human verification + reproducible result processing**
 
 ## Development Status
 
-> **Pre-release. Phases 0-2 of 11 are complete; Phase 3 is implemented and
-> currently undergoing testing and stabilisation.**
+> **Pre-release. Phases 0-2 of 11 are complete; Phase 3 (Recognition Engine
+> v1) is implemented and architecturally stabilised, and is undergoing
+> testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
 > canonical page, has an interactive designer for building that template, and
 > can now read the marks on a filled-in sheet, name/export the results, and
 > file the processed images by roll number. None of the Phase 3 workflow has
 > been validated on more than one real printed sheet.
 > **Do not use it for examination processing.**
+>
+> **Phase 3 v1 is architecturally stabilized but recognition accuracy remains
+> under active validation pending a large real-world OMR dataset.**
 
 OMRFlow is being developed incrementally, in the defined phases listed in
 [`development/ROADMAP.md`](development/ROADMAP.md). Each phase is implemented,
@@ -40,7 +44,7 @@ validated against a broad, real-world set of filled sheets.
 | 0 | Architecture & repository foundation | Complete | Complete | ✅ Complete |
 | 1 | OMR geometry & alignment engine | Complete | Complete | ✅ Complete |
 | 2 | Template data model & template designer core | Complete | Complete | ✅ Complete |
-| 3 | Bubble mapping, recognition, batch scanning, renaming & CSV export | Implemented | In progress | 🧪 Testing |
+| 3 | Recognition Engine v1: bubble mapping, recognition, batch scanning, renaming & CSV export | Implemented & architecturally hardened | In progress | 🧪 Testing |
 | 4 | Template calibration & validation | Pending | Not started | ⏳ Pending |
 | 5 | Batch scan processing pipeline (persistence, resume) | Pending | Not started | ⏳ Pending |
 | 6 | Conflict detection & human resolution | Pending | Not started | ⏳ Pending |
@@ -107,10 +111,48 @@ criteria.
   **Template** and **Scan** are implemented, and the remaining stages state
   which phase will implement them.
 
+### Phase 3 architectural hardening
+
+Phase 3 was subsequently hardened into a **replaceable recognition
+subsystem**, so that Phases 4 and 5 can be built against it now and a future
+Recognition Engine v2 can replace it without rewriting them:
+
+- **Recognition API established.** One entry point -
+  `RecognitionEngine.process(image, template)` - behind which no caller needs
+  to know about thresholds, contours or homographies. The older
+  `recognise_scan()` function remains supported.
+- **Structured `RecognitionResult`.** Plain, versioned, JSON-serialisable data:
+  the values, machine-readable status codes, the engine and template identity,
+  scan-quality metrics, per-stage timings, and the **raw per-bubble
+  measurements** behind every decision - so a future recalibration can re-score
+  a batch without re-reading a single image.
+- **Measurement separated from decision**, with every threshold still owned by
+  the template.
+- **Diagnostics.** Optional staged debug images and a headless annotated
+  overlay per sheet, switchable from *File > Settings > Diagnostics* or the
+  command line, and off by default.
+- **Headless operation.** `python -m omr_scanner.tools.recognise` reads a scan
+  or a folder with no GUI at all — asserted by a test that runs recognition in
+  an interpreter where Qt was never imported.
+- **Synthetic test generator.** Reproducible labelled datasets rendered from a
+  real template, with controlled mark styles, geometry, exposure and structural
+  damage, and ground truth written beside every image.
+- **Benchmark framework.** Scores the engine against ground truth, classifies
+  every disagreement by kind, writes machine-readable reports and compares a
+  run against a stored baseline.
+- **Regression fixtures.** Eleven stored recognition results covering the
+  scenarios later phases must handle, usable with no engine present.
+- **Multicore-ready processing** (see above), with the worker pool reading one
+  whole page per process.
+- **Real-dataset validation pending.** Everything above is infrastructure;
+  accuracy is still a Phase 3 open question.
+
+Details: [`docs/recognition_engine.md`](docs/recognition_engine.md).
+
 ### Phase 3 testing status
 
 Phase 3's functionality is implemented and exercised by an automated suite
-(1,708 tests passing at the time of writing, plus the repository-local
+(1,935 tests passing at the time of writing, plus the repository-local
 `qtguitesting` Qt GUI harness), but it has only been run end-to-end against
 **one real scanned sheet** (`examples/ECE-0000.png`) — validated with correct
 roll number, set code and all 100 answers — plus geometrically distorted copies
@@ -156,6 +198,16 @@ Confirmed by the current automated suite:
 - [x] Performance benchmarking (48 real scans at 1/2/4/8/12/16 workers, with
   peak memory; measured results and the reasoning behind the automatic worker
   cap are recorded in `docs/scan_workflow.md` §10)
+- [x] Recognition API and result contract (engine runs headlessly with no Qt
+  imported; `ScanResult` serialises, round-trips and refuses a newer schema)
+- [x] Synthetic dataset generation (reproducible from a seed; labels verified
+  by recognising the generated sheets; clean profile scores 100%)
+- [x] Benchmark harness and error categorisation (summary metrics, per-error
+  CSV, baseline comparison — all exercised by tests)
+- [x] Diagnostics (staged images and overlay produced on demand, nothing
+  written by default, and generating them provably does not change a result)
+- [x] Stored result fixtures for Phases 4-5 (11 scenarios, loadable with no
+  recognition engine present)
 
 Still open, and why Phase 3 is not marked complete:
 
@@ -169,6 +221,17 @@ Still open, and why Phase 3 is not marked complete:
 - [ ] Multicore validation on hardware other than the 16-thread Windows
   development machine (core counts, memory limits and `spawn` behaviour all
   differ; Linux and macOS are untested)
+- [ ] **Threshold calibration against real marks.** The defaults come from one
+  real sheet and synthetic pages
+- [ ] **Confidence calibration.** What the engine reports is a bounded
+  *decision score*, not a probability; the benchmark reports accuracy by band
+  so it can be checked once there is data to check it against
+- [ ] Difficult handwriting and mark-shape analysis. A synthetic mixed dataset
+  already shows tick-shaped marks producing a ~33% false-blank rate against 0%
+  for crosses and scribbles, because the measurement is coverage-based; whether
+  real ticks behave the same way is exactly what the corpus is for
+- [ ] Recognition accuracy and performance optimisation, once there is real
+  data to optimise against
 - [ ] Final Phase 3 regression sign-off once the above are addressed
 
 ### Development philosophy
@@ -220,7 +283,7 @@ omrflow "C:/Exams/Physics Midterm"     # open a project on start-up
 
 ```bash
 pip install -e ".[dev]"
-pytest                   # 1,700+ tests
+pytest                   # 1,900+ tests
 ruff check .
 mypy
 ```
@@ -244,6 +307,32 @@ python -m omr_scanner.tools.align_image scan.png --output aligned.png --debug de
 # Measure batch throughput on this machine at several worker counts
 python scripts/benchmark_batch.py --scans 48 --workers 1,2,4,8
 ```
+
+Phase 3 recognition, entirely without the GUI:
+
+```bash
+# Read one scan or a folder; write JSON results, overlays, or a full debug dump
+python -m omr_scanner.tools.recognise scans/ --template sheet.omrt \
+    --json-dir out/results --overlay-dir out/overlays --workers auto
+
+# Generate a reproducible labelled test dataset from a real template
+python -m omr_scanner.tools.make_dataset out/dataset --template sheet.omrt \
+    --count 24 --profile mixed --seed 20260918
+
+# Score recognition against that dataset, classifying every disagreement
+python -m omr_scanner.tools.benchmark_recognition out/dataset \
+    --template sheet.omrt --report out/benchmark
+
+# ...and compare a change against the run before it
+python -m omr_scanner.tools.benchmark_recognition out/dataset \
+    --template sheet.omrt --baseline out/benchmark/summary.json
+```
+
+Diagnostics (the corrected page, an annotated overlay, every bubble's
+measurement, and the result as JSON) come from `--diagnostics out/diagnostics`
+on the command line, or *File > Settings > Diagnostics* in the application.
+Both are off by default. Full detail:
+[`docs/recognition_engine.md`](docs/recognition_engine.md).
 
 ---
 
@@ -276,6 +365,9 @@ OMRflow/
 │   ├── recognition/          value interpretation: decide, fields (Phase 3,
 │   │                         testing in progress; conflict resolution is
 │   │                         Phase 6)
+│   ├── evaluation/           QA above the engine: ground-truth schema,
+│   │                         synthetic dataset generator, benchmark and
+│   │                         error categories (Phase 3)
 │   ├── reporting/            RESERVED - XLSX/PDF export (Phase 9; CSV export
 │   │                         already exists in services/scan_export.py)
 │   └── utils/                logging setup, atomic JSON
@@ -284,7 +376,11 @@ OMRflow/
 │   ├── unit/                 logic, domain models, layering rules
 │   ├── integration/          services + database + file system
 │   ├── gui/                  pytest-qt smoke tests, incl. the Scan workflow
-│   └── fixtures/             test data (policy in docs/TESTING.md)
+│   └── fixtures/             test data (policy in docs/TESTING.md), incl.
+│                             recognition/ - stored results for Phases 4-5
+│
+├── local_test_data/          where a real validation corpus goes; ignored by
+│                             git except its README (Phase 3)
 │
 ├── resources/
 │   ├── templates/            illustrative .omrt example
@@ -310,6 +406,7 @@ OMRflow/
 | [`docs/template_designer.md`](docs/template_designer.md) | The interactive template designer: workflow, shortcuts, architecture |
 | [`docs/IMAGE_PROCESSING.md`](docs/IMAGE_PROCESSING.md) | The alignment and recognition pipeline: algorithms, accuracy, failure modes and limits |
 | [`docs/scan_workflow.md`](docs/scan_workflow.md) | The Scan / recognition workflow: importing, batch processing, renaming and CSV export (Phase 3) |
+| [`docs/recognition_engine.md`](docs/recognition_engine.md) | The recognition subsystem for developers: the engine API, the `ScanResult` contract, diagnostics, synthetic datasets and the benchmark harness (Phase 3) |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |

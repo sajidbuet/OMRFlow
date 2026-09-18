@@ -1,8 +1,8 @@
 # Current state
 
-**Updated:** 2026-09-17
+**Updated:** 2026-09-18
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 implemented; testing and stabilisation in progress. Phase 4 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented and architecturally hardened; accuracy validation pending a real dataset. Phase 4 not started.
 
 Update this file at the end of every phase.
 
@@ -144,6 +144,39 @@ bubbles total), built and validated through the real generator functions
 and 1,607 MB respectively. Reproduce with
 `python scripts/benchmark_batch.py --scans 48 --workers 1,2,4,8,12,16`.
 
+### Recognition as a replaceable subsystem (Phase 3 hardening)
+
+- `RecognitionEngine.process(image, template) -> ScanResult` is the one door
+  into Phase 3; `recognise_scan()` remains as the function form. Nothing above
+  that line touches a threshold, a contour or a homography.
+- `ScanResult` is versioned (`engine_version`, `schema_version`), JSON
+  round-trips, and carries the **evidence** behind every decision: per-bubble
+  fill ratio, darkness, contrast, local paper level, the ink threshold applied,
+  sample size and rank. A recalibration can therefore re-score a stored batch
+  without re-reading an image.
+- `status_codes` gives consumers machine-readable conditions instead of English
+  prose; failures are results, never exceptions.
+- Diagnostics (staged images, a headless overlay, the result as JSON) are
+  opt-in from the GUI or the command line, and provably do not change what was
+  recognised.
+- `omr_scanner.evaluation` adds a QA layer above services: the ground-truth
+  schema, a reproducible synthetic dataset generator driven by a real template,
+  and a benchmark that classifies every disagreement and compares against a
+  stored baseline.
+- Three headless tools: `omr_scanner.tools.recognise`, `...make_dataset`,
+  `...benchmark_recognition`. A test runs recognition in an interpreter where
+  PySide6 is never imported.
+- Eleven stored result fixtures in `tests/fixtures/recognition/` let Phases 4
+  and 5 be written and tested with no engine present.
+
+**Measured on a synthetic mixed dataset** (12 sheets from the real sample's
+template, seed 20260918): answer accuracy 0.951, roll and set code 1.000, blank
+detection 1.000, double marks 1.000, borderline marks handled acceptably 19/19.
+Every remaining error was a false blank, and attributing them by the mark style
+that was drawn gives ticks 33%, circled bubbles 8%, crosses and scribbles 0% -
+a coverage-based measurement under-reading line-shaped marks. That is a finding
+for the real-dataset calibration, not a number to tune against.
+
 **Measured on the real sample** (`examples/ECE-0000.png`, an actual scan with
 handwritten marks, printed option glyphs and non-white paper): roll `00000000`,
 set code `10` and all 100 answers read correctly, with zero fields flagged for
@@ -216,6 +249,15 @@ perspective, JPEG compression and cropping is tabulated in
   smudges, different candidates' handwriting - has never been processed. This is
   the largest open risk in Phase 3, and it is the same category of risk Phases 1
   and 2 recorded.
+- **Thresholds are uncalibrated and `confidence` is uncalibrated.** What the
+  engine reports is a bounded *decision score*, not a probability. The benchmark
+  reports accuracy by score band so that it can be checked - once there is data
+  to check it against.
+- **Line-shaped marks are under-read.** A tick covers little of a bubble's
+  interior and the measurement is coverage-based; on synthetic data that is a
+  33% false-blank rate for ticks against 0% for crosses. Whether real ticks
+  behave the same way, and whether the answer is a darkness term or a different
+  threshold, is a question for the real corpus.
 - **No manual correction.** Recognised values cannot be edited in the GUI. The
   data model already keeps the machine's reading separate from a correction, so
   this is additive, but it is not there yet.
@@ -252,13 +294,13 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-1708 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+1935 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest         1708 passed, 1 skipped in 114.6s
+pytest         1935 passed, 1 skipped in 161.8s
 ruff check .   All checks passed
-mypy           Success: no issues found in 79 source files
+mypy           Success: no issues found in 89 source files
 ```
 
 96 of those are the multicore work: `tests/unit/test_processing_settings.py`
@@ -273,7 +315,7 @@ The skip is structural: `tests/unit/test_qtguitesting_skill.py` parametrises
 over the skill's scripts and skips `_harness.py`, which is shared plumbing
 rather than a command a user runs.
 
-979 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
+1206 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
 added **no** new mypy overrides, Ruff ignores or tool configuration changes.
 
 Phase 2 added **one** tool configuration change, not a suppressed check: the

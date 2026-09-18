@@ -27,13 +27,18 @@ Vocabulary:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QLabel,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -98,9 +103,12 @@ class SettingsDialog(QDialog):
         self._config = config
         self._cpu_count = max(cpu_count if cpu_count is not None else detected_cpu_count(), 1)
 
+        self._diagnostics_dir: Path | None = config.processing.diagnostics_dir
+
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.addWidget(self._build_processing_group())
+        layout.addWidget(self._build_diagnostics_group())
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -158,13 +166,69 @@ class SettingsDialog(QDialog):
         form.addRow(self.explanation_label)
         return box
 
+    def _build_diagnostics_group(self) -> QGroupBox:
+        """Build the Diagnostics section.
+
+        Deliberately a second, smaller section rather than another row in
+        Processing: how much of the computer to use is an everyday choice, and
+        writing several full-page images per sheet is a troubleshooting one.
+        """
+        box = QGroupBox("Diagnostics")
+        box.setObjectName("diagnosticsSettingsGroup")
+        layout = QVBoxLayout(box)
+
+        self.diagnostics_checkbox = QCheckBox(
+            "Save diagnostic images while processing"
+        )
+        self.diagnostics_checkbox.setObjectName("diagnosticsCheckBox")
+        self.diagnostics_checkbox.setToolTip(
+            "Writes the corrected page and an annotated overlay for every sheet. "
+            "Useful when investigating a misread; large, so leave it off otherwise."
+        )
+        self.diagnostics_checkbox.toggled.connect(self._on_diagnostics_toggled)
+        layout.addWidget(self.diagnostics_checkbox)
+
+        self.diagnostics_folder_button = QPushButton("Diagnostics Folder...")
+        self.diagnostics_folder_button.setObjectName("diagnosticsFolderButton")
+        self.diagnostics_folder_button.clicked.connect(self._prompt_diagnostics_folder)
+        layout.addWidget(self.diagnostics_folder_button)
+
+        self.diagnostics_folder_label = QLabel("")
+        self.diagnostics_folder_label.setObjectName("diagnosticsFolderLabel")
+        self.diagnostics_folder_label.setWordWrap(True)
+        layout.addWidget(self.diagnostics_folder_label)
+        return box
+
     # ------------------------------------------------------------------
     # State
     # ------------------------------------------------------------------
+    def set_diagnostics_directory(self, directory: Path | None) -> None:
+        """Set - or clear - the folder diagnostic images are written to.
+
+        Separate from the file dialog for the reason every command in this
+        application is: the dialog cannot be driven offscreen, the behaviour
+        can.
+        """
+        self._diagnostics_dir = directory
+        self._refresh()
+
+    def _prompt_diagnostics_folder(self) -> None:
+        """Ask for the diagnostics folder, then set it."""
+        start = self._diagnostics_dir or Path.home()
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select the diagnostics folder", str(start)
+        )
+        if directory:
+            self.set_diagnostics_directory(Path(directory))
+
+    def _on_diagnostics_toggled(self, _checked: bool) -> None:
+        self._refresh()
+
     def _load(self, processing: ProcessingSettings) -> None:
         """Put a stored setting into the widgets."""
         index = self.mode_combo.findData(processing.mode.value)
         self.mode_combo.setCurrentIndex(max(index, 0))
+        self.diagnostics_checkbox.setChecked(processing.diagnostics_enabled)
         # A stored count from a machine with more CPUs than this one is clamped
         # into range rather than rejected - the configuration file travels with
         # the user, the hardware does not.
@@ -187,7 +251,10 @@ class SettingsDialog(QDialog):
         merges this into whatever the current configuration is.
         """
         return ProcessingSettings(
-            mode=self.selected_mode, worker_count=self.worker_spin.value()
+            mode=self.selected_mode,
+            worker_count=self.worker_spin.value(),
+            diagnostics_enabled=self.diagnostics_checkbox.isChecked(),
+            diagnostics_dir=self._diagnostics_dir,
         )
 
     # ------------------------------------------------------------------
@@ -209,6 +276,19 @@ class SettingsDialog(QDialog):
         active = self.processing_settings().configured_worker_count(self._cpu_count)
         self.active_label.setText(str(active))
         self.explanation_label.setText(MODE_EXPLANATIONS[mode])
+
+        wants_diagnostics = self.diagnostics_checkbox.isChecked()
+        self.diagnostics_folder_button.setEnabled(wants_diagnostics)
+        if self._diagnostics_dir is not None:
+            self.diagnostics_folder_label.setText(str(self._diagnostics_dir))
+        elif wants_diagnostics:
+            # Switched on with nowhere to write is a real state a user can
+            # reach, and saying so beats silently writing nothing.
+            self.diagnostics_folder_label.setText(
+                "Choose a folder - diagnostics stay off until you do."
+            )
+        else:
+            self.diagnostics_folder_label.setText("No diagnostics folder selected")
 
 
 __all__ = ["MODE_EXPLANATIONS", "MODE_LABELS", "SettingsDialog"]

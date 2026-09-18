@@ -267,6 +267,43 @@ class TestCWorkerSelector:
 
 
 # ----------------------------------------------------------------------
+# Test C2 - the diagnostics controls
+# ----------------------------------------------------------------------
+class TestC2Diagnostics:
+    def test_the_dialog_has_a_diagnostics_section(self, dialog: SettingsDialog):
+        group = dialog.findChild(QGroupBox, "diagnosticsSettingsGroup")
+        assert group is not None
+        assert group.title() == "Diagnostics"
+
+    def test_diagnostics_are_off_on_a_new_installation(self, dialog: SettingsDialog):
+        # Several full-page images per sheet is not something a user should
+        # discover they have been writing all along.
+        assert dialog.diagnostics_checkbox.isChecked() is False
+        assert dialog.processing_settings().diagnostics_enabled is False
+
+    def test_the_folder_button_is_enabled_only_once_diagnostics_are_wanted(
+        self, dialog: SettingsDialog
+    ):
+        assert dialog.diagnostics_folder_button.isEnabled() is False
+        dialog.diagnostics_checkbox.setChecked(True)
+        assert dialog.diagnostics_folder_button.isEnabled() is True
+
+    def test_switching_them_on_without_a_folder_says_so(self, dialog: SettingsDialog):
+        dialog.diagnostics_checkbox.setChecked(True)
+        assert "Choose a folder" in dialog.diagnostics_folder_label.text()
+        # And nothing is written, because there is nowhere to write it.
+        assert dialog.processing_settings().writes_diagnostics is False
+
+    def test_choosing_a_folder_shows_it_and_arms_the_setting(
+        self, dialog: SettingsDialog, tmp_path: Path
+    ):
+        dialog.diagnostics_checkbox.setChecked(True)
+        dialog.set_diagnostics_directory(tmp_path / "diag")
+        assert str(tmp_path / "diag") in dialog.diagnostics_folder_label.text()
+        assert dialog.processing_settings().writes_diagnostics is True
+
+
+# ----------------------------------------------------------------------
 # Test D - persistence
 # ----------------------------------------------------------------------
 class TestDPersistence:
@@ -305,6 +342,19 @@ class TestDPersistence:
 
         assert window.config.processing.mode is ProcessingMode.AUTOMATIC
         assert not config_path.exists()
+
+    def test_the_diagnostics_choice_is_persisted_too(
+        self, window: MainWindow, dialog: SettingsDialog, tmp_path: Path, config_path: Path
+    ):
+        folder = tmp_path / "diagnostics"
+        dialog.diagnostics_checkbox.setChecked(True)
+        dialog.set_diagnostics_directory(folder)
+        window.apply_processing_settings(dialog.processing_settings())
+
+        stored = load_app_config(config_path, strict=True)
+        assert stored.processing.diagnostics_enabled is True
+        assert stored.processing.diagnostics_dir == folder
+        assert stored.processing.writes_diagnostics is True
 
     def test_changing_processing_does_not_disturb_the_recent_project_list(
         self, window: MainWindow, dialog: SettingsDialog, tmp_path: Path
@@ -500,6 +550,33 @@ class TestEScanPageUsesTheSetting:
         assert loaded.process_all_button.isEnabled()
         assert loaded.export_csv_button.isEnabled()
         assert loaded.cancel_button.isEnabled() is False
+
+    def test_a_batch_writes_diagnostics_when_the_setting_asks_for_them(
+        self, qtbot, window: MainWindow, loaded: ScanPage, tmp_path: Path
+    ):
+        folder = tmp_path / "diagnostics"
+        window.apply_processing_settings(
+            ProcessingSettings(
+                mode=ProcessingMode.SINGLE_CORE,
+                diagnostics_enabled=True,
+                diagnostics_dir=folder,
+            )
+        )
+        with qtbot.waitSignal(loaded.batch_finished, timeout=BATCH_TIMEOUT_MS):
+            assert loaded.process_all() is True
+
+        assert folder.is_dir()
+        assert sorted(item.name for item in folder.iterdir()) == [
+            f"scan{index:03d}" for index in range(4)
+        ]
+        assert (folder / "scan000" / "02_overlay.png").is_file()
+
+    def test_a_batch_writes_no_diagnostics_by_default(
+        self, qtbot, loaded: ScanPage, tmp_path: Path
+    ):
+        with qtbot.waitSignal(loaded.batch_finished, timeout=BATCH_TIMEOUT_MS):
+            assert loaded.process_all() is True
+        assert not (tmp_path / "diagnostics").exists()
 
     def test_no_worker_process_is_left_running_when_the_page_closes(
         self, qtbot, window: MainWindow, loaded: ScanPage
