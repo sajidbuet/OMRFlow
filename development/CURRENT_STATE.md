@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 not started.
 
 Update this file at the end of every phase.
 
@@ -439,18 +439,83 @@ multiprocessing has not silently fallen back to sequential.
 number of SQL statements and the summary a bounded number of grouped queries,
 asserted by counting statements rather than by timing one machine.
 
+### Candidate & attendance reconciliation (Phase 7)
+
+- **Four values kept apart on purpose**: what the roster file said
+  (`registered_candidate`, write-once), what recognition read
+  (`machine_candidate_id`, never overwritten), what an operator decided
+  (`reconciliation_decision` + `audit_event`), and the effective value, which
+  is the only one computed. Overriding an attendance or reassigning a script
+  can never cost the record of what it changed *from*.
+- Six additive tables, created by **migration 4**, plus `entity_type` and
+  `entity_id` on `audit_event` so a decision about a candidate or a script goes
+  into the **same append-only ledger**, under the same triggers, as a decision
+  about a recognition conflict. Existing audit rows were **deliberately not
+  backfilled** - an `UPDATE` there is aborted by those triggers, so the new
+  column's default was chosen to be already correct for them. Field-by-field:
+  `docs/DATA_MODEL.md`.
+- `services.candidate_import` reads CSV and `.xlsx` (via `openpyxl`; **pandas
+  deliberately not used** for one pass over a spreadsheet). Worksheet
+  selection, a preview of the real file, and a column mapping the operator
+  confirms - **Candidate ID** required, **Name** and **Marks / Attendance**
+  optional.
+- A marks column doubles as attendance: `ABSENT`/`ABS` in any case and spacing
+  means absent, anything else - including a blank cell - does not. Compared as
+  **whole tokens**, so `ABSENTEE`, `ABSENCE` and `ABS123` are not absences, and
+  the column name is never hard-coded.
+- **Candidate IDs are identifiers, not quantities.** `15000001` imports as
+  `"15000001"`, never `"15000001.0"`; a non-integral value is not rounded,
+  because rounding is how two candidates become one.
+- **It refuses to guess.** Two columns that equally name a candidate ID stop
+  the import and ask; a repeated candidate ID stops it with the ID and both row
+  numbers. A failed import leaves nothing behind.
+- `services.reconciliation` is **one pure deterministic function** - no clock,
+  no config, no database - so the rules are testable as a table and a re-run is
+  idempotent. The stored entry and script rows are a **cache** of it, rewritten
+  wholesale so a stale classification cannot survive a roster change; operator
+  decisions are the **input** and live in their own table.
+- Seven classifications, five of them exceptions, and **an entry carries a set
+  of issues rather than one status** - a candidate marked absent with two
+  scripts is both, and a schema holding one would make a physical script
+  invisible.
+- **`UNRESOLVED_CANDIDATE_ID` is its own state**, so a roll number still
+  awaiting Phase 6 review is never reported as an unknown candidate. The two
+  need different actions.
+- Resolution never destroys: a script set aside as an accidental re-scan keeps
+  its scan row, its recognition result, its reason and its audit trail. Every
+  decision needs a named operator and a reason, and **re-runs reconciliation
+  immediately** so a cascading duplicate is surfaced rather than discovered at
+  export time.
+- `review_store.effective_identifiers` is the single place Phase 7 learns which
+  candidate a sheet is now believed to belong to, so reconciling against the
+  machine's own reading is impossible by construction.
+- The **Attendance** stage: roster bar, live summary, a table filtered and
+  counted in SQL, a detail panel listing every script including set-aside ones,
+  the entry's history, and the decision panel. Import and reconciliation both
+  run off the GUI thread.
+- The candidate/attendance sample workbook is packaged **inside** the
+  application (`src/omr_scanner/resources/templates/`) and read through
+  `importlib.resources`, so *Download Sample Template…* works in a wheel and a
+  frozen build. The top-level `resources/` directory is dev fixtures and is
+  never shipped.
+- **Phases 5 and 6 are untouched.**
+
+**Measured**: 10,000 candidates against 10,000 scripts reconcile in well under
+a second - an indexed match, not a per-script walk of the roster.
+
 ## What does not exist
 
-No attendance reconciliation, answer-key handling, scoring or Excel/PDF
-reporting. There is no batch-browser dialog: `adopt_batch` and `list_batches`
-exist and are tested, but nothing in the UI lists previous batches to pick from
-yet. The conflict queue is **per batch** — there is no project-wide "every
-unresolved conflict" view. Reviewer identity is a name, not an account: there is
-no authentication, so the ledger records who *said* they made a decision.
+No answer-key handling, scoring or Excel/PDF reporting. There is no
+batch-browser dialog: `adopt_batch` and `list_batches` exist and are tested, but
+nothing in the UI lists previous batches to pick from yet. The conflict queue
+and the reconciliation are both **per batch** — there is no project-wide view
+of either, and a cohort split across two batches must be reconciled twice.
+Reviewer identity is a name, not an account: there is no authentication, so the
+ledger records who *said* they made a decision.
 
-`omr_scanner.reporting` contains module documentation and no code. The Results
-and later GUI pages say which phase will implement them and do not simulate
-anything.
+`omr_scanner.reporting` contains module documentation and no code. The Answer
+Key, Results and Reports pages say which phase will implement them and do not
+simulate anything.
 
 **This build must not be used for examination processing.** Its recognition has
 been validated against one real sheet and geometric variants of it, not against
@@ -565,6 +630,30 @@ perspective, JPEG compression and cropping is tabulated in
   actionable. Its usefulness is therefore capped by how honest that uncertainty
   is, which is Phase 3's open item and Phase 4's calibration tooling.
 
+### Candidate reconciliation
+
+- **No real cohort has been reconciled against a real roster.** Every test is
+  synthetic or uses the repository's one real sheet. A genuine examination
+  roster has its own column names, its own spelling of absence and candidates
+  who really are missing; none of that has been seen.
+- **No examination-scale run.** Matching is asserted at 10,000 candidates
+  against 10,000 scripts, but the largest *real* batch anywhere in this project
+  is 48 scans.
+- **A scan file named after a roll number still reaches the log.** The Phase 3
+  pipeline logs each scan's file name - documented, and the only way to tell
+  which sheet failed - so an office whose files are named by roll number (which
+  is what OMRFlow's own rename step produces) has roll numbers in its
+  application log. Phase 7 puts none there itself. Recorded in
+  `docs/reconciliation.md` §9 and pinned by a test; fixing it means logging a
+  scan id instead and costs the diagnostic for headless runs.
+- **Reconciliation is per batch**, with no project-wide view.
+- **`.xls` is not supported**, by decision - it would need another dependency
+  for a format Excel has discouraged for fifteen years.
+- **Leading zeros in a *numeric* Excel cell cannot be recovered.** Documented;
+  the column must be formatted as Text before saving.
+- **Phase 7 says nothing about whether an answer is right.** It accounts for
+  scripts and candidates; scoring is Phase 8.
+
 ### Elsewhere
 
 - The example template in `resources/templates` is illustrative. Its coordinates
@@ -581,15 +670,32 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2411 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2690 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest                2411 passed, 1 skipped
+pytest                2690 passed, 1 skipped
 ruff check .          All checks passed
-mypy                  Success: no issues found in 110 source files
-run_gui_smoke_tests   38/38 checks passed
+mypy                  Success: no issues found in 120 source files
+run_gui_smoke_tests   43/43 checks passed
 ```
+
+279 of those are Phase 7 (Candidate & Attendance Reconciliation):
+`tests/unit/test_candidate_import.py` (87, parsing, identifier normalisation,
+column detection and every refusal, against real CSV fixtures and real
+generated workbooks), `tests/unit/test_reconciliation.py` (44, the seven
+classifications as a table, co-occurrence, determinism and that matching is not
+quadratic), `tests/unit/test_reconciliation_store.py` (55, roster storage,
+idempotence, the six operator actions, the shared ledger, persistence and the
+migration from a Phase 6 project), `tests/unit/test_candidate_privacy.py` (18,
+the mandatory privacy criterion, including a grep that fails if a Phase 7
+module formats candidate data into a log call),
+`tests/integration/test_reconciliation_workflow.py` (19, the acceptance
+scenario with real recognition over real rendered sheets, Phase 6 integration
+and a 1-vs-4-worker comparison) and `tests/gui/test_attendance_page.py` (56).
+Confirmed end-to-end through `scripts/run_gui_smoke_tests.py` (43/43,
+including every classification, the machine-and-imported-values check, the
+missing-operator refusal, the sample download and a log-capture check).
 
 149 of those are Phase 6 (Conflict Detection & Human Resolution):
 `tests/unit/test_conflict_policy.py` (40, detection in isolation - the

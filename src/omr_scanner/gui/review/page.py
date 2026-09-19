@@ -216,6 +216,7 @@ class ResolvePage(WorkflowPage):
 
         self.state = ResolvePageState()
         self._worker: SheetWorker | None = None
+        self._workers: list[SheetWorker] = []
         self._loaded_scan_id: int | None = None
         self._suppress_selection = False
 
@@ -833,6 +834,13 @@ class ResolvePage(WorkflowPage):
         worker = SheetWorker(Path(source), self.state.template, self)
         worker.ready.connect(self._on_sheet_ready)
         self._worker = worker
+        # Tracked until it finishes. A superseded loader is still a running
+        # thread, and one alive when its parent is destroyed aborts the
+        # process - which looks like a crashed test suite rather than a
+        # forgotten join. (Found while building the Phase 7 page, which
+        # supersedes workers far more often.)
+        self._workers = [item for item in self._workers if item.isRunning()]
+        self._workers.append(worker)
         worker.start()
 
     def _on_sheet_ready(self, bundle: SheetBundle) -> None:
@@ -1254,10 +1262,16 @@ class ResolvePage(WorkflowPage):
         traceback. Decoding a sheet cannot usefully be interrupted part-way, so
         this waits rather than trying to cancel it; it is at most the time one
         image takes to read.
+
+        **Every** loader, not just the most recent: a superseded one is still a
+        running thread.
         """
-        worker = self._worker
-        if worker is not None and worker.isRunning():
-            worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+        workers = self._workers
+        self._worker = None
+        self._workers = []
+        for worker in workers:
+            if worker.isRunning():
+                worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
 
     def closeEvent(self, event: object) -> None:
         """Stop the sheet loader before the page disappears."""

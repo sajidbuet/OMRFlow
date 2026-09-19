@@ -965,6 +965,193 @@ def _check_a_correction_needs_a_named_reviewer() -> CheckResult:
     )
 
 
+def _check_reconciliation_classifies_every_case() -> CheckResult:
+    """Phase 7: a roster and a batch that disagree produce every exception."""
+    from _harness import build_reconciliation_page
+
+    harness = build_reconciliation_page()
+    harness.show_everything()
+    found = {
+        candidate_id: entry.status.value
+        for candidate_id, entry in harness.entries().items()
+    }
+    harness.shutdown()
+
+    expected = {
+        "100001": "matched",
+        "100002": "duplicate_script",
+        "100003": "absent_confirmed",
+        "100004": "present_without_script",
+        "100005": "absent_with_script",
+        "999999": "unknown_id",
+    }
+    wrong = {
+        key: (found.get(key), value)
+        for key, value in expected.items()
+        if found.get(key) != value
+    }
+    return not wrong, (
+        "matched, duplicate, absent-confirmed, present-without-script, "
+        "absent-with-script and unknown-ID all produced"
+        if not wrong
+        else f"unexpected: {wrong}"
+    )
+
+
+def _check_reconciliation_keeps_the_machine_and_imported_values() -> CheckResult:
+    """Phase 7: a human decision is added beside the source, never over it."""
+    from _harness import build_reconciliation_page
+
+    from omr_scanner.domain.reconciliation import (
+        AttendanceState,
+        ReconciliationReason,
+    )
+    from omr_scanner.services import reconciliation_store
+
+    harness = build_reconciliation_page()
+    harness.show_everything()
+    unknown = harness.entries()["999999"]
+    scan_id = unknown.scripts[0].script.scan_id
+
+    reconciliation_store.assign_script(
+        harness.database, harness.roster_id, harness.batch_id, scan_id,
+        candidate_id="100004", operator=harness.operator,
+        reason=ReconciliationReason.MISREAD_IDENTIFIER,
+    )
+    reconciliation_store.override_attendance(
+        harness.database, harness.roster_id, harness.batch_id, "100005",
+        attendance=AttendanceState.PRESENT, operator=harness.operator,
+        reason=ReconciliationReason.CANDIDATE_ATTENDED,
+    )
+    harness.reconcile()
+    harness.show_everything()
+
+    entries = harness.entries()
+    assigned = entries["100004"]
+    overridden = entries["100005"]
+    machine = assigned.scripts[0].script.machine_candidate_id
+    imported = overridden.candidate.imported_attendance.value
+    effective = overridden.effective_attendance.value
+    history = reconciliation_store.history_for(
+        harness.database, "script", str(scan_id)
+    )
+    harness.shutdown()
+
+    ok = (
+        assigned.status.value == "matched"
+        and machine == "999999"
+        and imported == "absent"
+        and effective == "present"
+        and len(history) == 1
+        and history[0].reviewer == "Dr. Smoke Test"
+    )
+    return ok, (
+        f"script assigned to 100004 but machine kept {machine!r}; "
+        f"100005 imported {imported!r}, effective {effective!r}; "
+        f"{len(history)} audit event(s)"
+    )
+
+
+def _check_a_reconciliation_decision_needs_a_named_operator() -> CheckResult:
+    """Phase 7: an unnamed decision is refused, and nothing is written."""
+    from _harness import build_reconciliation_page
+
+    from omr_scanner.domain.reconciliation import ReconciliationReason
+    from omr_scanner.errors import OMRScannerError
+    from omr_scanner.services import reconciliation_store
+
+    harness = build_reconciliation_page(operator="")
+    harness.show_everything()
+    unknown = harness.entries()["999999"]
+    scan_id = unknown.scripts[0].script.scan_id
+
+    refused = False
+    try:
+        reconciliation_store.assign_script(
+            harness.database, harness.roster_id, harness.batch_id, scan_id,
+            candidate_id="100004", operator="",
+            reason=ReconciliationReason.MISREAD_IDENTIFIER,
+        )
+    except OMRScannerError:
+        refused = True
+
+    harness.reconcile()
+    harness.show_everything()
+    state = harness.entries()["999999"].status.value
+    harness.shutdown()
+    return refused and state == "unknown_id", (
+        f"decision refused with no operator, script still {state!r}"
+    )
+
+
+def _check_the_sample_candidate_list_can_be_saved() -> CheckResult:
+    """Phase 7: the packaged sample is handed out, and imports straight back."""
+    from _harness import OUTPUT_ROOT, ensure_application, uuid_hex
+
+    from omr_scanner.services.candidate_import import (
+        read_roster,
+        sample_template_bytes,
+        save_sample_template,
+    )
+
+    ensure_application()
+    destination = OUTPUT_ROOT / "reconciliation" / uuid_hex() / "sample.xlsx"
+    save_sample_template(destination)
+    identical = destination.read_bytes() == sample_template_bytes()
+    found = read_roster(destination)
+    names = {item.display_name for item in found.candidates}
+    return (
+        identical and found.can_import and names == {"CANDIDATE NAME GOES HERE"}
+    ), (
+        f"sample saved ({destination.stat().st_size} bytes), "
+        f"{len(found.candidates)} placeholder candidate(s), "
+        f"importable={found.can_import}"
+    )
+
+
+def _check_no_candidate_data_reaches_the_log() -> CheckResult:
+    """Phase 7's mandatory exit criterion, exercised end to end."""
+    import io
+    import logging
+
+    from _harness import build_reconciliation_page
+
+    from omr_scanner.domain.reconciliation import ReconciliationReason
+    from omr_scanner.services import reconciliation_store
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setLevel(logging.DEBUG)
+    root = logging.getLogger()
+    previous = root.level
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG)
+    try:
+        harness = build_reconciliation_page()
+        harness.show_everything()
+        scan_id = harness.entries()["999999"].scripts[0].script.scan_id
+        reconciliation_store.assign_script(
+            harness.database, harness.roster_id, harness.batch_id, scan_id,
+            candidate_id="100004", operator=harness.operator,
+            reason=ReconciliationReason.MISREAD_IDENTIFIER,
+        )
+        harness.reconcile()
+        harness.shutdown()
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(previous)
+
+    captured = stream.getvalue()
+    # Candidate IDs and names from the harness's fictional roster.
+    secrets = ["100001", "100004", "999999", "CANDIDATE A", "CANDIDATE E"]
+    leaked = [item for item in secrets if item in captured]
+    return not leaked, (
+        f"{len(captured.splitlines())} log line(s), no candidate data"
+        if not leaked
+        else f"candidate data reached the log: {leaked}"
+    )
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -1085,6 +1272,26 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "a correction needs a named reviewer",
                     _check_a_correction_needs_a_named_reviewer,
+                ),
+                (
+                    "reconciliation classifies every case",
+                    _check_reconciliation_classifies_every_case,
+                ),
+                (
+                    "reconciliation keeps the machine and imported values",
+                    _check_reconciliation_keeps_the_machine_and_imported_values,
+                ),
+                (
+                    "a reconciliation decision needs a named operator",
+                    _check_a_reconciliation_decision_needs_a_named_operator,
+                ),
+                (
+                    "the sample candidate list can be saved",
+                    _check_the_sample_candidate_list_can_be_saved,
+                ),
+                (
+                    "no candidate data reaches the log",
+                    _check_no_candidate_data_reaches_the_log,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

@@ -1,12 +1,12 @@
 # User guide
 
 > **This guide describes only what OMRFlow can do today (version 0.1.0.dev0,
-> Phases 0-6).** The application can create and open projects, design `.omrt`
+> Phases 0-7).** The application can create and open projects, design `.omrt`
 > sheet templates visually, calibrate a template against real scans, read
-> filled-in answer sheets in resumable batches, and review everything the
-> recognition engine was unsure about. It cannot yet reconcile attendance,
-> calculate results or produce reports. Everything in
-> `development/ROADMAP.md` beyond Phase 6 is not available.
+> filled-in answer sheets in resumable batches, review everything the
+> recognition engine was unsure about, and reconcile the scripts against the
+> candidate list. It cannot yet calculate results or produce reports. Everything in
+> `development/ROADMAP.md` beyond Phase 7 is not available.
 >
 > **Do not use this build for examination processing.** Its recognition has been
 > validated against one real printed sheet and variants of it, not against a
@@ -39,8 +39,9 @@ omrflow "C:/Exams/Physics Midterm 2026"
 ## The main window
 
 The window has a workflow list on the left and a page for each stage on the
-right. **1. Project**, **2. Template**, **Calibrate**, **3. Scan** and
-**4. Resolve** do something in this version; the remaining pages state which
+right. **1. Project**, **2. Template**, **Calibrate**, **3. Scan**,
+**4. Resolve** and **5. Attendance** do something in this version; the remaining
+pages state which
 development phase will implement them and what that phase will provide - they
 are not broken, and they are not hiding a setting you need to find.
 
@@ -159,6 +160,93 @@ What to expect:
 
 Full detail — every kind of conflict, what the defaults are and why, and what
 the audit record does and does not guarantee — is in `docs/conflict_review.md`.
+
+## Checking the scripts against your candidate list
+
+Select **5. Attendance** once you have processed a batch. This answers two
+questions: does every script belong to somebody on your list, and did everybody
+who sat the paper hand one in?
+
+### Getting your list in
+
+1. **Download Sample Template...** if you want to see the columns OMRFlow
+   understands. Your own list does **not** have to look like it — you map the
+   columns when you import.
+2. **Import Candidate List...** and choose a `.csv` or `.xlsx` file. If the
+   workbook has several sheets, pick the one with the candidates on it.
+3. Check the preview, then the three dropdowns:
+   - **Candidate ID** — required. The roll number column.
+   - **Candidate Name** — optional.
+   - **Marks / Attendance** — optional. See below.
+4. Read the validation line: how many rows were read, how many candidates were
+   accepted, how many are expected present and how many are marked absent.
+5. **Import Candidates**.
+
+**A marks column works as an attendance column.** If a candidate's marks cell
+says **`ABSENT`** or **`ABS`** — in any capitalisation, with any spaces around
+it — they are treated as absent. Anything else, including an empty cell, means
+they were not marked absent. That is how a typical result sheet already works.
+
+Words that merely *start* with "ABS", like `ABSENTEE` or `ABS123`, are **not**
+treated as absences.
+
+**Two things will stop an import**, and both need fixing in your file:
+
+- the same roll number appearing twice — OMRFlow will not choose between two
+  rows claiming the same person;
+- a row with no roll number at all.
+
+You will be told the roll number and the row numbers involved.
+
+> **Roll numbers with leading zeros**: format that column in Excel as **Text**
+> before saving. A cell holding `0015` as a *number* is just fifteen by the
+> time any program reads it, and the zeros cannot be recovered.
+
+### Working through the results
+
+The table opens on the problems, because that is the work. Each row says what
+is wrong in plain words:
+
+| What you will see | What it means |
+| --- | --- |
+| **Matched** | Expected to attend, exactly one script. Nothing to do. |
+| **Absent, confirmed** | Marked absent, no script. Nothing to do. |
+| **Unknown candidate ID** | A script whose roll number is not on your list. |
+| **Duplicate script** | Two or more scripts for one candidate. |
+| **Present but no script found** | Expected to attend; nothing arrived. |
+| **Marked absent but script found** | Marked absent, yet a script turned up. |
+| **Candidate ID not yet resolved** | The roll number could not be read. Deal with it on the **Resolve** stage first. |
+
+If a row has more than one problem, it says so — for example *Marked absent but
+script found (+ Duplicate script)*.
+
+Select a row to see the candidate, what your list said about them, and every
+script attributed to them. Then decide:
+
+- **Assign Script** — type the correct roll number for the selected script.
+- **Set Script Aside** — for a sheet that was scanned twice. It stops counting,
+  but **nothing is deleted**: the scan, its reading and your reason are all
+  kept, and you can bring it back.
+- **Override Attendance** — for a candidate your list has wrong.
+- **Accept As-Is** — for a problem nothing can be done about, such as a script
+  known to be lost.
+
+Every decision needs a **reason**, and your name from
+*File > Settings > Reviewer*. You cannot record one without a name.
+
+What to expect:
+
+- **Your list is never changed.** If you override an attendance, the row still
+  shows what the file said alongside what you decided.
+- **What the machine read is never changed.** If you assign a script to a
+  different candidate, the roll number it was read as is still shown.
+- **Fixing one thing can reveal another.** Assigning a script to a candidate
+  who already has one creates a duplicate — and it says so immediately rather
+  than letting you find out later.
+- **History...** is in the detail panel: every decision, who made it, when, and
+  why.
+
+Full detail is in `docs/reconciliation.md`.
 
 ## Using more of your computer (or less)
 

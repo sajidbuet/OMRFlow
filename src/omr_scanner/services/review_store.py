@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -1255,6 +1255,139 @@ def _question_numbers_by_group(template: OmrTemplate) -> dict[tuple[str, int], i
         for offset in range(field_def.question_count):
             numbers[(zone.id, offset)] = field_def.first_question + offset
     return numbers
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveIdentifier:
+    """What a sheet's candidate ID reads as, after review.
+
+    The bridge Phase 7 crosses. Reconciliation matches on :attr:`value`, shows
+    :attr:`machine_value` beside it, and treats :attr:`unresolved` as a state of
+    its own rather than pretending an unread ID is an unknown candidate.
+
+    Attributes:
+        scan_id: The sheet.
+        machine_value: What recognition read. **Never overwritten.**
+        value: What it reads as now - the machine's, unless a named reviewer
+            decided otherwise on the Resolve stage.
+        source: Which of the two :attr:`value` came from.
+        unresolved: Whether the identifier is still *unknown* - an open or
+            deferred conflict says nobody has established what it is. A
+            duplicate-identifier conflict does **not** set this: the ID was read
+            perfectly well, and it is Phase 7's job to say two sheets share it.
+        reviewer / reason: Who decided, and why, when a human did.
+    """
+
+    scan_id: int
+    machine_value: str
+    value: str
+    source: ValueSource = ValueSource.MACHINE
+    unresolved: bool = False
+    reviewer: str = ""
+    reason: str = ""
+
+    @property
+    def was_corrected(self) -> bool:
+        """Whether a person changed what the machine read."""
+        return self.source is ValueSource.HUMAN and self.value != self.machine_value
+
+
+_IDENTIFIER_IS_UNKNOWN: frozenset[ConflictType] = frozenset(
+    {
+        ConflictType.IDENTIFIER_BLANK,
+        ConflictType.IDENTIFIER_INCOMPLETE,
+        ConflictType.IDENTIFIER_MULTIPLE,
+        ConflictType.IDENTIFIER_UNCERTAIN,
+        ConflictType.IDENTIFIER_UNREADABLE,
+        ConflictType.IDENTIFIER_LOW_CONFIDENCE,
+    }
+)
+"""Conflicts that mean nobody yet knows which candidate a sheet belongs to.
+
+Deliberately excludes ``IDENTIFIER_DUPLICATE`` - a duplicate ID is a perfectly
+legible ID that two sheets share, which is a reconciliation problem rather than
+a recognition one. Including it would file every duplicate under "candidate ID
+not yet resolved" and hide the duplication itself.
+"""
+
+
+def effective_identifiers(
+    database: ProjectDatabase, batch_id: str
+) -> dict[int, EffectiveIdentifier]:
+    """Return every sheet's candidate ID after Phase 6 review, keyed by scan id.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch to read.
+
+    Returns:
+        One entry per scan in the batch, whether or not anything was corrected.
+
+    **The one place outside this module learns what a sheet's identifier now
+    is.** Reconciliation asks here rather than reading
+    ``BatchScan.identifier_value`` directly, because that column holds the
+    machine's reading and using it would silently ignore every correction a
+    reviewer made - the Phase 6 defect in a new costume.
+
+    Two queries over the whole batch, not one per sheet: a ten-thousand-sheet
+    cohort must not open ten thousand transactions to be reconciled.
+    """
+    with database.session() as session:
+        scans = session.scalars(
+            select(BatchScan).where(BatchScan.batch_id == batch_id)
+        ).all()
+        found = {
+            row.scan_id: EffectiveIdentifier(
+                scan_id=row.scan_id,
+                machine_value=row.identifier_value or "",
+                value=row.identifier_value or "",
+            )
+            for row in scans
+        }
+
+        conflicts = session.scalars(
+            select(ReviewConflict).where(ReviewConflict.batch_id == batch_id)
+        ).all()
+        for conflict in conflicts:
+            current = found.get(conflict.scan_id)
+            if current is None:
+                continue
+            kind = FieldKind(conflict.field_kind)
+            conflict_type = ConflictType(conflict.conflict_type)
+            state = ConflictState(conflict.state)
+
+            if state.needs_attention and (
+                conflict_type in _IDENTIFIER_IS_UNKNOWN
+                or conflict_type.is_processing_failure
+            ):
+                found[conflict.scan_id] = replace(current, unresolved=True)
+                continue
+
+            if kind is not FieldKind.IDENTIFIER or state is not ConflictState.RESOLVED:
+                continue
+            decided = _project_provenance(session, conflict)
+            if not decided.is_human_decided:
+                continue
+            found[conflict.scan_id] = replace(
+                current,
+                value=_identifier_after(current.value, conflict, decided.value),
+                source=ValueSource.HUMAN,
+                reviewer=decided.reviewer,
+                reason=decided.reason,
+            )
+    return found
+
+
+def _identifier_after(current: str, conflict: ReviewConflict, decided: str) -> str:
+    """Apply one resolved identifier decision to a sheet's ID.
+
+    The same rule :func:`_apply_decision` uses for the CSV export, and for the
+    same reason: correcting the third digit of a roll number says nothing about
+    the other five, so a positional decision substitutes rather than replaces.
+    """
+    if conflict.group_key == WHOLE_FIELD:
+        return decided
+    return _substitute_position(current or conflict.machine_value, conflict.group_key, decided)
 
 
 def scan_source_path(database: ProjectDatabase, scan_id: int) -> str:

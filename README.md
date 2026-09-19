@@ -17,7 +17,7 @@ human verification + reproducible result processing**
 
 ## Development Status
 
-> **Pre-release. Phases 0-2 of 11 are complete; Phases 3, 4, 5 and 6 are
+> **Pre-release. Phases 0-2 of 11 are complete; Phases 3, 4, 5, 6 and 7 are
 > implemented and undergoing testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
 > canonical page, has an interactive designer for building that template, can
@@ -38,7 +38,10 @@ human verification + reproducible result processing**
 > values that batch produced are correct. Phase 6 makes what the machine was
 > unsure about visible, correctable and traceable; it does not make the machine
 > more accurate, and it does not verify that a human correction was right —
-> only who made it, when, and why.**
+> only who made it, when, and why. Phase 7 reconciles the scripts against the
+> registered candidates so that nothing can go missing quietly; it does not
+> score anything, and it does not verify that a reconciliation decision was
+> right either.**
 
 OMRFlow is being developed incrementally, in the defined phases listed in
 [`development/ROADMAP.md`](development/ROADMAP.md). Each phase is implemented,
@@ -58,7 +61,7 @@ validated against a broad, real-world set of filled sheets.
 | 4 | Template calibration & validation | Implemented | In progress | 🧪 Testing |
 | 5 | Batch scan processing pipeline (persistence, resume) | Implemented | In progress | 🧪 Testing |
 | 6 | Conflict detection & human resolution | Implemented | In progress | 🧪 Testing |
-| 7 | Candidate & attendance reconciliation | Pending | Not started | ⏳ Pending |
+| 7 | Candidate & attendance reconciliation | Implemented | In progress | 🧪 Testing |
 | 8 | Answer-key & scoring engine | Pending | Not started | ⏳ Pending |
 | 9 | Result management & reporting | Pending | Not started | ⏳ Pending |
 | 10 | Integration, recovery & production hardening | Pending | Not started | ⏳ Pending |
@@ -89,6 +92,7 @@ phases currently in testing:
 | 4 — Calibration | Yes | Yes | Yes | **Partial** — exercised against the one real sheet; no corpus of deliberately miscalibrated templates |
 | 5 — Batch pipeline | Yes | Yes | Yes | **Partial** — largest measured batch is 48 real scans; no examination-scale run |
 | 6 — Conflict review | Yes | Yes | Yes | **No** — no review session with real operators on a real batch |
+| 7 — Reconciliation | Yes | Yes | Yes | **No** — no reconciliation of a real cohort against a real roster |
 
 - **Implementation complete** — the code exists and does what the phase set out
   to do.
@@ -242,9 +246,54 @@ phases currently in testing:
   a correction was correct. See
   [`docs/conflict_review.md`](docs/conflict_review.md) and
   [`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
+- **Candidate & attendance reconciliation** (Phase 7, *implemented, testing in
+  progress*): import the candidate list an examination office already holds,
+  match the scanned scripts against it, and deal with every discrepancy
+  explicitly — **nothing is ever dropped, merged or silently chosen between**:
+  - import from **CSV or Excel (.xlsx)**, with a worksheet chooser, a preview of
+    the real file and a column mapping the operator confirms. Only
+    **Candidate ID** is required; **Name** and **Marks / Attendance** are
+    optional;
+  - a marks column doubles as attendance: **`ABSENT` or `ABS`** in any case,
+    with any spacing, means absent; **anything else, including a blank cell,**
+    means not marked absent. Compared as whole tokens, so `ABSENTEE`,
+    `ABSENCE` and `ABS123` are not absences, and the column name is never
+    hard-coded (`Total (90)` matches because `total` does);
+  - **candidate IDs are treated as identifiers, not numbers**: an Excel cell
+    holding `15000001` imports as `"15000001"`, never `"15000001.0"`, and a
+    non-integral value is left alone rather than rounded — because rounding is
+    how two candidates become one;
+  - **it refuses to guess.** A file with two columns that equally name a
+    candidate ID asks which; a repeated candidate ID **stops** the import with
+    the ID and both row numbers, because the file states two different facts
+    about one person; a failed import leaves nothing behind;
+  - **Download Sample Template…** hands the operator a packaged example
+    workbook containing placeholder data only;
+  - reconciliation classifies every candidate and every script: **Matched**,
+    **Absent confirmed**, **Unknown candidate ID**, **Duplicate script**,
+    **Present but no script found**, **Marked absent but script found**, and
+    **Candidate ID not yet resolved** — the last kept distinct so an unread
+    roll number is never reported as an unknown candidate;
+  - **conditions that co-occur are both shown.** A candidate marked absent who
+    has two scripts carries both facts, in the table and in the detail;
+  - resolution that never destroys: assign a script to the right candidate,
+    set an accidental re-scan **aside** (kept, with its reason and its audit
+    trail — never deleted), nominate the working script, override attendance,
+    or accept an exception as-is. Every action needs a named operator and a
+    reason, and **re-runs reconciliation immediately so a cascading duplicate
+    is surfaced rather than discovered later**;
+  - the **imported** value, the **machine** value and the **human** decision
+    stay independently visible; overriding an attendance does not change what
+    the roster said, and assigning a script does not change what the engine
+    read;
+  - **no candidate name, ID or mark reaches an application log** (see
+    [Data privacy](#data-privacy-and-examination-integrity)).
+
+  See [`docs/reconciliation.md`](docs/reconciliation.md) and
+  [`development/PHASE_07_HANDOFF.md`](development/PHASE_07_HANDOFF.md).
 - A PySide6 application shell with the nine workflow stages; **Project**,
-  **Template**, **Calibrate**, **Scan** and **Resolve** are implemented, and
-  the remaining stages state which phase will implement them.
+  **Template**, **Calibrate**, **Scan**, **Resolve** and **Attendance** are
+  implemented, and the remaining stages state which phase will implement them.
 
 ### Phase 3 architectural hardening
 
@@ -829,6 +878,139 @@ Still open, and why Phase 6 is not marked complete:
 - [ ] Reviewer identity is a **name, not an account**. There is no
   authentication, so the ledger records who *said* they made a decision
 
+### Phase 7 testing status
+
+Phase 7 (Candidate & Attendance Reconciliation) is implemented and covered by
+279 new automated tests (204 unit, 19 integration, 56 GUI), plus five new
+`qtguitesting` smoke checks. The integration tests run **real recognition over
+real rendered sheets** against a real roster and a real project database, so
+the roll numbers being reconciled are the ones the engine actually read. Full
+detail is in
+[`development/PHASE_07_HANDOFF.md`](development/PHASE_07_HANDOFF.md).
+
+Confirmed by the current automated suite:
+
+- [x] **Every required classification** is produced from controlled data and
+  from a real end-to-end run: matched, absent confirmed, unknown ID, duplicate
+  script, present without script, absent with script, and candidate ID not yet
+  resolved
+- [x] **Nothing disappears**: every script in a batch appears in exactly one
+  entry, including scripts belonging to nobody and scripts set aside; every
+  registered candidate has an entry
+- [x] **Co-occurring conditions are both reported** — a candidate marked absent
+  with two scripts carries both issues, in the summary, the table and the
+  detail
+- [x] **The imported value is never changed.** Overriding an attendance leaves
+  `imported_attendance` and the raw cell exactly as the file had them
+- [x] **The machine value is never changed.** Assigning a script to another
+  candidate leaves what recognition read intact, and the audit event carries
+  both
+- [x] **`ABSENT`/`ABS` in every case and spacing** reads as absent; `ABSENTEE`,
+  `ABSENCE`, `ABS123`, a blank cell and a mark of zero do not
+- [x] **Candidate IDs survive Excel**: `15000001` imports as `"15000001"` and
+  never `"15000001.0"`; a non-integral value is not rounded; text IDs and
+  leading zeros pass through; two distinct IDs never collapse into one
+- [x] **A duplicate candidate ID stops the import**, naming the ID and both
+  rows, and is never silently deduplicated; **a failed import leaves nothing
+  behind**
+- [x] **Ambiguous and missing ID columns ask rather than guess**, with a
+  message saying what to do
+- [x] Malformed input fails readably, never by crashing: corrupt workbook, a
+  zip that is not a workbook, empty worksheet, header-only file, missing file,
+  a folder, a legacy `.xls`, an unsupported extension, a malformed CSV, a
+  mapping that names one column twice
+- [x] The **packaged sample** is byte-identical when saved, contains
+  placeholder names only, imports straight back with no mapping help, and is
+  never altered by being handed out
+- [x] **Re-running reconciliation is idempotent** — no duplicate exception
+  records, exactly one link row per scan, and no stale classification after a
+  roster change
+- [x] **Cascading exceptions are surfaced**: assigning a script to an occupied
+  candidate reports the new duplicate immediately, and the entry stays open
+- [x] **A set-aside script is never deleted** — the scan row, the recognition
+  result, the reason and the audit trail all remain
+- [x] Every decision **appends** an audit event with both values and the
+  operator's name; a second decision appends rather than replacing; the ledger
+  still refuses an `UPDATE` and a `DELETE`
+- [x] **A decision without a named operator is refused**, and nothing is
+  written
+- [x] **Everything survives closing and reopening the project** — roster,
+  classifications, resolutions, reasons, attendance overrides and history
+- [x] **An existing Phase 6 project upgrades cleanly**: a database wound back
+  to schema version 3 regains the six tables and the two audit columns, keeps
+  its conflicts and its ledger, and is reconcilable afterwards — with **no
+  audit row rewritten**
+- [x] **No candidate name, ID or mark reaches the log** across import,
+  reconciliation, unknown-ID handling, duplicate handling, refusals and errors
+  — 18 dedicated tests plus a grep that fails if a Phase 7 module formats
+  candidate data into a log call at all
+- [x] **The source roster file and the source scans are byte-for-byte
+  unchanged** by reconciliation
+- [x] **Phase 5's multiprocessing is intact**: the same sheets read on 1 worker
+  and on 4 reconcile identically, with the reported worker count asserted
+- [x] The GUI event loop keeps running while a roster imports and reconciles
+- [x] Matching is indexed, not quadratic: 10,000 candidates against 10,000
+  scripts
+- [x] Automated Qt GUI validation using `qtguitesting` (43/43 smoke checks,
+  including every classification, the machine-and-imported-values check, the
+  missing-operator refusal, the sample download, and a log-capture check)
+
+Still open, and why Phase 7 is not marked complete:
+
+- [ ] **No reconciliation of a real cohort against a real roster.** Everything
+  is synthetic or the repository's one real sheet. A genuine examination roster
+  — with its own column names, its own spelling of absence, and candidates who
+  really are missing — has never been through this
+- [ ] **No examination-scale run.** Matching is asserted at 10,000 candidates,
+  but the largest *real* batch anywhere in this project is 48 scans
+- [ ] **Scan file names can still leak a roll number into the log.** Phase 3
+  logs the file name of each scan it reads — documented, and useful — so an
+  office whose files are named by roll number has roll numbers in its
+  application log. Phase 7 puts none there itself; the exposure is recorded in
+  [`docs/reconciliation.md`](docs/reconciliation.md) §9 and pinned by a test
+- [ ] **Reconciliation is per batch.** There is no project-wide view, and a
+  cohort split across two batches must be reconciled twice
+- [ ] The operator's identity is a **name, not an account** — the same
+  limitation Phase 6 has
+- [ ] **Phase 7 says nothing about whether an answer is right.** It accounts
+  for scripts and candidates; scoring is Phase 8
+
+### Reconciling the scripts against the candidate list (Phase 7)
+
+After the conflict queue is clear, and before anyone trusts a set of results.
+Full detail is in [`docs/reconciliation.md`](docs/reconciliation.md).
+
+1. Open **Attendance**. Press **Download Sample Template…** if you want to see
+   the columns OMRFlow understands — your own list does not have to match it.
+2. **Import Candidate List…** and choose your CSV or `.xlsx`. Pick the
+   worksheet if the workbook has several.
+3. Check the **preview**, then the **column mapping**: Candidate ID is
+   required; Name and Marks/Attendance are optional. OMRFlow suggests a mapping
+   and asks rather than guessing when two columns could both be the ID.
+4. Read the **validation** line: rows read, candidates accepted, expected
+   present, marked absent, and anything wrong. A duplicate candidate ID has to
+   be fixed in the source file — OMRFlow will not choose between two rows that
+   claim the same person.
+5. **Import Candidates**. Reconciliation runs immediately.
+6. Work the **exception list** — it is what the table shows by default.
+7. For each exception, read the detail panel: what the candidate list said, what
+   recognition read, and every script attributed to the entry.
+8. Decide, with a reason: **assign** a script to the right candidate, **set
+   aside** an accidental re-scan, **override attendance**, or **accept as-is**.
+   Put your name in *File > Settings > Reviewer* first — a decision cannot be
+   saved without one.
+9. Watch the counts. A decision that creates a *new* problem — assigning a
+   script to a candidate who already has one — says so at once.
+10. Send anything reading **Candidate ID not yet resolved** back to the
+    **Resolve** stage; those are recognition problems, not roster problems.
+
+> **What reconciliation establishes.** That every script maps to exactly one
+> registered candidate or to an explicit exception somebody has looked at, and
+> that every registered candidate has an understandable state. It is **not** a
+> check that a candidate's answers are right, or that a reconciliation decision
+> was correct — only that it was made by a named person, for a stated reason,
+> and can be traced and reversed.
+
 ### Development philosophy
 
 OMRFlow follows an incremental development process. Major functionality is
@@ -842,7 +1024,7 @@ exists.
 
 ### Pending development
 
-Phases 7-11 have not started. Their titles, purposes and deliverables as
+Phases 8-11 have not started. Their titles, purposes and deliverables as
 currently planned are documented in
 [`development/ROADMAP.md`](development/ROADMAP.md); this project does not
 promise a delivery date for any of them, and scopes may be refined as earlier
@@ -859,6 +1041,7 @@ Phase 3 handoff: [`development/PHASE_03_HANDOFF.md`](development/PHASE_03_HANDOF
 Phase 4 handoff: [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md).
 Phase 5 handoff: [`development/PHASE_05_HANDOFF.md`](development/PHASE_05_HANDOFF.md).
 Phase 6 handoff: [`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
+Phase 7 handoff: [`development/PHASE_07_HANDOFF.md`](development/PHASE_07_HANDOFF.md).
 
 ---
 
@@ -971,7 +1154,10 @@ OMRflow/
 │   │                         scan import/export (Phase 3), calibration
 │   │                         verdicts (Phase 4), batch persistence (Phase 5),
 │   │                         conflict detection policy and the review/audit
-│   │                         store (Phase 6)
+│   │                         store (Phase 6), candidate list import and
+│   │                         reconciliation (Phase 7)
+│   ├── resources/            packaged non-GUI assets: the candidate list
+│   │                         sample workbook (Phase 7)
 │   ├── gui/                  PySide6 window and workflow pages
 │   │   ├── template_designer/  interactive .omrt editor (Phase 2)
 │   │   ├── calibration/         calibrate a saved template against real
@@ -981,6 +1167,9 @@ OMRflow/
 │   │   │                        benchmark mode (Phase 3, testing in progress)
 │   │   ├── review/              conflict queue, review workspace and audit
 │   │   │                        history (Phase 6, testing in progress)
+│   │   ├── attendance/          candidate list import, reconciliation table
+│   │   │                        and exception resolution (Phase 7, testing in
+│   │   │                        progress)
 │   │   └── devtools/            Tools > Developer / Testing: dataset
 │   │                            generation and benchmark results (Phase 3)
 │   ├── imaging/              pixel algorithms: alignment, plus per-bubble
@@ -1034,6 +1223,7 @@ OMRflow/
 | [`docs/recognition_engine.md`](docs/recognition_engine.md) | The recognition subsystem for developers: the engine API, the `ScanResult` contract, diagnostics, synthetic datasets and the benchmark harness (Phase 3) |
 | [`docs/calibration_workflow.md`](docs/calibration_workflow.md) | The Calibration workflow: procedure, overlay layers, thresholds, validation status and how to recognise a bad calibration (Phase 4) |
 | [`docs/conflict_review.md`](docs/conflict_review.md) | Conflict detection and human review: what becomes a conflict, the reviewer's workflow, conflict states, provenance, the append-only audit ledger and export integration (Phase 6) |
+| [`docs/reconciliation.md`](docs/reconciliation.md) | Candidate & attendance reconciliation: the four values and why they stay apart, importing a roster, the classifications, resolving an exception, and the privacy rule (Phase 7) |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
@@ -1112,10 +1302,15 @@ reopening a decision restores the machine's reading without erasing the
 correction that preceded it. Duplicate identifiers are detected across the whole
 batch. See `docs/conflict_review.md`.
 
-**Candidate and attendance reconciliation** *(planned, Phase 7)*. Compare
-registered candidates, recorded attendance and detected scripts; surface
-unknown roll numbers, duplicate scripts, absent-with-script and
-present-without-script cases.
+**Candidate and attendance reconciliation** *(Phase 7, implemented; testing in
+progress)*. Import a candidate list from CSV or Excel, mapping its columns
+rather than requiring a fixed layout, and compare registered candidates,
+recorded attendance and detected scripts. Unknown roll numbers, duplicate
+scripts, absent-with-script and present-without-script cases each become an
+explicit, reviewable exception — never a dropped script or an arbitrarily
+chosen duplicate. A resolution is recorded beside the imported and recognised
+values, with the operator's name and a reason, in the same append-only ledger
+Phase 6 uses. See `docs/reconciliation.md`.
 
 **Answer keys and scoring** *(planned, Phase 8)*. Keys entered manually or read
 from solution sheets, independent per question paper set, verified before use.
@@ -1171,7 +1366,21 @@ imports Qt.
 
 OMRFlow runs locally. Candidate identities, answer sheets, attendance,
 answer keys and results never need to leave the machine, and candidate data is
-kept out of application logs by policy.
+kept out of application logs by policy — a policy Phase 7 makes executable:
+`tests/unit/test_candidate_privacy.py` drives every import and reconciliation
+path with distinctive synthetic candidate data and fails if any of it reaches
+captured logging.
+
+**One exposure is known and worth knowing.** The scan pipeline logs the *file
+name* of each scan it reads, which is how you tell which sheet failed. If your
+scan files are named by roll number — which is exactly what OMRFlow's own
+rename step produces — then your application log contains roll numbers. If
+logs leave the machine, either leave renaming off or treat the log as candidate
+data. Detail: [`docs/reconciliation.md`](docs/reconciliation.md) §9.
+
+Imported candidate lists are read, never written: OMRFlow stores what it needs
+in the project database and does not modify, move, rename or copy your
+spreadsheet.
 
 Successful processing is not the same as a correct result. For high-stakes
 examinations, institutions should retain independent procedures for template

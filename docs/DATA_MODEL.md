@@ -22,7 +22,12 @@ entities, it finds the intended shape and relationships already agreed.
 | ReviewConflict (was RecognitionConflict) | Implemented (Phase 6) | `review_conflict` table |
 | AuditEvent | Implemented (Phase 6) | `audit_event` table |
 | Provenance / effective value | Implemented (Phase 6) | *projected*, not stored |
-| Candidate, AttendanceRecord | Planned (Phase 7) | database |
+| CandidateRoster | Implemented (Phase 7) | `candidate_roster` table |
+| RegisteredCandidate | Implemented (Phase 7) | `registered_candidate` table |
+| AttendanceRecord | **Not implemented — superseded** (Phase 7) | — |
+| ReconciliationRun | Implemented (Phase 7) | `reconciliation_run` table |
+| CandidateReconciliation | Implemented (Phase 7) | `reconciliation_entry` + `reconciliation_script` |
+| ReconciliationResolution | Implemented (Phase 7) | `reconciliation_decision` table |
 | AnswerKey | Planned (Phase 8) | database |
 | ScoringConfiguration | Planned (Phase 8) | database |
 | CandidateResult | Planned (Phase 8/9) | database |
@@ -221,21 +226,105 @@ events are the record, and one function reads them.
 machine value, the reviewer, the reason, the timestamp and the originating event
 — everything the traceability requirement asks for, all derived.
 
-### Candidate and AttendanceRecord - *Phase 7*
+### CandidateRoster and RegisteredCandidate - *implemented (Phase 7)*
 
-`Candidate` is an imported registration row: `candidate_id` (roll number),
-`name`, `group`/`section`, `expected_set` (nullable).
+`candidate_roster` is one import: `roster_id`, `created_at`, `source_name`,
+`source_sheet`, `source_format`, `column_map`, `rows_read`, `candidate_count`,
+`expected_present`, `expected_absent`, `attendance_unknown`,
+`has_attendance_column`, `is_active`, `imported_by`.
 
-`AttendanceRecord` records the declared state: `present` / `absent`, its source
-(imported list or manual entry), and a timestamp.
+`registered_candidate` is one candidate exactly as the file declared them:
+`candidate_row_id`, `roster_id`, `candidate_id`, `display_name`, `row_order`,
+`source_row`, `imported_attendance`, `imported_value`. Unique on
+`(roster_id, candidate_id)`, which is what makes a duplicate ID impossible to
+store even if validation were bypassed, and is the index scripts are matched
+through.
 
-Reconciliation compares three sets - registered candidates, declared attendance
-and detected scripts - and classifies each case (normal, absent-with-script,
-present-without-script, unknown roll number, duplicate script). These
-classifications are computed, not stored as a candidate attribute.
+Invariants:
+- **`registered_candidate` is write-once.** Nothing in the application updates
+  a row after import. An operator who establishes that a candidate recorded
+  absent actually attended creates a `reconciliation_decision` beside it; the
+  entry then reports both values. That separation is the only reason this table
+  exists rather than a mutable "candidate" table.
+- `imported_value` keeps the **raw cell**, so an operator can see that the
+  sheet said `abs` rather than `ABSENT`.
+- Only `source_name` is stored, never the source path: a project database is
+  shared, and a path can name somebody's home directory. The file itself is
+  never modified, moved or copied in.
+- Several rosters may exist; exactly one `is_active`. A re-import supersedes
+  rather than merges, and the superseded roster is kept because decisions were
+  taken against it.
 
-Privacy: candidate names are project data. They must not appear in logs, in bug
-reports or in committed fixtures.
+Privacy: candidate names and IDs are project data. They must not appear in
+logs, in bug reports or in committed fixtures. See
+[`reconciliation.md`](reconciliation.md) §9.
+
+### AttendanceRecord - *not implemented; superseded in Phase 7*
+
+Planned as a separate row recording a declared `present`/`absent` state with a
+source and a timestamp. Phase 7 did not build it.
+
+The imported state is an attribute of the roster row
+(`registered_candidate.imported_attendance`), written once and never touched. A
+human override is a `reconciliation_decision`, and every change is already in
+`audit_event` with its actor, reason and timestamp. A third table holding "the
+attendance state" would have been a place for those two to disagree, and the
+only thing it would have added is a second answer to a question that must have
+one.
+
+### ReconciliationRun - *implemented (Phase 7)*
+
+`run_id`, `roster_id`, `batch_id`, `created_at`, `updated_at`, `counts` (JSON).
+Unique on `(roster_id, batch_id)` - **one row per pair, updated in place**. A
+row per *run* would grow without bound and, worse, leave yesterday's
+classifications in the database looking current.
+
+### ReconciliationEntry and ReconciliationScript - *implemented (Phase 7)*
+
+`reconciliation_entry` is one candidate's state, or one group of scripts that
+belong to no registered candidate: `entry_id`, `roster_id`, `batch_id`,
+`entry_key`, `entry_order`, `candidate_row_id` (null for an unplaced script),
+`candidate_id`, `display_name`, `is_registered`, `status`, `issues`,
+`script_count`, `excluded_count`, `imported_attendance`,
+`effective_attendance`, `attendance_source`, `resolution`, `reason_code`,
+`reason_text`, `reviewer`, `updated_at`.
+
+`reconciliation_script` is the link between one scan and the entry it was filed
+under: `link_id`, `roster_id`, `batch_id`, `entry_id`, `scan_id`,
+`source_name`, `machine_candidate_id`, `effective_candidate_id`,
+`assigned_candidate_id`, `assignment`, `identifier_unresolved`, `excluded`,
+`is_primary`, `reason_code`, `reason_text`, `reviewer`, `updated_at`.
+
+Invariants:
+- **Both tables are a cache of a pure function.**
+  `services.reconciliation.reconcile()` recomputes every column from the
+  roster, the scripts and the standing decisions, and `reconcile_batch`
+  rewrites them wholesale. They are stored so a ten-thousand-candidate cohort
+  can be filtered, counted and paged in SQL rather than in Python.
+- **One `reconciliation_script` row per scan in the batch, always** - including
+  a script belonging to nobody and one an operator has set aside. A script
+  missing from this table would be missing from every count and every screen,
+  which is the one thing this phase forbids.
+- `issues` is a comma-separated **set**, not a single status, because the
+  conditions genuinely co-occur. A schema holding one would make a physical
+  script invisible.
+- `machine_candidate_id` is never overwritten by a human assignment;
+  `assigned_candidate_id` records that separately.
+
+### ReconciliationDecision - *implemented (Phase 7)*
+
+`decision_id`, `roster_id`, `batch_id`, `target_kind` (`script`/`candidate`),
+`target_key`, `assigned_candidate_id`, `attendance_override`, `excluded`,
+`is_primary`, `dismissed`, `reason_code`, `reason_text`, `reviewer`,
+`decided_at`, `updated_at`. Unique on
+`(roster_id, batch_id, target_kind, target_key)`.
+
+The **input** to reconciliation, not an output - which is why it lives apart
+from the two tables above, whose every column is disposable. Re-running
+recomputes every classification from scratch and these rows are what steer it.
+
+A decision is a *current* position; its history is in `audit_event`, appended in
+the same transaction and never rewritten.
 
 ### AnswerKey - *Phase 8*
 
@@ -269,8 +358,17 @@ the report also contains an Excel `RANK.EQ` formula.
 Append-only history of anything that can change a result. Table `audit_event`.
 
 Fields: `event_id`, `occurred_at`, `entity_type`, `entity_id`, `batch_id`,
-`scan_id`, `action`, `actor`, `previous_value`, `new_value`, `reason_code`,
-`reason_text`, `detail`.
+`scan_id`, `conflict_id`, `action`, `reviewer`, `previous_value`, `new_value`,
+`machine_value`, `reason_code`, `reason_text`, `detail`.
+
+`entity_type` and `entity_id` were added by **migration 4** (Phase 7), so the
+same ledger can record decisions about candidates and scripts as well as
+conflicts. Rows written before that migration read back as
+`entity_type='conflict'`, `entity_id=0`; their `conflict_id` still identifies
+them, and it is what a conflict's history is queried by, so nothing had to be
+rewritten. **Deliberately no backfill** — an `UPDATE` would have been aborted by
+the immutability triggers, which is exactly the behaviour those triggers exist
+for.
 
 Append-only is the whole point: rows are never updated or deleted, so the
 question "why does this candidate have this mark?" always has an answer.
@@ -280,12 +378,14 @@ outright. See [`conflict_review.md`](conflict_review.md) §7.
 
 **No foreign key**, deliberately. A conflict row may one day be removed by
 housekeeping; the record that a named person decided something must outlive it.
-The table is joined by `entity_type` + `entity_id` instead, which also lets a
-later phase audit candidates, keys or results without a schema change.
+That is also what let Phase 7 start auditing candidates and scripts here without
+touching a constraint.
 
-`action` is one of `detected`, `re_recognised`, `accepted`, `corrected`,
-`deferred`, `reopened`, `withdrawn`. The first two are the machine's; the rest
-require a named actor, and `corrected` additionally requires a reason.
+`action` for a conflict is one of `detected`, `re_recognised`, `accepted`,
+`corrected`, `deferred`, `reopened`, `withdrawn`. The first two are the
+machine's; the rest require a named reviewer, and `corrected` additionally
+requires a reason. Phase 7 adds its own actions under `entity_type` of
+`candidate` or `script` — see [`reconciliation.md`](reconciliation.md).
 
 ## Persistence strategy
 
@@ -296,7 +396,13 @@ require a named actor, and `corrected` additionally requires a reason.
 | `scan_batch` | One run over a folder of scans. | Phase 5 (migration 2) |
 | `batch_scan` | One scanned sheet inside a batch, with its stored result. | Phase 5 (migration 2) |
 | `review_conflict` | One thing on one sheet a person must look at. | Phase 6 (migration 3) |
-| `audit_event` | Append-only history of every decision. | Phase 6 (migration 3) |
+| `audit_event` | Append-only history of every decision. | Phase 6 (migration 3); entity columns Phase 7 (migration 4) |
+| `candidate_roster` | One imported candidate/attendance list. | Phase 7 (migration 4) |
+| `registered_candidate` | One candidate as the file declared them. | Phase 7 (migration 4) |
+| `reconciliation_run` | When a roster/batch pair was last reconciled. | Phase 7 (migration 4) |
+| `reconciliation_entry` | One candidate's reconciliation state. | Phase 7 (migration 4) |
+| `reconciliation_script` | One scan, and the entry it was filed under. | Phase 7 (migration 4) |
+| `reconciliation_decision` | An operator's standing decision. | Phase 7 (migration 4) |
 
 ### Schema version 3 (Phase 6)
 
@@ -332,6 +438,32 @@ triggers were dropped while its schema version was left at 3 keeps the tables
 but loses the database-level enforcement. That is a deliberate database
 administrator action, which §7 of [`conflict_review.md`](conflict_review.md)
 already places outside what the application undertakes to prevent.
+
+### Schema version 4 (Phase 7)
+
+`_migration_004_reconciliation` creates the six reconciliation tables, and adds
+`entity_type` and `entity_id` to `audit_event` so a decision about a candidate
+or a script is recorded in the **same append-only ledger**, under the same
+triggers, as a decision about a recognition conflict — rather than in a second
+history table with its own, weaker guarantees.
+
+Compatibility:
+
+- **Purely additive.** No existing table or column was altered, so Phases 0-6
+  read and write exactly what they did before.
+- **Existing audit rows were deliberately not backfilled.** `ADD COLUMN` is a
+  schema change and does not fire the immutability triggers; an `UPDATE` to
+  populate the new columns *would*, and rightly so. The column default
+  (`'conflict'`) is therefore chosen to be already correct for every row that
+  predates this migration, and a conflict's history is still queried by
+  `conflict_id` exactly as before. Nothing had to be rewritten, so nothing was.
+- **A project processed before Phase 7 opens normally** and simply has no
+  roster until one is imported.
+
+Asserted by `TestMigrationOntoAnExistingPhase6Project`, which winds a real
+project back to version 3 — dropping the six tables and both new columns — then
+reopens it and checks the conflicts and the ledger survived, the columns
+returned with the right default, and the ledger still refuses a `DELETE`.
 
 Key/value storage is appropriate for a handful of identity attributes. Data that
 is queried, joined, sorted or reported on - scans, candidates, results - gets

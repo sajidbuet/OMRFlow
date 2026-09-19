@@ -33,6 +33,14 @@ Phase status:
     arrive with their own phases (see ``development/ROADMAP.md``).
 """
 
+# Phase 7 modules are exposed as modules rather than as fifty loose names: the
+# reconciliation surface is large, and `reconciliation_store.assign_script(...)`
+# reads better at a call site than an unqualified `assign_script(...)`.
+from omr_scanner.services import (
+    candidate_import,
+    reconciliation,
+    reconciliation_store,
+)
 from omr_scanner.services.alignment_service import (
     alignment_config_from_template,
     load_scan_image,
@@ -94,6 +102,15 @@ from omr_scanner.services.calibration_service import (
     evaluate_calibration,
     separation_label,
     write_calibration_report,
+)
+from omr_scanner.services.candidate_import import (
+    CandidateImportError,
+    ColumnMapping,
+    RosterValidation,
+    normalise_candidate_id,
+    preview_roster,
+    read_roster,
+    save_sample_template,
 )
 from omr_scanner.services.conflict_policy import (
     ConflictPolicy,
@@ -160,16 +177,20 @@ from omr_scanner.services.recognition_settings import (
     DiagnosticsOptions,
     RecognitionOptions,
 )
+from omr_scanner.services.reconciliation import ReconciliationInput, reconcile
+from omr_scanner.services.reconciliation_store import ReconciliationError
 from omr_scanner.services.review_store import (
     AuditRecord,
     ConflictFilter,
     ConflictRecord,
+    EffectiveIdentifier,
     ReviewError,
     accept_machine_value,
     correct_value,
     count_conflicts,
     count_conflicts_for_scan,
     defer,
+    effective_identifiers,
     effective_values_for_scan,
     get_conflict,
     history_for,
@@ -227,7 +248,9 @@ __all__ = [
     "CalibrationSampleReport",
     "CalibrationSession",
     "CalibrationStatus",
+    "CandidateImportError",
     "CharacterView",
+    "ColumnMapping",
     "CompatibilityVerdict",
     "ConflictFilter",
     "ConflictPolicy",
@@ -236,6 +259,7 @@ __all__ = [
     "DetectedConflict",
     "DetectedMarker",
     "DiagnosticsOptions",
+    "EffectiveIdentifier",
     "ErrorCategory",
     "FieldView",
     "FilenameAllocator",
@@ -252,8 +276,11 @@ __all__ = [
     "RecognitionEngine",
     "RecognitionOptions",
     "RecognitionOutcome",
+    "ReconciliationError",
+    "ReconciliationInput",
     "RegistrationStatus",
     "ReviewError",
+    "RosterValidation",
     "ScanJobStatus",
     "ScanQuality",
     "ScanResult",
@@ -265,6 +292,7 @@ __all__ = [
     "aggregate_calibration",
     "alignment_config_from_template",
     "apply_calibration",
+    "candidate_import",
     "categorise_error",
     "check_compatibility",
     "collect_scan_files",
@@ -283,6 +311,7 @@ __all__ = [
     "detect_orientation_marker_in_region",
     "detect_registration_markers",
     "duplicate_suffix",
+    "effective_identifiers",
     "effective_values_for_scan",
     "evaluate_calibration",
     "export_scan_results",
@@ -308,14 +337,20 @@ __all__ = [
     "mark_cancelled",
     "mark_queued",
     "natural_sort_key",
+    "normalise_candidate_id",
     "open_project",
     "plan_output_name",
+    "preview_roster",
     "process_batch",
     "process_scan",
     "provenance_for",
     "read_project_metadata",
+    "read_roster",
     "recognise_scan",
     "recompute_state",
+    "reconcile",
+    "reconciliation",
+    "reconciliation_store",
     "record_results",
     "recover_interrupted",
     "render_overlay",
@@ -324,6 +359,7 @@ __all__ = [
     "resumable_scans",
     "sanitise_stem",
     "save_image",
+    "save_sample_template",
     "save_template",
     "scan_ids_by_path",
     "scan_paths",

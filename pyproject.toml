@@ -76,6 +76,12 @@ omr_scanner = [
     "gui/resources/branding/*.svg",
     "gui/resources/branding/*.ico",
     "gui/resources/branding/*.png",
+    # Phase 7: the candidate/attendance sample workbook the Attendance stage
+    # offers to save. Inside the package for the same reason as the icons -
+    # "Download Sample Template..." has to work in an installed application,
+    # and the top-level `resources/` directory is never shipped. See
+    # `src/omr_scanner/services/candidate_import.py`.
+    "resources/templates/*.xlsx",
 ]
 
 # --------------------------------------------------------------------------
@@ -170,6 +176,17 @@ show_error_codes = true
 module = ["PySide6.*"]
 ignore_missing_imports = true
 follow_imports = "silent"
+
+[[tool.mypy.overrides]]
+# openpyxl ships no type information and has no stubs in the project's
+# dependency set. It is used in exactly one place - reading a candidate
+# workbook in `services/candidate_import.py`, behind a function that returns
+# plain Python values - so the untyped boundary is one call wide and nothing
+# untyped escapes it. Adding `types-openpyxl` for that would be a dependency
+# for a single import; relaxing it here does not weaken checking of any
+# OMRFlow code.
+module = ["openpyxl.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["omr_scanner.gui.*"]

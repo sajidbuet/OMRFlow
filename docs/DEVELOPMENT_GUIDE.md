@@ -193,3 +193,11 @@ end of a phase:
 
 Migrations are forward-only; `SCHEMA_VERSION` is derived from the tuple and is
 never edited by hand. Rationale: `docs/decisions/ADR-0003-schema-migrations.md`.
+
+**Adding a column to `audit_event`** needs one extra thought, because that
+table carries triggers that abort any `UPDATE`. `ALTER TABLE ... ADD COLUMN` is
+a schema change and does not fire them, but a statement that *backfills* the
+new column does — correctly. Choose a `DEFAULT` that is already true for every
+existing row, as migration 4 did (`entity_type DEFAULT 'conflict'`), so no
+backfill is needed. If you genuinely cannot, you are proposing to rewrite
+history; stop and reconsider.

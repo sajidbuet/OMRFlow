@@ -124,10 +124,13 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Attendance",
         summary="Import the candidate list and reconcile it against the scripts.",
         phase=7,
+        implemented=True,
         details=(
             "Import candidates and absentees from CSV or Excel.",
             "Detect unknown, duplicate and missing scripts.",
             "Flag absent candidates that nevertheless have a script.",
+            "Record every decision beside the imported and recognised values, "
+            "never over them.",
         ),
     ),
     WorkflowPageSpec(

@@ -483,6 +483,60 @@ worker: a worker process must not open the single-writer project database, and a
 duplicate identifier is not a property of one sheet. Phase 5's pool,
 cancellation, resume and progress are unchanged. See `docs/conflict_review.md`.
 
+## Candidate reconciliation (Phase 7)
+
+`omr_scanner.gui.attendance` matches the scripts a batch produced against the
+candidates an examination office registered. It adds no recognition and no
+image handling at all:
+
+```text
+AttendancePage.import_from      -> gui.attendance.import_dialog.RosterImportDialog
+                                     -> gui.attendance.worker.RosterReadWorker  (a QThread)
+                                        -> services.candidate_import.read_roster   (pure)
+AttendancePage.commit_roster    -> services.reconciliation_store.import_roster    (one transaction)
+AttendancePage.reconcile        -> gui.attendance.worker.ReconcileWorker  (a QThread)
+                                     -> services.reconciliation_store.reconcile_batch
+                                          -> review_store.effective_identifiers   (Phase 6)
+                                          -> services.reconciliation.reconcile     (pure)
+AttendancePage.assign_selected_script
+   / toggle_selected_exclusion  -> reconciliation_store.assign_script / set_script_excluded
+   / toggle_attendance             / override_attendance / dismiss_entry
+                                     -> one transaction: decision + audit event
+                                     -> re-reconcile, so consequences are visible
+```
+
+Four decisions worth carrying forward:
+
+- **Four values are kept apart on purpose**: what the roster file said, what
+  recognition read, what an operator decided, and what follows from the three.
+  Only the last is computed. `registered_candidate` is write-once and the
+  machine's reading is never overwritten, so a change of effective value can
+  never cost the record of what it changed *from*. This is Phase 6's invariant
+  extended to imported data.
+- **Classification is a pure function.** `services.reconciliation.reconcile`
+  takes value objects and returns them; it reads no clock, no configuration and
+  no database. That is what lets the rules be tested as a table rather than
+  through an interface, and what makes a re-run idempotent - the stored entry
+  and script rows are a *cache* of it, rewritten wholesale, so a stale
+  classification cannot survive a change of roster. Operator decisions are the
+  **input** to that function, which is why they live in their own table and
+  survive the rewrite.
+- **An entry carries a set of issues, not one status.** A candidate recorded
+  absent with two scripts is both `ABSENT_WITH_SCRIPT` and `DUPLICATE_SCRIPT`;
+  a schema or interface that could hold one would make a physical script
+  invisible. The headline is derived by documented precedence and never
+  replaces the set.
+- **Candidate identity is resolved through Phase 6, never around it.**
+  `review_store.effective_identifiers` is the single place that answers "which
+  candidate does this sheet say it belongs to" after review, so reconciling
+  against `BatchScan.identifier_value` - the machine's own reading - is
+  impossible by construction. An identifier still awaiting review is its own
+  state rather than an unknown candidate.
+
+Reconciliation runs after recognition, off the GUI thread, and touches nothing
+about how a batch runs. Candidate data is displayed and stored, never logged;
+see `docs/reconciliation.md`.
+
 ## Concurrency
 
 Phase 0 is single-threaded. From Phase 3, batch recognition runs off the GUI

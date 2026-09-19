@@ -18,7 +18,7 @@ that cannot be tested.
 | 4 | Template Calibration & Validation | Implemented; testing in progress - see `development/PHASE_04_HANDOFF.md` |
 | 5 | Batch Scan Processing Pipeline | Implemented; testing in progress - see `development/PHASE_05_HANDOFF.md` |
 | 6 | Conflict Detection & Human Resolution | Implemented; testing in progress - see `development/PHASE_06_HANDOFF.md` |
-| 7 | Candidate & Attendance Reconciliation | Not started |
+| 7 | Candidate & Attendance Reconciliation | Implemented; testing in progress - see `development/PHASE_07_HANDOFF.md` |
 | 8 | Answer-Key & Scoring Engine | Not started |
 | 9 | Result Management & Reporting | Not started |
 | 10 | Integration, Recovery & Production Hardening | Not started |
@@ -242,17 +242,44 @@ remains Phase 3's and Phase 4's problem.
 
 **Purpose.** Reconcile scripts against who was registered and who attended.
 
-**Deliverables.** Candidate/absentee import from CSV and Excel; matching of
-recognised candidate ids to registered candidates; classification of unknown ids,
-duplicate scripts, present-without-script and absent-with-script; resolution
-workflow for each.
+**Delivered as** `domain.reconciliation` (the vocabulary - seven
+classifications, five co-occurring issues, nine actions, nine reason codes, and
+the absence-token rule), `services.candidate_import` (CSV and XLSX, column
+mapping that reports ambiguity rather than guessing, and identifier
+normalisation that cannot merge two candidates), `services.reconciliation` (one
+pure deterministic function), `services.reconciliation_store` (roster import,
+the idempotent reconciliation, the six operator actions), six additive tables
+and two audit columns (migration 4), and the `gui.attendance` stage - roster
+bar, summary, filterable table, detail panel and resolution. `review_store`
+gained `effective_identifiers`, the single place Phase 7 learns what candidate
+a sheet is now believed to belong to. The candidate/attendance sample workbook
+is packaged inside the application and offered by a Save dialog. Phase 5's
+multiprocessing and Phase 6's ledger are **unchanged** - the ledger was
+extended with `entity_type`/`entity_id` rather than duplicated, with no
+existing row rewritten. Full detail: `development/PHASE_07_HANDOFF.md`;
+operator description: `docs/reconciliation.md`.
 
-**Major tests.** Each classification is produced for a constructed data set;
-duplicates and unknown ids are never silently dropped; imports with messy columns
-fail with a usable message.
+**Exit criteria - met.** Every script maps to exactly one registered candidate
+or to an explicit reviewable exception, and every registered candidate has an
+understandable state; unknown IDs and duplicate scripts are never dropped, and
+a script set aside as a re-scan keeps its scan row, its result, its reason and
+its audit trail; the imported attendance value, the machine's recognised ID and
+every human decision remain independently traceable; a decision without a named
+operator is refused; resolution state survives save/close/reopen; messy imports
+produce usable corrective messages rather than crashes; and **no candidate
+name, ID or mark appears in an application log**, asserted by 18 dedicated
+tests, a grep and a smoke check.
 
-**Exit criteria.** Every script maps to exactly one candidate or to an explicit,
-reviewable exception; no candidate data appears in logs.
+**Not done.** No reconciliation of a real cohort against a real roster - every
+test is synthetic or uses the repository's one real sheet, and a genuine
+examination roster has its own column names, its own spelling of absence and
+candidates who really are missing. No examination-scale run: matching is
+asserted at 10,000 candidates but the largest real batch anywhere in the
+project is 48 scans. Reconciliation is per batch, with no project-wide view.
+The operator's identity is a name, not an account. And one privacy exposure is
+documented rather than fixed: the Phase 3 pipeline logs each scan's *file
+name*, so an office whose files are named by roll number has roll numbers in
+its log.
 
 ---
 

@@ -43,7 +43,13 @@ from omr_scanner.database.models import (
     AuditEvent,
     Base,
     BatchScan,
+    CandidateRoster,
     ProjectSetting,
+    ReconciliationDecision,
+    ReconciliationEntryRow,
+    ReconciliationRun,
+    ReconciliationScript,
+    RegisteredCandidate,
     ReviewConflict,
     ScanBatch,
     SchemaMigration,
@@ -154,6 +160,67 @@ def _migration_003_review_and_audit(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+def _migration_004_reconciliation(connection: Connection) -> None:
+    """Add Phase 7 candidate reconciliation, and generalise the audit ledger.
+
+    Two parts.
+
+    **The five new tables** are purely additive: a project processed before
+    this version keeps every batch, result and conflict, and simply has no
+    roster until one is imported.
+
+    **``audit_event`` gains ``entity_type`` and ``entity_id``** so that a
+    decision about a candidate or a script is recorded in the same append-only
+    ledger, under the same triggers, as a decision about a recognition
+    conflict - rather than in a second history table with its own, weaker
+    guarantees.
+
+    Existing rows are **deliberately not backfilled.** ``ADD COLUMN`` is a
+    schema change and does not fire the immutability triggers; an ``UPDATE`` to
+    populate the new columns would, and rightly so. The column default
+    (``'conflict'``) is therefore chosen to be already correct for every row
+    that predates this migration, and a conflict's history is still queried by
+    ``conflict_id`` exactly as before. Nothing has to be rewritten, so nothing
+    is.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[CandidateRoster.__tablename__],
+            Base.metadata.tables[RegisteredCandidate.__tablename__],
+            Base.metadata.tables[ReconciliationRun.__tablename__],
+            Base.metadata.tables[ReconciliationEntryRow.__tablename__],
+            Base.metadata.tables[ReconciliationScript.__tablename__],
+            Base.metadata.tables[ReconciliationDecision.__tablename__],
+        ],
+    )
+
+    existing = {
+        row[1]
+        for row in connection.execute(text("PRAGMA table_info(audit_event)")).all()
+    }
+    if "entity_type" not in existing:
+        connection.execute(
+            text(
+                "ALTER TABLE audit_event ADD COLUMN entity_type "
+                "VARCHAR(20) NOT NULL DEFAULT 'conflict'"
+            )
+        )
+    if "entity_id" not in existing:
+        connection.execute(
+            text(
+                "ALTER TABLE audit_event ADD COLUMN entity_id "
+                "VARCHAR(64) NOT NULL DEFAULT ''"
+            )
+        )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_audit_event_entity "
+            "ON audit_event (entity_type, entity_id, event_id)"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -169,6 +236,14 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=3,
         description="Phase 6 conflict review: review_conflict, audit_event",
         apply=_migration_003_review_and_audit,
+    ),
+    Migration(
+        version=4,
+        description=(
+            "Phase 7 reconciliation: candidate_roster, registered_candidate, "
+            "reconciliation_run/entry/script/decision; audit_event entity columns"
+        ),
+        apply=_migration_004_reconciliation,
     ),
 )
 

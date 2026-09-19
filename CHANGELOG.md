@@ -8,6 +8,111 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Added — Phase 7
+
+Candidate & Attendance Reconciliation: the candidate list an examination office
+already holds is imported, the scanned scripts are matched against it, and
+every discrepancy becomes an explicit exception somebody has to look at.
+**Nothing is dropped, merged or silently chosen between.** Full detail:
+`development/PHASE_07_HANDOFF.md`; operator description:
+`docs/reconciliation.md`.
+
+- **Four values are kept independently traceable**: what the roster file said,
+  what recognition read, what an operator decided, and the effective value that
+  follows. Only the last is computed. `registered_candidate` is write-once and
+  the machine's reading is never overwritten, so overriding an attendance or
+  reassigning a script can never cost the record of what it changed *from*.
+- **`omr_scanner.domain.reconciliation`**: the vocabulary — seven
+  classifications, five issues that can co-occur, four attendance states, nine
+  actions and nine reason codes, with the operator-facing wording on the enum
+  rather than scattered through the interface.
+- **`omr_scanner.services.candidate_import`**: CSV and `.xlsx` (via
+  `openpyxl`; pandas deliberately not used for a single pass over a
+  spreadsheet). Worksheet selection, a preview of the real file, and a column
+  mapping the operator confirms — **Candidate ID** required, **Name** and
+  **Marks / Attendance** optional.
+- **A marks column doubles as attendance**: `ABSENT` or `ABS`, any case, any
+  spacing, means absent; anything else — including a blank cell and a mark of
+  zero — means not marked absent. Compared as **whole tokens**, so `ABSENTEE`,
+  `ABSENCE` and `ABS123` are not absences. The column name is never
+  hard-coded: `Total (90)` matches because `total` does.
+- **Candidate IDs are identifiers, not quantities.** An Excel cell holding
+  `15000001` imports as `"15000001"`, never `"15000001.0"`; a non-integral
+  value is left alone rather than rounded, because rounding is how two
+  candidates become one; text IDs and leading zeros pass through untouched.
+- **It refuses to guess.** Two columns that equally name a candidate ID stop
+  the import and ask; a repeated candidate ID stops it with the ID and both row
+  numbers, because the file states two different facts about one person. A
+  failed import leaves **nothing** behind.
+- **Every malformed input fails readably** rather than crashing: corrupt
+  workbook, a zip that is not one, empty worksheet, header-only file, legacy
+  `.xls` (with the two-click fix), unsupported extension, malformed CSV, UTF-8
+  BOM, a mapping naming one column twice.
+- **`omr_scanner.services.reconciliation`**: one pure, deterministic function
+  over value objects. No clock, no config, no database — which is what lets the
+  rules be tested as a table and makes a re-run idempotent.
+- **Seven classifications**: Matched, Absent confirmed, Unknown candidate ID,
+  Duplicate script, Present but no script found, Marked absent but script
+  found, and **Candidate ID not yet resolved** — kept distinct so a roll number
+  still awaiting review on the Resolve stage is never reported as an unknown
+  candidate. The two need different actions.
+- **Conditions that co-occur are both reported.** A candidate marked absent
+  with two scripts carries both issues; the headline is chosen by documented
+  precedence and never replaces the set. An architecture holding one status
+  would make a physical script invisible.
+- **Six additive tables, created by migration 4**, plus `entity_type` and
+  `entity_id` on `audit_event` so a decision about a candidate or a script is
+  recorded in the **same append-only ledger**, under the same triggers, as a
+  decision about a recognition conflict. Existing audit rows were
+  **deliberately not backfilled** — an `UPDATE` there is aborted by those
+  triggers, so the new column's default was chosen to be already correct.
+- **Resolution that never destroys**: assign a script to the right candidate,
+  set an accidental re-scan **aside** (its scan row, recognition result, reason
+  and audit trail all kept — never deleted), nominate the working script,
+  override attendance, or accept an exception as-is. Every action needs a named
+  operator and a reason.
+- **Cascades are surfaced, not hidden.** Every decision re-runs reconciliation,
+  so assigning a script to a candidate who already has one reports the new
+  duplicate at once rather than at export time. An entry whose issues a
+  decision did not clear stays **open**; being touched is not being fixed.
+- **Reconciliation output is a cache, decisions are the input.** Entry and
+  script rows are rewritten wholesale on every run, so a stale classification
+  cannot survive a roster change; operator decisions live in their own table
+  and steer the next run.
+- **Re-importing supersedes rather than merges**, after a warning. The old
+  roster and every decision taken against it are kept — an audit trail pointing
+  at a deleted roster explains nothing.
+- **The Attendance stage** (`omr_scanner.gui.attendance`), no longer a
+  placeholder: roster bar, live summary counts, a table filtered and counted in
+  SQL, a detail panel listing every script including set-aside ones, the
+  entry's full history, and the decision panel. Import and reconciliation both
+  run off the GUI thread.
+- **Download Sample Template…** hands the operator a packaged example workbook
+  containing placeholder data only. It lives **inside** the package and is read
+  through `importlib.resources`, so it works in a wheel and a frozen build —
+  the top-level `resources/` directory is dev fixtures and is never shipped.
+- **No candidate name, ID or mark reaches an application log**, enforced by 18
+  dedicated tests, a grep that fails if a Phase 7 module formats candidate data
+  into a log call, and a smoke check that captures the root logger through a
+  whole import-reconcile-assign cycle. Even an unexpected exception is logged
+  by type only.
+- **Phases 5 and 6 are untouched.** The worker pool, cancellation, resume and
+  progress are exactly as they were — asserted by reconciling the same sheets
+  read on 1 worker and on 4 and comparing, with the reported worker count
+  checked so the comparison cannot be between two sequential runs.
+
+### Fixed
+
+- **A candidate's roll number could reach the application log.** With renaming
+  on, `batch_processor` logged the *destination* file name of each copied
+  scan — which is the roll number. Two log lines now omit it. (Phase 3 code;
+  found while making the Phase 7 privacy rule executable.)
+- **A superseded background worker was never joined.** Dropping the reference
+  to a still-running `QThread` leaves a thread whose parent is later destroyed,
+  which aborts the process with no traceback. The Resolve page (Phase 6) and
+  both Phase 7 workers now track every worker and join all of them on
+  shutdown, not just the most recent.
+
 ### Added — Phase 6
 
 Conflict Detection & Human Resolution: everything recognition was unsure about

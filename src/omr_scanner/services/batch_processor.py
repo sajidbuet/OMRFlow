@@ -367,7 +367,14 @@ def finalise_scan(
     try:
         _copy_to_output(path, destination)
     except (OSError, FileExistsError) as exc:
-        _LOGGER.warning("Could not copy %s to %s: %s", path.name, destination, exc)
+        # Neither the destination name nor its path is logged: with renaming on,
+        # the output file is *named after the candidate's roll number*, so
+        # logging it would put a candidate identifier in the application log -
+        # which `docs/ARCHITECTURE.md` forbids and Phase 7's exit criteria
+        # restate. The source name is the scanner's own and carries nothing.
+        _LOGGER.warning(
+            "Could not copy %s to the output folder: %s", path.name, exc
+        )
         note = f"The scan could not be copied to the output folder: {exc}"
         return ProcessedScan(
             result=result,
@@ -375,7 +382,7 @@ def finalise_scan(
             message=f"{message} {note}".strip(),
         )
 
-    _LOGGER.info("Copied %s to %s", path.name, destination.name)
+    _LOGGER.info("Copied %s to the output folder", path.name)
     return ProcessedScan(
         result=result,
         output_name=name,

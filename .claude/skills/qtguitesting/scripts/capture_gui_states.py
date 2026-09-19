@@ -733,9 +733,70 @@ def _capture_review(_image: Path) -> list[Path]:
     return written
 
 
+def _capture_reconciliation(_image: Path) -> list[Path]:
+    """The Attendance page: the exceptions, then one of them resolved.
+
+    Three images: the exception list a reconciliation produces, the detail of a
+    candidate marked absent who nevertheless handed a script in, and the state
+    after a named decision - where the row must still show what the candidate
+    list said alongside what the operator decided.
+    """
+    from _harness import build_reconciliation_page
+
+    from omr_scanner.domain.reconciliation import (
+        AttendanceState,
+        ReconciliationReason,
+    )
+    from omr_scanner.services import reconciliation_store
+
+    written: list[Path] = []
+    harness = build_reconciliation_page(operator="Dr. A. Rahman")
+
+    counts = harness.counts()
+    print(
+        f"  reconciled: {counts.registered} registered, {counts.scripts} script(s), "
+        f"{counts.outstanding} exception(s) outstanding"
+    )
+    written.append(_save(harness.page, "reconciliation_exceptions"))
+
+    harness.select("100005")
+    harness.process_events()
+    entry = harness.entries()["100005"]
+    print(
+        f"  selected 100005: {entry.status.label}; list said "
+        f"{entry.candidate.imported_attendance.label.lower()}"
+    )
+    written.append(_save(harness.page, "reconciliation_absent_with_script"))
+
+    reconciliation_store.override_attendance(
+        harness.database,
+        harness.roster_id,
+        harness.batch_id,
+        "100005",
+        attendance=AttendanceState.PRESENT,
+        operator=harness.operator,
+        reason=ReconciliationReason.CANDIDATE_ATTENDED,
+    )
+    harness.reconcile()
+    harness.show_everything()
+    harness.select("100005")
+    harness.process_events()
+    entry = harness.entries()["100005"]
+    print(
+        f"  after override: effective={entry.effective_attendance.value!r} by "
+        f"{entry.reviewer!r}, imported="
+        f"{entry.candidate.imported_attendance.value!r} kept"
+    )
+    written.append(_save(harness.page, "reconciliation_attendance_overridden"))
+
+    harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
     "review": _capture_review,
+    "reconciliation": _capture_reconciliation,
     "loaded": _capture_loaded,
     "question": _capture_question_region,
     "bubble": _capture_bubble_radius,

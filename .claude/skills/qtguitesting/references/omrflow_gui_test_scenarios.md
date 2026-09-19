@@ -220,6 +220,64 @@ page re-selects by conflict id (`_restore_selection`); a scenario that reads
 `current_conflict()` straight after a decision without waiting for the rebuild
 is reading the queue mid-flight.
 
+### Attendance page (Phase 7)
+
+| `objectName` | Widget |
+| --- | --- |
+| `activeRosterLabel` | Which candidate list is in force, or "no candidate list imported" |
+| `importRosterButton`, `downloadSampleTemplateButton`, `reconcileButton` | The three roster commands |
+| `reconciliationSummaryLabel` | Every count, and whether work remains |
+| `reconciliationStatusFilter` | Everything / Exceptions only / one classification |
+| `reconciliationResolutionFilter` | Any / Needs review / Resolved / Accepted as-is |
+| `reconciliationSearchBox` | Free text over candidate ID and name |
+| `reconciliationTable` | One row per candidate or unplaced script group |
+| `reconciliationCountLabel` | "12 row(s) shown · 5 needing review" |
+| `reconciliationDetailLabel` | What is wrong, and what the list said |
+| `entryScriptsList` | Every script on this entry, **including set-aside ones** |
+| `assignCandidateEdit`, `assignScriptButton` | Attribute the selected script by hand |
+| `excludeScriptButton` | Set aside / bring back. Label changes with state |
+| `overrideAttendanceButton` | Override the imported attendance |
+| `dismissEntryButton` | Accept as-is / put back. Label changes with state |
+| `reconciliationReasonCombo`, `reconciliationReasonText` | Reason code, and the explanation "Other" requires |
+| `reconciliationHistoryLabel` | Every decision recorded about this entry |
+| `reconciliationOperatorLabel` | Who decisions are recorded as, or a warning |
+
+Import dialog: `rosterFileLabel`, `rosterSheetCombo`, `candidateIdColumnCombo`,
+`candidateNameColumnCombo`, `attendanceColumnCombo`, `rosterPreviewTable`,
+`rosterValidationLabel`, `confirmRosterImportButton`.
+
+**The table opens on "Exceptions only".** That is the work. A scenario that
+expects to find a *matched* candidate must call
+`ReconciliationHarness.show_everything()` first, or it will fail looking for a
+row that is deliberately filtered out.
+
+**Reconciliation runs in a `QThread`.** Use `harness.reconcile()`, which pumps
+events until `reconciled` fires - reading the table straight after calling
+`page.reconcile()` reads the *previous* run's rows. Note that `reconciled`
+carries **no payload**, so a slot connected to it must take no arguments;
+`done.append` will raise `TypeError`.
+
+**Do not name test scan files after roll numbers.** The Phase 3 pipeline logs
+each scan's file name, so a fixture called `m_100001.png` puts `100001` into
+the log through Phase 3 - and makes the Phase 7 privacy check assert the wrong
+thing. `build_reconciliation_page` names its sheets `scan_a.png`…`scan_e.png`
+for exactly this reason.
+
+**Every decision needs a named operator.** `build_reconciliation_page(...)` sets
+one; pass `operator=""` to exercise the refusal. Without it every action raises
+and nothing is written - correct behaviour, not a harness failure.
+
+**A decision re-runs reconciliation.** The page's `resolution_recorded` signal
+fires after the table is rebuilt, so a test that drives the page should wait on
+it. A test that calls `reconciliation_store` *directly* must not - the page
+emits nothing it did not do.
+
+**Call `AttendancePage.shutdown()` (or `close()`) before the session closes**,
+and the same for `RosterImportDialog`. Both track *every* worker they start,
+not just the most recent: the import dialog starts a reader on each column
+change, and a superseded `QThread` is still a running thread. One alive at
+teardown aborts the process with exit code 9 and no traceback.
+
 ### Calibration page (Phase 4)
 
 | `objectName` | Widget |
@@ -732,6 +790,77 @@ end, both tamper refusals, and the missing-reviewer refusal).
 
 ---
 
+## Scenario 19 - Candidate reconciliation (Phase 7)
+
+Import a candidate list, reconcile the batch against it, and resolve what does
+not line up. The whole scenario is about one claim: **a discrepancy is
+something to review, never something to silently discard.**
+
+```python
+harness = build_reconciliation_page(operator="Dr. Smoke Test")
+harness.show_everything()        # the table opens on exceptions only
+entries = harness.entries()
+```
+
+**Verify, in order:**
+
+1. Every classification the phase names is produced from one batch:
+
+```python
+assert entries["100001"].status.value == "matched"
+assert entries["100002"].status.value == "duplicate_script"
+assert entries["100003"].status.value == "absent_confirmed"
+assert entries["100004"].status.value == "present_without_script"
+assert entries["100005"].status.value == "absent_with_script"
+assert entries["999999"].status.value == "unknown_id"
+```
+
+2. **No script has vanished.** Every scan in the batch appears in exactly one
+   entry, including the one belonging to nobody.
+3. Resolve the unknown ID onto `100004`, then assert **all three** values:
+
+```python
+assert entries["100004"].status.value == "matched"           # the effect
+assert script.machine_candidate_id == "999999"               # the engine, kept
+assert history[0].reviewer == "Dr. Smoke Test"               # who is answerable
+```
+
+4. Override `100005`'s attendance and assert the *imported* value survives:
+
+```python
+assert entry.effective_attendance.value == "present"
+assert entry.candidate.imported_attendance.value == "absent"   # the file, kept
+```
+
+5. Assign a script to a candidate who already has one: the entry must become
+   `duplicate_script` **immediately**, not at export time.
+6. Set one of a duplicate pair aside: the entry becomes `matched`,
+   `script_count` falls to 1, and `len(entry.scripts)` stays at 2 - the script
+   is set aside, never deleted.
+7. Clear the operator name and try again: the decision is refused and the entry
+   keeps its previous state.
+8. Save the sample template, read it straight back, and confirm it carries only
+   placeholder names.
+9. Capture the root logger across a whole import-reconcile-assign cycle and
+   assert **no candidate ID or name appears in it**.
+
+**What is easy to get wrong here.** Asserting only that the effective value
+changed. An implementation that overwrote the imported attendance or the
+machine's roll number would pass that and fail the entire phase - check the
+source values every time.
+
+**Automated:** `tests/unit/test_candidate_import.py` (87),
+`tests/unit/test_reconciliation.py` (44),
+`tests/unit/test_reconciliation_store.py` (55),
+`tests/unit/test_candidate_privacy.py` (18),
+`tests/integration/test_reconciliation_workflow.py` (19, real recognition over
+real sheets), `tests/gui/test_attendance_page.py` (56) and
+`scripts/run_gui_smoke_tests.py` (five checks: every classification, the
+machine-and-imported-values check, the missing-operator refusal, the sample
+download, and the log capture).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -780,6 +909,9 @@ review_conflict_open.png
 review_zoomed_field.png
 review_original_scan.png
 review_conflict_resolved.png
+reconciliation_exceptions.png
+reconciliation_absent_with_script.png
+reconciliation_attendance_overridden.png
 ```
 
 `scan_overlay_zoom.png` is the one worth reading closely: it is the answer area
@@ -798,6 +930,19 @@ visibly false. It must read like *"Effective value: **B** — corrected by
 **<name>** at <time>. Machine read **B-D**, which is kept."* A resolved
 conflict that shows only the corrected value has lost the machine's
 observation, and no amount of passing unit tests makes that acceptable.
+
+`reconciliation_attendance_overridden.png` is the Phase 7 equivalent, and it
+is the one image where that phase's invariant is visibly true or visibly false.
+The row must read *"Expected present (list said marked absent)"* and the detail
+*"Candidate list said: **Marked absent** (cell read 'abs')"* beside *"A
+reviewer recorded: **Expected present**"*. A row showing only the new value has
+lost the imported one, and no amount of passing unit tests makes that
+acceptable.
+
+Reading it beside `reconciliation_exceptions.png` also catches the arithmetic:
+the summary's *Resolved* count and the table's *needing review* count must move
+in opposite directions when a decision is recorded. That comparison is how the
+dead `Resolved 0` count was found.
 
 `review_zoomed_field.png` is worth reading at 1:1 beside
 `scan_overlay_zoom.png`: both draw the recognition engine's own coordinates,

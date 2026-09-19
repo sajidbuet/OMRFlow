@@ -51,6 +51,7 @@ from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, ProcessingSettings, load_app_config, save_app_config
 from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
+from omr_scanner.gui.attendance.page import AttendancePage
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
 from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
@@ -185,6 +186,8 @@ class MainWindow(QMainWindow):
                 page = scan_page
             elif spec.key == "resolve":
                 page = ResolvePage(spec)
+            elif spec.key == "attendance":
+                page = AttendancePage(spec)
             else:
                 page = PlaceholderPage(spec)
 
@@ -473,6 +476,26 @@ class MainWindow(QMainWindow):
         page = self._pages.get("resolve")
         return page if isinstance(page, ResolvePage) else None
 
+    def _attendance_page(self) -> AttendancePage | None:
+        """The Attendance page, when this window built a real one."""
+        page = self._pages.get("attendance")
+        return page if isinstance(page, AttendancePage) else None
+
+    def reconcile_batch(self, batch_id: str) -> bool:
+        """Open a batch's candidate reconciliation in the Attendance stage.
+
+        Args:
+            batch_id: The batch to reconcile.
+
+        Returns:
+            Whether the stage could be opened with that batch.
+        """
+        page = self._attendance_page()
+        if page is None:
+            return False
+        page.set_batch(batch_id)
+        return self.show_page("attendance")
+
     def review_batch(self, batch_id: str) -> bool:
         """Open a batch's conflicts in the Resolve stage.
 
@@ -685,6 +708,13 @@ class MainWindow(QMainWindow):
         resolve_page = self._resolve_page()
         if resolve_page is not None:
             resolve_page.set_reviewer(self._config.reviewer_name)
+        attendance_page = self._attendance_page()
+        if attendance_page is not None:
+            # The same name: the person reconciling a script against a roster
+            # is the same kind of named authority as the one correcting a
+            # recognised value, and asking for two would invite one to be left
+            # blank.
+            attendance_page.set_operator(self._config.reviewer_name)
 
     # ------------------------------------------------------------------
     # Internal state propagation
@@ -836,6 +866,12 @@ class MainWindow(QMainWindow):
         review_page = self._resolve_page()
         if review_page is not None:
             review_page.shutdown()
+        attendance_page = self._attendance_page()
+        if attendance_page is not None:
+            # Joined before the project closes for the same reason the batch
+            # is: a reconciliation worker still writing when the database goes
+            # away would abort mid-transaction.
+            attendance_page.shutdown()
 
         self.close_project()
         logger.info("Main window closed")

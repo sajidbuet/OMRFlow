@@ -66,6 +66,15 @@ desktop.ini
 /private_dataset/
 /private_test_data/
 
+# Candidate/attendance lists (Phase 7). A real roster is a list of names and
+# roll numbers, so one left in the working tree must not be committed by
+# accident. The committed fixtures under `tests/fixtures/reconciliation/` and
+# the packaged sample inside the package are fictional and stay tracked.
+/candidate_lists/
+/*.xlsx
+/*.csv
+!/tests/fixtures/**/*.csv
+
 # Benchmark reports written beside a dataset by Tools > Developer / Testing.
 # Reproducible from the dataset plus the engine, and the interesting one is
 # always the *latest*, which is not a thing to keep in version control.

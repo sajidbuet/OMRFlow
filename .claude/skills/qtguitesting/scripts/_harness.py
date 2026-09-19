@@ -675,6 +675,223 @@ def build_review_page(
     return harness
 
 
+@dataclass
+class ReconciliationHarness:
+    """An Attendance page on a roster and a batch that really disagree."""
+
+    page: object
+    session: object
+    batch_id: str
+    roster_id: int
+    roster_path: Path
+    operator: str
+
+    @property
+    def database(self) -> object:
+        """The open project's database."""
+        return self.session.database
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting. See `DesignerHarness`."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def settle(self) -> None:
+        """Give the page real laid-out geometry without showing a window."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        widget: QWidget = self.page  # type: ignore[assignment]
+        widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        widget.show()
+        widget.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.process_events()
+
+    def reconcile(self, *, timeout_ms: int = 120_000) -> bool:
+        """Reconcile, and pump events until the worker has finished.
+
+        Reconciliation runs in a ``QThread``, so a scenario that reads the
+        table straight after calling this would read the previous run's rows.
+        """
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        done: list[bool] = []
+
+        def note() -> None:
+            # `reconciled` carries no payload, so the slot must take none.
+            done.append(True)
+
+        self.page.reconciled.connect(note)
+        try:
+            if not self.page.reconcile():
+                return False
+            clock = QElapsedTimer()
+            clock.start()
+            while not done:
+                QApplication.processEvents()
+                if clock.elapsed() > timeout_ms:
+                    raise TimeoutError(
+                        f"reconciliation did not finish within {timeout_ms} ms"
+                    )
+        finally:
+            self.page.reconciled.disconnect(note)
+        self.process_events()
+        return True
+
+    def entries(self) -> dict[str, object]:
+        """The current table's entries, keyed by the ID they are filed under."""
+        return {entry.candidate_id: entry for entry in self.page.state.entries}
+
+    def show_everything(self) -> None:
+        """Drop the default "exceptions only" filter."""
+        self.page.status_filter.setCurrentIndex(0)
+        self.process_events()
+
+    def select(self, candidate_id: str) -> bool:
+        """Select the row filed under ``candidate_id``."""
+        for row, entry in enumerate(self.page.state.entries):
+            if entry.candidate_id == candidate_id:
+                self.page.table.selectRow(row)
+                self.process_events()
+                return True
+        return False
+
+    def counts(self) -> object:
+        """The stored summary counts for this roster and batch."""
+        from omr_scanner.services import reconciliation_store
+
+        return reconciliation_store.stored_counts(
+            self.database, self.roster_id, self.batch_id
+        )
+
+    def shutdown(self) -> None:
+        """Close the page, then the project. Order matters, as in Phase 5."""
+        self.page.close()
+        self.session.close()
+
+
+def build_reconciliation_page(
+    *, operator: str = "Dr. Smoke Test", timeout_ms: int = 120_000
+) -> ReconciliationHarness:
+    """Build an Attendance page on the acceptance scenario.
+
+    Renders five sheets through the real pipeline and imports a roster that
+    disagrees with them in every way the phase names: a clean match, a
+    duplicate, a candidate marked absent who handed one in, one expected who
+    did not, and a sheet whose roll number is on nobody's list.
+
+    Args:
+        operator: The name decisions are recorded against. Pass ``""`` to
+            exercise the "a decision needs a named operator" refusal.
+        timeout_ms: How long to wait for the reconciliation worker.
+
+    Returns:
+        The harness, already reconciled once.
+    """
+    import cv2
+
+    from omr_scanner.gui.attendance.page import AttendancePage
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.services import batch_store, reconciliation_store, review_store
+    from omr_scanner.services.batch_processor import process_batch
+    from omr_scanner.services.candidate_import import read_roster
+
+    if str(REPOSITORY_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPOSITORY_ROOT))
+    from tests.conftest import build_answer_sheet_template, render_marked_sheet
+
+    template = build_answer_sheet_template()
+    session = _throwaway_project()
+
+    work = OUTPUT_ROOT / "reconciliation" / uuid_hex()
+    work.mkdir(parents=True, exist_ok=True)
+
+    def marks(roll: str) -> dict:
+        return {
+            "roll_number": dict(enumerate(roll)),
+            "set_code": {0: "A"},
+            "questions_0": dict.fromkeys(range(10), "B"),
+            "questions_1": dict.fromkeys(range(10), "C"),
+        }
+
+    # Deliberately *not* named after their roll numbers. The Phase 3 pipeline
+    # logs the file name of a scan it reads - documented, and useful, because
+    # it is the operator's own name for their own file. A harness that named
+    # its files `m_100001.png` would therefore put "100001" in the log through
+    # Phase 3 and make the Phase 7 privacy check assert the wrong thing.
+    plan = [
+        ("scan_a.png", "100001"),   # matched
+        ("scan_b.png", "100002"),   # duplicate pair
+        ("scan_c.png", "100002"),
+        ("scan_d.png", "100005"),   # marked absent, yet here it is
+        ("scan_e.png", "999999"),   # on nobody's list
+    ]
+    paths = []
+    for name, roll in plan:
+        path = work / name
+        cv2.imwrite(str(path), render_marked_sheet(template, marks(roll)))
+        paths.append(path)
+
+    # Every identifier and name below is fictional; a packaged or committed
+    # roster must never carry real candidate data.
+    roster_path = work / "candidates.csv"
+    roster_path.write_text(
+        "Sl.No.,Roll No.,Name,Total (90),Merit\n"
+        "1,100001,CANDIDATE A,55,1\n"
+        "2,100002,CANDIDATE B,60,2\n"
+        "3,100003,CANDIDATE C,ABSENT,---\n"
+        "4,100004,CANDIDATE D,,---\n"
+        "5,100005,CANDIDATE E, abs ,---\n",
+        encoding="utf-8",
+    )
+
+    database = session.database
+    batch_id = batch_store.create_batch(
+        database, paths, identity=batch_store.BatchIdentity.of(template)
+    )
+    recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+    report = process_batch(paths, template, on_result=recorder.record, workers=1)
+    recorder.flush()
+    batch_store.finalise_batch(database, batch_id)
+
+    ids = batch_store.scan_ids_by_path(database, batch_id)
+    for item in report.processed:
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[item.source_path],
+            result=item.result,
+            template=template,
+        )
+    review_store.sync_duplicate_identifiers(database, batch_id)
+
+    roster_id = reconciliation_store.import_roster(
+        database, read_roster(roster_path), imported_by=operator
+    )
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+    page = AttendancePage(spec)
+    page.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    page.on_project_changed(session)
+    page.set_operator(operator)
+    page.set_batch(batch_id)
+
+    harness = ReconciliationHarness(
+        page=page,
+        session=session,
+        batch_id=batch_id,
+        roster_id=roster_id,
+        roster_path=roster_path,
+        operator=operator,
+    )
+    harness.settle()
+    harness.reconcile(timeout_ms=timeout_ms)
+    return harness
+
+
 def uuid_hex() -> str:
     """A short unique directory name, so repeated runs never collide."""
     import uuid
