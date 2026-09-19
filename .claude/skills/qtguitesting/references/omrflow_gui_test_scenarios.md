@@ -147,6 +147,79 @@ assert resumed.total == 2                    # the two left, not all four
 assert harness.batch_summary.processed == 4
 ```
 
+### Resolve page (Phase 6)
+
+| `objectName` | Widget |
+| --- | --- |
+| `resolvePage` | The page itself |
+| `conflictQueuePanel` | The whole left-hand queue |
+| `reviewBatchLabel` | Which batch is under review, or "no batch" |
+| `conflictStateFilter` | Unresolved / Open / Resolved / Deferred / Withdrawn / All |
+| `conflictTypeFilter` | One conflict type, or all of them |
+| `conflictSearchBox` | Free text over student ID and file name |
+| `conflictQueueTable` | The queue. One row per conflict |
+| `reviewSummaryLabel` | Live counts for the batch |
+| `reviewToolbar` | Navigation, zoom and history |
+| `previousConflictButton`, `nextConflictButton`, `nextUnresolvedConflictButton` | Queue navigation |
+| `reviewZoomOutButton`, `reviewZoomInButton`, `reviewFitButton`, `reviewRecentreButton` | View controls |
+| `conflictHistoryButton` | Opens `conflictHistoryDialog` |
+| `sheetConflictProgressLabel` | "conflict 2 of 7 on this sheet" |
+| `reviewViewTabs` | Zoomed field / Normalised sheet / Original scan |
+| `conflictZoomView`, `normalisedSheetView`, `originalSheetView` | The three views, all `ScanPreviewView` |
+| `originalSheetNote` | Where on the original the field is - the original carries **no** overlay |
+| `conflictDecisionPanel` | The whole right-hand decision panel |
+| `machineEvidenceLabel` | What the machine saw, with each option's **fill score** |
+| `reviewerNameLabel` | The configured reviewer, or a warning that there is none |
+| `choiceButton_<LABEL>` | One per template option, plus `choiceButton_(blank)` |
+| `correctedValueEdit`, `saveCorrectedValueButton` | Free text, shown **instead** of the buttons when the field has no fixed alphabet |
+| `correctionReasonCombo`, `correctionReasonText` | Reason code, and the explanation "Other" requires |
+| `acceptMachineValueButton`, `deferConflictButton`, `reopenConflictButton` | The other three actions |
+| `conflictProvenanceLabel` | Where this conflict's current value comes from |
+| `conflictHistoryDialog`, `conflictHistoryLabel` | The audit history |
+
+Scan page additions: `reviewConflictsButton`, `batchConflictLabel`.
+
+**Value buttons are built from the template, so do not hard-code them.** The
+labels come from `conflict_policy.group_labels()`, which reads the same zone
+grouping recognition used - a six-option template yields six buttons plus
+`(blank)`. Find them with `page.findChild(QPushButton, f"choiceButton_{label}")`
+after a conflict is selected, or walk `page._choice_buttons`.
+
+**Three controls are mutually exclusive by design**, and a test that assumes
+otherwise is asserting the wrong thing:
+
+- a **field** conflict with a fixed alphabet shows `choiceButton_*`;
+- a conflict with **no** fixed alphabet (a whole identifier, a duplicate roll
+  number) shows `correctedValueEdit` instead - `group_labels()` returns empty;
+- a **processing failure** (`ConflictType.is_processing_failure`) shows neither,
+  because `A`/`B`/`C`/`D` is not an answer to a corrupt JPEG.
+
+**Never sleep waiting for a sheet.** Selecting a conflict re-reads that one
+sheet in a `SheetWorker` thread and emits `sheet_ready`. Wait on the
+**condition**, not the signal: the page auto-selects row 0 when a batch loads,
+so by the time a scenario calls `select()` the signal it wanted may already have
+fired. `ReviewHarness.select()` in `_harness.py` waits for
+`bundle is not None and page._loaded_scan_id == target.scan_id` for this reason.
+
+**Walking one sheet's conflicts must decode its image once.** The worker is
+started only when the selected conflict belongs to a *different* sheet. A
+scenario that asserts otherwise has caught a real regression.
+
+**Call `ResolvePage.shutdown()` before the session closes.** A `SheetWorker`
+still running at interpreter teardown aborts the process with exit code 9.
+`ReviewHarness.shutdown()` does this; `MainWindow.closeEvent` does it in the
+application.
+
+**A decision needs a reviewer name.** `build_review_page(...)` sets one. Without
+it every correction is refused and the conflict stays `open` - correct
+behaviour, not a harness failure.
+
+**A resolved conflict leaves the filtered queue.** The table keeps its row
+index, so after a decision the row at that index is a *different* conflict. The
+page re-selects by conflict id (`_restore_selection`); a scenario that reads
+`current_conflict()` straight after a decision without waiting for the rebuild
+is reading the queue mid-flight.
+
 ### Calibration page (Phase 4)
 
 | `objectName` | Widget |
@@ -595,6 +668,70 @@ and the sampled-vs-printed geometry check).
 
 ---
 
+## Scenario 18 - Conflict review (Phase 6)
+
+Process a batch with a project open, then review what the machine was unsure
+about. The whole scenario is about one claim: **the interface must never show a
+value different from the one the engine produced, and a human decision must
+never replace it.**
+
+```python
+harness = build_review_page(scans, with_project=True, reviewer="Dr. Smoke Test")
+harness.run_batch()                          # detection runs when it finishes
+conflict = harness.select(ConflictType.ANSWER_MULTIPLE)
+```
+
+**Verify, in order:**
+
+1. The queue lists one row per conflict, and `reviewSummaryLabel` counts agree
+   with `review_store.count_conflicts()` - the GUI must not count separately.
+2. Selecting a conflict loads **all three** views. `conflictZoomView` is
+   centred on the disputed group and **only** that group is ringed; a scenario
+   that finds two groups highlighted has caught a real defect.
+3. `originalSheetView` carries **no overlay**, and `originalSheetNote` says
+   where on the original the field is. Canonical coordinates do not apply to a
+   non-canonical image, so drawing them there would be a lie.
+4. `machineEvidenceLabel` reports the machine's value, its status, its decision
+   score and each option's **fill score** - the words "fill score", never
+   "probability".
+5. Correct it. Then assert **both** halves of the invariant:
+
+```python
+harness.correct("B", reason=ReasonCode.DOMINANT_MARK)
+provenance = review_store.provenance_for(db, conflict.conflict_id)
+assert provenance.value == "B"                    # the effective value
+assert provenance.machine_value == "B-D"          # still intact, both marks
+assert provenance.source is ValueSource.HUMAN
+assert provenance.reviewer == "Dr. Smoke Test"
+```
+
+6. Clear the reviewer name and correct again: the correction is **refused** and
+   the conflict is still `open`. Attribution is not optional.
+7. Attempt to rewrite the ledger. Both must raise:
+
+```python
+with database.session() as session:
+    session.execute(text("UPDATE audit_event SET actor = 'someone else'"))   # aborts
+    session.execute(text("DELETE FROM audit_event"))                          # aborts
+```
+
+8. Reopen the decision: the effective value falls back to the machine's, and
+   the superseded correction is **still in the history** with its own reviewer,
+   reason and timestamp.
+
+**What is easy to get wrong here.** Asserting only that the corrected value
+appears. A page that overwrote the machine value would pass that and fail the
+entire phase - check `machine_value` every time.
+
+**Automated:** `tests/unit/test_conflict_policy.py` (40 tests, detection in
+isolation), `tests/unit/test_review_store.py` (48, the ledger rules and the
+queue at 10,000 conflicts), `tests/integration/test_conflict_review.py` (24,
+scenarios A-E against real rendered sheets), `tests/gui/test_resolve_page.py`
+(37) and `scripts/run_gui_smoke_tests.py` (a named decision recorded end to
+end, both tamper refusals, and the missing-reviewer refusal).
+
+---
+
 ## Screenshots to keep
 
 Written to `test-output/gui/` by `scripts/capture_gui_states.py`:
@@ -639,6 +776,10 @@ calibration_threshold_ambiguous.png
 calibration_mismatched_failed.png
 calibration_displaced_zones.png
 calibration_displaced_zoomed.png
+review_conflict_open.png
+review_zoomed_field.png
+review_original_scan.png
+review_conflict_resolved.png
 ```
 
 `scan_overlay_zoom.png` is the one worth reading closely: it is the answer area
@@ -650,6 +791,18 @@ and bottom** of the same sheet on purpose. A scale or perspective error
 accumulates down the page, so a template that looks perfectly aligned in the
 Student ID block can be most of a bubble out by question 100. Checking one
 region proves nothing about the others.
+
+`review_conflict_resolved.png` is the Phase 6 equivalent of a zoomed overlay:
+the one image where the phase's whole invariant is either visibly true or
+visibly false. It must read like *"Effective value: **B** — corrected by
+**<name>** at <time>. Machine read **B-D**, which is kept."* A resolved
+conflict that shows only the corrected value has lost the machine's
+observation, and no amount of passing unit tests makes that acceptable.
+
+`review_zoomed_field.png` is worth reading at 1:1 beside
+`scan_overlay_zoom.png`: both draw the recognition engine's own coordinates,
+and a highlight that sits a few pixels off the printed bubbles means the
+reviewer is being shown the wrong evidence to decide from.
 
 `calibration_displaced_zoomed.png` is the counter-example to read beside them:
 same real scan, zones shifted by 2 per cent of the page, registration still

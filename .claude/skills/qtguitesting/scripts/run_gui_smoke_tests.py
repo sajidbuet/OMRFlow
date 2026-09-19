@@ -877,6 +877,94 @@ def _check_originals_are_unchanged_by_processing() -> CheckResult:
     )
 
 
+def _check_conflict_review_records_a_named_decision() -> CheckResult:
+    """Phase 6: a correction is stored, named, reasoned - and keeps the machine value."""
+    from _harness import build_review_page
+
+    harness = build_review_page()
+    conflict = harness.first_conflict()
+    if conflict is None:
+        harness.shutdown()
+        return False, "the prepared batch produced no conflicts to review"
+
+    machine_value = conflict.observation.value
+    harness.select(conflict.conflict_id)
+    ok_correct = harness.correct("A")
+
+    from omr_scanner.services import review_store
+
+    found = review_store.provenance_for(harness.database, conflict.conflict_id)
+    history = review_store.history_for(harness.database, conflict.conflict_id)
+    stored = review_store.get_conflict(harness.database, conflict.conflict_id)
+
+    ok = (
+        ok_correct
+        and found.value == "A"
+        and found.source.value == "human"
+        and found.reviewer == harness.reviewer
+        # The machine's own reading is untouched by the correction.
+        and stored.observation.value == machine_value
+        and [item.action.value for item in history] == ["detected", "corrected"]
+    )
+    detail = (
+        f"machine={machine_value!r} kept, effective={found.value!r} by "
+        f"{found.reviewer!r}, {len(history)} audit event(s)"
+    )
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_the_audit_ledger_cannot_be_rewritten() -> CheckResult:
+    """Phase 6: the database itself refuses to update or delete an audit event."""
+    from _harness import build_review_page
+    from sqlalchemy import delete, update
+
+    from omr_scanner.database.models import AuditEvent
+
+    harness = build_review_page()
+    conflict = harness.first_conflict()
+    if conflict is None:
+        harness.shutdown()
+        return False, "the prepared batch produced no conflicts to review"
+    harness.select(conflict.conflict_id)
+    harness.correct("A")
+
+    blocked = []
+    for label, statement in (
+        ("update", update(AuditEvent).values(reviewer="Someone Else")),
+        ("delete", delete(AuditEvent)),
+    ):
+        try:
+            with harness.database.session() as session:
+                session.execute(statement)
+        except Exception:
+            blocked.append(label)
+
+    harness.shutdown()
+    return len(blocked) == 2, f"blocked at the database: {', '.join(blocked) or 'nothing'}"
+
+
+def _check_a_correction_needs_a_named_reviewer() -> CheckResult:
+    """Phase 6: an unnamed correction is refused, and nothing is written."""
+    from _harness import build_review_page
+
+    from omr_scanner.services import review_store
+
+    harness = build_review_page(reviewer="")
+    conflict = harness.first_conflict()
+    if conflict is None:
+        harness.shutdown()
+        return False, "the prepared batch produced no conflicts to review"
+    harness.select(conflict.conflict_id)
+
+    refused = not harness.correct("A", expect_failure=True)
+    state = review_store.get_conflict(harness.database, conflict.conflict_id).state.value
+    harness.shutdown()
+    return refused and state == "open", (
+        f"correction refused with no reviewer, conflict still {state!r}"
+    )
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -985,6 +1073,18 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "originals are unchanged by processing",
                     _check_originals_are_unchanged_by_processing,
+                ),
+                (
+                    "conflict review records a named decision",
+                    _check_conflict_review_records_a_named_decision,
+                ),
+                (
+                    "the audit ledger cannot be rewritten",
+                    _check_the_audit_ledger_cannot_be_rewritten,
+                ),
+                (
+                    "a correction needs a named reviewer",
+                    _check_a_correction_needs_a_named_reviewer,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

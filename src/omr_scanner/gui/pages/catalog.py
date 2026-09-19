@@ -111,10 +111,12 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Resolve",
         summary="Review and correct sheets that recognition could not decide.",
         phase=6,
+        implemented=True,
         details=(
             "Queue of missing marks, multiple marks and low-confidence values.",
-            "Side-by-side original sheet, normalised sheet and zoomed field.",
+            "Original sheet, normalised sheet and a zoomed view of the field.",
             "Manual correction that preserves the machine value in an audit trail.",
+            "Every decision named, reasoned and recorded append-only.",
         ),
     ),
     WorkflowPageSpec(

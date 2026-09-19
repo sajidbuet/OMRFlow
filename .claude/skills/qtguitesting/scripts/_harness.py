@@ -476,6 +476,212 @@ def build_scan_page(
     return harness
 
 
+@dataclass(frozen=True, slots=True)
+class ReviewHarness:
+    """A Resolve page on a batch that genuinely produced conflicts (Phase 6).
+
+    Attributes:
+        page: The real `ResolvePage`.
+        session: The throwaway project it is reviewing.
+        batch_id: The batch whose conflicts are in the queue.
+        reviewer: The name decisions are recorded against.
+    """
+
+    page: object
+    session: object
+    batch_id: str
+    reviewer: str
+
+    @property
+    def database(self) -> object:
+        """The project database the decisions land in."""
+        return self.session.database
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting. See `DesignerHarness`."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def settle(self) -> None:
+        """Give the page real laid-out geometry without showing a window."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        widget: QWidget = self.page  # type: ignore[assignment]
+        widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        widget.show()
+        widget.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.process_events()
+
+    def first_conflict(self) -> object | None:
+        """The first conflict in the queue, or ``None`` when there are none."""
+        conflicts = self.page.state.conflicts
+        return conflicts[0] if conflicts else None
+
+    def select(self, conflict_id: int, *, timeout_ms: int = 120_000) -> bool:
+        """Select one conflict and pump events until its sheet is loaded.
+
+        Waits on the *condition* - "this conflict's sheet is the one loaded" -
+        rather than on the ``sheet_ready`` signal. The page selects its first
+        row as soon as a batch is loaded, so for that conflict the signal has
+        usually already fired by the time a script asks for it, and waiting for
+        another would wait forever. The condition is true either way.
+        """
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        target = next(
+            (
+                item
+                for item in self.page.state.conflicts
+                if item.conflict_id == conflict_id
+            ),
+            None,
+        )
+        if target is None or not self.page.select_conflict_by_id(conflict_id):
+            return False
+
+        clock = QElapsedTimer()
+        clock.start()
+        while not (
+            self.page.state.bundle is not None
+            and self.page._loaded_scan_id == target.scan_id
+        ):
+            QApplication.processEvents()
+            if clock.elapsed() > timeout_ms:
+                raise TimeoutError(f"the sheet did not load within {timeout_ms} ms")
+        self.process_events()
+        return True
+
+    def correct(self, value: str, *, expect_failure: bool = False) -> bool:
+        """Record a correction, suppressing the error dialog when one is expected."""
+        if expect_failure:
+            from PySide6.QtWidgets import QMessageBox
+
+            from omr_scanner.gui import error_reporting
+
+            original = QMessageBox.warning
+            QMessageBox.warning = staticmethod(  # type: ignore[method-assign]
+                lambda *_a, **_k: QMessageBox.StandardButton.Ok
+            )
+            try:
+                return self.page.correct(value)
+            finally:
+                QMessageBox.warning = original  # type: ignore[method-assign]
+                del error_reporting
+        return self.page.correct(value)
+
+    def shutdown(self) -> None:
+        """Stop the sheet loader, then release the project.
+
+        In that order: the page's own shutdown waits for the worker, and
+        releasing the SQLite handle first would close the file something is
+        still using.
+        """
+        self.page.close()
+        self.process_events()
+        self.session.close()
+
+
+def build_review_page(
+    *, reviewer: str = "Dr. Smoke Test", timeout_ms: int = 120_000
+) -> ReviewHarness:
+    """Build a Resolve page on a batch that really does contain conflicts.
+
+    Renders three sheets - one with a double-marked question, two sharing a
+    roll number - processes them through the real pipeline, detects the
+    conflicts the way the Scan page does, and hands back a page showing them.
+
+    Args:
+        reviewer: The name decisions are recorded against. Pass ``""`` to
+            exercise the "a correction needs a named reviewer" refusal.
+        timeout_ms: Unused placeholder kept for symmetry with the other
+            harnesses; recognition here is three synthetic sheets.
+
+    Returns:
+        The harness, already laid out.
+    """
+    del timeout_ms
+    import cv2
+
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.review.page import ResolvePage
+    from omr_scanner.services import batch_store, review_store
+    from omr_scanner.services.batch_processor import process_batch
+
+    # The synthetic builders live in the repository's own test helpers, which
+    # is deliberate: a second sheet generator here would drift from the one the
+    # tests use and stop proving anything about the real thing.
+    if str(REPOSITORY_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPOSITORY_ROOT))
+    from tests.conftest import build_answer_sheet_template, render_marked_sheet
+
+    template = build_answer_sheet_template()
+    session = _throwaway_project()
+
+    scans = OUTPUT_ROOT / "review_scans" / uuid_hex()
+    scans.mkdir(parents=True, exist_ok=True)
+
+    def marks(roll: str) -> dict:
+        return {
+            "roll_number": dict(enumerate(roll)),
+            "set_code": {0: "A"},
+            "questions_0": dict.fromkeys(range(10), "B"),
+            "questions_1": dict.fromkeys(range(10), "C"),
+        }
+
+    double = marks("170501")
+    double["questions_0"] = {**double["questions_0"], 0: ["B", "D"]}
+
+    paths = []
+    for name, sheet in (("double.png", double), ("dup.png", marks("170501"))):
+        path = scans / name
+        cv2.imwrite(str(path), render_marked_sheet(template, sheet))
+        paths.append(path)
+
+    database = session.database
+    batch_id = batch_store.create_batch(
+        database, paths, identity=batch_store.BatchIdentity.of(template)
+    )
+    recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+    report = process_batch(paths, template, on_result=recorder.record, workers=1)
+    recorder.flush()
+    batch_store.finalise_batch(database, batch_id)
+
+    ids = batch_store.scan_ids_by_path(database, batch_id)
+    for item in report.processed:
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[item.source_path],
+            result=item.result,
+            template=template,
+        )
+    review_store.sync_duplicate_identifiers(database, batch_id)
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+    page = ResolvePage(spec)
+    page.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    page.on_project_changed(session)
+    page.set_reviewer(reviewer)
+    page.load_batch(batch_id, template)
+
+    harness = ReviewHarness(
+        page=page, session=session, batch_id=batch_id, reviewer=reviewer
+    )
+    harness.settle()
+    return harness
+
+
+def uuid_hex() -> str:
+    """A short unique directory name, so repeated runs never collide."""
+    import uuid
+
+    return uuid.uuid4().hex[:8]
+
+
 def _throwaway_project() -> object:
     """Create a fresh project under ``test-output/`` and return its session.
 

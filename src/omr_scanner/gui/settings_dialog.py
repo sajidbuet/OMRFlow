@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -109,6 +110,7 @@ class SettingsDialog(QDialog):
         layout.setSpacing(10)
         layout.addWidget(self._build_processing_group())
         layout.addWidget(self._build_diagnostics_group())
+        layout.addWidget(self._build_reviewer_group())
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -165,6 +167,39 @@ class SettingsDialog(QDialog):
         self.explanation_label.setWordWrap(True)
         form.addRow(self.explanation_label)
         return box
+
+    def _build_reviewer_group(self) -> QGroupBox:
+        """Build the Reviewer section (Phase 6).
+
+        A name, not an account. The exit criterion for conflict review is that
+        a final value can be traced to a *named* correction, which needs
+        attribution rather than authentication - and a desktop application used
+        by one examination office should not grow a login screen to provide it.
+        The field is shaped so a real identity system could supply it later
+        without changing anything that reads it.
+        """
+        box = QGroupBox("Reviewer")
+        box.setObjectName("reviewerSettingsGroup")
+        layout = QVBoxLayout(box)
+
+        self.reviewer_edit = QLineEdit(self._config.reviewer_name)
+        self.reviewer_edit.setObjectName("reviewerNameEdit")
+        self.reviewer_edit.setPlaceholderText("Your name, e.g. Dr. A. Rahman")
+        layout.addWidget(self.reviewer_edit)
+
+        note = QLabel(
+            "Recorded against every conflict you resolve, so a corrected value "
+            "can always be traced back to the person who decided it. Corrections "
+            "cannot be saved until this is set."
+        )
+        note.setObjectName("reviewerNameNote")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        return box
+
+    def reviewer_name(self) -> str:
+        """The reviewer name the dialog currently shows, trimmed."""
+        return self.reviewer_edit.text().strip()
 
     def _build_diagnostics_group(self) -> QGroupBox:
         """Build the Diagnostics section.

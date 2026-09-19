@@ -1,8 +1,8 @@
 # Current state
 
-**Updated:** 2026-09-18
+**Updated:** 2026-09-19
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 not started.
 
 Update this file at the end of every phase.
 
@@ -374,16 +374,83 @@ unusable.
 1.79x; 8 workers 4.05 s / 1.98x. All 24 read at every worker count -
 multiprocessing has not silently fallen back to sequential.
 
+### Conflict detection and human review (Phase 6)
+
+- Two additive tables, created by **migration 3**: `review_conflict` (one thing
+  on one sheet to look at, with the machine's observation snapshotted for
+  querying) and `audit_event` (the append-only ledger). Identity is
+  `(batch_id, scan_id, conflict_type, zone_id, group_key)` under a unique
+  constraint, so Phase 5's resume and retry **update** conflicts rather than
+  duplicating them. Field-by-field: `docs/DATA_MODEL.md`.
+- `domain.review` holds the vocabulary — 22 conflict types, four states, seven
+  actions, nine reason codes, `FieldRef`, `MachineObservation`, `Provenance` —
+  with no Qt, no SQLAlchemy and no OpenCV in it. The enums carry their own rules
+  as properties (`is_processing_failure`, `allows_value_correction`,
+  `sets_effective_value`, `requires_text`), which is what lets the GUI build a
+  type filter and the exporter read a provenance without either importing the
+  other.
+- `services.conflict_policy` is the single deterministic place a result becomes
+  conflicts. **It contains no thresholds.** It reads the `needs_review` flag
+  `recognition/decide.py` already computed from the template's own
+  `ambiguity_margin` and `min_confidence`, so calibrating a template in Phase 4
+  moves the conflict queue with it.
+- Blank answers are **not** flagged by default (a candidate may leave a question
+  blank, and one row per unanswered question would bury the real conflicts);
+  alignment warnings are **not** (the repository's own sample raises one on every
+  sheet); an assumed orientation **is** (an inverted sheet read as upright
+  produces a full set of confidently wrong answers). All three are policy flags,
+  not constants.
+- `services.review_store` has **one write path for events** and no update or
+  delete for them. Every human action is one transaction: the audit event and
+  the state change commit together or neither does.
+- **The final value is projected, not stored.** There is no `resolved_value`
+  column; `provenance_for` folds a conflict's ordered events over the machine's
+  reading. Reopening a decision restores the machine's value while keeping the
+  superseded correction, its reviewer, its reason and its timestamp in the
+  record. `ReviewConflict.state` *is* cached for the queue's sake, and
+  `recompute_state()` proves it equal to the fold.
+- **Append-only, enforced three ways**: nothing on the service surface, nothing
+  in the application, and two SQLite triggers that `RAISE(ABORT)` on any
+  `UPDATE` or `DELETE` of `audit_event`. The table carries **no foreign key**, so
+  a decision outlives the row it was about and Phases 7-9 can audit into it
+  without a schema change.
+- The **Resolve** stage: a queue filtered by state, type and a search over
+  student ID and file name; a workspace showing the disputed bubbles zoomed, the
+  whole normalised sheet, and the original scan; an evidence panel reporting
+  each option's measured **fill score** (a coverage measurement, labelled as
+  such, never a "probability"); and Accept / Correct / Defer / Reopen, each
+  requiring a named reviewer and each correction a reason.
+- `ScanResult.source_transform` carries the engine's own inverse homography, so
+  the original scan can be located from the engine's geometry rather than a
+  second calculation in the GUI — which may not import OpenCV or NumPy anyway.
+  The original view therefore carries a **note**, not an overlay.
+- Review re-reads the one selected sheet in a `QThread`, because
+  `keep_bubble_measurements` is off for batches (most of a gigabyte over ten
+  thousand sheets). Recognition is deterministic, so the evidence reproduces
+  exactly; the worker starts only when the sheet actually changes.
+- Detection runs **in the coordinator after the batch**, never in a worker: a
+  worker must not open the single-writer database, and a duplicate identifier is
+  not a property of one sheet. **Phase 5's pipeline is unchanged.**
+- CSV export gained `value_source` and `unresolved_conflicts`, appended after
+  the existing columns. Exporting with conflicts open warns and states the
+  count; it does not block.
+
+**Measured**: 10,000 conflicts in one batch — a queue page costs a bounded
+number of SQL statements and the summary a bounded number of grouped queries,
+asserted by counting statements rather than by timing one machine.
+
 ## What does not exist
 
-No conflict resolution, attendance reconciliation, answer-key handling, scoring
-or Excel/PDF reporting. Recognised values cannot yet be corrected by hand in the
-GUI. There is no batch-browser dialog: `adopt_batch` and `list_batches` exist and
-are tested, but nothing in the UI lists previous batches to pick from yet.
+No attendance reconciliation, answer-key handling, scoring or Excel/PDF
+reporting. There is no batch-browser dialog: `adopt_batch` and `list_batches`
+exist and are tested, but nothing in the UI lists previous batches to pick from
+yet. The conflict queue is **per batch** — there is no project-wide "every
+unresolved conflict" view. Reviewer identity is a name, not an account: there is
+no authentication, so the ledger records who *said* they made a decision.
 
-`omr_scanner.reporting` contains module documentation and no code. The Resolve,
-Results and later GUI pages say which phase will implement them and do not
-simulate anything.
+`omr_scanner.reporting` contains module documentation and no code. The Results
+and later GUI pages say which phase will implement them and do not simulate
+anything.
 
 **This build must not be used for examination processing.** Its recognition has
 been validated against one real sheet and geometric variants of it, not against
@@ -446,11 +513,11 @@ perspective, JPEG compression and cropping is tabulated in
   33% false-blank rate for ticks against 0% for crosses. Whether real ticks
   behave the same way, and whether the answer is a darkness term or a different
   threshold, is a question for the real corpus.
-- **No manual correction.** Recognised values cannot be edited in the GUI. The
-  data model already keeps the machine's reading separate from a correction, so
-  this is additive, but it is not there yet.
-- **Results are not persisted.** A batch's output is the CSV and the optional
-  renamed copies; nothing is written to the project database (Phase 5).
+- **Manual correction covers flagged values only** (Phase 6). Anything the
+  engine was unsure about is reviewable and correctable; a value it read
+  *confidently and wrongly* never enters the queue, so there is no way to
+  correct one except by noticing it some other way. Narrowing that gap is a
+  recognition problem, not a review one.
 - **No PDF input.** Deliberate - the brief ruled out adding a dependency for it
   in this phase.
 - **Renaming only copies.** There is no move/rename-in-place mode.
@@ -470,6 +537,34 @@ perspective, JPEG compression and cropping is tabulated in
   exercised by a 10,000-job simulation, but the largest *real* batch measured
   is 48 scans. No performance limit is claimed.
 
+### Conflict review
+
+- **No review session with real operators on a real batch.** Everything is
+  automated: 147 tests, three smoke checks and four screenshots. The workflow
+  has never been driven by someone reviewing sheets they cared about, which is
+  the only way to learn whether the queue is *usable* rather than merely
+  correct.
+- **Queue performance is asserted, not measured at scale.** 10,000 conflicts,
+  by counting SQL statements rather than timing a machine. The per-sheet re-read
+  on selection has been measured only on the development machine.
+- **The policy defaults are reasoned, not evidenced.** Whether an examination
+  office wants blank answers flagged, or alignment warnings surfaced, is not yet
+  known; both are `ConflictPolicy` flags rather than constants, so the question
+  is answerable without a code change.
+- **Reviewer identity is a name, not an account.** No authentication, so the
+  ledger records who *said* they made a decision. Deliberate - the brief ruled
+  out building an auth system - but a real limitation for a high-stakes
+  deployment.
+- **The ledger is append-only, not tamper-proof.** Triggers stop the
+  application and a careless hand-written statement; a database administrator
+  with file access can still alter the file. Cryptographic chaining was
+  explicitly out of scope.
+- **The queue is per batch.** There is no project-wide "every unresolved
+  conflict" view, and no way to review two batches together.
+- **Phase 6 does not bound the error rate.** It makes the machine's *uncertainty*
+  actionable. Its usefulness is therefore capped by how honest that uncertainty
+  is, which is Phase 3's open item and Phase 4's calibration tooling.
+
 ### Elsewhere
 
 - The example template in `resources/templates` is illustrative. Its coordinates
@@ -486,15 +581,36 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2188 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2411 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest -m "not gui"   1595 passed, 1 skipped in 95s
-pytest -m gui         593 passed in 109s
+pytest                2411 passed, 1 skipped
 ruff check .          All checks passed
-mypy                  Success: no issues found in 102 source files
+mypy                  Success: no issues found in 110 source files
+run_gui_smoke_tests   38/38 checks passed
 ```
+
+149 of those are Phase 6 (Conflict Detection & Human Resolution):
+`tests/unit/test_conflict_policy.py` (40, detection in isolation - the
+taxonomy, the policy defaults, determinism and identity, and that every label
+comes from the template), `tests/unit/test_review_store.py` (48, the ledger
+rules: the machine value never overwritten, reviewer and reason required,
+append-only enforced by the database, reopening superseding without erasing,
+the cached state equal to the fold, one transaction per decision, and the queue
+paged and counted in SQL at 10,000 conflicts),
+`tests/integration/test_conflict_review.py` (24, the real engine and real
+rendered sheets: scenarios A-E, every conflict kind raised from marks on a
+page, migration onto an existing Phase 5 project, and source-file integrity)
+and `tests/gui/test_resolve_page.py` (37, the real page with a real project and
+a real `QThread`). Confirmed end-to-end through
+`scripts/run_gui_smoke_tests.py` (38/38, including a named decision recorded
+against the real sample, both tamper refusals and the missing-reviewer refusal)
+and by inspecting the four screenshots `scripts/capture_gui_states.py --only
+review` produces - which is how a real defect was found and fixed: a
+duplicate-identifier conflict names no zone, so the zoomed view had been
+falling back to the whole page at fit scale instead of magnifying the roll
+number a reviewer has to read.
 
 93 of those are Phase 4 (Template Calibration & Validation):
 `tests/unit/test_calibration_service.py` (34, the four-state judgement rules
@@ -538,6 +654,15 @@ dialogs, cancellation and benchmark mode).
 
 1365 of those tests are new in Phase 3 (146 in Phase 2, 455 in Phase 1). Phase 3
 added **no** new mypy overrides, Ruff ignores or tool configuration changes.
+
+Phase 6 added one tool configuration change, and it is a scope extension rather
+than a suppressed check: `ARG002` joined `ARG001` in the existing **test-only**
+per-file ignores in `pyproject.toml`. The reason is identical to the one
+already documented for `ARG001` - a pytest fixture requested purely for its side
+effect ("make a conflict exist") is indistinguishable from a dead parameter to
+ruff - and `ARG002` is that same case for a test written as a method of a
+`Test*` class, which most of Phase 6's are. No source-tree rule was relaxed, and
+no mypy override was added.
 
 Phase 2 added **one** tool configuration change, not a suppressed check: the
 `pep8-naming` Qt-override allowlist in `pyproject.toml` was extended to cover
@@ -609,7 +734,7 @@ relaxations, `warn_unreachable` off for the one module that branches on
 ## Next recommended action
 
 Consult `development/ROADMAP.md` for the next phase, and
-`development/PHASE_03_HANDOFF.md` for entry conditions and constraints.
+`development/PHASE_06_HANDOFF.md` for entry conditions and constraints.
 
 Independently of whichever phase comes next, and now the single most valuable
 thing anyone can do for this project: **process a stack of genuinely filled
@@ -635,3 +760,16 @@ previous-run comparison apply to real sheets, and tagging a sheet
 synthetic equivalent. Keep that data in `private_test_data/` or
 `local_test_data/`, which are git-ignored - real candidate identifiers must
 never reach this repository.
+
+Phase 6 changes what that exercise can now measure. Previously the only outputs
+were a CSV and a benchmark report; now the same batch produces a **conflict
+queue**, so the run yields three numbers rather than one: how many sheets the
+engine flagged, how many a reviewer agreed with on inspection (Accept), and how
+many it got wrong. The third is still the one that decides whether this is
+usable — a confidently wrong reading never enters the queue — but the first two
+now tell you whether the review workload is realistic for an examination office,
+which no synthetic dataset can.
+
+Run it with a real reviewer name set, and afterwards read the audit ledger: it
+is a complete record of what a human had to overrule and why, which is exactly
+the evidence needed to decide whether the thresholds want recalibrating.

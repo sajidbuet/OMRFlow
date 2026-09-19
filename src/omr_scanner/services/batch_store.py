@@ -591,6 +591,22 @@ def scan_paths(database: ProjectDatabase, batch_id: str) -> tuple[Path, ...]:
     return tuple(Path(item) for item in rows)
 
 
+def scan_ids_by_path(database: ProjectDatabase, batch_id: str) -> dict[Path, int]:
+    """Map each of a batch's source paths to its durable scan id.
+
+    What a caller holding :class:`ProcessedScan` results needs in order to
+    attach anything to the right row - Phase 6's conflict detection, above all,
+    which works from a finished :class:`BatchReport` and has only paths.
+    """
+    with database.session() as session:
+        rows = session.execute(
+            select(BatchScan.source_path, BatchScan.scan_id).where(
+                BatchScan.batch_id == batch_id
+            )
+        ).all()
+    return {Path(str(path)): int(scan_id) for path, scan_id in rows}
+
+
 def failed_scans(database: ProjectDatabase, batch_id: str) -> tuple[Path, ...]:
     """Return every failed scan in the batch, in batch order."""
     with database.session() as session:
@@ -886,6 +902,7 @@ __all__ = [
     "record_results",
     "recover_interrupted",
     "resumable_scans",
+    "scan_ids_by_path",
     "scan_paths",
     "set_batch_status",
 ]

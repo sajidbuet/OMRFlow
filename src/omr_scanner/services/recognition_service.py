@@ -111,6 +111,7 @@ from omr_scanner.services.recognition_settings import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Sequence
     from pathlib import Path
 
     from numpy.typing import NDArray
@@ -554,6 +555,7 @@ def _decide_and_build(
         recognised_at=utc_timestamp(),
         quality=quality,
         timings=timings,
+        source_transform=_inverse_transform(measured.alignment),
     )
 
     _LOGGER.info(
@@ -593,6 +595,54 @@ def _decide_and_build(
         )
 
     return result
+
+
+def _inverse_transform(alignment: AlignmentResult) -> tuple[float, ...]:
+    """Return the canonical-to-source homography, row-major, or ``()``.
+
+    The stored transform maps the scan onto the canonical page; its inverse
+    maps a canonical coordinate back onto the scan it came from, which is the
+    only way anything can point at *where on the original sheet* a disputed
+    mark is (Phase 6). Recorded rather than recomputed by the consumer so that
+    there is exactly one transform in play and it is the engine's own.
+
+    A singular matrix cannot be inverted. That would mean a degenerate fit,
+    which registration would already have rejected - but returning an empty
+    tuple rather than raising keeps a reporting concern from ending a batch.
+    """
+    try:
+        inverse = np.linalg.inv(alignment.transform_matrix)
+    except np.linalg.LinAlgError:  # pragma: no cover - a valid fit is invertible
+        _LOGGER.warning("The alignment transform could not be inverted")
+        return ()
+    return tuple(float(value) for value in inverse.reshape(-1))
+
+
+def map_canonical_to_source(
+    result: ScanResult, points: Sequence[tuple[float, float]]
+) -> tuple[tuple[float, float], ...]:
+    """Map canonical page coordinates back onto the original scan's pixels.
+
+    Args:
+        result: A result carrying
+            :attr:`~omr_scanner.services.recognition_models.ScanResult.source_transform`.
+        points: ``(x, y)`` in canonical page pixels.
+
+    Returns:
+        The same points in the source image's pixels, or ``()`` when this
+        result has no usable transform - a page that never registered, or one
+        produced by a build from before the field existed.
+
+    The one place that transform is applied. Callers - the conflict review
+    workspace, above all - get source coordinates without importing
+    :mod:`omr_scanner.imaging` or doing projective arithmetic of their own,
+    which is what keeps the GUI layer free of geometry.
+    """
+    if len(result.source_transform) != 9 or not points:
+        return ()
+    matrix = np.asarray(result.source_transform, dtype=np.float64).reshape(3, 3)
+    mapped = apply_transform(matrix, [Point(x=x, y=y) for x, y in points])
+    return tuple((item.x, item.y) for item in mapped)
 
 
 def _marker_view(
@@ -1315,5 +1365,6 @@ __all__ = [
     "StageTimings",
     "StatusCode",
     "ZoneView",
+    "map_canonical_to_source",
     "recognise_scan",
 ]

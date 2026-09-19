@@ -17,7 +17,7 @@ that cannot be tested.
 | 3 | Bubble Mapping & Recognition Engine | Implemented; testing in progress - see `development/PHASE_03_HANDOFF.md` |
 | 4 | Template Calibration & Validation | Implemented; testing in progress - see `development/PHASE_04_HANDOFF.md` |
 | 5 | Batch Scan Processing Pipeline | Implemented; testing in progress - see `development/PHASE_05_HANDOFF.md` |
-| 6 | Conflict Detection & Human Resolution | Not started |
+| 6 | Conflict Detection & Human Resolution | Implemented; testing in progress - see `development/PHASE_06_HANDOFF.md` |
 | 7 | Candidate & Attendance Reconciliation | Not started |
 | 8 | Answer-Key & Scoring Engine | Not started |
 | 9 | Result Management & Reporting | Not started |
@@ -197,16 +197,44 @@ correct remains Phase 3's open item.
 **Purpose.** Put a human in the loop wherever the machine is unsure - without
 losing what the machine saw.
 
-**Deliverables.** Conflict queue; review interface showing the original sheet,
-the normalised sheet, the highlighted field and the zoomed region with
-alternatives; manual correction; append-only `AuditEvent` history.
+**Delivered as** `domain.review` (the pure vocabulary - conflict types, states,
+actions, reason codes, provenance), `services.conflict_policy` (the single
+deterministic place where a recognition result becomes conflicts, reading the
+engine's own `needs_review` and the template's own thresholds rather than
+inventing new ones), `services.review_store` (the conflict and audit repository,
+with one write path and provenance *projected* from the event fold rather than
+stored), two additive tables and two immutability triggers (migration 3), and
+the `gui.review` Resolve page - queue, three-view workspace, evidence panel,
+decision panel and audit history dialog. The Scan page gained conflict detection
+after a batch, a Review Conflicts button and an unresolved-export warning; the
+CSV gained `value_source` and `unresolved_conflicts`; `ScanResult` gained
+`source_transform`, which is how the original scan can be highlighted using the
+engine's own inverse homography rather than a second calculation in the GUI.
+Phase 5's multiprocessing, cancellation, resume and progress are **unchanged** -
+detection runs in the coordinator, after the batch, never in a worker. Full
+detail: `development/PHASE_06_HANDOFF.md`; operator description:
+`docs/conflict_review.md`.
 
-**Major tests.** Every conflict kind is raised and resolvable; a correction never
-overwrites the machine value; audit history is complete and append-only;
-resolution state survives a reopen.
+**Exit criteria - met.** Every conflict kind in the taxonomy is raised from a
+real rendered sheet and is resolvable; a correction never overwrites the machine
+value (including the special multi-mark form `B-D`); the audit history is
+complete and append-only, enforced at the service surface, in the application
+and by database triggers that abort an `UPDATE` or `DELETE` outright; a decision
+survives a reopen with the superseded correction, its reviewer and its reason
+intact; resolution state survives closing and reopening the project; a
+correction without a named reviewer is refused; duplicate identifiers are
+detected across the whole batch; and original scans remain byte-for-byte
+unchanged by review.
 
-**Exit criteria.** Every ambiguous value is reviewable, and any final value can
-be traced back to either the machine or a named correction with a reason.
+**Not done.** No review session with real operators on a real batch - the
+workflow has been exercised by automated GUI tests, a smoke suite and screenshot
+inspection, all against synthetic sheets and the repository's single real
+sample. The queue's performance at examination scale is reasoned from its SQL
+(filtered, ordered and counted in the database; no image loaded for an
+unselected row) and asserted on a synthetic ten-thousand-conflict batch, not
+measured on a real one. And Phase 6 makes what the machine was *unsure* about
+visible; a confidently wrong reading never reaches the queue at all, which
+remains Phase 3's and Phase 4's problem.
 
 ---
 

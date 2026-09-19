@@ -1,12 +1,16 @@
 # User guide
 
 > **This guide describes only what OMRFlow can do today (version 0.1.0.dev0,
-> Phases 0-2).** The application can create and open projects, and design
-> `.omrt` sheet templates visually. It cannot yet read filled-in answer sheets,
-> recognise marks, reconcile attendance, calculate results or produce reports.
-> Everything in `development/ROADMAP.md` beyond Phase 2 is not available.
+> Phases 0-6).** The application can create and open projects, design `.omrt`
+> sheet templates visually, calibrate a template against real scans, read
+> filled-in answer sheets in resumable batches, and review everything the
+> recognition engine was unsure about. It cannot yet reconcile attendance,
+> calculate results or produce reports. Everything in
+> `development/ROADMAP.md` beyond Phase 6 is not available.
 >
-> Do not use this build for examination processing.
+> **Do not use this build for examination processing.** Its recognition has been
+> validated against one real printed sheet and variants of it, not against a
+> corpus of genuinely filled papers. See the README's development status.
 
 ## Installing
 
@@ -35,10 +39,10 @@ omrflow "C:/Exams/Physics Midterm 2026"
 ## The main window
 
 The window has a workflow list on the left and a page for each stage on the
-right. **1. Project**, **2. Template** and **3. Scan** do something in this
-version; the other five pages state which development phase will implement them
-and what that phase will provide - they are not broken, and they are not hiding
-a setting you need to find.
+right. **1. Project**, **2. Template**, **Calibrate**, **3. Scan** and
+**4. Resolve** do something in this version; the remaining pages state which
+development phase will implement them and what that phase will provide - they
+are not broken, and they are not hiding a setting you need to find.
 
 The status bar shows the open project's name and folder, or "No project open".
 
@@ -99,6 +103,62 @@ What to look for when reviewing:
 Full detail - supported formats, the recognition conventions, the duplicate
 naming rule, the CSV columns and the known limitations - is in
 `docs/scan_workflow.md`.
+
+## Reviewing what the machine was unsure about
+
+Select **4. Resolve** — or press **Review Conflicts** on the Scan page — to look
+at everything recognition could not decide. The Scan page tells you how many
+there are when a batch finishes.
+
+**First, put your name in File > Settings > Reviewer.** It is remembered between
+sessions, and it is recorded against every decision you make. You cannot save a
+correction without one.
+
+The page has the queue on the left and the sheet on the right.
+
+1. Narrow the queue if you like — by state (*Unresolved*, *Resolved*,
+   *Deferred*), by kind of problem, or by typing a student ID or file name in
+   the search box.
+2. Click a conflict. Three views load:
+   - **Zoomed field** — the disputed bubbles, magnified, with just that group
+     circled. Decide from this one.
+   - **Normalised sheet** — the whole corrected page, so you can see where on
+     the sheet it sits.
+   - **Original scan** — the file exactly as it arrived, in case the problem is
+     with the scan rather than the reading.
+3. Read **What the machine saw**. Alongside its answer it shows each option's
+   *fill score* — how much of that bubble was covered in ink. These are
+   measurements, not probabilities: a low score on the option you can plainly
+   see marked usually means a light pencil or a tick rather than a fill.
+4. Decide:
+   - **Accept machine value** if you looked and it was right.
+   - Click the **correct answer** instead if it was not. For a whole roll number
+     or a duplicate ID you type the value rather than picking one.
+   - **Defer** to come back to it.
+   - **Reopen** to change a decision — yours or somebody else's.
+5. Give a **reason** for a correction. "Other" asks you to explain.
+6. **Next unresolved** jumps to the next thing nobody has decided. ← and → step
+   through, **Enter** accepts, **D** defers.
+
+What to expect:
+
+- **Your correction never erases what the machine read.** Both are kept. Press
+  **History...** at any time to see the whole story: what was recognised, who
+  changed it, when, and why.
+- **Reopening a decision** puts the machine's value back as the current one, but
+  the correction you are replacing stays in the history under the name of
+  whoever made it.
+- **Some conflicts have no answer to pick.** A sheet that would not register, or
+  a file that would not open, needs re-scanning — so those offer only *Defer*.
+- **Duplicate roll numbers** are found across the whole batch. Each sheet's
+  conflict names the others.
+- Exporting with conflicts still open **warns you and says how many**. It does
+  not stop you — an interim export is fine — and the CSV records the count per
+  sheet either way, along with whether that sheet's values are the machine's or
+  a person's.
+
+Full detail — every kind of conflict, what the defaults are and why, and what
+the audit record does and does not guarantee — is in `docs/conflict_review.md`.
 
 ## Using more of your computer (or less)
 
@@ -165,7 +225,8 @@ same.
 ## Where OMRFlow keeps your settings
 
 Your preferences - log level, recent projects, the folder new projects start in,
-and the Processing mode - live in `omrflow.config.json` in your account's
+the Processing mode and your reviewer name - live in `omrflow.config.json` in
+your account's
 application data folder
 (`%APPDATA%\OMRFlow` on Windows). Deleting that file loses only preferences, not
 project data.

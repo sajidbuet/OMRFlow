@@ -141,9 +141,11 @@ extend-ignore-names = [
 [tool.ruff.lint.per-file-ignores]
 # Tests are self-describing through their names; module docstrings are still
 # required (D100 stays on) but per-test docstrings would be noise.
-# ARG001: a pytest fixture is frequently requested only for its side effect
-# (isolation, sandboxing), which ruff cannot distinguish from a dead parameter.
-"tests/*" = ["D103", "D101", "D102", "ANN201", "ANN001", "ARG001"]
+# ARG001/ARG002: a pytest fixture is frequently requested only for its side
+# effect (isolation, sandboxing, "make a conflict exist"), which ruff cannot
+# distinguish from a dead parameter. ARG002 is the same situation for a test
+# written as a method of a Test* class, which is most of them.
+"tests/*" = ["D103", "D101", "D102", "ANN201", "ANN001", "ARG001", "ARG002"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Qt slots frequently take default arguments supplied by the signal.

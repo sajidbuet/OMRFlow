@@ -60,21 +60,32 @@ def test_navigation_switches_the_visible_page(window: MainWindow):
 
 
 def test_unimplemented_pages_say_so(window: MainWindow):
-    # Phase 2 replaced the Template placeholder, Phase 3 the Scan one and
-    # Phase 4 the Calibration one, so this check walks forward - by key,
-    # never a hard-coded index - to whichever stage is still honestly
-    # unimplemented.
-    resolve_index = next(
+    # Phase 2 replaced the Template placeholder, Phase 3 the Scan one, Phase 4
+    # the Calibration one and Phase 6 the Resolve one, so this walks forward -
+    # by key, never a hard-coded index - to whichever stage is still honestly
+    # unimplemented, and fails loudly once every stage is built rather than
+    # quietly passing on nothing.
+    index, spec = next(
+        (index, spec)
+        for index, spec in enumerate(WORKFLOW_PAGES)
+        if not spec.is_implemented
+    )
+    page = window.stack.widget(index)
+    texts = [label.text() for label in page.findChildren(QLabel)]
+
+    assert page.spec.key == spec.key
+    assert page.spec.phase > 0
+    assert any("Not implemented yet" in text for text in texts)
+    assert any(f"phase {page.spec.phase}" in text for text in texts)
+
+
+def test_the_resolve_page_is_no_longer_a_placeholder(window: MainWindow):
+    index = next(
         index for index, spec in enumerate(WORKFLOW_PAGES) if spec.key == "resolve"
     )
-    resolve_page = window.stack.widget(resolve_index)
-    texts = [label.text() for label in resolve_page.findChildren(QLabel)]
-
-    assert resolve_page.spec.key == "resolve"
-    assert resolve_page.spec.phase > 0
-    assert not resolve_page.spec.is_implemented
-    assert any("Not implemented yet" in text for text in texts)
-    assert any(f"phase {resolve_page.spec.phase}" in text for text in texts)
+    page = window.stack.widget(index)
+    assert page.objectName() == "resolvePage"
+    assert page.spec.is_implemented is True
 
 
 def test_template_page_is_no_longer_a_placeholder(window: MainWindow):

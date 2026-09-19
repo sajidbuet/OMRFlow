@@ -295,3 +295,127 @@ class BatchScan(Base):
     def __repr__(self) -> str:
         """Return a debugging representation naming the file and its state."""
         return f"BatchScan(filename={self.filename!r}, status={self.status!r})"
+
+
+# ----------------------------------------------------------------------
+# Phase 6: conflicts and the audit ledger
+# ----------------------------------------------------------------------
+class ReviewConflict(Base):
+    """One disputed value awaiting, or having received, a human decision.
+
+    The machine's observation is stored here **once, at detection**, and no
+    code path in the application updates
+    :attr:`machine_value`/:attr:`machine_status`/:attr:`machine_confidence`
+    except the re-recognition path, which records the change as an audit event
+    first (:class:`AuditEvent`, ``RE_RECOGNISED``). A human correction never
+    touches these columns at all: it appends an event, and the effective value
+    is projected from the ledger.
+
+    :attr:`state` is a cache. It is always reconstructible by folding this
+    conflict's ordered events, and
+    ``tests/unit/test_review_store.py`` asserts the two agree - so the cache can
+    make the queue fast without becoming a second, divergent source of truth.
+    """
+
+    __tablename__ = "review_conflict"
+    __table_args__ = (
+        # The identity that makes detection idempotent: re-reading a sheet
+        # produces the same (type, zone, group) and therefore updates this row
+        # instead of creating a second one. Without it a Phase 5 retry would
+        # fill the queue with duplicates.
+        UniqueConstraint(
+            "batch_id",
+            "scan_id",
+            "conflict_type",
+            "zone_id",
+            "group_key",
+            name="review_conflict_identity",
+        ),
+        Index("ix_review_conflict_batch_state", "batch_id", "state"),
+        Index("ix_review_conflict_scan", "scan_id"),
+    )
+
+    conflict_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="CASCADE"), nullable=False
+    )
+    scan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("batch_scan.scan_id", ondelete="CASCADE"), nullable=False
+    )
+    conflict_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    scope: Mapped[str] = mapped_column(String(10), nullable=False, default="field")
+    severity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    state: Mapped[str] = mapped_column(String(15), nullable=False, default="open")
+
+    zone_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    group_key: Mapped[int] = mapped_column(Integer, nullable=False, default=-1)
+    field_kind: Mapped[str] = mapped_column(String(15), nullable=False, default="other")
+    field_label: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    question_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    machine_value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    machine_status: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    machine_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    machine_top_fill: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    machine_margin: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    machine_candidates: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    machine_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    related_scan_ids: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the conflict and its state."""
+        return (
+            f"ReviewConflict(id={self.conflict_id}, type={self.conflict_type!r}, "
+            f"state={self.state!r})"
+        )
+
+
+class AuditEvent(Base):
+    """One immutable entry in the provenance ledger.
+
+    **Append-only, enforced at three levels** (Phase 6 brief §27):
+
+    1. The repository (:mod:`omr_scanner.services.review_store`) exposes
+       ``append_event`` and no update or delete for events.
+    2. Nothing in the application constructs an ``UPDATE`` or ``DELETE`` against
+       this table, and a test asserts the module exposes no such function.
+    3. SQLite triggers installed by migration 3 raise on any ``UPDATE`` or
+       ``DELETE`` of a row here, so even a hand-written statement or a future
+       careless ORM flush fails loudly instead of quietly rewriting history.
+
+    **No foreign key, deliberately.** A conflict may in principle be removed by
+    housekeeping; the record that it once existed and what a named person
+    decided about it must outlive that. ``conflict_id`` is therefore a plain
+    indexed column, and the ledger is the one table in the schema that nothing
+    cascades into.
+    """
+
+    __tablename__ = "audit_event"
+    __table_args__ = (
+        Index("ix_audit_event_conflict", "conflict_id", "event_id"),
+        Index("ix_audit_event_batch", "batch_id"),
+    )
+
+    event_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    scan_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conflict_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    reviewer: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    previous_value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    new_value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    machine_value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reason_code: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    reason_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the action and its author."""
+        return (
+            f"AuditEvent(id={self.event_id}, action={self.action!r}, "
+            f"reviewer={self.reviewer!r})"
+        )

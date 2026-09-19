@@ -873,6 +873,10 @@ class TestJCsvExport:
         _page, path = exported
         header = self.read_rows(path)[0]
 
+        # The Phase 3 columns keep their positions. Phase 6 appended
+        # `value_source` and `unresolved_conflicts` *after* them, deliberately,
+        # so a consumer that indexes the original seven positionally still
+        # works.
         assert header[:7] == [
             "original_filename",
             "output_filename",
@@ -882,7 +886,17 @@ class TestJCsvExport:
             "recognition_status",
             "warning_count",
         ]
-        assert header[7:] == [f"Q{number}" for number in range(1, 21)]
+        assert header[7:9] == ["value_source", "unresolved_conflicts"]
+        assert header[9:] == [f"Q{number}" for number in range(1, 21)]
+
+    def test_an_unreviewed_export_says_the_values_are_the_machines(self, exported):
+        # The point of the column: a row nobody has reviewed must not be
+        # indistinguishable from one a human confirmed.
+        _page, path = exported
+        rows = self.read_rows(path)
+        record = dict(zip(rows[0], rows[1], strict=True))
+        assert record["value_source"] == "machine"
+        assert record["unresolved_conflicts"] == "0"
 
     def test_the_roll_the_set_code_and_the_answers_are_correct(self, exported):
         _page, path = exported

@@ -106,9 +106,15 @@ class TestQuestionColumns:
 
 class TestColumnLayout:
     def test_the_header_is_the_documented_order(self, template):
+        # Sliced by `len(BASE_COLUMNS)` rather than a literal, so appending a
+        # column (Phase 6 added two) does not need this test edited to keep
+        # asserting the same thing: the base columns first, in order, then one
+        # per question.
         header = build_rows([], template)[0]
-        assert header[:7] == BASE_COLUMNS
-        assert header[7:] == tuple(f"Q{number}" for number in range(1, 21))
+        assert header[: len(BASE_COLUMNS)] == BASE_COLUMNS
+        assert header[len(BASE_COLUMNS) :] == tuple(
+            f"Q{number}" for number in range(1, 21)
+        )
 
     def test_a_row_lines_up_with_the_header(self, template):
         answers = tuple(answer(number, "B") for number in range(1, 21))
@@ -312,4 +318,4 @@ class TestWritingTheFile:
         with path.open(encoding=BOM_ENCODING, newline="") as stream:
             rows = list(csv.reader(stream))
         assert len(rows) == 1
-        assert tuple(rows[0][:7]) == BASE_COLUMNS
+        assert tuple(rows[0][: len(BASE_COLUMNS)]) == BASE_COLUMNS

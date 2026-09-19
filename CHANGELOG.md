@@ -8,6 +8,92 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Added — Phase 6
+
+Conflict Detection & Human Resolution: everything recognition was unsure about
+now becomes a reviewable queue, and every decision a person makes is recorded
+against their name — **without the machine's own reading ever being
+overwritten**. Full detail: `development/PHASE_06_HANDOFF.md`; operator
+description: `docs/conflict_review.md`.
+
+- **`omr_scanner.domain.review`**: the pure vocabulary, with no Qt, no database
+  and no OpenCV in it — `ConflictType` (22 members, each knowing its own scope,
+  whether it is a processing failure rather than a value, and whether it can be
+  corrected), `ConflictState`, `ReviewAction`, `ReasonCode`, `FieldRef`,
+  `MachineObservation`, `Provenance`, `ReviewCounts`. Putting the taxonomy in
+  the domain layer is what lets the GUI build a type filter and the exporter
+  read a provenance without either importing the other.
+- **`omr_scanner.services.conflict_policy`**: the single, deterministic place
+  where a recognition result becomes conflicts. It reads the engine's own
+  `needs_review` judgement — which the decision layer computed from **the
+  template's own** `ambiguity_margin` and `min_confidence` — rather than
+  introducing a second opinion with new numbers. Calibrating a template in
+  Phase 4 therefore moves the conflict queue with it. Pure functions: same
+  result in, same conflicts out.
+- **Two additive tables, created by migration 3**: `review_conflict` (one thing
+  on one sheet to look at, with the machine's observation snapshotted for
+  querying) and `audit_event` (the append-only ledger). Conflict identity is
+  `(batch_id, scan_id, conflict_type, zone_id, group_key)` under a unique
+  constraint, so re-running, resuming or retrying a batch **updates** conflicts
+  instead of creating a second set.
+- **`omr_scanner.services.review_store`**: the repository. One write path for
+  events (`_append_event`) and no update or delete for them at all. Every
+  decision is one transaction — the event and the state change commit together
+  or neither does.
+- **The effective value is projected, not stored.** There is no `resolved_value`
+  column. `provenance_for` folds a conflict's ordered events over the machine's
+  reading, so a correction, a reopening and a second correction each *add* to
+  the record. Reopening restores the machine's value while keeping the
+  superseded correction, its reviewer, its reason and its timestamp. A stored
+  column would have been a third copy of the truth to keep in step; a fold
+  cannot drift.
+- **Append-only enforced three ways** (not by developer discipline): no update
+  or delete on the service surface, none anywhere in the application, and two
+  SQLite triggers that `RAISE(ABORT)` on any `UPDATE` or `DELETE` of
+  `audit_event`. The table deliberately carries **no foreign key**, so the
+  record that a named person decided something outlives the row it was about —
+  and so Phases 7-9 can audit into the same ledger without a schema change.
+- **The Resolve stage** (`omr_scanner.gui.review`), no longer a placeholder: a
+  queue filtered by state, type and a search over student ID and file name,
+  with live counts; and a workspace showing the disputed bubbles **zoomed**, the
+  whole **normalised** sheet, and **the original scan** — the last with the
+  field located through the recognition engine's own inverse homography rather
+  than a second projective calculation in the GUI. Overlays are Phase 4's.
+- **The evidence panel** shows what the machine saw, its status, its decision
+  score and each option's measured **fill score**, labelled as a coverage
+  measurement and never as a "probability".
+- **Accept / Correct / Defer / Reopen**, each requiring a named reviewer (*File
+  > Settings > Reviewer*, remembered between sessions) and each correction a
+  reason. A correction without a name is refused outright. Keyboard: ← / → to
+  step, **Enter** to accept, **D** to defer — deliberately no shortcut for
+  choosing a value.
+- **Duplicate student IDs detected across the whole batch**, in the coordinator
+  after the run, because a duplicate is not a property of one sheet and a worker
+  process must not open the database.
+- **Processing failures are distinguished from ambiguous values.** A corrupt
+  file or a sheet that would not register offers acknowledgement and deferral
+  and no value buttons, because `A`/`B`/`C`/`D` is not an answer to an
+  undecodable JPEG.
+- **Special machine values are preserved.** A double mark exported as `B-D` is
+  still `B-D` in the ledger after a reviewer decides it meant `B`.
+- **CSV export** gained `value_source` (`machine` / `human`) and
+  `unresolved_conflicts`, both appended after the existing columns. Resolutions
+  reach the export through one function and nothing else computes them.
+  Exporting a batch with conflicts still open **warns and states the count**; it
+  does not block, because an interim export is legitimate.
+- **`ScanResult.source_transform`**: the inverse homography the engine already
+  computed, now carried on the result. Added so the original scan can be
+  highlighted from the engine's own geometry; older stored results default it
+  and still load.
+- Review re-reads the one selected sheet in a background thread rather than
+  storing per-bubble evidence for a whole batch — five hundred bubble records
+  per sheet is most of a gigabyte over ten thousand sheets. Recognition is
+  deterministic, so the evidence reproduces exactly. The same sheet is not
+  decoded twice while walking its own conflicts.
+- **Phase 5 is untouched.** The worker pool, worker count, cancellation, resume,
+  retry and progress reporting are exactly as they were; detection runs in the
+  coordinator, after the batch.
+
 ### Added — Phase 5
 
 Batch Scan Processing Pipeline: a batch is now **durable and resumable**. With

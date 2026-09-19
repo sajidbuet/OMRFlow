@@ -56,6 +56,7 @@ from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.review.page import ResolvePage
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
@@ -179,7 +180,11 @@ class MainWindow(QMainWindow):
                 calibration_page.edit_template_requested.connect(self.edit_template)
                 page = calibration_page
             elif spec.key == "scan":
-                page = ScanPage(spec)
+                scan_page = ScanPage(spec)
+                scan_page.review_requested.connect(self.review_batch)
+                page = scan_page
+            elif spec.key == "resolve":
+                page = ResolvePage(spec)
             else:
                 page = PlaceholderPage(spec)
 
@@ -442,14 +447,54 @@ class MainWindow(QMainWindow):
         AboutDialog(self).exec()
 
     def show_settings(self) -> None:
-        """Open the Settings dialog and apply whatever the user accepted."""
+        """Open the Settings dialog and apply whatever the user accepted.
+
+        Both sections are applied in one configuration update, so accepting the
+        dialog writes the file once rather than twice.
+        """
         dialog = SettingsDialog(self._config, self)
         if dialog.exec() == SettingsDialog.DialogCode.Accepted:
-            self.apply_processing_settings(dialog.processing_settings())
+            self.apply_config(
+                self._config.with_processing(dialog.processing_settings()).with_reviewer_name(
+                    dialog.reviewer_name()
+                )
+            )
 
     def apply_processing_settings(self, processing: ProcessingSettings) -> None:
         """Adopt an edited Processing section, leaving every other setting alone."""
         self.apply_config(self._config.with_processing(processing))
+
+    def apply_reviewer_name(self, name: str) -> None:
+        """Adopt the reviewer identity conflict decisions are recorded against."""
+        self.apply_config(self._config.with_reviewer_name(name))
+
+    def _resolve_page(self) -> ResolvePage | None:
+        """The Resolve page, when this window built a real one."""
+        page = self._pages.get("resolve")
+        return page if isinstance(page, ResolvePage) else None
+
+    def review_batch(self, batch_id: str) -> bool:
+        """Open a batch's conflicts in the Resolve stage.
+
+        Args:
+            batch_id: The batch to review.
+
+        Returns:
+            Whether the stage could be opened with that batch.
+
+        The main window owns cross-page navigation, so the Scan page asks
+        rather than reaching into another stage - and the template travels with
+        the request, because the review workspace needs it to re-read a sheet
+        and to know which labels a reviewer may choose from.
+        """
+        page = self._resolve_page()
+        scan_page = self._scan_page()
+        if page is None:
+            return False
+        template = scan_page.state.template if scan_page is not None else None
+        if not page.load_batch(batch_id, template):
+            return False
+        return self.show_page("resolve")
 
     def apply_config(self, config: AppConfig) -> None:
         """Adopt an edited configuration: persist it and tell the pages.
@@ -634,9 +679,12 @@ class MainWindow(QMainWindow):
 
     def _broadcast_config_change(self) -> None:
         """Push settings that pages act on down to the pages that act on them."""
-        scan_page = self._pages.get("scan")
-        if isinstance(scan_page, ScanPage):
+        scan_page = self._scan_page()
+        if scan_page is not None:
             scan_page.set_processing_settings(self._config.processing)
+        resolve_page = self._resolve_page()
+        if resolve_page is not None:
+            resolve_page.set_reviewer(self._config.reviewer_name)
 
     # ------------------------------------------------------------------
     # Internal state propagation
@@ -781,6 +829,13 @@ class MainWindow(QMainWindow):
                 # results flushed before the database goes away, or the run is
                 # neither finished nor properly resumable.
                 page.shutdown_batch()
+
+        # The review page may be part-way through decoding a sheet. Same rule,
+        # same reason: no thread may outlive the window, and none may still be
+        # reading when the project's database handle is released.
+        review_page = self._resolve_page()
+        if review_page is not None:
+            review_page.shutdown()
 
         self.close_project()
         logger.info("Main window closed")

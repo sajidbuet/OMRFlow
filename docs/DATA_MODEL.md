@@ -18,13 +18,14 @@ entities, it finds the intended shape and relationships already agreed.
 | ScanBatch | Implemented (Phase 5) | `scan_batch` table |
 | BatchScan (one scan in a batch) | Implemented (Phase 5) | `batch_scan` table |
 | RecognitionResult | Implemented (Phase 5) | `batch_scan.result_json` |
-| FieldValue (per-zone, as its own row) | Planned (Phase 6) | database |
-| RecognitionConflict | Planned (Phase 6) | database |
+| FieldValue (per-zone, as its own row) | **Not implemented — superseded** (Phase 6) | — |
+| ReviewConflict (was RecognitionConflict) | Implemented (Phase 6) | `review_conflict` table |
+| AuditEvent | Implemented (Phase 6) | `audit_event` table |
+| Provenance / effective value | Implemented (Phase 6) | *projected*, not stored |
 | Candidate, AttendanceRecord | Planned (Phase 7) | database |
 | AnswerKey | Planned (Phase 8) | database |
 | ScoringConfiguration | Planned (Phase 8) | database |
 | CandidateResult | Planned (Phase 8/9) | database |
-| AuditEvent | Planned (Phase 6) | database |
 
 ## Entity relationships
 
@@ -44,9 +45,8 @@ erDiagram
     ZONE ||--o| BUBBLE_GRID : "positions"
 
     SCAN ||--|| RECOGNITION_RESULT : "produces"
-    RECOGNITION_RESULT ||--o{ FIELD_VALUE : "contains"
-    FIELD_VALUE ||--o{ RECOGNITION_CONFLICT : "may raise"
-    RECOGNITION_CONFLICT ||--o{ AUDIT_EVENT : "resolved by"
+    RECOGNITION_RESULT ||--o{ REVIEW_CONFLICT : "may raise"
+    REVIEW_CONFLICT ||--o{ AUDIT_EVENT : "resolved by"
 
     CANDIDATE ||--o| ATTENDANCE_RECORD : "has"
     CANDIDATE ||--o| CANDIDATE_RESULT : "earns"
@@ -148,31 +148,78 @@ its forty-odd fields as columns would mean a migration every time recognition
 gained a measurement. The handful of columns that *are* typed alongside it are
 exactly the ones a query needs to filter or sort on without decoding every row.
 
-### FieldValue - *Phase 6*
+### FieldValue - *not implemented; superseded in Phase 6*
 
-One recognised zone as its own row, which is what a conflict queue needs to
-point at.
+Planned as one row per recognised zone, for a conflict queue to point at. Phase
+6 did not build it, and the reason is worth recording.
 
-Intended fields: `zone_id`, `value` (canonical string), `confidence` (0-1),
-`state` (confident / missing / multiple / low_confidence), `alternatives`
-(competing candidates), and the raw per-bubble measurements.
+Every recognised field already exists, structured and versioned, inside
+`batch_scan.result_json`. A parallel `field_value` table would have been a
+**second copy of the same values**, kept in step by application code — and the
+one defect this phase most had to avoid is an interface that shows a value
+different from the one the engine produced. Two stores is precisely how that
+happens.
 
-Invariant, and the reason this will be separate from the stored result:
-**the machine value is never overwritten.** A human correction is recorded
-alongside it with an `AuditEvent`, so a result can always be traced back to what
-the machine actually saw. The display strings described in the README
-(`?10018-10028`, `?1__18`) are rendered from this structured data; they are
-never the stored form.
+So a conflict **references** a field rather than duplicating it:
+`(zone_id, group_key)` addresses a group in the stored result, resolved through
+`recognition/fields.py`, which is the same mapping recognition itself used. The
+machine's reading is snapshotted onto the conflict row for querying and display,
+but the result remains the single source of what was recognised.
 
-### RecognitionConflict - *Phase 6*
+The invariant the original design was protecting is kept in full, and is
+enforced harder than a separate table would have managed: **the machine value is
+never overwritten**, and a human correction is a new `audit_event` row that a
+trigger forbids anyone from rewriting.
 
-A `FieldValue` that needs human attention: multiple marks, a missing digit, a
-low-confidence bubble, a duplicate or unknown candidate id, or an alignment
-failure.
+If a later phase needs per-field rows for scoring or reporting, it should
+derive them from the stored result rather than have recognition write to two
+places.
 
-Intended fields: `conflict_id`, `scan_id`, `zone_id`, `kind`, `detected_at`,
-`status` (open / resolved / dismissed), `resolved_value`, `resolved_by`,
-`resolved_at`, `reason`.
+### ReviewConflict - *implemented (Phase 6)*
+
+One thing on one sheet that a person needs to look at. Table `review_conflict`.
+
+Fields: `conflict_id`, `batch_id`, `scan_id`, `conflict_type`, `scope`,
+`zone_id`, `group_key`, `field_kind`, `field_label`, `question_number`,
+`machine_value`, `machine_status`, `machine_confidence`, `machine_detail`,
+`state`, `detected_at`, `updated_at`.
+
+Identity is `(batch_id, scan_id, conflict_type, zone_id, group_key)`, enforced
+by the unique constraint `review_conflict_identity`. That is what makes
+detection **idempotent**: re-running, resuming or retrying a batch updates the
+existing conflicts instead of creating a second set. Two indexes support the
+queue — `(batch_id, state)` for filtering and counting, `(scan_id)` for a
+sheet's own conflicts.
+
+`conflict_type` is one of 22 values (`omr_scanner.domain.review.ConflictType`),
+`state` one of `open` / `resolved` / `deferred` / `withdrawn`.
+
+Invariants:
+- the `machine_*` columns are written at detection and changed **only** by a
+  re-read, which appends a `re_recognised` audit event first. No human action
+  touches them.
+- `state` is a **cache**, not the truth. The authoritative state is the fold
+  over that conflict's audit events; `recompute_state` rebuilds the column from
+  them, and a test asserts the two agree.
+- conflicts are **never deleted**. One the machine no longer raises becomes
+  `withdrawn`; the fact that it was once disputed is evidence.
+- a machine re-read may withdraw its own complaint but **never** overrides a
+  state a person set.
+
+### Provenance and the effective value - *implemented (Phase 6); not stored*
+
+There is no `resolved_value` column, deliberately. The final value of a field is
+**projected** by `review_store.provenance_for` as a left-fold over that
+conflict's audit events in order, starting from the machine's reading.
+
+A stored resolved value would be a third copy of the truth, and would have to be
+kept correct across corrections, reopenings and re-corrections by application
+code. The fold cannot drift, because there is nothing to drift *from*: the
+events are the record, and one function reads them.
+
+`Provenance` carries the effective value, its source (`machine` / `human`), the
+machine value, the reviewer, the reason, the timestamp and the originating event
+— everything the traceability requirement asks for, all derived.
 
 ### Candidate and AttendanceRecord - *Phase 7*
 
@@ -217,23 +264,74 @@ Per candidate: `set_code`, `attendance_state`, `correct_count`,
 `rank` is stored so that an exported report and the database agree, even when
 the report also contains an Excel `RANK.EQ` formula.
 
-### AuditEvent - *Phase 6*
+### AuditEvent - *implemented (Phase 6)*
 
-Append-only history of anything that can change a result: `event_id`,
-`occurred_at`, `actor`, `entity_type`, `entity_id`, `action`, `previous_value`,
-`new_value`, `reason`.
+Append-only history of anything that can change a result. Table `audit_event`.
+
+Fields: `event_id`, `occurred_at`, `entity_type`, `entity_id`, `batch_id`,
+`scan_id`, `action`, `actor`, `previous_value`, `new_value`, `reason_code`,
+`reason_text`, `detail`.
 
 Append-only is the whole point: rows are never updated or deleted, so the
 question "why does this candidate have this mark?" always has an answer.
+Enforced at three levels — no update or delete on the service surface, none
+anywhere in the application, and two SQLite triggers that abort either one
+outright. See [`conflict_review.md`](conflict_review.md) §7.
+
+**No foreign key**, deliberately. A conflict row may one day be removed by
+housekeeping; the record that a named person decided something must outlive it.
+The table is joined by `entity_type` + `entity_id` instead, which also lets a
+later phase audit candidates, keys or results without a schema change.
+
+`action` is one of `detected`, `re_recognised`, `accepted`, `corrected`,
+`deferred`, `reopened`, `withdrawn`. The first two are the machine's; the rest
+require a named actor, and `corrected` additionally requires a reason.
 
 ## Persistence strategy
 
-Implemented in Phase 0:
+| Table | Purpose | Added by |
+|---|---|---|
+| `schema_migration` | Ledger of applied migrations: version, description, timestamp, writing application version. | Phase 0 (migration 1) |
+| `project_setting` | Key/value mirror of project identity, so a stray `database.sqlite` can still be identified. | Phase 0 (migration 1) |
+| `scan_batch` | One run over a folder of scans. | Phase 5 (migration 2) |
+| `batch_scan` | One scanned sheet inside a batch, with its stored result. | Phase 5 (migration 2) |
+| `review_conflict` | One thing on one sheet a person must look at. | Phase 6 (migration 3) |
+| `audit_event` | Append-only history of every decision. | Phase 6 (migration 3) |
 
-| Table | Purpose |
-|---|---|
-| `schema_migration` | Ledger of applied migrations: version, description, timestamp, writing application version. |
-| `project_setting` | Key/value mirror of project identity, so a stray `database.sqlite` can still be identified. |
+### Schema version 3 (Phase 6)
+
+`_migration_003_review_and_audit` creates `review_conflict` and `audit_event`,
+their indexes and unique constraint, and the two `BEFORE UPDATE` /
+`BEFORE DELETE ... RAISE(ABORT)` triggers that make `audit_event` append-only at
+the database level.
+
+Compatibility, both directions:
+
+- **A project created before Phase 6 opens normally.** Migrations are
+  forward-only and run on open, so a version-2 database gains the two tables
+  with no conflicts in them; an existing batch simply has nothing to review
+  until it is looked at again.
+- **Its existing results are not merely preserved but usable.** Conflicts are
+  detected from the *stored* recognition results, so a batch processed under
+  Phase 5 becomes fully reviewable without re-reading a single image.
+- **No existing table or column was altered.** Phase 6 is purely additive, so
+  Phases 0-5 read and write exactly what they did before.
+- **A version-3 database cannot be opened by an older build** — the standard
+  refusal, unchanged since Phase 0.
+
+All four are asserted by
+`TestMigrationOntoAnExistingProject`, which winds a *real* project back to
+version 2 — dropping both tables, both triggers and the ledger row — then
+reopens it and checks that the Phase 5 batch survived intact, the tables
+returned, the conflicts came back from the stored results, and the re-created
+ledger refuses a `DELETE` again.
+
+The triggers are created with `IF NOT EXISTS`, so re-running a partially applied
+migration is safe. They are *not* re-asserted on every open: a database whose
+triggers were dropped while its schema version was left at 3 keeps the tables
+but loses the database-level enforcement. That is a deliberate database
+administrator action, which §7 of [`conflict_review.md`](conflict_review.md)
+already places outside what the application undertakes to prevent.
 
 Key/value storage is appropriate for a handful of identity attributes. Data that
 is queried, joined, sorted or reported on - scans, candidates, results - gets

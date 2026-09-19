@@ -36,13 +36,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import Connection, Engine, insert, inspect, select
+from sqlalchemy import Connection, Engine, insert, inspect, select, text
 
 from omr_scanner import __version__
 from omr_scanner.database.models import (
+    AuditEvent,
     Base,
     BatchScan,
     ProjectSetting,
+    ReviewConflict,
     ScanBatch,
     SchemaMigration,
 )
@@ -103,6 +105,55 @@ def _migration_002_batch_persistence(connection: Connection) -> None:
     )
 
 
+AUDIT_IMMUTABILITY_TRIGGERS: tuple[str, ...] = (
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_event_is_append_only_update
+    BEFORE UPDATE ON audit_event
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_event is append-only: rows cannot be updated');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS audit_event_is_append_only_delete
+    BEFORE DELETE ON audit_event
+    BEGIN
+        SELECT RAISE(ABORT, 'audit_event is append-only: rows cannot be deleted');
+    END
+    """,
+)
+"""Database-level enforcement that the provenance ledger is append-only.
+
+Two triggers, not an elaborate scheme (Phase 6 brief §51 explicitly rules out
+building tamper-proof enterprise logging here). Their job is to turn an
+accidental rewrite - a careless ORM flush, a hand-written statement during
+maintenance, a future refactor that forgets - into a loud failure rather than a
+silent loss of history. Deliberate, documented removal by a database
+administrator remains possible; that is outside what the application can or
+should prevent.
+
+``IF NOT EXISTS`` so re-running the migration on a partially applied database
+is safe."""
+
+
+def _migration_003_review_and_audit(connection: Connection) -> None:
+    """Add Phase 6 conflict review: ``review_conflict``, ``audit_event``.
+
+    Purely additive. Phase 5's batches, scans and recognition results are left
+    exactly as they are - a project processed before this version opens, keeps
+    every result, and simply has no conflicts recorded for its existing
+    batches until those are reviewed or re-run.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[ReviewConflict.__tablename__],
+            Base.metadata.tables[AuditEvent.__tablename__],
+        ],
+    )
+    for statement in AUDIT_IMMUTABILITY_TRIGGERS:
+        connection.execute(text(statement))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -113,6 +164,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=2,
         description="Phase 5 batch persistence: scan_batch, batch_scan",
         apply=_migration_002_batch_persistence,
+    ),
+    Migration(
+        version=3,
+        description="Phase 6 conflict review: review_conflict, audit_event",
+        apply=_migration_003_review_and_audit,
     ),
 )
 

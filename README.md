@@ -17,23 +17,28 @@ human verification + reproducible result processing**
 
 ## Development Status
 
-> **Pre-release. Phases 0-2 of 11 are complete; Phases 3, 4 and 5 are
+> **Pre-release. Phases 0-2 of 11 are complete; Phases 3, 4, 5 and 6 are
 > implemented and undergoing testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
 > canonical page, has an interactive designer for building that template, can
 > now read the marks on a filled-in sheet, name/export the results, and file
 > the processed images by roll number, can calibrate a saved template
-> against representative real scans before a batch is run, and records every
-> batch durably so an interrupted run resumes rather than restarts. None of the
-> Phase 3 recognition pipeline has been validated on more than one real printed
-> sheet. **Do not use it for examination processing.**
+> against representative real scans before a batch is run, records every
+> batch durably so an interrupted run resumes rather than restarts, and puts a
+> named human in the loop wherever the machine was unsure — without ever losing
+> what the machine saw. None of the Phase 3 recognition pipeline has been
+> validated on more than one real printed sheet. **Do not use it for
+> examination processing.**
 >
 > **Phase 3 v1 is architecturally stabilized but recognition accuracy remains
 > under active validation pending a large real-world OMR dataset. Phase 4
 > makes that validation safer and more systematic to perform on whatever real
 > scans an operator has - it does not perform the validation itself. Phase 5
 > makes a batch reliable and resumable; it says nothing about whether the
-> values that batch produced are correct.**
+> values that batch produced are correct. Phase 6 makes what the machine was
+> unsure about visible, correctable and traceable; it does not make the machine
+> more accurate, and it does not verify that a human correction was right —
+> only who made it, when, and why.**
 
 OMRFlow is being developed incrementally, in the defined phases listed in
 [`development/ROADMAP.md`](development/ROADMAP.md). Each phase is implemented,
@@ -52,7 +57,7 @@ validated against a broad, real-world set of filled sheets.
 | 3 | Recognition Engine v1: bubble mapping, recognition, batch scanning, renaming & CSV export | Implemented & architecturally hardened | In progress | 🧪 Testing |
 | 4 | Template calibration & validation | Implemented | In progress | 🧪 Testing |
 | 5 | Batch scan processing pipeline (persistence, resume) | Implemented | In progress | 🧪 Testing |
-| 6 | Conflict detection & human resolution | Pending | Not started | ⏳ Pending |
+| 6 | Conflict detection & human resolution | Implemented | In progress | 🧪 Testing |
 | 7 | Candidate & attendance reconciliation | Pending | Not started | ⏳ Pending |
 | 8 | Answer-key & scoring engine | Pending | Not started | ⏳ Pending |
 | 9 | Result management & reporting | Pending | Not started | ⏳ Pending |
@@ -71,6 +76,29 @@ criteria.
   stabilisation ongoing.
 - 🚧 **In development** — active implementation.
 - ⏳ **Pending** — not yet started.
+
+### What "testing" means, level by level
+
+"Tests pass" is four different claims, and the difference is the whole
+distinction between a phase that is finished and one that merely runs. For the
+phases currently in testing:
+
+| Phase | Implementation complete | Automated tests complete | Synthetic-data validation complete | Real-sheet validation complete |
+|---|---|---|---|---|
+| 3 — Recognition engine | Yes | Yes | Yes | **No** — one real sheet (`examples/ECE-0000.png`) plus geometric variants of it |
+| 4 — Calibration | Yes | Yes | Yes | **Partial** — exercised against the one real sheet; no corpus of deliberately miscalibrated templates |
+| 5 — Batch pipeline | Yes | Yes | Yes | **Partial** — largest measured batch is 48 real scans; no examination-scale run |
+| 6 — Conflict review | Yes | Yes | Yes | **No** — no review session with real operators on a real batch |
+
+- **Implementation complete** — the code exists and does what the phase set out
+  to do.
+- **Automated tests complete** — the phase's own suite passes, *and* the
+  earlier phases' suites still pass.
+- **Synthetic-data validation complete** — exercised end-to-end against
+  generated sheets with known ground truth.
+- **Real-sheet validation complete** — exercised against a broad corpus of
+  genuinely filled, independently scanned sheets. **No phase claims this yet**,
+  and it is the single reason no phase after 2 is marked ✅.
 
 ### What works today
 
@@ -173,9 +201,50 @@ criteria.
   - a failure to *store* results is reported separately from a failure to
     *read* a sheet: a run whose results could not be written is never presented
     as a clean success.
+- **Conflict detection & human review** (Phase 6, *implemented, testing in
+  progress*): when a batch finishes, everything recognition was unsure about
+  becomes a reviewable queue, and every decision a person makes is recorded
+  against their name — **without the machine's own reading ever being
+  overwritten**:
+  - conflicts detected from the engine's **own** `needs_review` judgement and
+    the **template's own** thresholds, so calibrating a template in Phase 4
+    moves the queue with it and there is one place where "sure enough" is
+    configured — no second opinion, no new numbers;
+  - a taxonomy covering the identifier (blank, incomplete, multiple, uncertain,
+    unreadable, low confidence, **and duplicates across the whole batch**), the
+    set code, questions, and the sheet itself (registration failed, orientation
+    assumed, unreadable file, processing error), with a **processing failure
+    distinguished from an ambiguous value** — a corrupt file offers no answer
+    buttons, because `A`/`B`/`C`/`D` is not an answer to it;
+  - a **review workspace** showing the disputed bubbles zoomed, the whole
+    normalised sheet, and **the original scan** — the last with the field
+    located on it through the recognition engine's own inverse homography, not
+    a second calculation in the GUI, and never by drawing on the file;
+  - what the machine saw, its status, its decision score, and each option's
+    measured **fill score** — labelled as a coverage measurement, never as a
+    "probability";
+  - **Accept**, **Correct**, **Defer** and **Reopen**, each requiring a named
+    reviewer (*File > Settings > Reviewer*) and each correction a reason;
+  - **an append-only audit ledger** enforced three ways — at the service
+    surface, in the application, and by SQLite triggers that abort any `UPDATE`
+    or `DELETE` on it outright;
+  - a final value that is **projected** from the machine's reading plus the
+    ordered events rather than stored, so reopening a decision restores the
+    machine's value while keeping the superseded correction, its reviewer, its
+    reason and its timestamp in the record;
+  - CSV export carrying `value_source` (`machine` / `human`) and
+    `unresolved_conflicts` per sheet, with a warning — not a block — before
+    exporting a batch that still has conflicts open;
+  - **special machine values are preserved**: a double mark exported as `B-D`
+    is still `B-D` in the ledger after a reviewer decides it meant `B`.
+
+  Phase 6 does **not** make recognition more accurate, and does not verify that
+  a correction was correct. See
+  [`docs/conflict_review.md`](docs/conflict_review.md) and
+  [`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
 - A PySide6 application shell with the nine workflow stages; **Project**,
-  **Template**, **Calibrate** and **Scan** are implemented, and the remaining
-  stages state which phase will implement them.
+  **Template**, **Calibrate**, **Scan** and **Resolve** are implemented, and
+  the remaining stages state which phase will implement them.
 
 ### Phase 3 architectural hardening
 
@@ -623,6 +692,143 @@ Still open, and why Phase 5 is not marked complete:
   whether the values it durably recorded are correct — that remains Phase 3's
   open item
 
+### Reviewing what the machine was unsure about (Phase 6)
+
+Between processing a batch and trusting its CSV. Full detail, including every
+conflict type and what the audit ledger guarantees, is in
+[`docs/conflict_review.md`](docs/conflict_review.md).
+
+1. Put your name in **File > Settings > Reviewer**. It is remembered between
+   sessions. **A correction cannot be saved without one** — attribution is the
+   point of this stage.
+2. Process the batch on the **Scan** stage. Conflicts are detected automatically
+   when it finishes, and the page reports how many need review.
+3. Press **Review Conflicts**, or open **Resolve**.
+4. Work the queue. **Next unresolved** skips to the next thing nobody has
+   decided; ← and → step through; **Enter** accepts the machine's value and
+   **D** defers.
+5. For each conflict, look at the **zoomed field** first — that is the evidence.
+   The **normalised sheet** shows where on the page it sits, and the **original
+   scan** shows the file exactly as it arrived, in case the fault is in the
+   scan rather than the reading.
+6. Read **What the machine saw**, including each option's measured fill score.
+   These are coverage measurements, not probabilities.
+7. **Accept** when the machine was right; pick a **value** when it was not; give
+   a reason for a correction.
+8. Deal with the **sheet-level** conflicts too. A registration failure or an
+   unreadable file has no value to correct — it needs re-scanning, and the queue
+   says so rather than offering you an answer to pick.
+9. Check for **duplicate student IDs** — these are found across the whole batch
+   and are the one conflict no single sheet could reveal.
+10. Export when the queue is clear. Exporting earlier warns and states the
+    count; it does not block, but the CSV records `unresolved_conflicts` per
+    sheet either way.
+
+> **What review does and does not establish.** That a person looked at every
+> value the machine flagged, and that every final value traces back to either
+> the machine or a named human decision with a reason. It is **not** a check
+> that the machine was right about what it did *not* flag — a confidently wrong
+> reading never reaches this queue. That is what Phase 4's calibration and
+> Phase 3's accuracy validation are for.
+
+### Phase 6 testing status
+
+Phase 6 (Conflict Detection & Human Resolution) is implemented and covered by
+149 new automated tests (88 unit, 24 integration, 37 GUI), plus three new
+`qtguitesting` smoke checks and screenshot inspection of the Resolve page. The
+integration tests start from **marks rendered on a page** and run the real
+recognition engine, a real project database and the real review services, so
+the conflicts under test are the ones the engine genuinely produces rather than
+the ones a fixture author assumed it would. Full detail is in
+[`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
+
+Confirmed by the current automated suite:
+
+- [x] **The machine value is never overwritten** — after one correction, after
+  two, and in the stored columns themselves; the special multi-mark form
+  (`B-D`) survives intact (the mandatory Phase 6 invariant)
+- [x] **The audit ledger cannot be rewritten** — the service module exposes no
+  update or delete for events, and the database refuses both outright; a
+  refused tamper leaves the ledger complete
+- [x] **A correction without a named reviewer is refused**, as is an "Other"
+  reason with no explanation; accepting records a confirmation reason without
+  the reviewer typing one
+- [x] **Reopening restores the machine's value while keeping the superseded
+  correction** verbatim, with its own reviewer, reason and timestamp
+- [x] The cached conflict state is **always reconstructible** by folding its
+  events — asserted over sequences of actions, so the cache cannot become a
+  second source of truth
+- [x] **A decision is one transaction**: a write made to fail mid-way leaves
+  neither the event nor the state change
+- [x] Detection is **deterministic and idempotent** — the same result produces
+  the same conflicts every time, and re-syncing an unchanged sheet writes
+  nothing to the ledger at all
+- [x] A changed machine reading is **recorded, not silently overwritten**; a
+  conflict the machine no longer raises is **withdrawn, not deleted**; and a
+  later machine read **never** withdraws a conflict a person has decided
+- [x] Every conflict kind in the taxonomy is raised from a real rendered sheet:
+  blank and multiply-marked identifier columns, blank and multiply-marked set
+  codes, multiple answers, a failed registration, an undecodable file — and a
+  clean sheet raises nothing at all
+- [x] **A processing failure is not a value**: an undecodable image offers no
+  answer buttons, and a value correction against one is refused by the service
+  as well as hidden by the GUI
+- [x] **Duplicate identifiers are detected across the batch**, each sheet
+  pointing at the others, the unique sheet untouched, and re-detection
+  idempotent
+- [x] Choices, labels and symbol sets come from **the template**, never a
+  hard-coded `A`/`B`/`C`/`D`; a multi-position set code is reported per
+  position; question numbers come from the template's own numbering
+- [x] **Original scans are byte-for-byte unchanged** by review (Phase 5's
+  invariant, still in force — review draws overlays, never annotations)
+- [x] Everything survives closing and reopening the project — states, history
+  and effective values — and reopening a batch does not duplicate its conflicts
+- [x] **An existing Phase 5 project upgrades cleanly**: a database genuinely
+  wound back to schema version 2 regains both tables and both triggers on open,
+  keeps its batch and results intact, and its conflicts are re-detected from
+  the *stored* results without re-reading a single image
+- [x] **The queue is paged and counted in SQL at batch scale** — 10,000
+  conflicts, one page costing a bounded number of statements and the summary a
+  bounded number of grouped queries, asserted by counting statements rather
+  than by timing a particular machine
+- [x] The GUI event loop keeps running while a sheet loads, and walking one
+  sheet's conflicts **decodes its image once**
+- [x] The CSV carries `value_source` and `unresolved_conflicts`, an unreviewed
+  export says the values are the machine's, and exporting with conflicts open
+  warns and states the count
+- [x] Automated Qt GUI validation using `qtguitesting` (38/38 smoke checks,
+  including a named decision recorded end to end against the real sample sheet,
+  the ledger refusing both an update and a delete, and a correction refused for
+  want of a reviewer)
+- [x] **Phase 5's multiprocessing is intact**: the same four sheets read on 1
+  worker and on 4 produce byte-identical conflicts, with the run's own reported
+  worker count asserted so the comparison cannot be between two sequential runs
+- [x] Full pre-existing Phase 0-5 suites pass unchanged (2,411 tests, 1 skipped)
+
+Still open, and why Phase 6 is not marked complete:
+
+- [ ] **No review session with real operators on a real batch.** Everything
+  above is automated; the workflow has never been driven by someone reviewing
+  sheets they cared about, which is the only way to find out whether the queue
+  is usable rather than merely correct
+- [ ] Queue performance at scale is asserted on a **synthetic**
+  10,000-conflict batch and reasoned from the SQL. No real examination-scale
+  review has been timed, and the sheet re-read on selection has been measured
+  only on the development machine
+- [ ] The conflict taxonomy's **defaults** (blank answers not flagged, assumed
+  orientation flagged, alignment warnings not flagged) are reasoned choices
+  documented as such in [`docs/conflict_review.md`](docs/conflict_review.md).
+  Which of them an examination office actually wants is not yet known
+- [ ] **Phase 6 makes what the machine was *unsure* about reviewable.** A
+  confidently wrong reading never reaches the queue, so this phase does not
+  bound the error rate — that remains Phase 3's open item, and Phase 4's
+  calibration is what narrows it
+- [ ] The ledger is append-only, not tamper-*proof*. A database administrator
+  with direct file access can still alter it; building cryptographically
+  chained enterprise logging was explicitly out of scope
+- [ ] Reviewer identity is a **name, not an account**. There is no
+  authentication, so the ledger records who *said* they made a decision
+
 ### Development philosophy
 
 OMRFlow follows an incremental development process. Major functionality is
@@ -636,7 +842,7 @@ exists.
 
 ### Pending development
 
-Phases 6-11 have not started. Their titles, purposes and deliverables as
+Phases 7-11 have not started. Their titles, purposes and deliverables as
 currently planned are documented in
 [`development/ROADMAP.md`](development/ROADMAP.md); this project does not
 promise a delivery date for any of them, and scopes may be refined as earlier
@@ -651,6 +857,8 @@ Current detail: [`development/CURRENT_STATE.md`](development/CURRENT_STATE.md).
 Plan: [`development/ROADMAP.md`](development/ROADMAP.md).
 Phase 3 handoff: [`development/PHASE_03_HANDOFF.md`](development/PHASE_03_HANDOFF.md).
 Phase 4 handoff: [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOFF.md).
+Phase 5 handoff: [`development/PHASE_05_HANDOFF.md`](development/PHASE_05_HANDOFF.md).
+Phase 6 handoff: [`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
 
 ---
 
@@ -761,7 +969,9 @@ OMRflow/
 │   │                         recognition, batch processing (incl. the
 │   │                         multicore worker pool), filename allocation,
 │   │                         scan import/export (Phase 3), calibration
-│   │                         verdicts (Phase 4)
+│   │                         verdicts (Phase 4), batch persistence (Phase 5),
+│   │                         conflict detection policy and the review/audit
+│   │                         store (Phase 6)
 │   ├── gui/                  PySide6 window and workflow pages
 │   │   ├── template_designer/  interactive .omrt editor (Phase 2)
 │   │   ├── calibration/         calibrate a saved template against real
@@ -769,14 +979,16 @@ OMRflow/
 │   │   │                        progress)
 │   │   ├── scan/                scan/recognition workflow page, incl.
 │   │   │                        benchmark mode (Phase 3, testing in progress)
+│   │   ├── review/              conflict queue, review workspace and audit
+│   │   │                        history (Phase 6, testing in progress)
 │   │   └── devtools/            Tools > Developer / Testing: dataset
 │   │                            generation and benchmark results (Phase 3)
 │   ├── imaging/              pixel algorithms: alignment, plus per-bubble
 │   │                         fill-metric measurement (Phase 3)
 │   ├── tools/                developer command line utilities
 │   ├── recognition/          value interpretation: decide, fields (Phase 3,
-│   │                         testing in progress; conflict resolution is
-│   │                         Phase 6)
+│   │                         testing in progress). Its `needs_review`
+│   │                         judgement is what Phase 6 turns into conflicts
 │   ├── evaluation/           QA above the engine: ground-truth schema, named
 │   │                         test cases, dataset planner and renderer,
 │   │                         benchmark, error categories and the benchmark
@@ -821,6 +1033,7 @@ OMRflow/
 | [`docs/scan_workflow.md`](docs/scan_workflow.md) | The Scan / recognition workflow: importing, batch processing, renaming and CSV export (Phase 3) |
 | [`docs/recognition_engine.md`](docs/recognition_engine.md) | The recognition subsystem for developers: the engine API, the `ScanResult` contract, diagnostics, synthetic datasets and the benchmark harness (Phase 3) |
 | [`docs/calibration_workflow.md`](docs/calibration_workflow.md) | The Calibration workflow: procedure, overlay layers, thresholds, validation status and how to recognise a bad calibration (Phase 4) |
+| [`docs/conflict_review.md`](docs/conflict_review.md) | Conflict detection and human review: what becomes a conflict, the reviewer's workflow, conflict states, provenance, the append-only audit ledger and export integration (Phase 6) |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
@@ -889,10 +1102,15 @@ verdict (Passed / Passed with Warnings / Needs Review / Calibration Failed)
 that reports a mis-registered or mis-calibrated template as failed rather than
 producing a confident-looking wrong result. See `docs/calibration_workflow.md`.
 
-**Conflict resolution** *(planned, Phase 6)*. A review interface showing the
-original sheet, the normalised sheet, the highlighted field, the zoomed region
-and the detected alternatives. A manual correction never overwrites the
-machine value - it is recorded alongside it with a timestamp and a reason.
+**Conflict resolution** *(Phase 6, implemented; testing in progress)*. A review
+interface showing the original sheet, the normalised sheet, the highlighted
+field, the zoomed region and the detected alternatives with their measured fill
+scores. A manual correction never overwrites the machine value - it is recorded
+alongside it in an append-only ledger with the reviewer's name, a timestamp and
+a reason, and the final value is *derived* from the two rather than stored, so
+reopening a decision restores the machine's reading without erasing the
+correction that preceded it. Duplicate identifiers are detected across the whole
+batch. See `docs/conflict_review.md`.
 
 **Candidate and attendance reconciliation** *(planned, Phase 7)*. Compare
 registered candidates, recorded attendance and detected scripts; surface
@@ -908,8 +1126,12 @@ marking optional.
 merit-wise Excel workbooks with a user-editable layout, plus PDF export. (CSV
 export of raw recognition results already exists, from Phase 3.)
 
-**Auditability.** Anything that can change a result is recorded append-only:
-machine value, corrected value, timestamp, operation, reason.
+**Auditability** *(Phase 6, implemented for recognition values; testing in
+progress)*. Anything that can change a result is recorded append-only: machine
+value, corrected value, timestamp, operation, reviewer and reason. Phase 6
+covers recognition values; attendance (Phase 7), answer keys (Phase 8) and
+results (Phase 9) will record into the same ledger, which was given no foreign
+key precisely so that they can.
 
 ---
 

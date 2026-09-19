@@ -552,6 +552,17 @@ class ScanResult:
         quality: Diagnostic measurements of the scan, or ``None`` when they were
             not requested.
         timings: Per-stage durations.
+        source_transform: The **inverse** of the fitted homography, row-major,
+            nine values - the map from canonical page pixels back to this
+            scan's own pixels. Empty when the page never registered, or when
+            the matrix could not be inverted.
+
+            Recorded so that a review interface can show *where on the original
+            scan* a disputed mark is, which is otherwise impossible: every
+            other coordinate in this result is canonical, and the original is
+            not in that frame. It is the engine's own transform, not a second
+            one - see :func:`~omr_scanner.services.recognition_service.map_canonical_to_source`,
+            which is the only thing that applies it.
     """
 
     source_path: Path
@@ -583,6 +594,7 @@ class ScanResult:
     recognised_at: str = ""
     quality: ScanQuality | None = None
     timings: StageTimings = field(default_factory=StageTimings)
+    source_transform: tuple[float, ...] = ()
 
     # ------------------------------------------------------------------
     # Convenience accessors used by the GUI, the CSV export and the tests
@@ -703,6 +715,7 @@ class ScanResult:
                 "source_width": self.source_width,
                 "source_height": self.source_height,
             },
+            "source_transform": [_encode_value(item) for item in self.source_transform],
             # Through the same encoder as every nested value, so the "JSON has
             # no NaN" rule holds for a top-level number too.
             "elapsed_seconds": _encode_value(self.elapsed_seconds),
@@ -777,6 +790,12 @@ class ScanResult:
             recognised_at=payload.get("recognised_at", ""),
             quality=_build(ScanQuality, quality) if quality else None,
             timings=_build(StageTimings, payload.get("timings") or {}),
+            # `or 0.0` per element: a non-finite coefficient was written as
+            # null, and a transform with a hole in it is unusable rather than a
+            # reason to fail loading the whole result.
+            source_transform=tuple(
+                float(item or 0.0) for item in payload.get("source_transform", ())
+            ),
         )
 
 

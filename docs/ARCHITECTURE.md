@@ -429,6 +429,60 @@ such a scan as anything but `CalibrationStatus.FAILED`. There is no separate
 "is this template safe" heuristic to keep in sync with the engine's own
 failure handling. See `docs/calibration_workflow.md`.
 
+## Conflict review (Phase 6)
+
+`omr_scanner.gui.review` puts a person in front of every value recognition was
+unsure about. It adds no recognition, no thresholds and no geometry of its own:
+
+```text
+ScanPage._generate_conflicts       -> services.conflict_policy.detect_conflicts   (pure)
+   (after the batch, in the           -> services.review_store.sync_conflicts
+    coordinating process)          -> conflict_policy.detect_duplicate_identifiers
+                                      -> review_store.sync_duplicate_identifiers
+
+ResolvePage.refresh_queue          -> review_store.list_conflicts / count_conflicts   (SQL)
+ResolvePage._load_sheet_for        -> gui.review.worker.SheetWorker  (a QThread)
+                                        -> services.recognition_service.RecognitionEngine.process
+ResolvePage.accept / correct       -> review_store.accept_machine_value / correct_value
+   / defer / reopen                     -> one transaction: audit event + state
+ResolvePage._refresh_provenance    -> review_store.provenance_for   (fold over the ledger)
+ScanPage._export_resolutions       -> review_store.sheet_resolutions -> scan_export
+```
+
+Four decisions worth carrying forward:
+
+- **Detection reads the engine's own judgement.** `conflict_policy` maps each
+  group's `MarkStatus` and the `needs_review` flag `recognition/decide.py`
+  already computed — from **the template's own** `ambiguity_margin` and
+  `min_confidence` — into conflict types. There is no threshold in the module
+  and no second opinion about the pixels. Calibrating a template in Phase 4
+  therefore moves the conflict queue with it, which is the same
+  one-source-of-truth argument as the overlay above.
+- **The final value is projected, never stored.** There is no `resolved_value`
+  column. `review_store.provenance_for` folds a conflict's ordered audit events
+  over the machine's reading, so the machine's observation, every superseded
+  correction, its reviewer and its reason all survive — and no application code
+  has to keep a third copy of the truth in step. `ReviewConflict.state` *is*
+  cached, for the queue's sake, and `recompute_state()` proves it equal to the
+  fold.
+- **The append-only ledger is enforced below the code that uses it**: no update
+  or delete on the service surface, none in the application, and two SQLite
+  triggers that abort either statement. Correctness here does not depend on a
+  future contributor remembering. `audit_event` carries no foreign key, so a
+  decision outlives the row it was about and Phases 7-9 can audit into the same
+  table without a migration.
+- **Highlighting the original scan uses the engine's own inverse homography.**
+  `ScanResult.source_transform` carries it, and
+  `recognition_service.map_canonical_to_source()` is the one place it is
+  applied. The GUI may not import OpenCV or NumPy, and a second implementation
+  of the engine's geometry is a second thing to drift — the failure Phase 4's
+  audit named as the most serious possible.
+
+Detection runs **in the coordinator after the batch finishes**, never in a
+worker: a worker process must not open the single-writer project database, and a
+duplicate identifier is not a property of one sheet. Phase 5's pool,
+cancellation, resume and progress are unchanged. See `docs/conflict_review.md`.
+
 ## Concurrency
 
 Phase 0 is single-threaded. From Phase 3, batch recognition runs off the GUI

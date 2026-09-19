@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.config.processing import ProcessingSettings, detected_cpu_count
+from omr_scanner.domain.review import ReviewCounts
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
@@ -87,6 +88,7 @@ from omr_scanner.services import (
     check_compatibility,
     collect_scan_files,
     completed_results,
+    count_conflicts,
     create_batch,
     export_scan_results,
     failed_scans,
@@ -99,8 +101,12 @@ from omr_scanner.services import (
     mark_cancelled,
     mark_queued,
     resumable_scans,
+    scan_ids_by_path,
     scan_paths,
     set_batch_status,
+    sheet_resolutions,
+    sync_conflicts,
+    sync_duplicate_identifiers,
 )
 from omr_scanner.services.recognition_models import utc_timestamp
 
@@ -111,7 +117,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.evaluation.benchmark import BenchmarkReport
     from omr_scanner.evaluation.session import BenchmarkComparison, BenchmarkSession
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
-    from omr_scanner.services import ProjectDatabase, ProjectSession
+    from omr_scanner.services import ProjectDatabase, ProjectSession, SheetResolution
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -275,6 +281,10 @@ class ScanPage(WorkflowPage):
     Signals:
         batch_finished: ``BatchReport`` when a run ends. GUI tests and the
             qtguitesting scripts wait on this instead of sleeping.
+        review_requested: ``str`` batch id when the operator asks to review
+            that batch's conflicts. The main window owns cross-page
+            navigation, so this page asks rather than reaching into another
+            stage.
         scan_selected: ``int`` row index whenever the shown scan changes.
         benchmark_finished: ``BenchmarkReport`` when a run in benchmark mode has
             been scored. Emitted before the results dialog opens, so a test can
@@ -288,6 +298,7 @@ class ScanPage(WorkflowPage):
     batch_finished = Signal(object)
     scan_selected = Signal(int)
     benchmark_finished = Signal(object)
+    review_requested = Signal(str)
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
@@ -448,6 +459,20 @@ class ScanPage(WorkflowPage):
         self.cancel_button.setObjectName("cancelButton")
         self.cancel_button.clicked.connect(self.cancel_processing)
         process_layout.addWidget(self.cancel_button)
+
+        self.review_button = QPushButton(load_icon("list-checks"), "Review Conflicts")
+        self.review_button.setObjectName("reviewConflictsButton")
+        self.review_button.setToolTip(
+            "Open everything this batch could not decide, with the evidence "
+            "behind it, for human review."
+        )
+        self.review_button.clicked.connect(self.request_review)
+        process_layout.addWidget(self.review_button)
+
+        self.conflict_label = QLabel("")
+        self.conflict_label.setObjectName("batchConflictLabel")
+        self.conflict_label.setWordWrap(True)
+        process_layout.addWidget(self.conflict_label)
 
         self.batch_state_label = QLabel("")
         self.batch_state_label.setObjectName("batchStateLabel")
@@ -1533,6 +1558,9 @@ class ScanPage(WorkflowPage):
         self._final_report = report
 
         self._settle_batch_state(report)
+        # Conflicts are detected from the finished results, in this process,
+        # after the pool has been torn down - see `_generate_conflicts`.
+        self._generate_conflicts(report)
         if snapshot is not None:
             self._last_snapshot = snapshot
         self._render_completion(report, self._last_snapshot)
@@ -1560,6 +1588,109 @@ class ScanPage(WorkflowPage):
         if self.state.benchmark is not None and not report.cancelled:
             self._score_benchmark(report)
         self.batch_finished.emit(report)
+
+    def request_review(self) -> bool:
+        """Ask the main window to open this batch's conflicts."""
+        if self.state.batch_id is None:
+            QMessageBox.information(
+                self,
+                "Nothing to review",
+                "Conflicts are recorded against a saved batch. Open a project and "
+                "process some scans first.",
+            )
+            return False
+        self.review_requested.emit(self.state.batch_id)
+        return True
+
+    def _generate_conflicts(self, report: BatchReport) -> None:
+        """Record what this run could not decide, for human review (Phase 6).
+
+        Runs in the coordinating process, once, after the batch has finished -
+        never inside a worker. Two reasons, and both are architectural rather
+        than convenience:
+
+        * A worker process must not open the project database. SQLite is a
+          single-writer store and Phase 5 keeps it that way by construction;
+          letting eight processes write conflicts would be exactly the shared
+          mutable state the worker pool exists to avoid.
+        * A duplicate identifier is not a property of one sheet - both sheets
+          are perfectly legible - so it cannot be seen while reading one.
+
+        Detection is idempotent: re-running a batch, resuming it or retrying a
+        failed sheet updates the existing conflicts rather than creating a
+        second set, because a conflict's identity is
+        ``(batch, scan, type, zone, group)``.
+
+        Never fatal. A batch that read ten thousand sheets correctly is not
+        spoiled by a failure to write its review queue; the failure is logged
+        and reported in the label, and the results remain exported and
+        resumable.
+        """
+        database = self.database
+        batch_id = self.state.batch_id
+        template = self.state.template
+        if database is None or batch_id is None or template is None:
+            self.conflict_label.setText("")
+            return
+
+        rows = scan_ids_by_path(database, batch_id)
+        total = 0
+        try:
+            for item in report.processed:
+                scan_id = rows.get(item.source_path)
+                if scan_id is None:
+                    continue
+                total += sync_conflicts(
+                    database,
+                    batch_id=batch_id,
+                    scan_id=scan_id,
+                    result=item.result,
+                    template=template,
+                )
+            duplicates = sync_duplicate_identifiers(database, batch_id)
+        except OMRScannerError:
+            _LOGGER.exception("Conflicts could not be recorded for batch %s", batch_id)
+            self.conflict_label.setText(
+                "⚠ The review queue could not be written. Results are still saved."
+            )
+            return
+
+        counts = count_conflicts(database, batch_id)
+        _LOGGER.info(
+            "Batch %s conflict detection: %d total, %d unresolved, %d duplicate id(s)",
+            batch_id,
+            counts.total,
+            counts.unresolved,
+            duplicates,
+        )
+        self._refresh_conflict_label(counts)
+
+    def _refresh_conflict_label(self, counts: ReviewCounts | None = None) -> None:
+        """Say how much of this batch still needs a human."""
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            self.conflict_label.setText("")
+            return
+        summary = counts if counts is not None else count_conflicts(
+            database, self.state.batch_id
+        )
+        if summary.total == 0:
+            self.conflict_label.setText("No conflicts: nothing needs review.")
+            return
+        self.conflict_label.setText(
+            f"{summary.unresolved} of {summary.total} conflict(s) still need review."
+        )
+
+    def unresolved_conflict_count(self) -> int:
+        """How many of this batch's conflicts still need a decision.
+
+        Read by :meth:`export_csv_to` before writing a file, so that an export
+        cannot silently present unreviewed ambiguity as finished data.
+        """
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return 0
+        return count_conflicts(database, self.state.batch_id).unresolved
 
     def _settle_batch_state(self, report: BatchReport) -> None:
         """Write the batch's terminal state after a run ends.
@@ -2071,14 +2202,72 @@ class ScanPage(WorkflowPage):
                 "Process at least one scan before exporting results.",
             )
             return None
+        if not self._confirm_unresolved_export():
+            return None
+
+        # Human decisions are applied here, at the one point results leave the
+        # application - never by editing a result. What recognition read stays
+        # in the project database whatever this file says.
+        resolutions = self._export_resolutions()
         try:
-            written = export_scan_results(processed, self.state.template, path)
+            written = export_scan_results(
+                processed, self.state.template, path, resolutions=resolutions
+            )
         except OMRScannerError as exc:
             report_error(self, exc, context="Export results")
             return None
-        _LOGGER.info("Exported %d result(s) to %s", len(processed), written)
+        _LOGGER.info(
+            "Exported %d result(s) to %s (%d sheet(s) carry human decisions)",
+            len(processed),
+            written,
+            sum(1 for item in resolutions.values() if item.reviewed),
+        )
         self.progress_label.setText(f"Exported {len(processed)} result(s) to {written.name}")
         return written
+
+    def _export_resolutions(self) -> dict[Path, SheetResolution]:
+        """The human decisions that apply to this batch, or none."""
+        database = self.database
+        if database is None or self.state.batch_id is None or self.state.template is None:
+            return {}
+        try:
+            return sheet_resolutions(database, self.state.batch_id, self.state.template)
+        except OMRScannerError:
+            # An export that silently dropped corrections would be worse than
+            # no export, so this is reported rather than swallowed - but it
+            # does not have to stop the machine values being written.
+            _LOGGER.exception("Human decisions could not be read for the export")
+            QMessageBox.warning(
+                self,
+                "Corrections could not be read",
+                "The project's review decisions could not be read, so this export "
+                "contains the machine's own values only. The decisions themselves "
+                "are not lost.",
+            )
+            return {}
+
+    def _confirm_unresolved_export(self) -> bool:
+        """Warn before exporting a batch that still has disputes open.
+
+        Informational, not a block (Phase 6 brief §24): an operator may
+        legitimately want an interim export. What must not happen is unresolved
+        ambiguity leaving the application *silently* looking like finished
+        data - so the count is stated, and the exported rows carry it too in
+        the ``unresolved_conflicts`` column.
+        """
+        unresolved = self.unresolved_conflict_count()
+        if not unresolved:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Conflicts are still unresolved",
+            f"{unresolved} conflict(s) in this batch have not been reviewed.\n\n"
+            "Those rows will carry the machine's own values, and the export marks "
+            "them as unresolved. Export anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     # ------------------------------------------------------------------
     # Filtering

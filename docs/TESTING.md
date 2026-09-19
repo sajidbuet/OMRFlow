@@ -484,6 +484,75 @@ a test, so the state a crash *leaves* is constructed instead - rows marked
 asserted against that. The limitation is recorded in
 `development/PHASE_05_HANDOFF.md` §7 rather than papered over.
 
+## Testing conflict review (Phase 6)
+
+| Level | Where | Asserts |
+|---|---|---|
+| Detection | `tests/unit/test_conflict_policy.py` (40 tests) | The taxonomy, the policy defaults, determinism and identity, and that every label comes from the template - against hand-built results, so the *rules* are tested without the engine that ordinarily drives them. |
+| The ledger | `tests/unit/test_review_store.py` (48 tests) | The machine value is never overwritten, a reviewer and reason are required, the ledger is append-only, reopening supersedes without erasing, the cached state equals the fold, a decision is one transaction, and the queue is paged and counted in SQL at 10,000 conflicts. |
+| The pipeline | `tests/integration/test_conflict_review.py` (24 tests) | The real engine, real rendered sheets and a real project database: scenarios A-E, every conflict kind raised from marks on a page, migration onto an existing Phase 5 project, a 1-vs-4-worker comparison, and source-file integrity. |
+| The GUI | `tests/gui/test_resolve_page.py` (36 tests) | The real page, a real project and a real `QThread`: queue filtering and navigation, all three views, the evidence panel, every decision, history, reopening, and survival across a fresh page. |
+
+**Assert both halves of the invariant, every time.** A page that overwrote the
+machine value passes the first line and fails the entire phase:
+
+```python
+assert provenance.value == "B"              # what the reviewer decided
+assert provenance.machine_value == "B-D"    # what the machine saw, intact
+assert provenance.reviewer == "Dr. Rahman"  # who is answerable for it
+```
+
+**Render the sheets; do not hand-build the conflicts.** The integration tests
+start from marks on a page and run real recognition, so the conflicts under test
+are the ones the engine genuinely produces rather than the ones a fixture author
+assumed it would. A hand-built `ScanResult` is right for the *unit* level, where
+the point is to vary one status at a time.
+
+**Test the queue's scale by counting statements, not by timing.** A wall clock
+measures whichever machine happened to run the suite; "the number of SQL
+statements does not grow with the number of rows" is the property that actually
+keeps the queue responsive:
+
+```python
+event.listen(database.engine, "before_cursor_execute", record)
+page = review_store.list_conflicts(database, batch_id, limit=50)
+assert len(page) == 50
+assert selects <= 2, statements       # one page is one page, whatever is behind it
+```
+
+**Wind the database genuinely back to test a migration.** Creating a fresh
+database and observing that it has the tables proves nothing about the *upgrade*
+path. `TestMigrationOntoAnExistingProject` drops both tables, both triggers and
+the ledger row from a project that already holds a batch, then reopens it.
+
+**Prove the tamper refusals against the database**, not against the service:
+
+```python
+with database.session() as session, pytest.raises(Exception, match="append-only"):
+    session.execute(text("DELETE FROM audit_event"))
+```
+
+The service having no delete function is the first of three defences; the test
+that matters is the one that goes around it.
+
+**Assert the worker count when comparing a parallel run with a sequential one.**
+Otherwise a pool that silently fell back to one process makes the comparison
+vacuous - two sequential runs agreeing proves nothing about multiprocessing:
+
+```python
+assert report.worker_count == workers
+assert signature_at_1_worker == signature_at_4_workers
+```
+
+**Wait on the condition, not the signal.** Selecting a conflict starts a
+`SheetWorker` and emits `sheet_ready` - but the page auto-selects row 0 when a
+batch loads, so the signal a test wants may already have fired before it starts
+waiting. Wait for `bundle is not None and page._loaded_scan_id == expected`.
+
+**Call `ResolvePage.shutdown()` before the session closes.** A worker thread
+still running at interpreter teardown aborts the process with exit code 9 -
+which looks like a crashed test suite rather than a fixture problem.
+
 ## Testing the Calibration workflow (Phase 4)
 
 Three levels, and the reason for each mirrors the recognition-testing table

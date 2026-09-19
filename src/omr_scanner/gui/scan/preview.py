@@ -524,6 +524,16 @@ class ScanPreviewView(QGraphicsView):
         """Show the page at 100 per cent."""
         self._apply_zoom(1.0)
 
+    def set_zoom(self, factor: float) -> None:
+        """Zoom to ``factor``, clamped to the view's own limits.
+
+        The public form of an absolute zoom, for a caller that has computed the
+        magnification it wants - the conflict review workspace fitting one
+        disputed group to the viewport, for instance. Clamping happens here, so
+        a caller never has to know :data:`MIN_ZOOM` and :data:`MAX_ZOOM`.
+        """
+        self._apply_zoom(factor)
+
     def fit_to_window(self) -> None:
         """Zoom so the whole page fits the viewport."""
         width, height = self._page_size

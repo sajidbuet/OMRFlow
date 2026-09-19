@@ -683,8 +683,59 @@ def _capture_calibration(_image: Path) -> list[Path]:
     return written
 
 
+def _capture_review(_image: Path) -> list[Path]:
+    """The Resolve page: a conflict open, then the same one decided.
+
+    Three images: the queue with a double-marked question selected and its
+    evidence shown, the zoomed field it is decided from, and the state after a
+    named correction - where the provenance line must still name the machine's
+    own reading.
+    """
+    from _harness import build_review_page
+
+    written: list[Path] = []
+    harness = build_review_page(reviewer="Dr. A. Rahman")
+
+    conflict = harness.first_conflict()
+    if conflict is None:
+        raise RuntimeError("the prepared batch produced no conflicts to capture")
+    harness.select(conflict.conflict_id)
+    print(
+        f"  selected: {conflict.conflict_type.label} on {conflict.scan_name}, "
+        f"machine value {conflict.observation.value!r}"
+    )
+    written.append(_save(harness.page, "review_conflict_open"))
+
+    # The zoomed field is the tab a reviewer actually decides from.
+    harness.page.view_tabs.setCurrentIndex(0)
+    harness.process_events()
+    written.append(_save(harness.page, "review_zoomed_field"))
+
+    harness.page.view_tabs.setCurrentIndex(2)
+    harness.process_events()
+    written.append(_save(harness.page, "review_original_scan"))
+
+    harness.page.view_tabs.setCurrentIndex(0)
+    harness.correct("B")
+    harness.page.state_filter.setCurrentText("All")
+    harness.page.select_conflict_by_id(conflict.conflict_id)
+    harness.process_events()
+    from omr_scanner.services import review_store
+
+    found = review_store.provenance_for(harness.database, conflict.conflict_id)
+    print(
+        f"  after correction: effective={found.value!r} by {found.reviewer!r}, "
+        f"machine={found.machine_value!r} kept"
+    )
+    written.append(_save(harness.page, "review_conflict_resolved"))
+
+    harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
+    "review": _capture_review,
     "loaded": _capture_loaded,
     "question": _capture_question_region,
     "bubble": _capture_bubble_radius,

@@ -59,6 +59,18 @@ class AppConfig(BaseModel):
         processing: How many CPU workers batch recognition may use. A machine
             property rather than an examination property, which is why it
             belongs to the per-user document and not to a project or a template.
+        reviewer_name: Who is sitting at this machine, recorded against every
+            conflict resolution they make (Phase 6). Remembered here rather
+            than asked for on every correction, because a reviewer works
+            through hundreds of them in a sitting.
+
+            Deliberately a name and not an account: Phase 6 requires
+            *attribution*, not authentication, and the field is shaped so that
+            a real identity system could later supply it without changing
+            anything that reads it. An empty value is normal - it simply means
+            nobody has said who they are yet, and
+            :func:`~omr_scanner.services.review_store.validate_reviewer`
+            refuses corrections until somebody does.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -69,6 +81,7 @@ class AppConfig(BaseModel):
     default_projects_root: Path | None = None
     max_recent_projects: int = Field(default=DEFAULT_MAX_RECENT_PROJECTS, ge=1, le=50)
     processing: ProcessingSettings = ProcessingSettings()
+    reviewer_name: str = ""
 
     def log_level_value(self) -> int:
         """Return :attr:`log_level` as a :mod:`logging` numeric level."""
@@ -105,6 +118,14 @@ class AppConfig(BaseModel):
     def with_processing(self, processing: ProcessingSettings) -> AppConfig:
         """Return a copy carrying ``processing``; the receiver is unchanged."""
         return self.model_copy(update={"processing": processing})
+
+    def with_reviewer_name(self, name: str) -> AppConfig:
+        """Return a copy remembering who is reviewing; the receiver is unchanged.
+
+        Whitespace is trimmed, because a name of three spaces would satisfy a
+        non-empty check while naming nobody.
+        """
+        return self.model_copy(update={"reviewer_name": name.strip()})
 
 
 def load_app_config(path: Path | None = None, *, strict: bool = False) -> AppConfig:
