@@ -192,6 +192,8 @@ where it belongs, and `entity_type='result'` is free.
 | `tests/gui/test_scoring_pages.py` | 56 | Both pages and the policy dialog, with a real project |
 | **Total new** | **247** | |
 
+Raised to **314** by the audit in §11a; the counts above are as first written.
+
 Plus 5 new `qtguitesting` smoke checks (**48/48** passing).
 
 **Full suite: 2,937 passed, 1 skipped** (baseline before this phase: 2,690).
@@ -228,6 +230,133 @@ asserts the mark is re-derived rather than adjusted.
   without changing the result shape.
 - **No manual mark override**, by design (§9).
 - Windows only, as for every phase since 3.
+
+## 11a. Independent audit, and what it changed
+
+After the above was written, Phase 8 was put through an adversarial audit
+against the brief: every requirement mapped to code, behaviour verified rather
+than inferred from a class or a test name. The baseline suite was green
+(2,937 passed, 1 skipped) and stayed green, so nothing below was found by a
+failing test - which is the point.
+
+Nine defects were found and repaired. Five mattered.
+
+### Silent, and the worst of them: a key numbered for another paper
+
+`score_answers` took the printed number of the first question from its
+*caller* and never checked it against the key's own `first_question`. A key's
+`wrong_questions` are printed question numbers, so a key written when the paper
+started at question 1, used against a plan numbered from 101, lines its answers
+up perfectly and **withdraws nothing at all**. Every candidate loses credit the
+examiners granted them, every total is internally consistent, and nothing looks
+wrong anywhere.
+
+It now refuses, and `score_candidate` turns the refusal into
+`BlockReason.KEY_NUMBERING_MISMATCH` so an operator gets a sentence rather than
+a traceback.
+
+### A contradiction filed as a settled outcome
+
+`score_candidate` returned `ABSENT` for anyone whose effective attendance was
+absent - including `ABSENT_WITH_SCRIPT`, where the attendance record says one
+thing and a script carrying that candidate's ID says another. Phase 7 exists to
+decide which is wrong. Recording it as "Absent" answered the question by
+ignoring it, and left a physical script unmarked with no row anywhere
+complaining. Only `ABSENT_CONFIRMED` is an outcome now; any exception on an
+absent candidate blocks.
+
+### A key that never reached the stage that uses it
+
+`AnswerKeyPage.key_saved` and `.key_verified` were emitted into the void - no
+`connect` anywhere - as was `ResultsPage.policy_changed`, and
+`offer_set_codes` had no caller at all despite a docstring saying the main
+window called it. So verifying a key left the Results stage still reporting
+*"Verified answer keys: none"*, with results that had just gone stale still
+presented as current, until something unrelated happened to rebuild the table.
+The Results stage also learned its batch only when a project was *opened*, so a
+batch scanned during the session was invisible to it. All four are wired
+through `MainWindow` now.
+
+### A template edit that penalised the candidates
+
+The same family as the numbering one, and reachable the same way. A sheet read
+when the paper offered `A/B/C/D/E`, marked against a template since cut to
+`A/B/C/D`, holds an `E` that `canonical_answer_string` cannot name. It becomes
+`?` - deliberately, because calling it blank would credit a candidate for a
+question they answered - and a `?` attracts the **multiple deduction**. So a
+candidate lost marks for an edit somebody else made to the template, with a
+`?` in the detail view that the sheet does not show.
+
+`unnameable_responses` now finds those values and the sheet blocks, asking to
+be read again against the template it is being marked against. The docstring in
+`canonical_answer_string` claiming "the caller is expected to have blocked such
+a sheet already" was, until this, describing a caller that did not exist.
+
+### A rule that was stored, previewed, and ignored
+
+`effective_multiple_penalty` honoured `multiple_penalty` only under the fixed
+mode. The dialog could nevertheless save a policy with a separate multiple
+deduction *and* a 1-per-3 mode - switch mode with the checkbox already
+cleared - and the deduction was then silently never applied. It is honoured in
+every penalising mode now, and the dialog offers the field in all of them,
+because a rule that is displayed and not applied is worse than one that does
+not exist.
+
+### The other four
+
+- **A blocked result never expired.** Its reason - *"no verified answer key for
+  Set C"* - went on being asserted after the key was verified. Its stored
+  reasons are now compared against the reasons it would be given now.
+- **`ScoringPolicyDialog` round-tripped marks through `float`.** An exact rule
+  that four decimal places cannot express (`1/3` as a blank mark) came back as
+  `3333/10000` merely because somebody opened the dialog - creating a revision
+  nobody asked for and making every result in the project stale under a rule
+  that was never typed. Untouched fields now keep their loaded value exactly.
+  `_exact` also silently returned `0` on a parse failure, which is
+  indistinguishable from an operator typing zero; it now falls back to the
+  spin box's own value, and locale group separators are handled rather than
+  turned into an exception.
+- **The Results stage read the whole batch twice per refresh** - once for the
+  table, once for the summary line above it, each a full `gather_inputs`. One
+  read now, filtered for the table and summarised before filtering.
+- **Verification applied to the stored revision while the editor could show
+  something else**, so an operator who edited the box and pressed Verify locked
+  the key they had already saved and lost the edit without being told. The
+  button is disabled while the editor is dirty.
+
+Two smaller things were made honest rather than repaired: `candidate_result`
+`.stale_reasons` is documented as permanently empty (staleness is derived on
+read, and a stored flag would be wrong the moment a key was verified - dropping
+a column in SQLite means rebuilding the table that holds every mark, which is
+not a tidying-up job), and `get_result` carries a warning that it reads the
+whole batch, so Phase 9 does not call it per candidate.
+
+### Tests added
+
+67 (314 total for the phase, from 247; the whole suite goes 2,937 -> 3,004).
+The gaps were not in the arithmetic, which was already tested as a table -
+they were in everything around it:
+
+| Area | What was missing |
+|---|---|
+| Phase 7 states | Nothing exercised scoring against absent-with-script, present-without-script, duplicate scripts or an unknown candidate |
+| Provenance across a reopen | The brief's key-revision and policy-revision reopen tests, including two changes before one recomputation |
+| Cross-contamination | Deliberately opposite keys, multi-character set codes (`10`, `11`, `12`, `X1`) beside a decoy key for their first character |
+| Numbering | A key and an answer string covering differently numbered questions |
+| Whole-paper extremes | Every response correct/incorrect/blank/multiple, every question withdrawn, first and last question withdrawn |
+| Determinism | Field-by-field identity over repeated runs, and order-independence of the sum |
+| Privacy | Nothing asserted that a *mark* or an answer string stays out of the log - `test_candidate_privacy.py` was Phase 7 only |
+| GUI | The cross-stage wiring, the dirty-editor rule, the dialog's exactness, one-read summaries, preflight collecting several issues, staleness from a key change and from a withdrawn question |
+
+One test was found to be **hiding three others**: a class added during the
+audit shadowed an existing `TestDeterminism`, and `ruff`'s `F811` caught it.
+Worth knowing that the suite's own count is not self-checking.
+
+A crash was also fixed in passing: the first version of the cancellation notice
+was a modal dialog raised from `_on_scored`, which arrives whenever the run
+happens to end - including during teardown, where it corrupted the heap. It is
+a line in the summary now, and `_on_scored` drops signals that arrive after
+`shutdown`.
 
 ## 12. For whoever picks this up
 

@@ -879,3 +879,408 @@ class TestMigrationOntoAnExistingPhase7Project:
             assert stored.revision == 1
         finally:
             reopened.close()
+
+# ----------------------------------------------------------------------
+# Repairs and coverage added by the Phase 8 audit.
+# ----------------------------------------------------------------------
+def build_batch(database, template, plan, tmp_path, rows, *, roster=None):
+    """Reconcile a batch of ``(filename, roll, set_code, answers)`` rows."""
+    roster_id = reconciliation_store.import_roster(
+        database, validation_of(roster or ROSTER), imported_by=OPERATOR
+    )
+    now = datetime.now(UTC)
+    batch_id = batch_store.new_batch_id()
+    with database.session() as session:
+        session.add(
+            ScanBatch(
+                batch_id=batch_id, created_at=now, updated_at=now,
+                source_folder=str(tmp_path), status="completed", total_scans=len(rows),
+            )
+        )
+        session.flush()
+        for index, (name, roll, set_code, answers) in enumerate(rows):
+            result = make_result(tmp_path / name, roll, set_code, answers, plan.numbers)
+            session.add(
+                BatchScan(
+                    batch_id=batch_id, batch_index=index,
+                    source_path=str(tmp_path / name), filename=name,
+                    status="completed", identifier_value=roll,
+                    set_code_value=set_code,
+                    result_json=json.dumps(result.to_dict()),
+                )
+            )
+    reconciliation_store.reconcile_batch(database, roster_id, batch_id)
+    return roster_id, batch_id
+
+
+def verified_set(database, plan, set_code: str, answers: str | None = None):
+    """Store and verify a key for one set."""
+    text_of = answers or "A" * plan.question_count
+    stored = scoring_store.save_key(
+        database, read_key(text_of, plan, set_code).to_key()
+    )
+    return scoring_store.verify_key(database, stored.key_id, verified_by=OPERATOR)
+
+
+class TestReconciliationDecidesEligibility:
+    """Phase 8 reads Phase 7's states; it never re-decides them.
+
+    Every state below is one a person has to settle. The only one that produces
+    a mark is a registered candidate with exactly one script; the only one that
+    produces an outcome without a mark is a candidate confirmed absent.
+    """
+
+    def test_a_matched_candidate_is_scored(self, database, template, plan, tmp_path):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s1.png", "10001", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)
+        assert found["10001"].status is ResultStatus.SCORED
+
+    def test_a_confirmed_absence_is_an_outcome_not_a_zero(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s1.png", "10001", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        absent = results_by_id(database, roster_id, batch_id, template)["10003"]
+        assert absent.status is ResultStatus.ABSENT
+        assert absent.final_score is None
+
+    def test_absent_with_a_script_is_blocked_not_recorded_absent(
+        self, database, template, plan, tmp_path
+    ):
+        # 10003 is marked absent on the roster, yet a script carries their ID.
+        # Either record may be wrong, and calling it "Absent" would settle a
+        # question nobody has answered - leaving a real script unmarked.
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s3.png", "10003", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10003"]
+        assert found.status is ResultStatus.BLOCKED
+        assert BlockReason.NOT_RECONCILED in {item.reason for item in found.blocks}
+        assert found.final_score is None
+
+    def test_a_candidate_present_without_a_script_is_blocked(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s1.png", "10001", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10002"]
+        assert found.status is ResultStatus.BLOCKED
+        assert found.final_score is None
+
+    def test_duplicate_scripts_are_never_chosen_between(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [("s1.png", "10001", "A", {}), ("s1b.png", "10001", "A", {})],
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert found.status is ResultStatus.BLOCKED
+        assert found.final_score is None
+
+    def test_an_unknown_candidate_is_never_silently_scored(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("sx.png", "99999", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        marked = [
+            item
+            for item in scoring_store.list_results(
+                database, roster_id, batch_id, template
+            )
+            if item.status is ResultStatus.SCORED
+        ]
+        assert marked == []
+
+
+class TestAnswersThisTemplateCannotName:
+    """A template edited after recognition must not penalise anybody.
+
+    A sheet read when the paper offered five choices, marked against a
+    template since cut to four, holds values the plan cannot name. The
+    canonical string turns those into ``?`` - and a ``?`` attracts the multiple
+    deduction, so a candidate would lose marks for an edit somebody else made.
+    """
+
+    def test_a_value_the_template_no_longer_offers_blocks_scoring(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [("s1.png", "10001", "A", dict.fromkeys(plan.numbers[:2], "E"))],
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert found.status is ResultStatus.BLOCKED
+        assert BlockReason.UNNAMEABLE_RESPONSE in {
+            item.reason for item in found.blocks
+        }
+        assert found.final_score is None
+
+    def test_the_block_names_the_questions(self, database, template, plan, tmp_path):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [("s1.png", "10001", "A", {plan.numbers[4]: "Z"})],
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10001"]
+        detail = found.describe_blocks()
+        assert f"Question {plan.numbers[4]}" in detail
+
+    def test_a_genuine_double_mark_is_still_scored(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [("s1.png", "10001", "A", {plan.numbers[0]: "B-D"})],
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert found.status is ResultStatus.SCORED
+        assert found.multiple_count == 1
+
+
+class TestKeyProvenanceAcrossAReopen:
+    """A result names the revision that produced it, and goes on naming it."""
+
+    def test_a_later_revision_does_not_rewrite_history(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s1.png", "10001", "A", {})]
+        )
+        first = verified_set(database, plan, "A", "A" * plan.question_count)
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        before = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert before.answer_key_revision == 1
+        assert before.answer_key_id == first.key_id
+
+        second = verified_set(database, plan, "A", "B" * plan.question_count)
+        assert second.revision == 2
+
+        after = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert after.answer_key_revision == 1
+        assert after.answer_key_id == first.key_id
+        assert StaleReason.ANSWER_KEY in after.stale_reasons
+        assert after.final_score == before.final_score
+
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        recomputed = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert recomputed.answer_key_revision == 2
+        assert recomputed.answer_key_id == second.key_id
+        assert recomputed.stale_reasons == ()
+        assert recomputed.final_score != before.final_score
+
+    def test_two_key_changes_before_recomputing_land_on_the_latest(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s1.png", "10001", "A", {})]
+        )
+        verified_set(database, plan, "A", "A" * plan.question_count)
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        verified_set(database, plan, "A", "B" * plan.question_count)
+        third = verified_set(database, plan, "A", "C" * plan.question_count)
+        assert third.revision == 3
+
+        stale = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert stale.answer_key_revision == 1
+
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        current = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert current.answer_key_revision == 3
+        assert current.stale_reasons == ()
+
+
+class TestPolicyProvenanceAcrossAReopen:
+    """The same, for the rules a mark was calculated under."""
+
+    def test_an_old_result_keeps_its_policy_revision_after_reopening(
+        self, database, template, plan, tmp_path
+    ):
+        db_path = database.path if hasattr(database, "path") else None
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s2.png", "10002", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.save_policy(
+            database,
+            ScoringPolicy(
+                correct_mark=Fraction(1),
+                incorrect_penalty=Fraction(1, 4),
+                mode=NegativeMarking.FIXED,
+            ),
+            created_by=OPERATOR,
+        )
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        before = results_by_id(database, roster_id, batch_id, template)["10002"]
+
+        scoring_store.save_policy(
+            database,
+            ScoringPolicy(correct_mark=Fraction(1), mode=NegativeMarking.ONE_PER_THREE),
+            created_by=OPERATOR,
+        )
+        after = results_by_id(database, roster_id, batch_id, template)["10002"]
+        assert after.policy_revision == before.policy_revision
+        assert StaleReason.SCORING_POLICY in after.stale_reasons
+        assert after.final_score == before.final_score
+        assert db_path is None or db_path.exists()
+
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        recomputed = results_by_id(database, roster_id, batch_id, template)["10002"]
+        assert recomputed.policy_revision == before.policy_revision + 1
+        assert recomputed.stale_reasons == ()
+
+    def test_two_policy_changes_before_recomputing_land_on_the_latest(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s2.png", "10002", "A", {})]
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        scoring_store.save_policy(
+            database,
+            ScoringPolicy(
+                correct_mark=Fraction(1),
+                incorrect_penalty=Fraction(1, 4),
+                mode=NegativeMarking.FIXED,
+            ),
+        )
+        latest = scoring_store.save_policy(
+            database,
+            ScoringPolicy(correct_mark=Fraction(1), mode=NegativeMarking.ONE_PER_FOUR),
+        )
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        current = results_by_id(database, roster_id, batch_id, template)["10002"]
+        assert current.policy_revision == latest.revision
+        assert current.policy_id == latest.policy_id
+
+
+class TestSetSpecificKeysDoNotContaminate:
+    """A candidate is marked against their own paper, or not at all."""
+
+    def test_wildly_different_keys_do_not_leak_between_sets(
+        self, database, template, plan, tmp_path
+    ):
+        count = plan.question_count
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [
+                ("s1.png", "10001", "A", dict.fromkeys(plan.numbers, "A")),
+                ("s4.png", "10004", "B", dict.fromkeys(plan.numbers, "D")),
+            ],
+        )
+        verified_set(database, plan, "A", "A" * count)
+        verified_set(database, plan, "B", "D" * count)
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)
+
+        # Each is perfect against their own key and would score zero against
+        # the other's, so a swap could not go unnoticed.
+        assert found["10001"].final_score == count
+        assert found["10004"].final_score == count
+        assert found["10001"].set_code == "A"
+        assert found["10004"].set_code == "B"
+
+    def test_a_set_without_a_verified_key_is_blocked_not_marked_elsewhere(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [
+                ("s1.png", "10001", "A", {}),
+                ("s4.png", "10004", "B", {}),
+            ],
+        )
+        verified_set(database, plan, "A")
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)
+        assert found["10001"].status is ResultStatus.SCORED
+        assert found["10004"].status is ResultStatus.BLOCKED
+        assert BlockReason.NO_VERIFIED_KEY in {
+            item.reason for item in found["10004"].blocks
+        }
+
+    def test_a_draft_key_is_not_used(self, database, template, plan, tmp_path):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s1.png", "10001", "A", {})]
+        )
+        scoring_store.save_key(
+            database, read_key("A" * plan.question_count, plan, "A").to_key()
+        )
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert found.status is ResultStatus.BLOCKED
+
+    @pytest.mark.parametrize("set_code", ["10", "11", "12", "X1"])
+    def test_multi_character_set_codes_are_marked_against_their_own_key(
+        self, database, template, plan, tmp_path, set_code
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path,
+            [("s1.png", "10001", set_code, dict.fromkeys(plan.numbers, "C"))],
+        )
+        verified_set(database, plan, set_code, "C" * plan.question_count)
+        # A decoy key for a set whose code shares the first character.
+        verified_set(database, plan, set_code[0], "A" * plan.question_count)
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        found = results_by_id(database, roster_id, batch_id, template)["10001"]
+        assert found.set_code == set_code
+        assert found.answer_key_revision == 1
+        assert found.final_score == plan.question_count
+
+
+class TestABlockedResultStopsClaimingAResolvedProblem:
+    """A block is a claim about the present, and claims expire."""
+
+    def test_verifying_the_missing_key_makes_the_block_stale(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s4.png", "10004", "B", {})]
+        )
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        blocked = results_by_id(database, roster_id, batch_id, template)["10004"]
+        assert blocked.status is ResultStatus.BLOCKED
+        assert blocked.stale_reasons == ()
+
+        verified_set(database, plan, "B")
+        after = results_by_id(database, roster_id, batch_id, template)["10004"]
+        assert after.is_stale
+
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        scored = results_by_id(database, roster_id, batch_id, template)["10004"]
+        assert scored.status is ResultStatus.SCORED
+        assert scored.stale_reasons == ()
+
+    def test_a_block_that_still_holds_is_not_stale(
+        self, database, template, plan, tmp_path
+    ):
+        roster_id, batch_id = build_batch(
+            database, template, plan, tmp_path, [("s4.png", "10004", "B", {})]
+        )
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+        verified_set(database, plan, "A")
+        after = results_by_id(database, roster_id, batch_id, template)["10004"]
+        assert after.stale_reasons == ()

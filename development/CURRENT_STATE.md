@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented, independently audited and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. The audit found nine defects that the green suite had not, three of which produced quietly wrong marks; all are repaired and pinned by tests. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 not started.
 
 Update this file at the end of every phase.
 
@@ -725,33 +725,42 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2937 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+3004 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest                2937 passed, 1 skipped
+pytest                3004 passed, 1 skipped
 ruff check .          All checks passed
 mypy                  Success: no issues found in 130 source files
 run_gui_smoke_tests   48/48 checks passed
 ```
 
-247 of those are Phase 8 (Answer-Key & Scoring Engine):
-`tests/unit/test_scoring.py` (71, the arithmetic as a table - the brief's
+314 of those are Phase 8 (Answer-Key & Scoring Engine):
+`tests/unit/test_scoring.py` (96, the arithmetic as a table - the brief's
 hand-calculated cases, every negative-marking mode, wrong-question precedence,
-clamping and exactness), `tests/unit/test_answer_key.py` (43, reading a key and
-every refusal *with its message*), `tests/unit/test_scoring_store.py` (55,
-revisions, verification, staleness, recomputation-never-patching, persistence
-and the migration), `tests/integration/test_scoring_workflow.py` (22, the
-acceptance scenario with real recognition over real rendered sheets) and
-`tests/gui/test_scoring_pages.py` (56). Confirmed end-to-end through
-`scripts/run_gui_smoke_tests.py` (48/48, including a draft key producing no
-marks, the acceptance outcomes with the key revision recorded, a rule change
-making results stale, recomputation ignoring a deliberately corrupted mark, and
-a withdrawn question paying every response) and by inspecting the four
-screenshots `scripts/capture_gui_states.py --only scoring` produces - which is
-how two real defects were found and fixed: an unread set code arriving as `"_"`
-and being reported as a missing answer key, and the Results page listing the
-verified keys only when the project was opened.
+clamping, exactness, whole-paper extremes and determinism field by field),
+`tests/unit/test_answer_key.py` (43, reading a key and every refusal *with its
+message*), `tests/unit/test_scoring_store.py` (77, revisions, verification,
+staleness, recomputation-never-patching, the Phase 7 eligibility matrix,
+provenance across a reopen, set-key contamination and the migration),
+`tests/integration/test_scoring_workflow.py` (23, the acceptance scenario with
+real recognition over real rendered sheets) and
+`tests/gui/test_scoring_pages.py` (72), plus three in
+`tests/unit/test_candidate_privacy.py` keeping marks and answer strings out of
+the log. Confirmed end-to-end through `scripts/run_gui_smoke_tests.py` (48/48,
+including a draft key producing no marks, the acceptance outcomes with the key
+revision recorded, a rule change making results stale, recomputation ignoring a
+deliberately corrupted mark, and a withdrawn question paying every response).
+
+Four defects were found by inspecting the four screenshots
+`scripts/capture_gui_states.py --only scoring` produces and by an **independent
+adversarial audit** of the phase against its brief. The audit found nine, none
+of which any existing test caught - the suite was green before and after it.
+The worst were silent: a key written for a differently numbered paper withdrew
+no questions at all, a template edited after recognition cost candidates the
+multiple-answer deduction, and a candidate recorded absent whose script had
+turned up was filed as a settled "Absent". Detail in
+`development/PHASE_08_HANDOFF.md` §11a.
 
 279 of those are Phase 7 (Candidate & Attendance Reconciliation):
 `tests/unit/test_candidate_import.py` (87, parsing, identifier normalisation,

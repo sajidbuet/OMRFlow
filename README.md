@@ -1065,13 +1065,21 @@ Full detail is in [`docs/reconciliation.md`](docs/reconciliation.md).
 
 ### Phase 8 testing status
 
-Phase 8 (Answer-Key & Scoring Engine) is implemented and covered by 247 new
-automated tests (169 unit, 22 integration, 56 GUI), plus five new
+Phase 8 (Answer-Key & Scoring Engine) is implemented and covered by 314
+automated tests (219 unit, 23 integration, 72 GUI), plus five
 `qtguitesting` smoke checks. The integration tests run **real recognition over
 real rendered sheets**; the unit tests assert every mark **exactly**, as a
 rational, because `assert score == 0.5` would pass for a value that is not one
 half. Full detail is in
 [`development/PHASE_08_HANDOFF.md`](development/PHASE_08_HANDOFF.md).
+
+The implementation was subsequently put through an **independent adversarial
+audit**, which found and repaired nine defects — among them a key written for
+a differently numbered paper silently withdrawing no questions at all, a
+candidate recorded absent whose script had turned up being filed as a settled
+"Absent", a template edit quietly costing candidates the multiple-answer
+deduction, and a verified key not reaching the stage that uses it. The audit's
+findings and the tests added to pin them down are in the Phase 8 handoff.
 
 Confirmed by the current automated suite:
 
@@ -1105,7 +1113,19 @@ Confirmed by the current automated suite:
   wrong-question credit
 - [x] Scoring is blocked, with a reason, for every unresolved condition: no
   script, an unnominated duplicate, an unknown candidate, a missing or unread
-  set, no verified key, or answers still under review
+  set, no verified key, answers still under review, a key written for a
+  differently numbered paper, or answers this template no longer offers
+- [x] **A candidate recorded absent whose script turned up is blocked**, not
+  filed as absent: that contradiction is Phase 7's to settle, and recording it
+  as an outcome would leave a real script unmarked
+- [x] A **blocked** result stops asserting a problem that has been fixed — once
+  the missing key is verified, the row says it needs recomputing
+- [x] A deduction for a multiple answer set by the operator is applied **in
+  every negative-marking mode**, rather than being stored, previewed and then
+  ignored outside the fixed one
+- [x] Opening and saving the scoring configuration unchanged **never rewrites
+  an exact rule**, so no revision is created and nothing goes stale for a rule
+  nobody typed
 - [x] **Recomputation never patches**: a deliberately corrupted stored score is
   ignored and the mark is re-derived from the stored inputs
 - [x] The full key-then-policy sequence: score, change the policy, go stale,
@@ -1113,7 +1133,8 @@ Confirmed by the current automated suite:
   unchanged throughout and each revision recorded
 - [x] **Repeated recomputation is idempotent**
 - [x] A **cancelled** run writes nothing, rather than leaving a batch half
-  marked under two policies
+  marked under two policies, and the summary says so rather than looking like a
+  finished run
 - [x] The per-question breakdown is **regenerated** and always agrees with the
   total; a stale result explains the mark it actually has
 - [x] A Phase 6 correction changes the effective answer, leaves the machine's
@@ -1123,6 +1144,12 @@ Confirmed by the current automated suite:
 - [x] An existing Phase 7 project upgrades cleanly by migration
 - [x] Source scans and the roster file are byte-for-byte unchanged by scoring
 - [x] The GUI event loop keeps running while a batch is marked
+- [x] **Verifying a key reaches the stage that uses it**, and a batch read
+  during the session reaches the Results stage without reopening the project
+- [x] **Verification applies to a stored revision, never to unsaved text** in
+  the editor
+- [x] A batch is read **once** per refresh of the Results stage, not once for
+  the table and again for the summary line above it
 - [x] Automated Qt GUI validation using `qtguitesting` (48/48 smoke checks,
   including a draft key producing no marks, the acceptance outcomes with the
   key revision recorded, a rule change making results stale, recomputation

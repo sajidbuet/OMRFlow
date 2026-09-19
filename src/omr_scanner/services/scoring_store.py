@@ -961,10 +961,22 @@ def stale_reasons_for(
     and counting them as needing recomputation would fill the queue with work
     that changes nothing. Both can still go stale through *reconciliation* -
     the one input that can turn them into somebody with a script.
+
+    A blocked result is the exception to the exception. It carries no mark, but
+    it does carry a *claim* - "no verified answer key for Set C" - and that
+    claim expires the moment somebody verifies the key. Left alone it would go
+    on asserting a problem that has been fixed, which is a stale statement even
+    though it is not a stale number. So its stored reasons are compared against
+    the reasons it would be given now, and any difference makes it stale.
     """
     status = ResultStatus(row.status)
     if status is ResultStatus.BLOCKED:
-        return ()
+        if current is None or entry is None:
+            return ()
+        outcome = score_candidate(inputs_for_candidate(current, entry))
+        was = {item.reason for item in _parse_blocks(row.blocks)}
+        now = {item.reason for item in outcome.blocks}
+        return () if was == now else (StaleReason.INPUTS,)
 
     reasons: list[StaleReason] = []
     if status is ResultStatus.SCORED:
@@ -996,7 +1008,12 @@ def get_result(
     candidate_id: str,
     template: OmrTemplate | None = None,
 ) -> StoredResult | None:
-    """Return one candidate's stored result."""
+    """Return one candidate's stored result.
+
+    Convenience for a single lookup. It reads the whole batch to evaluate
+    staleness, so calling it per candidate is quadratic: anything iterating
+    over a cohort - a report, a export - wants :func:`list_results` once.
+    """
     found = [
         item
         for item in list_results(database, roster_id, batch_id, template)
@@ -1038,7 +1055,17 @@ def count_results(
     template: OmrTemplate | None = None,
 ) -> ResultCounts:
     """Summarise a batch's results."""
-    results = list_results(database, roster_id, batch_id, template)
+    return summarise(list_results(database, roster_id, batch_id, template))
+
+
+def summarise(results: Sequence[StoredResult]) -> ResultCounts:
+    """Summarise results already read.
+
+    Split out from :func:`count_results` because a caller that has just listed
+    a batch must not list it again to count it: reading ten thousand results
+    twice to show one summary line is the whole batch's work done for nothing,
+    and the two reads can disagree if anything changes between them.
+    """
     by_set: dict[str, int] = {}
     for item in results:
         if item.status is ResultStatus.SCORED and item.set_code:

@@ -102,6 +102,58 @@ description: `docs/scoring.md`.
 - **The Results page listed the verified keys only when the project was
   opened**, so a key verified on the Answer Key stage left it saying "none".
 
+### Fixed — Phase 8 independent audit
+
+Found by mapping the phase brief onto the code and checking behaviour rather
+than names. The suite was green before and after; none of these was caught by
+an existing test. Detail in `development/PHASE_08_HANDOFF.md` §11a.
+
+- **A key written for a differently numbered paper withdrew no questions at
+  all.** `score_answers` took the first printed question number from its caller
+  and never compared it with the key's own. Because `wrong_questions` holds
+  *printed* numbers, a key written for a paper starting at question 1 and used
+  against one numbered from 101 lined its answers up perfectly and silently
+  granted nobody the credit the examiners had granted. It is refused now, and
+  reported as a blocked candidate with a sentence rather than a traceback.
+- **A candidate recorded absent whose script had turned up was filed as
+  "Absent".** That contradiction is Phase 7's to settle; recording it as an
+  outcome answered the question by ignoring it and left a real script unmarked.
+  Only a *confirmed* absence is an outcome now.
+- **Verifying an answer key did not reach the stage that uses it.**
+  `key_saved`, `key_verified` and `policy_changed` were emitted with nothing
+  connected to them, and `offer_set_codes` had no caller at all, so the Results
+  stage went on reporting "Verified answer keys: none" with freshly stale
+  results shown as current. The Results stage also learned its batch only when
+  a project was *opened*, so a batch scanned during the session was invisible
+  to it and "Calculate Results" refused to run.
+- **A template edit penalised the candidates.** A sheet read when the paper
+  offered `A/B/C/D/E` and marked against a template since cut to `A/B/C/D` held
+  an `E` the canonical string could not name. It became `?` — which attracts
+  the multiple deduction — so a candidate lost marks for somebody else's edit.
+  Such a sheet blocks now and asks to be read again.
+- **A deduction for a multiple answer was stored, previewed and then
+  ignored** outside the fixed mode, although the dialog could save exactly that
+  combination. It applies in every penalising mode now, and the field is
+  offered in all of them.
+- **A result that could not be scored went on asserting a problem that had been
+  fixed** — *"no verified answer key for Set C"*, after the key was verified.
+  Its recorded reasons are compared against the reasons it would be given now.
+- **Opening and saving the scoring configuration could rewrite an exact rule.**
+  A blank mark of `1/3` came back as `3333/10000` through the spin box's
+  `float`, creating a revision nobody asked for and making every result stale
+  under a rule that was never typed. Untouched fields keep their exact value.
+  An unparseable field also no longer becomes a silent zero, which was
+  indistinguishable from an operator typing one.
+- **Verification applied to the stored revision while the editor could show
+  something else**, so editing the key and pressing Verify locked the older
+  text and discarded the edit without saying so. The button is disabled while
+  the editor holds unsaved changes.
+- **The Results stage read the whole batch twice per refresh**, once for the
+  table and again for the summary line above it.
+- A **cancelled** run now says so in the summary instead of looking like a
+  finished one, and a run that finishes while the stage is shutting down is
+  dropped rather than redrawing a table whose widgets are going away.
+
 ### Added — Phase 7
 
 Candidate & Attendance Reconciliation: the candidate list an examination office

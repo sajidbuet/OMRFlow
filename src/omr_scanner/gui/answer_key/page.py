@@ -659,12 +659,30 @@ class AnswerKeyPage(WorkflowPage):
         )
         self.reviewer_label.setStyleSheet("color: #a4262c;")
 
+    def matches_editor(self, stored: StoredKey) -> bool:
+        """Whether the editor still shows exactly what ``stored`` holds.
+
+        Verification applies to a *stored revision*, not to the text on screen.
+        An operator who edits the box and then presses Verify would otherwise
+        lock the revision they had already saved and lose the edit without
+        being told - and the key they believed they had checked would not be
+        the key candidates are marked against.
+        """
+        draft = self.state.draft
+        if draft is None:
+            return False
+        return (
+            draft.answers == stored.key.answers
+            and frozenset(draft.wrong_questions) == stored.key.wrong_questions
+        )
+
     def _update_enabled(self) -> None:
         """Enable only what the current state allows."""
         has_project = self.database is not None
         has_plan = self.state.plan is not None
         draft = self.state.draft
         stored = self.current_revision()
+        unsaved = stored is not None and not self.matches_editor(stored)
 
         self.scan_button.setEnabled(has_plan)
         self.key_edit.setEnabled(has_plan)
@@ -675,7 +693,15 @@ class AnswerKeyPage(WorkflowPage):
         self.verify_button.setEnabled(
             has_project
             and stored is not None
+            and not unsaved
             and stored.key.status is not AnswerKeyStatus.VERIFIED
             and stored.key.status is not AnswerKeyStatus.SUPERSEDED
+        )
+        self.verify_button.setToolTip(
+            "Save these edits as a new revision before verifying: verification "
+            "locks a stored revision, not the text on screen."
+            if unsaved
+            else "Lock this revision so candidates may be marked against it. "
+            "Only a verified key can produce marks."
         )
         self._refresh_reviewer_label()

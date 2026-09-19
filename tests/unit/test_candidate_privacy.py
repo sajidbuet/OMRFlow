@@ -370,3 +370,176 @@ class TestTheRuleIsNotAccidental:
         )
         found = read_roster(path, ColumnMapping(candidate_id=0, name=1))
         assert SECRET_ID in found.issues[0].message
+
+
+# ----------------------------------------------------------------------
+# Phase 8: answer keys, scoring policy and marks.
+#
+# A mark tied to an identifiable candidate is candidate data. So is an answer
+# string, which is a complete record of what one person wrote. Neither may be
+# logged, and the whole point of scoring is to produce both.
+# ----------------------------------------------------------------------
+SECRET_ANSWERS = "ABCDABCDAB"
+
+
+@pytest.fixture
+def scoring_setup(database, tmp_path):
+    """A one-candidate batch whose every value is distinctive."""
+    import json
+
+    from tests.conftest import build_answer_sheet_template
+
+    from omr_scanner.domain.reconciliation import CandidateRecord
+    from omr_scanner.services import batch_store
+    from omr_scanner.services.answer_key import plan_for
+    from omr_scanner.services.candidate_import import ColumnMapping
+    from omr_scanner.services.recognition_models import (
+        AnswerView,
+        FieldView,
+        RecognitionOutcome,
+        RegistrationStatus,
+        ScanResult,
+    )
+
+    template = build_answer_sheet_template()
+    plan = plan_for(template)
+    validation = RosterValidation(
+        candidates=(
+            CandidateRecord(
+                candidate_id=SECRET_ID,
+                display_name=SECRET_NAME,
+                source_row=2,
+                imported_attendance=AttendanceState.PRESENT,
+                imported_value=SECRET_MARKS,
+            ),
+        ),
+        issues=(),
+        rows_read=1,
+        blank_ids=0,
+        duplicate_ids=0,
+        expected_present=1,
+        expected_absent=0,
+        attendance_unknown=0,
+        mapping=ColumnMapping(candidate_id=0, name=1, attendance=2),
+        source_name="roster.csv",
+    )
+    roster_id = reconciliation_store.import_roster(
+        database, validation, imported_by=OPERATOR
+    )
+
+    now = datetime.now(UTC)
+    batch_id = batch_store.new_batch_id()
+    result = ScanResult(
+        source_path=tmp_path / "sheet.png",
+        outcome=RecognitionOutcome.COMPLETE,
+        registration=RegistrationStatus.REGISTERED,
+        fields=(
+            FieldView(
+                zone_id="set_code", label="Set", field_type="set_code",
+                value="A", status="complete", needs_review=False, characters=(),
+            ),
+        ),
+        answers=tuple(
+            AnswerView(
+                number=number, zone_id="q",
+                value=SECRET_ANSWERS[index % len(SECRET_ANSWERS)],
+                status="resolved", needs_review=False,
+                top_fill=0.9, margin=0.4, confidence=0.9,
+            )
+            for index, number in enumerate(plan.numbers)
+        ),
+        set_code_zone_id="set_code",
+    )
+    with database.session() as session:
+        session.add(
+            ScanBatch(
+                batch_id=batch_id, created_at=now, updated_at=now,
+                source_folder=str(tmp_path), status="completed", total_scans=1,
+            )
+        )
+        session.flush()
+        session.add(
+            BatchScan(
+                batch_id=batch_id, batch_index=0,
+                source_path=str(tmp_path / "sheet.png"), filename="sheet.png",
+                status="completed", identifier_value=SECRET_ID, set_code_value="A",
+                result_json=json.dumps(result.to_dict()),
+            )
+        )
+    reconciliation_store.reconcile_batch(database, roster_id, batch_id)
+    return roster_id, batch_id, template, plan
+
+
+class TestScoringLogging:
+    def test_saving_and_verifying_a_key_logs_no_answers(
+        self, capture, database, scoring_setup
+    ):
+        from omr_scanner.services import scoring_store
+        from omr_scanner.services.answer_key import read_key
+
+        _, _, _, plan = scoring_setup
+        answers = (SECRET_ANSWERS * plan.question_count)[: plan.question_count]
+        stored = scoring_store.save_key(database, read_key(answers, plan, "A").to_key())
+        scoring_store.verify_key(database, stored.key_id, verified_by=OPERATOR)
+
+        captured = caplog_text(capture)
+        assert "Answer key saved" in captured, "it does log something useful"
+        assert answers not in captured, "a key is not logged"
+        assert_no_secrets(capture)
+
+    def test_scoring_a_batch_logs_counts_not_marks(
+        self, capture, database, scoring_setup
+    ):
+        from omr_scanner.services import scoring_store
+        from omr_scanner.services.answer_key import read_key
+
+        roster_id, batch_id, template, plan = scoring_setup
+        answers = (SECRET_ANSWERS * plan.question_count)[: plan.question_count]
+        stored = scoring_store.save_key(database, read_key(answers, plan, "A").to_key())
+        scoring_store.verify_key(database, stored.key_id, verified_by=OPERATOR)
+        capture.clear()
+
+        counts = scoring_store.score_batch(database, roster_id, batch_id, template)
+        assert counts.scored == 1, "the candidate really was marked"
+        marked = scoring_store.list_results(database, roster_id, batch_id)[0]
+        assert marked.final_score is not None
+
+        captured = caplog_text(capture)
+        assert "Scored:" in captured, "it does log something useful"
+        assert answers not in captured, "an answer string is not logged"
+        assert marked.answer_string not in captured
+        assert SECRET_ID not in captured
+        # The mark itself. Searched as the exact rational the row stores,
+        # because that is the form a leak would take.
+        assert str(marked.final_score) not in captured.replace(
+            "candidates=1", ""
+        ).replace("scored=1", "")
+        assert_no_secrets(capture)
+
+    def test_a_result_repr_names_no_candidate(self, database, scoring_setup):
+        from omr_scanner.database.models import CandidateResult
+        from omr_scanner.services import scoring_store
+        from omr_scanner.services.answer_key import read_key
+
+        roster_id, batch_id, template, plan = scoring_setup
+        answers = (SECRET_ANSWERS * plan.question_count)[: plan.question_count]
+        stored = scoring_store.save_key(database, read_key(answers, plan, "A").to_key())
+        scoring_store.verify_key(database, stored.key_id, verified_by=OPERATOR)
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+
+        with database.session() as session:
+            row = session.scalars(select(CandidateResult)).first()
+            shown = repr(row)
+        assert SECRET_ID not in shown
+        assert answers not in shown
+
+
+def caplog_text(capture: pytest.LogCaptureFixture) -> str:
+    """Everything captured, message and arguments alike."""
+    return "\n".join(
+        [record.getMessage() for record in capture.records]
+        + [str(record.args) for record in capture.records]
+        + [capture.text]
+    )
+
+

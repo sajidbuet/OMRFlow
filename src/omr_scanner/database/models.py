@@ -909,7 +909,20 @@ class CandidateResult(Base):
 
     status: Mapped[str] = mapped_column(String(15), nullable=False, default="blocked")
     blocks: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
     stale_reasons: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """Reserved, and deliberately always empty.
+
+    Staleness is **derived** on read by
+    :func:`~omr_scanner.services.scoring_store.stale_reasons_for`, which
+    compares the revisions above against the ones in force. Storing it as well
+    would be a second copy of a fact that changes without this row being
+    touched - verifying a key makes results stale without writing to any of
+    them - so a stored flag would be wrong from the moment it was written, and
+    would still be wrong after a restart. The column is kept rather than
+    dropped because removing one in SQLite means rebuilding the table, and a
+    rebuild of the table that holds every mark is not a tidying-up job.
+    """
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     computed_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")

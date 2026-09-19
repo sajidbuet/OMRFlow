@@ -426,3 +426,217 @@ class TestResultStatusSemantics:
         # Zero would be indistinguishable from somebody who sat the paper and
         # answered nothing, and would drag every average down.
         assert ResultStatus.ABSENT.label == "Absent"
+
+
+class TestQuestionNumberingMustAgree:
+    """A key and an answer string must cover the same *printed* questions.
+
+    The length check alone is not enough. A key written when the paper started
+    at question 1, used against a paper numbered from 101, lines its answers up
+    perfectly - and its ``wrong_questions``, which are printed numbers, then
+    withdraw nothing at all. Every candidate silently loses the credit the
+    examiners granted them, and no total looks wrong.
+    """
+
+    def test_a_key_numbered_differently_is_refused(self):
+        with pytest.raises(ValueError, match="numbered from"):
+            score_answers("ABCD", key("ABCD", first=101), NO_NEGATIVE)
+
+    def test_agreeing_numbering_is_accepted(self):
+        breakdown = score_answers(
+            "ABCD", key("ABCD", first=101), NO_NEGATIVE, first_question=101
+        )
+        assert [item.number for item in breakdown.questions] == [101, 102, 103, 104]
+
+    def test_a_withdrawn_question_is_found_under_its_printed_number(self):
+        breakdown = score_answers(
+            "BBBB",
+            key("AAAA", wrong=(102,), first=101),
+            FIXED_QUARTER,
+            first_question=101,
+        )
+        outcomes = [item.outcome for item in breakdown.questions]
+        assert outcomes[1] is QuestionOutcome.WRONG_QUESTION
+        assert breakdown.final_score == Fraction(1) - Fraction(3, 4)
+
+
+class TestMultiplePenaltyInEveryMode:
+    """A deduction an operator set is applied, whatever the mode.
+
+    ``multiple_penalty`` is its own field precisely so a paper can treat a
+    double mark differently from a wrong answer. Honouring it only under the
+    fixed mode would let a policy be stored, displayed in the preview, and then
+    never applied.
+    """
+
+    @pytest.mark.parametrize(
+        ("mode", "wrong_cost"),
+        [
+            (NegativeMarking.FIXED, Fraction(1, 4)),
+            (NegativeMarking.ONE_PER_THREE, Fraction(1, 3)),
+            (NegativeMarking.ONE_PER_FOUR, Fraction(1, 4)),
+        ],
+    )
+    def test_a_separate_multiple_deduction_is_applied(self, mode, wrong_cost):
+        policy = ScoringPolicy(
+            correct_mark=Fraction(1),
+            incorrect_penalty=Fraction(1, 4),
+            multiple_penalty=Fraction(1, 2),
+            mode=mode,
+            clamp_minimum=False,
+        )
+        breakdown = score_answers("B?", key("AA"), policy)
+        assert breakdown.questions[0].mark == -wrong_cost
+        assert breakdown.questions[1].mark == Fraction(-1, 2)
+
+    def test_a_multiple_can_be_free_under_one_per_three(self):
+        policy = ScoringPolicy(
+            correct_mark=Fraction(1),
+            multiple_penalty=Fraction(0),
+            mode=NegativeMarking.ONE_PER_THREE,
+            clamp_minimum=False,
+        )
+        breakdown = score_answers("B?", key("AA"), policy)
+        assert breakdown.questions[0].mark == Fraction(-1, 3)
+        assert breakdown.questions[1].mark == Fraction(0)
+
+    def test_no_negative_marking_still_deducts_nothing(self):
+        policy = ScoringPolicy(
+            correct_mark=Fraction(1), multiple_penalty=Fraction(1, 2)
+        )
+        assert policy.effective_multiple_penalty == 0
+
+
+class TestUniformPapers:
+    """Whole-paper extremes, where an off-by-one shows up as a whole mark."""
+
+    def test_every_response_correct(self):
+        breakdown = score_answers("ABCD" * 25, key("ABCD" * 25), FIXED_QUARTER)
+        assert breakdown.final_score == 100
+        assert breakdown.correct_count == 100
+
+    def test_every_response_incorrect(self):
+        breakdown = score_answers("B" * 100, key("A" * 100), FIXED_QUARTER)
+        assert breakdown.final_score == -25
+        assert breakdown.incorrect_count == 100
+
+    def test_every_response_blank(self):
+        breakdown = score_answers(BLANK * 100, key("A" * 100), FIXED_QUARTER)
+        assert breakdown.final_score == 0
+        assert breakdown.blank_count == 100
+        assert breakdown.penalised_count == 0
+
+    def test_every_response_multiple(self):
+        breakdown = score_answers(MULTIPLE * 100, key("A" * 100), ONE_PER_THREE)
+        assert breakdown.final_score == Fraction(-100, 3)
+        assert breakdown.multiple_count == 100
+
+    def test_every_question_withdrawn(self):
+        breakdown = score_answers(
+            BLANK * 10, key("A" * 10, wrong=tuple(range(1, 11))), FIXED_QUARTER
+        )
+        assert breakdown.final_score == 10
+        assert breakdown.wrong_question_count == 10
+        assert breakdown.blank_count == 0
+
+    def test_no_question_withdrawn(self):
+        breakdown = score_answers("A" * 10, key("A" * 10), FIXED_QUARTER)
+        assert breakdown.wrong_question_count == 0
+
+
+class TestWithdrawnQuestionBoundaries:
+    """The first and last questions, where an off-by-one hides."""
+
+    def test_the_first_question_can_be_withdrawn(self):
+        breakdown = score_answers("BBB", key("AAA", wrong=(1,)), FIXED_QUARTER)
+        assert breakdown.questions[0].outcome is QuestionOutcome.WRONG_QUESTION
+        assert breakdown.final_score == Fraction(1) - Fraction(1, 2)
+
+    def test_the_last_question_can_be_withdrawn(self):
+        breakdown = score_answers("BBB", key("AAA", wrong=(3,)), FIXED_QUARTER)
+        assert breakdown.questions[2].outcome is QuestionOutcome.WRONG_QUESTION
+        assert breakdown.final_score == Fraction(1) - Fraction(1, 2)
+
+    def test_a_number_outside_the_paper_withdraws_nothing(self):
+        # Validation refuses such a key; the scorer must not act on one either.
+        breakdown = score_answers("BBB", key("AAA", wrong=(0, 4, 99)), FIXED_QUARTER)
+        assert breakdown.wrong_question_count == 0
+        assert breakdown.final_score == Fraction(-3, 4)
+
+
+class TestFractionalTotals:
+    """Totals that are not whole marks stay exact all the way through."""
+
+    @pytest.mark.parametrize(
+        ("wrong", "expected"),
+        [
+            (1, Fraction(29) - Fraction(1, 3)),
+            (2, Fraction(28) - Fraction(2, 3)),
+            (4, Fraction(26) - Fraction(4, 3)),
+            (5, Fraction(25) - Fraction(5, 3)),
+        ],
+    )
+    def test_one_per_three_over_thirty_questions(self, wrong, expected):
+        answers = "B" * wrong + "A" * (30 - wrong)
+        breakdown = score_answers(answers, key("A" * 30), ONE_PER_THREE)
+        assert breakdown.final_score == expected
+
+    def test_a_custom_decimal_penalty_is_exact(self):
+        policy = ScoringPolicy(
+            correct_mark=Fraction(1),
+            incorrect_penalty=parse_mark("0.33"),
+            mode=NegativeMarking.FIXED,
+            clamp_minimum=False,
+        )
+        breakdown = score_answers("BBB", key("AAA"), policy)
+        assert breakdown.final_score == Fraction(-99, 100)
+
+    def test_a_negative_total_survives_and_is_clamped_only_when_asked(self):
+        answers, expected = "B" * 10, Fraction(-10, 3)
+        free = score_answers(answers, key("A" * 10), ONE_PER_THREE)
+        clamped = score_answers(
+            answers,
+            key("A" * 10),
+            ScoringPolicy(
+                correct_mark=Fraction(1),
+                mode=NegativeMarking.ONE_PER_THREE,
+                clamp_minimum=True,
+            ),
+        )
+        assert free.final_score == expected and free.clamped is False
+        assert clamped.raw_score == expected
+        assert clamped.final_score == 0 and clamped.clamped is True
+
+
+class TestDeterminismFieldByField:
+    """Identical inputs produce identical output, in every field."""
+
+    def test_repeated_scoring_is_identical_in_every_field(self):
+        answers = "AB?_" * 25
+        paper = key("ABCD" * 25, wrong=(7, 93))
+        runs = [score_answers(answers, paper, ONE_PER_THREE) for _ in range(5)]
+        for later in runs[1:]:
+            assert later == runs[0]
+            assert later.questions == runs[0].questions
+            assert later.raw_score == runs[0].raw_score
+            assert later.final_score == runs[0].final_score
+            assert (
+                later.correct_count,
+                later.incorrect_count,
+                later.blank_count,
+                later.multiple_count,
+                later.wrong_question_count,
+            ) == (
+                runs[0].correct_count,
+                runs[0].incorrect_count,
+                runs[0].blank_count,
+                runs[0].multiple_count,
+                runs[0].wrong_question_count,
+            )
+
+    def test_the_order_questions_are_summed_in_does_not_matter(self):
+        # The same responses, rearranged: exact arithmetic makes the total
+        # identical rather than merely close.
+        forward = score_answers("B" * 50 + "A" * 50, key("A" * 100), ONE_PER_THREE)
+        interleaved = score_answers("BA" * 50, key("A" * 100), ONE_PER_THREE)
+        assert forward.final_score == interleaved.final_score

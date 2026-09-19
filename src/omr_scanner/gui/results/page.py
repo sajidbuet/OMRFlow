@@ -69,6 +69,7 @@ from omr_scanner.services import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from omr_scanner.domain.scoring import ResultCounts
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import ProjectDatabase, ProjectSession
@@ -111,6 +112,14 @@ class ResultsPageState:
     batch_id: str | None = None
     reviewer: str = ""
     results: list[StoredResult] = field(default_factory=list)
+    counts: ResultCounts | None = None
+    """The whole batch's summary, from the same read that filled :attr:`results`.
+
+    Kept rather than asked for again: counting a batch means listing it, and
+    listing a ten-thousand-candidate batch twice per refresh - once for the
+    table, once for the line above it - is the batch's work done twice for one
+    label.
+    """
 
 
 class ResultsPage(WorkflowPage):
@@ -127,6 +136,7 @@ class ResultsPage(WorkflowPage):
         self.state = ResultsPageState()
         self._worker: ScoringWorker | None = None
         self._workers: list[ScoringWorker] = []
+        self._closing = False
 
         self.body.addWidget(self._build_policy_bar())
         self.body.addWidget(self._build_summary())
@@ -504,13 +514,38 @@ class ResultsPage(WorkflowPage):
         self.progress.setValue(done)
 
     def _on_scored(self, result: ScoringResult) -> None:
-        """Adopt a finished run. Runs on the GUI thread."""
+        """Adopt a finished run. Runs on the GUI thread.
+
+        A run that finishes *after* the stage has been asked to shut down is
+        dropped: its signal is delivered while the page is being torn down, and
+        redrawing a table whose widgets are on their way out is how a clean
+        close turns into a crash.
+        """
+        if self._closing:
+            return
         self.progress.setVisible(False)
         self.score_button.setEnabled(True)
         if result.error:
             QMessageBox.warning(self, "Scoring failed", result.error)
             return
         self.refresh_table()
+        if result.cancelled:
+            # A cancelled run deliberately writes nothing, so the marks on
+            # screen are the previous ones. Saying so is the difference between
+            # a coherent state and a coherent state that looks, to the person
+            # who stopped it, like a finished run.
+            #
+            # Said in the summary rather than in a modal box: this arrives on
+            # the GUI thread whenever the run happens to end, including while
+            # the stage is being torn down, and a dialog opened then blocks a
+            # window that is halfway closed.
+            self.summary_label.setText(
+                self.summary_label.text()
+                + "<br><span style='color:#a4262c'><b>Scoring was cancelled, so "
+                "nothing was written.</b> The marks above are from the previous "
+                "run.</span>"
+            )
+            return
         self.scored.emit()
 
     def rescore_selected(self) -> bool:
@@ -555,12 +590,16 @@ class ResultsPage(WorkflowPage):
 
         if database is None or self.state.roster_id is None or self.state.batch_id is None:
             self.state.results = []
+            self.state.counts = None
         else:
             _, statuses, attention = _FILTERS[max(0, self.filter_combo.currentIndex())]
             text = self.search_box.text().strip().casefold()
             everything = scoring_store.list_results(
                 database, self.state.roster_id, self.state.batch_id, self.state.template
             )
+            # The summary describes the whole batch, not the filtered view, so
+            # it is taken before filtering and from this same read.
+            self.state.counts = scoring_store.summarise(everything)
             self.state.results = [
                 item
                 for item in everything
@@ -642,14 +681,11 @@ class ResultsPage(WorkflowPage):
         self._show_result(self.selected_result())
 
     def _refresh_summary(self) -> None:
-        """Show the batch counts."""
-        database = self.database
-        if database is None or self.state.roster_id is None or self.state.batch_id is None:
+        """Show the batch counts, from the read that filled the table."""
+        counts = self.state.counts
+        if counts is None:
             self.summary_label.setText("Nothing scored yet.")
             return
-        counts = scoring_store.count_results(
-            database, self.state.roster_id, self.state.batch_id, self.state.template
-        )
         if not counts.registered:
             self.summary_label.setText(
                 "Nothing scored yet. Reconcile the batch on the "
@@ -783,6 +819,7 @@ class ResultsPage(WorkflowPage):
 
     def shutdown(self) -> None:
         """Wait for every scoring run this page started."""
+        self._closing = True
         workers = self._workers
         self._worker = None
         self._workers = []

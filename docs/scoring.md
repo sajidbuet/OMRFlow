@@ -179,7 +179,7 @@ somebody who was never there.
 | Correct answer | `+1.00` | Also what a wrong question pays |
 | Blank answer | `0.00` | **A blank is not a wrong answer** and never attracts the deduction |
 | Incorrect answer | `0.00` | See the modes below |
-| Multiple answer | same as incorrect | Separately configurable |
+| Multiple answer | same as incorrect | Separately configurable, **in every mode** |
 | Minimum total | `0.00`, clamped | Recorded in the policy, not hard-coded |
 
 ### Negative marking
@@ -203,6 +203,13 @@ paper marked out of two per question.
 1 wrong  →  -1/3          3 wrong  →  -1
 2 wrong  →  -2/3          6 wrong  →  -2
 ```
+
+**A double mark can cost something different from a wrong answer.** Clearing
+*Multiple answers: same as incorrect* sets its own deduction, and that
+deduction applies whichever negative-marking mode is in force - a paper may
+well take a third off for a wrong answer and nothing for a question answered
+twice. The deduction is only ignored under **None**, where nothing is deducted
+at all.
 
 ### Precedence
 
@@ -240,17 +247,43 @@ has been settled:
 | State | What happens |
 |---|---|
 | Reconciled, present, one script | Scored |
-| **Absent** | `ABSENT`, **no mark** - not a zero |
+| **Absent, confirmed** | `ABSENT`, **no mark** - not a zero |
+| **Marked absent, but a script turned up** | Cannot be scored |
 | Present but no script | Cannot be scored |
 | Duplicate script, none nominated | Cannot be scored |
 | Unknown candidate ID | Cannot be scored |
 | Set unresolved or unread | Cannot be scored |
 | No verified key for the set | Cannot be scored |
 | Answers still under review | Cannot be scored |
+| Key written for a differently numbered paper | Cannot be scored |
+| Answers this template no longer offers | Cannot be scored |
 
 An absent candidate gets **no mark at all**. Writing zero would make them
 indistinguishable from somebody who sat the paper and answered nothing, and
 would drag every average down with a candidate who was never there.
+
+Only a *confirmed* absence is an outcome. A candidate recorded absent whose
+script has turned up is a contradiction between the attendance record and the
+recognised ID, and which of the two is wrong matters: filing them as "Absent"
+would settle a question nobody has answered and leave a real script in the room
+unmarked. That is Phase 7's decision, so Phase 8 blocks and says so.
+
+The last two rows are the quietest failures of the lot, and both come from a
+template that changed after the batch was read.
+
+A key's wrong-question numbers are *printed* question numbers, so a key written
+when the paper started at question 1 and used against a paper numbered from 101
+lines its answers up perfectly and withdraws nothing at all - every candidate
+silently loses credit the examiners granted them, and no total looks wrong. The
+two numberings are compared, and a mismatch blocks rather than guessing which
+one the examiners meant.
+
+Likewise, a sheet read when the paper offered `A/B/C/D/E`, marked against a
+template since cut to `A/B/C/D`, holds an `E` the canonical string cannot name.
+It becomes `?` - because calling it blank would credit a candidate for a
+question they answered - and a `?` attracts the multiple deduction. Neither
+reading is right, so the sheet blocks and asks to be read again against the
+template it is being marked against.
 
 Nothing blocked is hidden: it is a row with a reason, and *Check Before
 Scoring* lists every one of them together rather than one dialog at a time.
@@ -269,6 +302,20 @@ A result goes **stale** when any input changes:
 
 A stale result **keeps its mark** - it is a true record of what the earlier
 inputs produced - but says so, and the summary counts it.
+
+A result that **could not be scored** goes stale too, on a different ground. It
+carries no mark to be out of date, but it does carry a claim - *"no verified
+answer key for Set C"* - and that claim expires the moment somebody verifies
+the key. Left alone it would go on asserting a problem that has been fixed, so
+its recorded reasons are compared against the reasons it would be given now,
+and any difference marks it for recomputation.
+
+Staleness is **worked out when a result is read**, never stored. Verifying a
+key makes results stale without touching a single one of their rows, so a
+stored flag would be wrong from the moment it was written - and still wrong
+after a restart. Comparing the revisions a result names against the revisions
+in force gives the same answer in a fresh session as in the one that produced
+it.
 
 ### Recompute, never patch
 
@@ -293,7 +340,9 @@ correct value rather than the corrupted one adjusted.
 Repeated recomputation with identical inputs is idempotent.
 
 Cancelling a run **writes nothing**. A half-marked batch under two different
-policies, presented as current, is worse than one that was never marked.
+policies, presented as current, is worse than one that was never marked - and
+the summary says the run was cancelled, so the marks still on screen are not
+mistaken for the ones it was going to produce.
 
 ---
 

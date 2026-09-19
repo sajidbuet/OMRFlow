@@ -299,10 +299,20 @@ class ScoringPolicy:
 
     @property
     def effective_multiple_penalty(self) -> Fraction:
-        """The magnitude deducted for one confirmed multiple answer."""
+        """The magnitude deducted for one confirmed multiple answer.
+
+        ``None`` means "whatever a wrong answer costs", which is what an
+        examination usually means. A value means the operator said otherwise,
+        and is honoured **in every mode** - including the 1-per-3 and 1-per-4
+        ones, where a paper may well deduct a third for a wrong answer and
+        nothing for a double mark. Reading the field only under
+        :attr:`NegativeMarking.FIXED` would let a policy be saved with a
+        deduction that is silently never applied, and a rule that is stored,
+        displayed and ignored is worse than one that does not exist.
+        """
         if self.mode is NegativeMarking.NONE:
             return Fraction(0)
-        if self.mode is NegativeMarking.FIXED and self.multiple_penalty is not None:
+        if self.multiple_penalty is not None:
             return self.multiple_penalty
         return self.effective_incorrect_penalty
 
@@ -471,9 +481,20 @@ def score_answers(
         Every question's outcome and contribution, and the total.
 
     Raises:
-        ValueError: ``answers`` and ``key`` cover different questions. A
-            length mismatch is a bug or a mis-entered key, never something to
-            paper over by marking the overlap.
+        ValueError: ``answers`` and ``key`` cover different questions - either
+            a different *number* of them, or the same number under different
+            printed numbering. A mismatch is a bug or a mis-entered key, never
+            something to paper over by marking the overlap.
+
+            The numbering check matters as much as the length one, and is
+            easier to miss: ``key.wrong_questions`` holds *printed* question
+            numbers, so a key written when the paper started at question 1 and
+            used against a plan that starts at 101 lines its answers up
+            perfectly and silently stops withdrawing the questions the
+            examiners withdrew. Every candidate then loses credit they are
+            owed, and no total looks wrong. Refusing is the only safe
+            behaviour; the caller turns this into a block an operator can act
+            on.
 
     **Precedence**, in this order, and tested as such:
 
@@ -497,6 +518,12 @@ def score_answers(
         raise ValueError(
             f"answer string covers {len(answers)} question(s) but the key for "
             f"set {key.set_code!r} covers {key.question_count}"
+        )
+    if first_question != key.first_question:
+        raise ValueError(
+            f"answer string is numbered from question {first_question} but the "
+            f"key for set {key.set_code!r} is numbered from "
+            f"{key.first_question}"
         )
 
     correct = policy.correct_mark
@@ -599,6 +626,8 @@ class BlockReason(StrEnum):
     NO_VERIFIED_KEY = "no_verified_key"
     UNRESOLVED_ANSWERS = "unresolved_answers"
     ANSWER_LENGTH_MISMATCH = "answer_length_mismatch"
+    KEY_NUMBERING_MISMATCH = "key_numbering_mismatch"
+    UNNAMEABLE_RESPONSE = "unnameable_response"
     NO_RESULT_STORED = "no_result_stored"
 
     @property
@@ -614,6 +643,12 @@ class BlockReason(StrEnum):
             BlockReason.NO_VERIFIED_KEY: "No verified answer key for this set",
             BlockReason.UNRESOLVED_ANSWERS: "Answers still awaiting review",
             BlockReason.ANSWER_LENGTH_MISMATCH: "Answers do not match the key length",
+            BlockReason.KEY_NUMBERING_MISMATCH: (
+                "The answer key was written for differently numbered questions"
+            ),
+            BlockReason.UNNAMEABLE_RESPONSE: (
+                "This sheet was read with different answer choices"
+            ),
             BlockReason.NO_RESULT_STORED: "This sheet has no stored recognition result",
         }[self]
 
@@ -645,6 +680,7 @@ class StaleReason(StrEnum):
     ANSWERS = "answers"
     SET_CODE = "set_code"
     RECONCILIATION = "reconciliation"
+    INPUTS = "inputs"
 
     @property
     def label(self) -> str:
@@ -655,6 +691,10 @@ class StaleReason(StrEnum):
             StaleReason.ANSWERS: "this candidate's answers have changed",
             StaleReason.SET_CODE: "this candidate's question-paper set has changed",
             StaleReason.RECONCILIATION: "this candidate's reconciliation has changed",
+            StaleReason.INPUTS: (
+                "what was blocking this candidate has changed since it was "
+                "recorded"
+            ),
         }[self]
 
 
@@ -712,10 +752,13 @@ def canonical_answer_string(
         One character per entry in ``numbers``.
 
     A value that is neither blank, a multiple, nor a known label becomes
-    :data:`MULTIPLE` - it is *some* mark this function cannot name, and
-    reporting it as blank would credit a candidate for a question they
-    answered. The caller is expected to have blocked such a sheet already; this
-    is the safe fallback, not the mechanism.
+    :data:`MULTIPLE`: it is *some* mark this function cannot name, and calling
+    it blank would credit a candidate for a question they answered. But a
+    :data:`MULTIPLE` attracts the multiple deduction, so this is a safe
+    fallback only for a sheet somebody has already refused to mark - which is
+    what :func:`~omr_scanner.services.scoring.unnameable_responses` exists to
+    find, and why an unnameable value blocks scoring rather than relying on
+    this.
     """
     known = set(answer_labels_for(labels))
     out: list[str] = []

@@ -68,6 +68,7 @@ from omr_scanner.services import (
     create_project,
     open_project,
     recover_interrupted,
+    review_store,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -185,13 +186,21 @@ class MainWindow(QMainWindow):
             elif spec.key == "scan":
                 scan_page = ScanPage(spec)
                 scan_page.review_requested.connect(self.review_batch)
+                scan_page.batch_finished.connect(self._on_batch_finished)
                 page = scan_page
             elif spec.key == "resolve":
                 page = ResolvePage(spec)
             elif spec.key == "attendance":
                 page = AttendancePage(spec)
             elif spec.key == "answer_key":
-                page = AnswerKeyPage(spec)
+                answer_key_page = AnswerKeyPage(spec)
+                # A key is written on one stage and used on another. Without
+                # these the Results stage goes on reporting "verified answer
+                # keys: none" - and its stored results go on looking current -
+                # until something else happens to rebuild its table.
+                answer_key_page.key_saved.connect(self._on_answer_key_changed)
+                answer_key_page.key_verified.connect(self._on_answer_key_changed)
+                page = answer_key_page
             elif spec.key == "results":
                 page = ResultsPage(spec)
             else:
@@ -512,6 +521,55 @@ class MainWindow(QMainWindow):
         results = self._results_page()
         if results is not None:
             results.set_template(template)  # type: ignore[arg-type]
+
+    def _on_answer_key_changed(self, _key_id: int) -> None:
+        """Tell the Results stage that this project's keys have moved on.
+
+        Verifying a key changes which candidates can be marked and makes every
+        result computed under the previous revision stale. The Results stage
+        cannot see that happen - it is a different page - so it is told, and
+        re-reads. Which key changed is deliberately not used: the stage
+        re-reads everything rather than patching one row, which is the rule the
+        scoring engine itself follows.
+        """
+        results = self._results_page()
+        if results is not None:
+            results.refresh_table()
+
+    def _on_batch_finished(self, report: object) -> None:
+        """Point the scoring stages at a batch that has just been processed.
+
+        Both stages pick up a batch when a project is *opened*. A batch scanned
+        during the session would otherwise be invisible to them until the
+        project was closed and reopened, and "Calculate Results" would go on
+        saying it had nothing to mark with a freshly read cohort on disk.
+
+        The batch id comes from the Scan stage rather than from ``report``,
+        which summarises what was read and does not name the batch it was
+        written to.
+        """
+        if getattr(report, "cancelled", False):
+            return
+        scan_page = self._scan_page()
+        batch_id = scan_page.state.batch_id if scan_page is not None else None
+        if not batch_id:
+            return
+        results = self._results_page()
+        if results is not None:
+            results.set_batch(batch_id)
+        answer_key = self._answer_key_page()
+        session = self._session
+        if answer_key is None or session is None:
+            return
+        # The sets the batch actually contains, so an operator writing keys is
+        # offered the papers that were sat rather than having to remember them.
+        try:
+            found = review_store.effective_set_codes(session.database, batch_id)
+        except OMRScannerError:  # pragma: no cover - defensive
+            return
+        answer_key.offer_set_codes(
+            [item.value for item in found.values() if item.value and not item.unresolved]
+        )
 
     def reconcile_batch(self, batch_id: str) -> bool:
         """Open a batch's candidate reconciliation in the Attendance stage.

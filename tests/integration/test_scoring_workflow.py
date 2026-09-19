@@ -36,9 +36,11 @@ from typing import TYPE_CHECKING
 
 import cv2
 import pytest
+from sqlalchemy import select
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 
 from omr_scanner.database import open_project_database
+from omr_scanner.database.models import CandidateResult
 from omr_scanner.domain.review import ReasonCode
 from omr_scanner.domain.scoring import (
     BLANK,
@@ -476,6 +478,46 @@ class TestReproducibility:
             assert {k: v.final_score for k, v in again.items()} == {
                 k: v.final_score for k, v in before.items()
             }
+        finally:
+            reopened.close()
+
+    def test_a_reopened_project_rebuilds_marks_without_the_stored_ones(
+        self, tmp_path, database, prepared, template
+    ):
+        """The phase's first exit criterion, in its strongest form.
+
+        Reopening and recomputing is only a proof of reproducibility if the
+        previously serialised mark plays no part in producing the new one. So
+        every stored mark is corrupted first, the authoritative inputs - the
+        answer string, the set, the key revision, the policy revision - are
+        left exactly as they were, and the marks are rebuilt from those.
+        """
+        roster_id, batch_id = prepared
+        expected = {
+            candidate_id: item.final_score
+            for candidate_id, item in results_by_id(
+                database, roster_id, batch_id, template
+            ).items()
+        }
+        assert any(value is not None for value in expected.values())
+        database.close()
+
+        reopened = open_project_database(tmp_path / "database.sqlite")
+        try:
+            with reopened.session() as session:
+                for row in session.scalars(select(CandidateResult)).all():
+                    row.final_score = "999"
+                    row.raw_score = "999"
+                    row.correct_count = 4242
+            corrupted = results_by_id(reopened, roster_id, batch_id, template)
+            assert all(
+                item.final_score in (None, Fraction(999)) for item in corrupted.values()
+            )
+
+            scoring_store.score_batch(reopened, roster_id, batch_id, template)
+            rebuilt = results_by_id(reopened, roster_id, batch_id, template)
+            assert {k: v.final_score for k, v in rebuilt.items()} == expected
+            assert all(item.correct_count != 4242 for item in rebuilt.values())
         finally:
             reopened.close()
 

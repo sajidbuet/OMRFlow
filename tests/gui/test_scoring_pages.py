@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
+from sqlalchemy import select
 
 from omr_scanner.config import AppConfig
 from omr_scanner.domain.reconciliation import AttendanceState, CandidateRecord
@@ -627,6 +628,55 @@ class TestStaleIndication:
         )
         assert "scoring configuration has changed" in results_page.table.item(row, 10).text()
 
+    def test_a_new_key_revision_marks_results_stale(
+        self, qtbot, results_page: ResultsPage, project_session, plan
+    ):
+        database = project_session.database
+        verified_key_for(database, plan)
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_batch()
+        assert not any(item.is_stale for item in results_page.state.results)
+
+        stored = scoring_store.save_key(
+            database,
+            read_key("B" * plan.question_count, plan, "A").to_key(),
+        )
+        scoring_store.verify_key(database, stored.key_id, verified_by=OPERATOR)
+        results_page.refresh_table()
+
+        found = {item.candidate_id: item for item in results_page.state.results}
+        assert found["10001"].is_stale
+        assert found["10001"].answer_key_revision == 1, "provenance is not rewritten"
+        row = next(
+            index
+            for index, item in enumerate(results_page.state.results)
+            if item.candidate_id == "10001"
+        )
+        assert "answer key has changed" in results_page.table.item(row, 10).text()
+
+    def test_withdrawing_a_question_marks_results_stale(
+        self, qtbot, results_page: ResultsPage, project_session, plan
+    ):
+        # Wrong questions live on the key revision, so flagging one is a new
+        # revision - and every mark computed under the old one is out of date.
+        database = project_session.database
+        verified_key_for(database, plan)
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_batch()
+        before = {item.candidate_id: item for item in results_page.state.results}
+
+        verified_key_for(database, plan, wrong=(2,))
+        results_page.refresh_table()
+        after = {item.candidate_id: item for item in results_page.state.results}
+        assert after["10002"].is_stale
+        assert after["10002"].final_score == before["10002"].final_score
+
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_batch()
+        recomputed = {item.candidate_id: item for item in results_page.state.results}
+        assert recomputed["10002"].is_stale is False
+        assert recomputed["10002"].wrong_question_count == 1
+
     def test_a_stale_result_keeps_its_mark_until_recalculated(
         self, qtbot, results_page: ResultsPage, project_session, plan
     ):
@@ -697,6 +747,26 @@ class TestPreflight:
         monkeypatch.setattr(QMessageBox, "information", _capture(shown))
         results_page.show_preflight()
         assert shown and "Correct answer" in shown[0]
+
+    def test_every_blocking_issue_is_collected_not_just_the_first(
+        self, results_page: ResultsPage, project_session, plan
+    ):
+        # An operator who discovers blocking issues one dialog at a time fixes
+        # them one at a time, and the batch fails as many times as there are
+        # problems. Set B has no key; 10002's answers are still in review.
+        from omr_scanner.database.models import BatchScan
+
+        database = project_session.database
+        verified_key_for(database, plan)
+        with database.session() as session:
+            row = session.scalars(select(BatchScan)).first()
+            row.set_code_value = "B"
+        results_page.refresh_table()
+
+        issues = results_page.preflight()
+        assert len(issues) >= 2
+        assert any("Set B has no verified answer key" in item for item in issues)
+        assert any("10001" in item for item in issues)
 
     def test_the_policy_bar_lists_verified_keys(
         self, results_page: ResultsPage, project_session, plan
@@ -848,3 +918,201 @@ class TestStableObjectNames:
                 assert dialog.findChild(object, name) is not None, name
         finally:
             dialog.close()
+
+# ----------------------------------------------------------------------
+# Repairs and coverage added by the Phase 8 audit.
+# ----------------------------------------------------------------------
+class TestVerifyingFollowsWhatWasSaved:
+    """Verification locks a stored revision, never the text on screen."""
+
+    def test_verify_is_refused_while_the_editor_holds_unsaved_edits(
+        self, key_page: AnswerKeyPage, plan, monkeypatch
+    ):
+        monkeypatch.setattr(QMessageBox, "question", _answer_yes)
+        key_page.set_combo.setCurrentText("A")
+        key_page.key_edit.setPlainText("A" * plan.question_count)
+        key_page.save_key()
+        assert key_page.verify_button.isEnabled() is True
+
+        # One character changed, not saved. The stored revision still says "A".
+        key_page.key_edit.setPlainText("B" + "A" * (plan.question_count - 1))
+        assert key_page.verify_button.isEnabled() is False
+        assert "Save these edits" in key_page.verify_button.toolTip()
+
+    def test_saving_the_edit_makes_verification_available_again(
+        self, key_page: AnswerKeyPage, plan, monkeypatch
+    ):
+        monkeypatch.setattr(QMessageBox, "question", _answer_yes)
+        key_page.set_combo.setCurrentText("A")
+        key_page.key_edit.setPlainText("A" * plan.question_count)
+        key_page.save_key()
+        key_page.key_edit.setPlainText("B" + "A" * (plan.question_count - 1))
+        assert key_page.save_key() is True
+        assert key_page.verify_button.isEnabled() is True
+        assert key_page.verify_key() is True
+        stored = key_page.current_revision()
+        assert stored.revision == 2
+        assert stored.key.answers.startswith("B")
+
+    def test_a_wrong_question_edit_also_counts_as_unsaved(
+        self, key_page: AnswerKeyPage, plan
+    ):
+        key_page.set_combo.setCurrentText("A")
+        key_page.key_edit.setPlainText("A" * plan.question_count)
+        key_page.save_key()
+        key_page.wrong_edit.setText("3")
+        assert key_page.verify_button.isEnabled() is False
+
+
+class TestPolicyDialogExpressesEveryRule:
+    """What the dialog can express, the scorer must apply - and vice versa."""
+
+    def test_a_separate_multiple_deduction_is_offered_under_one_per_three(
+        self, qtbot
+    ):
+        dialog = ScoringPolicyDialog(
+            ScoringPolicy(correct_mark=Fraction(1), mode=NegativeMarking.ONE_PER_THREE)
+        )
+        qtbot.addWidget(dialog)
+        dialog.same_penalty_box.setChecked(False)
+        assert dialog.same_penalty_box.isEnabled() is True
+        assert dialog.multiple_spin.isEnabled() is True
+        # The per-incorrect amount still belongs to the fixed mode alone.
+        assert dialog.incorrect_spin.isEnabled() is False
+
+    def test_nothing_is_deducted_under_no_negative_marking(self, qtbot):
+        dialog = ScoringPolicyDialog(ScoringPolicy(correct_mark=Fraction(1)))
+        qtbot.addWidget(dialog)
+        assert dialog.same_penalty_box.isEnabled() is False
+        assert dialog.multiple_spin.isEnabled() is False
+        assert dialog.policy().effective_multiple_penalty == 0
+
+    def test_a_multiple_deduction_set_here_reaches_the_scorer(self, qtbot):
+        dialog = ScoringPolicyDialog(
+            ScoringPolicy(correct_mark=Fraction(1), mode=NegativeMarking.ONE_PER_THREE)
+        )
+        qtbot.addWidget(dialog)
+        dialog.same_penalty_box.setChecked(False)
+        dialog.multiple_spin.setValue(0.5)
+        policy = dialog.policy()
+        assert policy.multiple_penalty == Fraction(1, 2)
+        assert policy.effective_multiple_penalty == Fraction(1, 2)
+        assert policy.effective_incorrect_penalty == Fraction(1, 3)
+
+    def test_opening_and_saving_never_rewrites_an_exact_rule(self, qtbot):
+        # A third cannot be shown in four decimal places. Reading the field
+        # back as 0.3333 would create a revision nobody asked for and make
+        # every result in the project stale under a rule that was never typed.
+        original = ScoringPolicy(
+            correct_mark=Fraction(1),
+            blank_mark=Fraction(1, 3),
+            mode=NegativeMarking.ONE_PER_THREE,
+        )
+        dialog = ScoringPolicyDialog(original)
+        qtbot.addWidget(dialog)
+        assert dialog.policy().blank_mark == Fraction(1, 3)
+
+    def test_an_edited_field_is_read_exactly_from_its_text(self, qtbot):
+        dialog = ScoringPolicyDialog(
+            ScoringPolicy(correct_mark=Fraction(1), blank_mark=Fraction(1, 3))
+        )
+        qtbot.addWidget(dialog)
+        dialog.blank_spin.setValue(0.25)
+        assert dialog.policy().blank_mark == Fraction(1, 4)
+
+
+class TestTheSummaryComesFromOneRead:
+    """The table and the line above it describe the same read of the batch."""
+
+    def test_the_counts_match_the_rows_that_were_listed(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan, qtbot
+    ):
+        verified_key_for(project_session.database, plan)
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_batch()
+        counts = results_page.state.counts
+        assert counts is not None
+        assert counts.registered == len(results_page.state.results)
+        assert counts.scored + counts.absent + counts.blocked == counts.registered
+
+    def test_a_filtered_view_does_not_shrink_the_batch_summary(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan, qtbot
+    ):
+        verified_key_for(project_session.database, plan)
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_batch()
+        everything = results_page.state.counts.registered
+        assert everything > 0
+        results_page.filter_combo.setCurrentIndex(3)  # Absent only
+        assert results_page.state.counts.registered == everything
+        assert len(results_page.state.results) < everything
+
+
+class TestCrossStageWiring:
+    """A key written on one stage has to reach the stage that uses it."""
+
+    def test_verifying_a_key_refreshes_the_results_stage(
+        self, qtbot, project_session: ProjectSession, template, prepared, plan
+    ):
+        window = MainWindow(AppConfig(reviewer_name=OPERATOR))
+        qtbot.addWidget(window)
+        window._adopt_session(project_session)
+        window.broadcast_template(template)
+        _, batch_id = prepared
+        results = window._results_page()
+        key_page = window._answer_key_page()
+        assert results is not None and key_page is not None
+        results.set_batch(batch_id)
+        assert "none" in results.policy_label.text()
+
+        key_page.set_combo.setCurrentText("A")
+        key_page.key_edit.setPlainText("A" * plan.question_count)
+        key_page.save_key()
+        stored = key_page.current_revision()
+        scoring_store.verify_key(
+            project_session.database, stored.key_id, verified_by=OPERATOR
+        )
+        key_page.key_verified.emit(stored.key_id)
+
+        assert "A rev 1" in results.policy_label.text()
+        window.close()
+
+    def test_a_batch_read_during_the_session_reaches_the_results_stage(
+        self, qtbot, project_session: ProjectSession, template, prepared
+    ):
+        _, batch_id = prepared
+        window = MainWindow(AppConfig(reviewer_name=OPERATOR))
+        qtbot.addWidget(window)
+        window._adopt_session(project_session)
+        window.broadcast_template(template)
+        results = window._results_page()
+        scan_page = window._scan_page()
+        assert results is not None and scan_page is not None
+
+        results.set_batch("")
+        results.state.batch_id = None
+        scan_page.state.batch_id = batch_id
+        window._on_batch_finished(object())
+
+        assert results.state.batch_id == batch_id
+        window.close()
+
+    def test_the_sets_a_batch_contains_are_offered_for_keying(
+        self, qtbot, project_session: ProjectSession, template, prepared
+    ):
+        _, batch_id = prepared
+        window = MainWindow(AppConfig(reviewer_name=OPERATOR))
+        qtbot.addWidget(window)
+        window._adopt_session(project_session)
+        window.broadcast_template(template)
+        scan_page = window._scan_page()
+        key_page = window._answer_key_page()
+        assert scan_page is not None and key_page is not None
+        scan_page.state.batch_id = batch_id
+        window._on_batch_finished(object())
+
+        offered = {
+            key_page.set_combo.itemText(i) for i in range(key_page.set_combo.count())
+        }
+        assert "A" in offered
+        window.close()

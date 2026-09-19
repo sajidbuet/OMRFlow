@@ -64,6 +64,7 @@ __all__ = [
     "ScoringInputs",
     "build_candidate_answers",
     "score_candidate",
+    "unnameable_responses",
     "usable_set_code",
     "working_script",
 ]
@@ -87,6 +88,9 @@ class CandidateAnswers:
         corrected: Printed question numbers a named reviewer decided.
         unresolved: Printed question numbers whose conflict is still open.
             Non-empty blocks scoring: an unread answer is not a blank.
+        unnameable: Printed question numbers whose stored value is not one of
+            the template's current answer choices. Non-empty blocks scoring;
+            see :func:`unnameable_responses`.
         set_code: The candidate's question-paper set, after Phase 6 review.
         machine_set_code: The set code recognition read.
     """
@@ -96,6 +100,7 @@ class CandidateAnswers:
     machine_answers: str
     corrected: tuple[int, ...] = ()
     unresolved: tuple[int, ...] = ()
+    unnameable: tuple[int, ...] = ()
     set_code: str = ""
     machine_set_code: str = ""
 
@@ -153,9 +158,40 @@ def build_candidate_answers(
         machine_answers=canonical_answer_string(machine, plan.numbers, plan.labels),
         corrected=tuple(sorted(decided or {})),
         unresolved=tuple(sorted(unresolved)),
+        unnameable=unnameable_responses(effective, plan),
         set_code=usable_set_code(set_code or result.set_code_value),
         machine_set_code=usable_set_code(result.set_code_value),
     )
+
+
+def unnameable_responses(
+    responses: Mapping[int, str], plan: QuestionPlan
+) -> tuple[int, ...]:
+    """Printed question numbers whose value is not a choice this paper offers.
+
+    A sheet read when the template offered ``A/B/C/D/E`` and marked against a
+    template since edited down to ``A/B/C/D`` has stored values the plan cannot
+    name. :func:`~omr_scanner.domain.scoring.canonical_answer_string` turns
+    those into :data:`~omr_scanner.domain.scoring.MULTIPLE`, because calling
+    them blank would credit a candidate for a question they answered - but a
+    multiple attracts the multiple deduction, so a candidate would be penalised
+    for a template edit.
+
+    Neither reading is right. What is right is to stop, which is what a
+    non-empty result here makes :func:`score_candidate` do: the sheet needs
+    reading again against the template it is being marked against.
+    """
+    known = set(plan.labels)
+    found: list[int] = []
+    for number in plan.numbers:
+        raw = (responses.get(number) or "").strip().upper()
+        # Blank, a known choice, and the engine's "B-D" are all nameable. The
+        # test mirrors canonical_answer_string exactly, so the two cannot
+        # disagree about what a value means.
+        if not raw or raw in known or "-" in raw or len(raw) > 1:
+            continue
+        found.append(number)
+    return tuple(found)
 
 
 def usable_set_code(value: str) -> str:
@@ -268,7 +304,8 @@ def score_candidate(inputs: ScoringInputs) -> CandidateScore:
     2. **No usable script** - none, or several with none nominated.
     3. **Set unresolved or missing.**
     4. **No verified key** for that set.
-    5. **Answers still in the review queue**, or of the wrong length.
+    5. **Answers this template cannot name**, answers still in the review
+       queue, or answers of the wrong length or numbering.
     6. Otherwise mark, question by question, under
        :func:`~omr_scanner.domain.scoring.score_answers` - where a question
        flagged invalid takes precedence over everything else.
@@ -279,8 +316,36 @@ def score_candidate(inputs: ScoringInputs) -> CandidateScore:
     entry = inputs.entry
     blocks: list[ScoringBlock] = []
 
-    # 1. Eligibility. Absence is an outcome, not a failure.
+    # 1. Eligibility. Absence is an outcome, not a failure - but only once
+    # reconciliation has *settled* that the candidate was absent.
+    #
+    # A candidate marked absent whose script turned up is ABSENT_WITH_SCRIPT:
+    # either the attendance record or the recognised ID is wrong, and Phase 7
+    # exists to decide which. Recording them as a plain "Absent" would present
+    # an open question as a finished answer, and the physical script in the
+    # room would never be marked. The same is true of any other exception a
+    # candidate carries while marked absent - a duplicate script, an unresolved
+    # ID. Only ABSENT_CONFIRMED is an outcome.
     if entry.effective_attendance is AttendanceState.ABSENT:
+        if entry.status.is_exception:
+            blocks.append(
+                ScoringBlock(
+                    BlockReason.NOT_RECONCILED,
+                    detail=(
+                        f"{entry.status.label}. Settle this on the Attendance "
+                        "stage: a candidate recorded absent whose script exists "
+                        "is neither absent nor markable until somebody decides "
+                        "which record is right."
+                    ),
+                )
+            )
+            return CandidateScore(
+                candidate_id=entry.candidate_id,
+                status=ResultStatus.BLOCKED,
+                set_code=inputs.answers.set_code if inputs.answers else "",
+                answers=inputs.answers,
+                blocks=tuple(blocks),
+            )
         return CandidateScore(
             candidate_id=entry.candidate_id,
             status=ResultStatus.ABSENT,
@@ -320,6 +385,25 @@ def score_candidate(inputs: ScoringInputs) -> CandidateScore:
                     ),
                 )
             )
+        # 5a-. A value this template cannot name. Checked before the review
+        # queue because it is not a disagreement about what the sheet says -
+        # it is a sheet read against a different paper.
+        if answers.unnameable:
+            shown = ", ".join(str(n) for n in answers.unnameable[:6])
+            more = (
+                "" if len(answers.unnameable) <= 6
+                else f" (+{len(answers.unnameable) - 6} more)"
+            )
+            blocks.append(
+                ScoringBlock(
+                    BlockReason.UNNAMEABLE_RESPONSE,
+                    detail=(
+                        f"Question {shown}{more} hold answers this template no "
+                        "longer offers. Read the batch again with the template "
+                        "it is being marked against."
+                    ),
+                )
+            )
         # 5a. Answers still under review.
         if answers.unresolved:
             shown = ", ".join(str(n) for n in answers.unresolved[:6])
@@ -346,16 +430,34 @@ def score_candidate(inputs: ScoringInputs) -> CandidateScore:
                 detail=f"Set {answers.set_code}" if has_set and answers else "",
             )
         )
-    elif key is not None and answers is not None and len(answers.answers) != key.question_count:
-        blocks.append(
-            ScoringBlock(
-                BlockReason.ANSWER_LENGTH_MISMATCH,
-                detail=(
-                    f"{len(answers.answers)} answer(s) read, "
-                    f"{key.question_count} expected"
-                ),
+    elif key is not None and answers is not None:
+        if len(answers.answers) != key.question_count:
+            blocks.append(
+                ScoringBlock(
+                    BlockReason.ANSWER_LENGTH_MISMATCH,
+                    detail=(
+                        f"{len(answers.answers)} answer(s) read, "
+                        f"{key.question_count} expected"
+                    ),
+                )
             )
-        )
+        elif inputs.plan.first_question != key.first_question:
+            # The key's wrong-question numbers are *printed* question numbers.
+            # A key written against a differently numbered paper lines its
+            # answers up perfectly and withdraws the wrong questions, so this
+            # has to block rather than be corrected by guessing which numbering
+            # the examiners meant.
+            blocks.append(
+                ScoringBlock(
+                    BlockReason.KEY_NUMBERING_MISMATCH,
+                    detail=(
+                        f"the key numbers its questions from "
+                        f"{key.first_question}, this paper from "
+                        f"{inputs.plan.first_question}. Save a new revision of "
+                        f"the key for set {key.set_code}."
+                    ),
+                )
+            )
 
     if blocks or answers is None or key is None:
         return CandidateScore(

@@ -16,7 +16,7 @@ Two things worth keeping:
 
 from __future__ import annotations
 
-from decimal import InvalidOperation
+from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
@@ -80,6 +80,7 @@ class ScoringPolicyDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        self._loaded = policy
         self.load(policy)
 
     # ------------------------------------------------------------------
@@ -196,7 +197,16 @@ class ScoringPolicyDialog(QDialog):
     # State
     # ------------------------------------------------------------------
     def load(self, policy: ScoringPolicy) -> None:
-        """Show an existing policy."""
+        """Show an existing policy.
+
+        A spin box can only hold a ``float`` at :data:`MARK_DECIMALS` places,
+        so a policy carrying an exact value that is not one - a blank mark of
+        ``1/3``, say - cannot be displayed without rounding it. The value shown
+        is therefore the rounded one, but :meth:`policy` puts the **original**
+        exact value back for any field the operator did not touch, so merely
+        opening and saving this dialog can never rewrite a rule.
+        """
+        self._loaded = policy
         self.correct_spin.setValue(float(policy.correct_mark))
         self.blank_spin.setValue(float(policy.blank_mark))
         self.incorrect_spin.setValue(float(policy.incorrect_penalty))
@@ -225,28 +235,44 @@ class ScoringPolicyDialog(QDialog):
 
         Values are read from the spin boxes' *text* rather than their float
         value, so ``0.25`` is exactly one quarter rather than the nearest
-        double to it.
+        double to it - and a field still showing what it was loaded with keeps
+        the loaded value exactly, however many places that took to write.
         """
-        mode = self.current_mode()
+        loaded = self._loaded
         return ScoringPolicy(
-            correct_mark=_exact(self.correct_spin),
-            blank_mark=_exact(self.blank_spin),
-            incorrect_penalty=_exact(self.incorrect_spin),
-            multiple_penalty=(
-                None if self.same_penalty_box.isChecked() else _exact(self.multiple_spin)
+            correct_mark=_exact(self.correct_spin, loaded.correct_mark),
+            blank_mark=_exact(self.blank_spin, loaded.blank_mark),
+            incorrect_penalty=_exact(
+                self.incorrect_spin, loaded.incorrect_penalty
             ),
-            mode=mode,
+            multiple_penalty=(
+                None
+                if self.same_penalty_box.isChecked()
+                else _exact(self.multiple_spin, loaded.multiple_penalty)
+            ),
+            mode=self.current_mode(),
             clamp_minimum=self.clamp_box.isChecked(),
-            minimum_score=_exact(self.minimum_spin),
+            minimum_score=_exact(self.minimum_spin, loaded.minimum_score),
         )
 
     def _on_mode_changed(self) -> None:
-        """Enable only the fields the chosen mode uses."""
+        """Enable only the fields the chosen mode uses.
+
+        The per-incorrect deduction belongs to the fixed mode alone - 1-per-3
+        and 1-per-4 define their own. The *multiple* deduction does not: every
+        mode that deducts anything can be told to treat a double mark
+        differently, so the field follows :attr:`ScoringPolicy.multiple_penalty`
+        rather than the mode. It is disabled only where nothing is deducted at
+        all.
+        """
         mode = self.current_mode()
         fixed = mode is NegativeMarking.FIXED
+        penalising = mode is not NegativeMarking.NONE
         self.incorrect_spin.setEnabled(fixed)
-        self.same_penalty_box.setEnabled(fixed)
-        self.multiple_spin.setEnabled(fixed and not self.same_penalty_box.isChecked())
+        self.same_penalty_box.setEnabled(penalising)
+        self.multiple_spin.setEnabled(
+            penalising and not self.same_penalty_box.isChecked()
+        )
         self.minimum_spin.setEnabled(self.clamp_box.isChecked())
         self._refresh_preview()
 
@@ -261,12 +287,56 @@ class ScoringPolicyDialog(QDialog):
         self.preview_label.setText("<br>".join(lines) + worked)
 
 
-def _exact(spin: QDoubleSpinBox) -> Fraction:
-    """Read a spin box's value exactly, from its text."""
+def _exact(spin: QDoubleSpinBox, original: Fraction | None = None) -> Fraction:
+    """Read a spin box's value exactly, from its text.
+
+    Args:
+        spin: The field to read.
+        original: What the field was loaded with, when it was loaded with
+            anything. If the field still reads as that value, the original is
+            returned unchanged rather than the value parsed back out of the
+            text - a stored ``1/3`` displays as ``0.3333`` and must not become
+            it merely because somebody opened the dialog.
+
+    A number this fails to parse is not quietly turned into zero. Zero is a
+    valid mark, so a silent fallback would be indistinguishable from an
+    operator deliberately typing one; the spin box's own float value is a
+    wrong-in-the-last-bit answer, which is the right kind of wrong here.
+    """
+    text = spin.cleanText().strip()
     try:
-        return parse_mark(spin.cleanText().replace(",", "."))
-    except (InvalidOperation, ValueError):  # pragma: no cover - defensive
-        return Fraction(0)
+        value = parse_mark(_decimal_text(text))
+    except (InvalidOperation, ValueError, ArithmeticError):
+        value = Fraction(Decimal(repr(spin.value())))
+    if original is not None and _displays_as(original, spin) == text:
+        return original
+    return value
+
+
+def _decimal_text(text: str) -> str:
+    """Strip a locale's group separators, leaving one decimal point.
+
+    ``QDoubleSpinBox`` renders through the application locale, so a value at
+    the top of the range can arrive as ``1,000.0000`` or ``1.000,0000``
+    depending on where the machine thinks it is. The last separator in the
+    string is the decimal one; every earlier one groups digits.
+    """
+    # A no-break space is a group separator in several European locales.
+    cleaned = "".join(character for character in text if not character.isspace())
+    cut = max(cleaned.rfind("."), cleaned.rfind(","))
+    if cut < 0:
+        return cleaned
+    whole = cleaned[:cut].replace(".", "").replace(",", "")
+    return f"{whole}.{cleaned[cut + 1 :]}"
+
+
+def _displays_as(value: Fraction, spin: QDoubleSpinBox) -> str:
+    """How ``spin`` would render ``value`` if it were loaded with it."""
+    probe = QDoubleSpinBox()
+    probe.setDecimals(spin.decimals())
+    probe.setRange(spin.minimum(), spin.maximum())
+    probe.setValue(float(value))
+    return probe.cleanText().strip()
 
 
 def _example(policy: ScoringPolicy) -> Fraction:
