@@ -537,6 +537,56 @@ Reconciliation runs after recognition, off the GUI thread, and touches nothing
 about how a batch runs. Candidate data is displayed and stored, never logged;
 see `docs/reconciliation.md`.
 
+## Answer keys and scoring (Phase 8)
+
+`omr_scanner.gui.answer_key` and `omr_scanner.gui.results` turn recognised
+answers into marks. Neither does any arithmetic of its own:
+
+```text
+AnswerKeyPage.read_from_scan  -> services.RecognitionEngine.process      (the existing engine)
+                                   -> services.answer_key.key_from_scan  (pure)
+AnswerKeyPage.save_key        -> services.scoring_store.save_key         (a new revision, always)
+AnswerKeyPage.verify_key      -> services.scoring_store.verify_key       (supersedes the previous)
+
+ResultsPage.configure_policy  -> services.scoring_store.save_policy      (a revision only if a rule changed)
+ResultsPage.score_batch       -> gui.results.worker.ScoringWorker  (a QThread)
+                                   -> services.scoring_store.score_batch
+                                        -> review_store.effective_answers / effective_set_codes
+                                        -> services.scoring.score_candidate      (pure: eligibility)
+                                             -> domain.scoring.score_answers     (pure: arithmetic)
+ResultsPage._show_result      -> scoring_store.breakdown_for             (regenerated, not stored)
+```
+
+Four decisions worth carrying forward:
+
+- **Marks are exact rationals, and rounding happens once.** Every mark is a
+  `fractions.Fraction`; a decimal typed into the configuration is read with
+  `Fraction(Decimal(text))` and never through `float`. `0.1 + 0.2` is not
+  `0.3` in binary floating point, and a hundred questions at `-1/3` accumulate
+  an error that depends on the order they were added. Formatting to two places
+  is presentation and never feeds back.
+- **A result stores its inputs, not just its mark.** The answer string, the
+  key revision and the policy revision are all on the row, and the per-question
+  breakdown is *regenerated* by the same pure function that produced the total.
+  A detail view and a total therefore cannot disagree - and a million-row
+  breakdown table that could is avoided entirely. This is the same
+  "one calculation, not two copies" argument as Phase 6's projected provenance.
+- **Changing an input makes a result stale; it never changes the number.**
+  `stale_reasons_for` compares what a result *was computed from* against what
+  is current, and recomputation runs the whole scorer again. Nothing anywhere
+  adds a delta to an existing mark - asserted by a test that corrupts a stored
+  score and checks the rescore ignores it.
+- **A revision is never edited.** Correcting a verified key creates the next
+  revision and supersedes the old one, which is kept because results point at
+  it. "Which key produced this mark" is answered from the result, never
+  inferred from whichever key happens to be current.
+
+Eligibility is separate from arithmetic: `services.scoring` knows about
+candidates, scripts and the four phases underneath and produces either a mark
+or a list of blocks; `domain.scoring` knows only about strings and fractions.
+That split is why the marking rules can be tested as a table. See
+`docs/scoring.md`.
+
 ## Concurrency
 
 Phase 0 is single-threaded. From Phase 3, batch recognition runs off the GUI

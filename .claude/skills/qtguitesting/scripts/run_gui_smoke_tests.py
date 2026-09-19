@@ -1152,6 +1152,163 @@ def _check_no_candidate_data_reaches_the_log() -> CheckResult:
     )
 
 
+def _check_scoring_needs_a_verified_key() -> CheckResult:
+    """Phase 8: a draft key produces no marks, whatever else is in place."""
+    from _harness import build_scoring_pages
+
+    harness = build_scoring_pages()
+    harness.write_key("A", "A" * harness.plan.question_count)
+    harness.score()
+    before = {
+        candidate: item.status.value for candidate, item in harness.results().items()
+    }
+    scored = sum(1 for value in before.values() if value == "scored")
+    harness.shutdown()
+    return scored == 0, (
+        f"draft key produced {scored} mark(s); statuses {sorted(set(before.values()))}"
+    )
+
+
+def _check_scoring_produces_defensible_marks() -> CheckResult:
+    """Phase 8: the acceptance outcomes, with the key revision recorded."""
+    from _harness import build_scoring_pages
+
+    from omr_scanner.domain.scoring import format_mark
+
+    harness = build_scoring_pages()
+    total = harness.plan.question_count
+    harness.write_key("A", "A" * total)
+    harness.verify_key("A")
+    harness.score()
+    found = harness.results()
+
+    perfect = found.get("200001")
+    partial = found.get("200002")
+    absent = found.get("200003")
+    no_key = found.get("200004")
+    harness.shutdown()
+
+    ok = (
+        perfect is not None
+        and perfect.status.value == "scored"
+        and perfect.final_score == total
+        and perfect.answer_key_revision == 1
+        and partial is not None
+        and partial.final_score == total - 3
+        and absent is not None
+        and absent.status.value == "absent"
+        and absent.final_score is None
+        and no_key is not None
+        and no_key.status.value == "blocked"
+    )
+    return ok, (
+        f"perfect={format_mark(perfect.final_score) if perfect and perfect.has_mark else '-'} "
+        f"(key rev {perfect.answer_key_revision if perfect else '?'}), "
+        f"three wrong={format_mark(partial.final_score) if partial and partial.has_mark else '-'}, "
+        f"absent has no mark, no-key candidate blocked"
+    )
+
+
+def _check_a_rule_change_makes_results_stale() -> CheckResult:
+    """Phase 8: changing a rule invalidates marks rather than editing them."""
+    from fractions import Fraction
+
+    from _harness import build_scoring_pages
+
+    from omr_scanner.domain.scoring import NegativeMarking, ScoringPolicy
+
+    harness = build_scoring_pages()
+    total = harness.plan.question_count
+    harness.write_key("A", "A" * total)
+    harness.verify_key("A")
+    harness.score()
+    before = harness.results()["200002"]
+
+    harness.results_page.apply_policy(
+        ScoringPolicy(
+            correct_mark=Fraction(1),
+            incorrect_penalty=Fraction(1, 4),
+            mode=NegativeMarking.FIXED,
+            clamp_minimum=False,
+        )
+    )
+    stale = harness.results()["200002"]
+    kept_mark = stale.final_score == before.final_score
+
+    harness.score()
+    after = harness.results()["200002"]
+    harness.shutdown()
+
+    expected = Fraction(total - 3) - 3 * Fraction(1, 4)
+    ok = (
+        stale.is_stale
+        and kept_mark
+        and not after.is_stale
+        and after.final_score == expected
+        and after.policy_revision == before.policy_revision + 1
+        and after.answer_string == before.answer_string
+    )
+    return ok, (
+        f"policy change made the result stale and kept its mark; recomputation "
+        f"gave {after.final_score} from unchanged answers "
+        f"(policy rev {before.policy_revision} -> {after.policy_revision})"
+    )
+
+
+def _check_recomputation_ignores_a_corrupted_mark() -> CheckResult:
+    """Phase 8: a rescore derives the mark; it never adjusts the stored one."""
+    from _harness import build_scoring_pages
+    from sqlalchemy import select
+
+    from omr_scanner.database.models import CandidateResult
+
+    harness = build_scoring_pages()
+    total = harness.plan.question_count
+    harness.write_key("A", "A" * total)
+    harness.verify_key("A")
+    harness.score()
+
+    with harness.database.session() as session:
+        row = session.scalars(
+            select(CandidateResult).where(CandidateResult.candidate_id == "200001")
+        ).first()
+        row.final_score = "999"
+        row.raw_score = "999"
+
+    harness.score()
+    after = harness.results()["200001"]
+    harness.shutdown()
+    return after.final_score == total, (
+        f"stored mark corrupted to 999; recomputation produced {after.final_score} "
+        f"(expected {total})"
+    )
+
+
+def _check_a_wrong_question_pays_everyone() -> CheckResult:
+    """Phase 8: a withdrawn question credits every response, with no deduction."""
+    from _harness import build_scoring_pages
+
+    harness = build_scoring_pages()
+    total = harness.plan.question_count
+    harness.write_key("A", "A" * total, wrong="1, 2, 3")
+    harness.verify_key("A")
+    harness.score()
+
+    partial = harness.results()["200002"]  # answered 1-3 wrongly
+    harness.select("200002")
+    outcomes = {
+        harness.results_page.detail_table.item(row, 4).text()
+        for row in range(3)
+    }
+    harness.shutdown()
+    return partial.final_score == total and outcomes == {
+        "Wrong question - full credit"
+    }, (
+        f"three wrongly-answered questions withdrawn: mark {partial.final_score} "
+        f"of {total}, outcomes {sorted(outcomes)}"
+    )
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -1292,6 +1449,26 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "no candidate data reaches the log",
                     _check_no_candidate_data_reaches_the_log,
+                ),
+                (
+                    "scoring needs a verified answer key",
+                    _check_scoring_needs_a_verified_key,
+                ),
+                (
+                    "scoring produces defensible marks",
+                    _check_scoring_produces_defensible_marks,
+                ),
+                (
+                    "a rule change makes results stale",
+                    _check_a_rule_change_makes_results_stale,
+                ),
+                (
+                    "recomputation ignores a corrupted mark",
+                    _check_recomputation_ignores_a_corrupted_mark,
+                ),
+                (
+                    "a wrong question pays everyone",
+                    _check_a_wrong_question_pays_everyone,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

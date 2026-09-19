@@ -40,9 +40,11 @@ from sqlalchemy import Connection, Engine, insert, inspect, select, text
 
 from omr_scanner import __version__
 from omr_scanner.database.models import (
+    AnswerKeyRevision,
     AuditEvent,
     Base,
     BatchScan,
+    CandidateResult,
     CandidateRoster,
     ProjectSetting,
     ReconciliationDecision,
@@ -53,6 +55,7 @@ from omr_scanner.database.models import (
     ReviewConflict,
     ScanBatch,
     SchemaMigration,
+    ScoringPolicyRevision,
 )
 from omr_scanner.errors import DatabaseError, SchemaVersionError
 
@@ -221,6 +224,23 @@ def _migration_004_reconciliation(connection: Connection) -> None:
     )
 
 
+def _migration_005_scoring(connection: Connection) -> None:
+    """Add Phase 8 answer keys, scoring policy and results.
+
+    Purely additive. A project scored before this version does not exist - this
+    is the first phase that produces marks - so nothing needs converting, and
+    every table Phases 0-7 rely on is untouched.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[AnswerKeyRevision.__tablename__],
+            Base.metadata.tables[ScoringPolicyRevision.__tablename__],
+            Base.metadata.tables[CandidateResult.__tablename__],
+        ],
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -244,6 +264,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "reconciliation_run/entry/script/decision; audit_event entity columns"
         ),
         apply=_migration_004_reconciliation,
+    ),
+    Migration(
+        version=5,
+        description=(
+            "Phase 8 scoring: answer_key_revision, scoring_policy_revision, "
+            "candidate_result"
+        ),
+        apply=_migration_005_scoring,
     ),
 )
 

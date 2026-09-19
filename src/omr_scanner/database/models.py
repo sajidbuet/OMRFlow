@@ -752,3 +752,171 @@ class ReconciliationDecision(Base):
             f"ReconciliationDecision(id={self.decision_id}, "
             f"kind={self.target_kind!r})"
         )
+
+
+# ----------------------------------------------------------------------
+# Phase 8 - answer keys, scoring policy and results
+# ----------------------------------------------------------------------
+# Marks may end up on a transcript, so every table below is arranged around
+# one rule: a result must be reproducible from stored inputs. Nothing here
+# stores a number that cannot be recomputed, and nothing overwrites an input
+# that a stored result depends on.
+
+
+class AnswerKeyRevision(Base):
+    """One question-paper set's answer key, at one revision.
+
+    **Revisions are never edited.** Correcting a verified key that results
+    already reference creates revision *n+1* and marks the old one superseded;
+    the old row stays, because a :class:`CandidateResult` points at it and
+    "which key produced this mark" must always have an answer.
+
+    :attr:`wrong_questions` is stored per revision rather than beside the set,
+    because flagging a question invalid changes every mark for that set - it is
+    part of the key, not a separate setting that could drift out of step with
+    it.
+    """
+
+    __tablename__ = "answer_key_revision"
+    __table_args__ = (
+        UniqueConstraint("set_code", "revision", name="answer_key_revision_identity"),
+        Index("ix_answer_key_revision_set", "set_code", "status"),
+    )
+
+    key_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    set_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    answers: Mapped[str] = mapped_column(Text, nullable=False)
+    wrong_questions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    first_question: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(15), nullable=False, default="draft")
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="manual")
+    source_scan: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    verified_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation. Names no candidate, and no answers."""
+        return (
+            f"AnswerKeyRevision(set={self.set_code!r}, rev={self.revision}, "
+            f"status={self.status!r})"
+        )
+
+
+class ScoringPolicyRevision(Base):
+    """The marking rules, at one revision.
+
+    Every mark is stored as an **exact rational string** (``"1"``, ``"1/4"``,
+    ``"-1/3"``), parsed back with :class:`fractions.Fraction`. A column of
+    ``FLOAT`` would make a stored policy round-trip to something a fraction of
+    a mark away from what the operator typed, which is precisely what Phase 8
+    forbids.
+
+    A new revision is created whenever any score-affecting rule changes.
+    Results reference the revision they were computed under, so changing the
+    rules makes them **stale** rather than wrong.
+    """
+
+    __tablename__ = "scoring_policy_revision"
+    __table_args__ = (
+        UniqueConstraint("revision", name="scoring_policy_revision_identity"),
+    )
+
+    policy_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    correct_mark: Mapped[str] = mapped_column(String(40), nullable=False, default="1")
+    blank_mark: Mapped[str] = mapped_column(String(40), nullable=False, default="0")
+    incorrect_penalty: Mapped[str] = mapped_column(String(40), nullable=False, default="0")
+    multiple_penalty: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    clamp_minimum: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    minimum_score: Mapped[str] = mapped_column(String(40), nullable=False, default="0")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation."""
+        return (
+            f"ScoringPolicyRevision(rev={self.revision}, mode={self.mode!r}, "
+            f"active={self.is_active})"
+        )
+
+
+class CandidateResult(Base):
+    """One candidate's mark, and everything needed to reproduce it.
+
+    **The per-question breakdown is deliberately not stored.** A hundred
+    questions across ten thousand candidates is a million rows that would have
+    to be kept in step with a total they could contradict. Instead this row
+    keeps the *inputs* - the answer string, the key revision, the policy
+    revision - and the breakdown is regenerated by the same pure function that
+    produced the mark. A detail view and a total can then never disagree,
+    because there is only one calculation.
+
+    :attr:`answer_key_id` and :attr:`policy_id` are the provenance the phase
+    turns on: a result identifies the exact revisions used, so a later key does
+    not retroactively change what an earlier mark was computed from.
+    """
+
+    __tablename__ = "candidate_result"
+    __table_args__ = (
+        UniqueConstraint(
+            "roster_id", "batch_id", "candidate_id", name="candidate_result_identity"
+        ),
+        Index("ix_candidate_result_status", "roster_id", "batch_id", "status"),
+        Index("ix_candidate_result_key", "answer_key_id"),
+    )
+
+    result_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    roster_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("candidate_roster.roster_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="CASCADE"), nullable=False
+    )
+    candidate_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    set_code: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    # The authoritative inputs. Everything below them is derived.
+    answer_string: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    machine_answer_string: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    corrected_questions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    answer_key_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    answer_key_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    policy_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    first_question: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    # Derived, and recomputed rather than patched whenever an input changes.
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    correct_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    incorrect_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    blank_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    multiple_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    wrong_question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    raw_score: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    final_score: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    clamped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    status: Mapped[str] = mapped_column(String(15), nullable=False, default="blocked")
+    blocks: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    stale_reasons: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    computed_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation. Deliberately names no candidate."""
+        return (
+            f"CandidateResult(id={self.result_id}, status={self.status!r}, "
+            f"key_rev={self.answer_key_revision}, policy_rev={self.policy_revision})"
+        )

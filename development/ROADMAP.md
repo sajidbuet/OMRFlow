@@ -19,7 +19,7 @@ that cannot be tested.
 | 5 | Batch Scan Processing Pipeline | Implemented; testing in progress - see `development/PHASE_05_HANDOFF.md` |
 | 6 | Conflict Detection & Human Resolution | Implemented; testing in progress - see `development/PHASE_06_HANDOFF.md` |
 | 7 | Candidate & Attendance Reconciliation | Implemented; testing in progress - see `development/PHASE_07_HANDOFF.md` |
-| 8 | Answer-Key & Scoring Engine | Not started |
+| 8 | Answer-Key & Scoring Engine | Implemented; testing in progress - see `development/PHASE_08_HANDOFF.md` |
 | 9 | Result Management & Reporting | Not started |
 | 10 | Integration, Recovery & Production Hardening | Not started |
 | 11 | Release, User Documentation & Packaging | Not started |
@@ -287,18 +287,43 @@ its log.
 
 **Purpose.** Produce marks that can be defended.
 
-**Deliverables.** Answer-key entry and recognition from solution sheets;
-independent keys per question paper set; key verification before scoring;
-scoring configuration (correct/incorrect/blank marks, negative marking toggle);
-the scoring engine and `CandidateResult`.
+**Delivered as** `domain.scoring` (the arithmetic, as pure functions over
+value objects - the canonical answer string, the key, the policy, the five
+question outcomes and `score_answers`), `services.answer_key` (reading a key
+from text or from a scanned solution sheet through the *existing* recognition
+engine, with validation that names the question), `services.scoring`
+(eligibility - who can be marked, and why not), `services.scoring_store` (key
+and policy revisions, verification, scoring and staleness), three additive
+tables (migration 5), and the `gui.answer_key` and `gui.results` stages.
+`review_store` gained `effective_set_codes` and `effective_answers`, so a paper
+is never marked against the set or the answers the *machine* read when a
+reviewer has said otherwise. **Every mark is an exact rational**, never a
+float; rounding happens once, for display. Full detail:
+`development/PHASE_08_HANDOFF.md`; operator description: `docs/scoring.md`.
 
-**Major tests.** Scoring arithmetic against hand-computed cases including blanks,
-multiples and absentees; negative marking on and off; per-set keys applied to the
-right candidates; recomputation is deterministic.
+**Exit criteria - met.** Results are reproducible from stored inputs: a result
+records the answer string, the set, the exact **answer-key revision** and the
+exact **scoring-policy revision**, and closing and reopening the project and
+recomputing reproduces the same mark. The key used for each candidate is
+recorded on the result itself and never inferred from whichever key is current
+- an earlier revision is superseded rather than deleted, precisely so it can
+still be named. Changing any score-affecting rule makes affected results
+**stale** and recomputes them from authoritative inputs rather than adjusting
+the stored number, which a test asserts by corrupting a stored score and
+checking it is ignored. Every hand-calculated case in the brief passes exactly,
+fractional penalties are never truncated, a withdrawn question pays every
+response with no deduction, an absent candidate gets no mark rather than a
+zero, and an unverified key produces no marks at all.
 
-**Exit criteria.** Results are reproducible from stored inputs; the key used for
-each candidate is recorded; changing the scoring configuration recomputes rather
-than patches.
+**Not done.** No examination has been marked with it - every test is synthetic
+or uses the repository's one real sheet, and no operator has checked a mark
+against a paper in front of them. No examination-scale run: the largest real
+batch anywhere in the project is 48 scans. A key is not checked for
+*correctness*; verification records who looked at it, which is a much weaker
+claim. Scoring is per batch and per roster, so a cohort split across two
+batches is marked twice. One policy applies to the whole paper - no
+section-wise or per-question weights. And there is no result export: reports
+are Phase 9.
 
 ---
 

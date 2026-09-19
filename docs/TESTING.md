@@ -640,6 +640,62 @@ is still a running thread, and one alive when its parent is destroyed aborts
 the process with exit code 9 and no traceback — which looks like a crashed
 suite rather than a forgotten join.
 
+## Testing answer keys and scoring (Phase 8)
+
+| Level | Where | Asserts |
+|---|---|---|
+| The arithmetic | `tests/unit/test_scoring.py` (71 tests) | The brief's hand-calculated cases, every negative-marking mode, wrong-question precedence, clamping, the canonical answer string, and exactness. |
+| Reading a key | `tests/unit/test_answer_key.py` (43 tests) | Typed, pasted and scanned keys, and every refusal *with its message*. |
+| Persistence | `tests/unit/test_scoring_store.py` (55 tests) | Key and policy revisions, verification, staleness, **recomputation never patching**, persistence and the migration. |
+| The pipeline | `tests/integration/test_scoring_workflow.py` (22 tests) | The acceptance scenario with **real recognition over real sheets**, Phase 6 integration and reproducibility. |
+| The GUI | `tests/gui/test_scoring_pages.py` (56 tests) | Both pages and the policy dialog, with a real project and a real `QThread`. |
+
+**Assert marks as rationals, never floats.** `assert score == 0.5` passes for a
+value that is not one half:
+
+```python
+assert breakdown.final_score == Fraction(14) - Fraction(1, 3)   # yes
+assert breakdown.final_score == 13.6666                         # meaningless
+```
+
+**Test the fractional cases, not just the round ones.** Three wrong answers
+under the 1-per-3 rule costing exactly one mark proves very little; *one* wrong
+answer costing exactly `1/3` is what shows the penalty is not being floored
+away - which is the failure that mode most invites.
+
+**Prove that recomputation recomputes.** Corrupt the stored score, leave every
+authoritative input untouched, rescore, and assert the mark is re-derived:
+
+```python
+row.final_score = "999"
+scoring_store.score_batch(database, roster_id, batch_id, template)
+assert result.final_score == question_count   # not 999 plus an adjustment
+```
+
+An implementation that patched would pass every other test in the suite.
+
+**Test the wrong-question rule against all four responses.** Right answer,
+wrong answer, multiple *and* blank. An implementation that checks "blank first"
+passes three of those and is wrong for exactly the candidates least able to
+argue about it.
+
+**Assert the refusal's message, not just the refusal.** "Invalid key" tells an
+operator nothing, and a test that only checked `is_valid is False` would let
+the helpful message regress silently:
+
+```python
+assert "Questions 99-100" in draft.issues[0].message
+```
+
+**Make the sets genuinely different.** A Set B key that differs from Set A's by
+one answer makes cross-set scoring almost invisible; a Set B key of all `D`
+against a Set A key of all `A` makes it impossible to miss.
+
+**Drive scoring through the page and wait on `scored`.** It runs in a
+`QThread`, so reading the table straight after `score_batch()` reads the
+previous run's rows. Note the signal carries **no payload**: a slot connected
+to it must take no arguments.
+
 ## Testing the Calibration workflow (Phase 4)
 
 Three levels, and the reason for each mirrors the recognition-testing table

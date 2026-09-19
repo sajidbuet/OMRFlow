@@ -278,6 +278,58 @@ not just the most recent: the import dialog starts a reader on each column
 change, and a superseded `QThread` is still a running thread. One alive at
 teardown aborts the process with exit code 9 and no traceback.
 
+### Answer Key and Results pages (Phase 8)
+
+| `objectName` | Widget |
+| --- | --- |
+| `answerKeySetCombo` | The question-paper set. Editable - set codes are not one character |
+| `answerKeyRevisionCombo` | Every stored revision for this set |
+| `readKeyFromScanButton` | Recognise a solution sheet as a draft key |
+| `answerKeyTextEdit` | The key, one character per question |
+| `wrongQuestionEdit` | Question numbers withdrawn for this set |
+| `answerKeyValidationLabel` | Every problem, or "Valid" |
+| `saveAnswerKeyButton`, `verifyAnswerKeyButton` | Store a revision; lock it |
+| `answerKeyTable`, `answerKeySummaryLabel` | The same key, question by question, plus the canonical string |
+| `answerKeyReviewerLabel` | Who a verification is recorded as |
+| `scoringPolicyLabel` | The rules in force and the verified keys |
+| `configureScoringButton`, `checkBeforeScoringButton`, `calculateResultsButton` | The three Results commands |
+| `resultsSummaryLabel`, `scoringProgressBar` | Counts; progress during a run |
+| `resultsFilterCombo`, `resultsSearchBox`, `resultsTable`, `resultsCountLabel` | The results list |
+| `resultsDetailLabel`, `resultDetailTable` | One candidate's provenance and per-question marks |
+| `reviewAnswersButton`, `recalculateCandidateButton` | Open the Resolve stage; rescore one candidate |
+
+Policy dialog: `correctMarkSpin`, `blankMarkSpin`, `negativeNoneRadio`,
+`negativeFixedRadio`, `negativeOnePerThreeRadio`, `negativeOnePerFourRadio`,
+`incorrectPenaltySpin`, `multipleSamePenaltyCheck`, `multiplePenaltySpin`,
+`clampMinimumCheck`, `minimumScoreSpin`, `scoringPreviewLabel`.
+
+**Nothing is marked against a draft key.** `ScoringHarness.write_key(...)`
+saves a revision; `verify_key(...)` locks it. A scenario that forgets the
+second gets every candidate `blocked`, which is correct behaviour and not a
+harness failure.
+
+**`verify_key` goes through the store, not the button.** The page's Verify
+button opens a confirmation dialog, which these scripts never drive. The
+refusal it enforces - no reviewer name, no verification - is exercised by
+`scoring_store` directly.
+
+**Scoring runs in a `QThread`.** Use `harness.score()`, which pumps events
+until `scored` fires. That signal carries **no payload**, so a slot connected
+to it must take no arguments; `done.append` will raise `TypeError`.
+
+**Assert marks exactly.** A result's `final_score` is a `Fraction`. Compare
+against `Fraction(...)`, not a float, and use `format_mark` only for the
+message a check prints.
+
+**Do not name test scan files after roll numbers**, for the same reason as
+Phase 7: the Phase 3 pipeline logs each scan's file name.
+`build_scoring_pages` names its sheets `scan_a.png`…`scan_d.png`.
+
+**A template must be broadcast before either page is useful.** Both need the
+question count and the option labels;
+`MainWindow.broadcast_template(template)` is the route, and
+`build_scoring_pages` calls `set_template` directly.
+
 ### Calibration page (Phase 4)
 
 | `objectName` | Widget |
@@ -858,6 +910,84 @@ real sheets), `tests/gui/test_attendance_page.py` (56) and
 `scripts/run_gui_smoke_tests.py` (five checks: every classification, the
 machine-and-imported-values check, the missing-operator refusal, the sample
 download, and the log capture).
+
+---
+
+## Scenario 20 - Answer keys and scoring (Phase 8)
+
+Write a key, verify it, mark a batch, and change a rule. The scenario is about
+one claim: **a mark is reproducible from stored inputs, and changing an input
+recomputes rather than patches.**
+
+```python
+harness = build_scoring_pages(operator="Dr. Smoke Test")
+total = harness.plan.question_count
+harness.write_key("A", "A" * total)
+```
+
+**Verify, in order:**
+
+1. Score *before* verifying the key. Every candidate who is not absent must be
+   `blocked`. A draft key produces no marks, ever.
+2. Verify, score, and check the acceptance outcomes:
+
+```python
+harness.verify_key("A")
+harness.score()
+found = harness.results()
+assert found["200001"].final_score == total          # perfect paper
+assert found["200002"].final_score == total - 3      # three wrong
+assert found["200003"].status.value == "absent"
+assert found["200003"].final_score is None           # no mark, not zero
+assert found["200004"].status.value == "blocked"     # no key for their set
+```
+
+3. Check the **provenance**, not just the number:
+
+```python
+assert found["200001"].answer_key_revision == 1
+assert "Set A / revision 1" in found["200001"].describe_provenance()
+```
+
+4. Change the policy. The result must go **stale and keep its mark**:
+
+```python
+harness.results_page.apply_policy(ScoringPolicy(..., mode=NegativeMarking.FIXED))
+stale = harness.results()["200002"]
+assert stale.is_stale
+assert stale.final_score == before.final_score     # not patched
+```
+
+5. Rescore, and check the mark was **re-derived** from unchanged answers:
+
+```python
+harness.score()
+after = harness.results()["200002"]
+assert after.final_score == Fraction(total - 3) - 3 * Fraction(1, 4)
+assert after.answer_string == before.answer_string
+assert after.policy_revision == before.policy_revision + 1
+```
+
+6. Corrupt a stored score directly in the database, leaving every input
+   untouched, rescore, and assert the mark comes back correct rather than
+   adjusted. **This is the check that distinguishes recomputation from
+   patching**, and an implementation that patched would pass every other step
+   above.
+7. Withdraw a question the candidate answered wrongly and confirm it pays full
+   credit - and that the detail table says *"Wrong question - full credit"*.
+
+**What is easy to get wrong here.** Asserting only the total. A mark that is
+numerically right but records the wrong key revision is exactly the result
+nobody can defend six months later - check `answer_key_revision` every time.
+
+**Automated:** `tests/unit/test_scoring.py` (71),
+`tests/unit/test_answer_key.py` (43),
+`tests/unit/test_scoring_store.py` (55),
+`tests/integration/test_scoring_workflow.py` (22, real recognition over real
+sheets), `tests/gui/test_scoring_pages.py` (56) and
+`scripts/run_gui_smoke_tests.py` (five checks: the draft-key refusal, the
+acceptance outcomes, staleness, the corrupted-mark recomputation, and the
+wrong-question rule).
 
 ---
 

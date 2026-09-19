@@ -1,12 +1,13 @@
 # User guide
 
 > **This guide describes only what OMRFlow can do today (version 0.1.0.dev0,
-> Phases 0-7).** The application can create and open projects, design `.omrt`
+> Phases 0-8).** The application can create and open projects, design `.omrt`
 > sheet templates visually, calibrate a template against real scans, read
 > filled-in answer sheets in resumable batches, review everything the
-> recognition engine was unsure about, and reconcile the scripts against the
-> candidate list. It cannot yet calculate results or produce reports. Everything in
-> `development/ROADMAP.md` beyond Phase 7 is not available.
+> recognition engine was unsure about, reconcile the scripts against the
+> candidate list, and calculate marks against a verified answer key. It cannot
+> yet produce reports or export results. Everything in
+> `development/ROADMAP.md` beyond Phase 8 is not available.
 >
 > **Do not use this build for examination processing.** Its recognition has been
 > validated against one real printed sheet and variants of it, not against a
@@ -39,11 +40,11 @@ omrflow "C:/Exams/Physics Midterm 2026"
 ## The main window
 
 The window has a workflow list on the left and a page for each stage on the
-right. **1. Project**, **2. Template**, **Calibrate**, **3. Scan**,
-**4. Resolve** and **5. Attendance** do something in this version; the remaining
-pages state which
-development phase will implement them and what that phase will provide - they
-are not broken, and they are not hiding a setting you need to find.
+right. **1. Project**, **2. Template**, **3. Calibrate**, **4. Scan**,
+**5. Resolve**, **6. Attendance**, **7. Answer Key** and **8. Results** do
+something in this version; **9. Reports** states which development phase will
+implement it and what that phase will provide - it is not broken, and it is not
+hiding a setting you need to find.
 
 The status bar shows the open project's name and folder, or "No project open".
 
@@ -73,7 +74,7 @@ Full detail, including every keyboard shortcut, is in
 
 ## Scanning answer sheets
 
-Select **3. Scan** to read filled sheets against a template.
+Select **4. Scan** to read filled sheets against a template.
 
 1. **Load Template...** - the `.omrt` the sheets were printed from.
 2. **Add Scan(s)...** for individual images, or **Add Folder...** to take every
@@ -107,7 +108,7 @@ naming rule, the CSV columns and the known limitations - is in
 
 ## Reviewing what the machine was unsure about
 
-Select **4. Resolve** — or press **Review Conflicts** on the Scan page — to look
+Select **5. Resolve** — or press **Review Conflicts** on the Scan page — to look
 at everything recognition could not decide. The Scan page tells you how many
 there are when a batch finishes.
 
@@ -163,7 +164,7 @@ the audit record does and does not guarantee — is in `docs/conflict_review.md`
 
 ## Checking the scripts against your candidate list
 
-Select **5. Attendance** once you have processed a batch. This answers two
+Select **6. Attendance** once you have processed a batch. This answers two
 questions: does every script belong to somebody on your list, and did everybody
 who sat the paper hand one in?
 
@@ -247,6 +248,148 @@ What to expect:
   why.
 
 Full detail is in `docs/reconciliation.md`.
+
+## Writing the answer key
+
+Select **7. Answer Key**. Nothing can be marked until a key exists and somebody
+has verified it.
+
+The page works one **question-paper set** at a time. Type or pick the set code
+in the **Set** box at the top — set codes are not limited to a single letter,
+so `10` and `X1` are as valid as `A`. If your paper has no sets at all, the
+recognised set code is blank and there is a single key for the whole paper.
+
+Two ways to get the answers in:
+
+- **Type or paste them** into the **Answers** box: one character per question,
+  in question order, for example `ABCBCCADBDAC...`. Spaces, tabs, line breaks,
+  commas, semicolons and vertical bars are ignored, so a column copied out of a
+  spreadsheet pastes straight in. Anything *else* that is not a valid choice is
+  reported to you rather than quietly dropped.
+- **Read From Solution Sheet...** — fill a blank sheet in with the correct
+  answers, scan it, and let the same recognition engine read it. **A sheet read
+  this way is a draft, never a verified key.** Any question it read as blank or
+  as a double mark is listed for you to fix by hand first.
+
+The **Validation** box below tells you exactly what is wrong while you type: how
+many characters it has against how many questions the template defines, and
+which positions hold a character that is not one of that question's choices.
+The table on the right shows the key question by question, so you can check it
+against the printed paper without counting characters.
+
+**Wrong questions (full credit for everyone)** takes question numbers —
+`17, 64` — for questions withdrawn after the paper was sat. Every scored
+candidate gets the full mark for those whatever they marked, including a blank
+or a double mark, and no deduction is ever applied to them. They are flagged per
+set: Set A and Set B need not agree.
+
+Then:
+
+1. **Save As New Revision** stores it as a **draft**. A stored revision is never
+   edited — correcting a key creates the next revision, and the old one stays
+   readable in the **revision** dropdown beside the set.
+2. **Verify Answer Key** locks that revision and allows marking against it. It
+   shows you the answers one last time and asks you to confirm. **Only a
+   verified key produces marks**; a draft produces none.
+
+**Put your name in File > Settings > Reviewer first.** A key cannot be verified
+without one, and the name is recorded against the verification. The line under
+the buttons tells you whose name will be used, in red if there is none.
+
+Verifying a *new* revision of a set that already had one supersedes the old key
+and tells you so — any results already calculated under it are marked as needing
+recomputation rather than being silently left wrong.
+
+## Calculating results
+
+Select **8. Results** once the batch is processed, the candidate list is
+imported and a key is verified.
+
+### The rules
+
+**Scoring Configuration...** opens the marking rules, which apply to the whole
+paper:
+
+- **Marks for correct answer** — and for any question flagged as a wrong
+  question.
+- **Blank answer mark** — what an unanswered question is worth. A blank is not a
+  wrong answer: it never attracts the incorrect-answer deduction.
+- **Negative marking** — *No negative marking*, *Fixed deduction per wrong
+  answer*, *1 mark deducted per 3 wrong answers*, or *1 mark deducted per 4
+  wrong answers*. Deductions are entered as positive amounts: `0.25` means minus
+  a quarter mark.
+- **Multiple answers: same as incorrect** — a question answered twice usually
+  attracts the same deduction as one answered wrongly. Clear the box to set it
+  separately.
+- **Minimum total** — whether a total may fall below zero, and what the floor
+  is.
+
+The **Preview** panel works an example out under the rules as you set them, so
+you can see what they do before anything is marked.
+
+The bar at the top of the page always states the rules in force and which keys
+are verified — *Revision 2 · Correct answer: +1.00 · Blank answer: 0.00 ·
+Incorrect answer: -0.25 · ... · Verified answer keys: A rev 1, B rev 1*.
+
+A rule that cannot change a mark — renaming, say — does not create a new
+revision. One that can does, and every result already calculated under the old
+one is flagged as needing recomputation.
+
+### Marking
+
+1. **Check Before Scoring** lists everything that will stop a candidate being
+   marked, with the rules, before you commit to a run. Scoring will still run
+   afterwards: a blocked candidate is *recorded* as "cannot be scored", with the
+   reason, never skipped or given a zero.
+2. **Calculate Results** marks the batch. The window stays usable while it runs.
+   **Cancelling discards the whole run** — a half-marked batch under two
+   different sets of rules, presenting itself as current, is worse than one that
+   was never marked.
+
+The table has one row per registered candidate: candidate, name, set, status,
+score, the counts of correct/wrong/blank/multiple, the **key revision** that
+produced the mark, and what needs attention. The dropdown above it filters to
+*Needs attention*, *Scored*, *Absent* or *Cannot be scored*, and the search box
+takes a candidate ID or name.
+
+What the statuses mean:
+
+| What you will see | What it means |
+| --- | --- |
+| **Scored** | Marked. The score and the key revision are shown. |
+| **Absent** | Did not sit the paper. **No mark at all** — not a mark of zero, which would be indistinguishable from somebody who sat it and answered nothing. |
+| **Cannot be scored** | Something needs a person. The row says what. |
+
+Every reason a candidate cannot be scored names something you can go and fix:
+*Reconciliation is not complete*, *No script was received*, *More than one
+script, none nominated*, *Script belongs to no registered candidate*,
+*Question-paper set not yet resolved*, *No question-paper set was read*, *No
+verified answer key for this set*, *Answers still awaiting review*, *Answers do
+not match the key length*, *This sheet has no stored recognition result*. None
+of them is ever resolved by guessing.
+
+Select a row for the detail: the total, the counts, the key and configuration
+revision it was computed under, and the full question-by-question breakdown —
+what the candidate marked, what the key says, and the mark that question earned.
+Any question whose answer a person corrected on the Resolve stage is named —
+the machine's reading is still kept. **Review Answers...** jumps to that
+candidate's sheet on the Resolve stage.
+
+### When something changes underneath
+
+A result never silently changes, and it is never patched. If you verify a new
+key, change the marking rules, correct an answer on the Resolve stage, or
+reassign a script on the Attendance stage, the affected rows say so — for
+example *Needs recomputing because the scoring configuration has changed. The
+mark below is what the earlier inputs produced.* The old mark stays visible
+until you act, so nothing changes behind your back.
+
+**Calculate Results** redoes the batch; **Recalculate This Candidate** redoes
+one. Either way the engine is re-run from scratch against the stored inputs —
+it never adjusts the old number.
+
+Full detail — the arithmetic, the exact rules for blanks, doubles and withdrawn
+questions, what is stored and what is recomputed — is in `docs/scoring.md`.
 
 ## Using more of your computer (or less)
 

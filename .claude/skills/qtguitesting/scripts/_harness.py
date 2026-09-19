@@ -892,6 +892,231 @@ def build_reconciliation_page(
     return harness
 
 
+@dataclass
+class ScoringHarness:
+    """An Answer Key page and a Results page over one reconciled batch."""
+
+    key_page: object
+    results_page: object
+    session: object
+    batch_id: str
+    roster_id: int
+    template: object
+    plan: object
+    operator: str
+
+    @property
+    def database(self) -> object:
+        """The open project's database."""
+        return self.session.database
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting. See `DesignerHarness`."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def settle(self) -> None:
+        """Give both pages real laid-out geometry without showing a window."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        for page in (self.key_page, self.results_page):
+            widget: QWidget = page  # type: ignore[assignment]
+            widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+            widget.show()
+            widget.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.process_events()
+
+    def write_key(self, set_code: str, answers: str, *, wrong: str = "") -> bool:
+        """Type a key into the page and save it as a new revision."""
+        self.key_page.set_combo.setCurrentText(set_code)
+        self.key_page.key_edit.setPlainText(answers)
+        self.key_page.wrong_edit.setText(wrong)
+        self.process_events()
+        return bool(self.key_page.save_key())
+
+    def verify_key(self, set_code: str) -> object:
+        """Verify the current revision of one set's key, through the store.
+
+        The page's own Verify button opens a confirmation dialog, which these
+        scripts never drive; the refusal it enforces (no name, no verification)
+        is exercised by `scoring_store` directly.
+        """
+        from omr_scanner.services import scoring_store
+
+        stored = scoring_store.list_keys(self.database, set_code=set_code)[0]
+        return scoring_store.verify_key(
+            self.database, stored.key_id, verified_by=self.operator
+        )
+
+    def score(self, *, timeout_ms: int = 120_000) -> bool:
+        """Score the batch and pump events until the worker has finished."""
+        from PySide6.QtCore import QElapsedTimer
+        from PySide6.QtWidgets import QApplication
+
+        done: list[bool] = []
+
+        def note() -> None:
+            # `scored` carries no payload, so the slot must take none.
+            done.append(True)
+
+        self.results_page.scored.connect(note)
+        try:
+            if not self.results_page.score_batch():
+                return False
+            clock = QElapsedTimer()
+            clock.start()
+            while not done:
+                QApplication.processEvents()
+                if clock.elapsed() > timeout_ms:
+                    raise TimeoutError(f"scoring did not finish within {timeout_ms} ms")
+        finally:
+            self.results_page.scored.disconnect(note)
+        self.process_events()
+        return True
+
+    def results(self) -> dict[str, object]:
+        """The current results table, keyed by candidate."""
+        return {
+            item.candidate_id: item for item in self.results_page.state.results
+        }
+
+    def select(self, candidate_id: str) -> bool:
+        """Select one candidate's row in the results table."""
+        for row, item in enumerate(self.results_page.state.results):
+            if item.candidate_id == candidate_id:
+                self.results_page.table.selectRow(row)
+                self.process_events()
+                return True
+        return False
+
+    def shutdown(self) -> None:
+        """Close both pages, then the project. Order matters, as in Phase 5."""
+        self.results_page.close()
+        self.key_page.close()
+        self.session.close()
+
+
+def build_scoring_pages(
+    *, operator: str = "Dr. Smoke Test", timeout_ms: int = 120_000
+) -> ScoringHarness:
+    """Build the Answer Key and Results pages over a reconciled batch.
+
+    Four sheets through the real pipeline, against a roster with one absentee:
+    a perfect paper, one with three wrong answers, an absentee, and one sitting
+    a set with no key - enough for every outcome the phase distinguishes.
+
+    Args:
+        operator: The name verifications and scoring runs are recorded against.
+        timeout_ms: How long to wait for the scoring worker.
+    """
+    import cv2
+
+    from omr_scanner.gui.answer_key.page import AnswerKeyPage
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.results.page import ResultsPage
+    from omr_scanner.services import batch_store, reconciliation_store, review_store
+    from omr_scanner.services.answer_key import plan_for
+    from omr_scanner.services.batch_processor import process_batch
+    from omr_scanner.services.candidate_import import read_roster
+
+    if str(REPOSITORY_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPOSITORY_ROOT))
+    from tests.conftest import build_answer_sheet_template, render_marked_sheet
+
+    template = build_answer_sheet_template()
+    plan = plan_for(template)
+    session = _throwaway_project()
+
+    work = OUTPUT_ROOT / "scoring" / uuid_hex()
+    work.mkdir(parents=True, exist_ok=True)
+
+    def marks(roll: str, set_code: str, wrong: dict[int, str]) -> dict:
+        return {
+            "roll_number": dict(enumerate(roll)),
+            "set_code": {0: set_code},
+            "questions_0": {i: wrong.get(i + 1, "A") for i in range(10)},
+            "questions_1": {i: wrong.get(i + 11, "A") for i in range(10)},
+        }
+
+    # Named neutrally: the Phase 3 pipeline logs each scan's file name, and a
+    # fixture named after a roll number would put one in the log.
+    plan_rows = [
+        ("scan_a.png", "200001", "A", {}),                       # perfect
+        ("scan_b.png", "200002", "A", {1: "B", 2: "B", 3: "B"}),  # three wrong
+        ("scan_d.png", "200004", "Z", {}),                        # no key for Z
+    ]
+    paths = []
+    for name, roll, set_code, wrong in plan_rows:
+        path = work / name
+        cv2.imwrite(str(path), render_marked_sheet(template, marks(roll, set_code, wrong)))
+        paths.append(path)
+
+    # Every identifier and name below is fictional.
+    roster_path = work / "candidates.csv"
+    roster_path.write_text(
+        "Roll No.,Name,Total (90)\n"
+        "200001,CANDIDATE A,55\n"
+        "200002,CANDIDATE B,55\n"
+        "200003,CANDIDATE C,ABSENT\n"
+        "200004,CANDIDATE D,55\n",
+        encoding="utf-8",
+    )
+
+    database = session.database
+    batch_id = batch_store.create_batch(
+        database, paths, identity=batch_store.BatchIdentity.of(template)
+    )
+    recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+    report = process_batch(paths, template, on_result=recorder.record, workers=1)
+    recorder.flush()
+    batch_store.finalise_batch(database, batch_id)
+
+    ids = batch_store.scan_ids_by_path(database, batch_id)
+    for item in report.processed:
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[item.source_path],
+            result=item.result,
+            template=template,
+        )
+    review_store.sync_duplicate_identifiers(database, batch_id)
+    roster_id = reconciliation_store.import_roster(
+        database, read_roster(roster_path), imported_by=operator
+    )
+    reconciliation_store.reconcile_batch(database, roster_id, batch_id)
+
+    key_spec = next(item for item in WORKFLOW_PAGES if item.key == "answer_key")
+    key_page = AnswerKeyPage(key_spec)
+    key_page.on_project_changed(session)
+    key_page.set_reviewer(operator)
+    key_page.set_template(template)
+
+    results_spec = next(item for item in WORKFLOW_PAGES if item.key == "results")
+    results_page = ResultsPage(results_spec)
+    results_page.on_project_changed(session)
+    results_page.set_reviewer(operator)
+    results_page.set_template(template)
+    results_page.set_batch(batch_id)
+
+    harness = ScoringHarness(
+        key_page=key_page,
+        results_page=results_page,
+        session=session,
+        batch_id=batch_id,
+        roster_id=roster_id,
+        template=template,
+        plan=plan,
+        operator=operator,
+    )
+    harness.settle()
+    del timeout_ms
+    return harness
+
+
 def uuid_hex() -> str:
     """A short unique directory name, so repeated runs never collide."""
     import uuid

@@ -793,10 +793,72 @@ def _capture_reconciliation(_image: Path) -> list[Path]:
     return written
 
 
+def _capture_scoring(_image: Path) -> list[Path]:
+    """The Answer Key and Results stages, before and after a rule change.
+
+    Four images: the key with a question withdrawn, the scored batch, one
+    candidate's per-question detail - where the machine's reading must appear
+    beside what was scored - and the same batch after a policy change, where
+    every affected row must say it needs recalculating rather than quietly
+    showing a number computed under the old rules.
+    """
+    from fractions import Fraction
+
+    from _harness import build_scoring_pages
+
+    from omr_scanner.domain.scoring import NegativeMarking, ScoringPolicy
+
+    written: list[Path] = []
+    harness = build_scoring_pages(operator="Dr. A. Rahman")
+    total = harness.plan.question_count
+
+    harness.write_key("A", "A" * total, wrong="7")
+    harness.process_events()
+    print(f"  key written: Set A, {total} answers, Q7 withdrawn")
+    written.append(_save(harness.key_page, "scoring_answer_key"))
+
+    harness.verify_key("A")
+    harness.score()
+    found = harness.results()
+    print(
+        "  scored: "
+        + ", ".join(
+            f"{candidate}={item.status.value}"
+            f"{'' if not item.has_mark else f' {item.final_score}'}"
+            for candidate, item in sorted(found.items())
+        )
+    )
+    written.append(_save(harness.results_page, "scoring_results"))
+
+    harness.select("200002")
+    harness.process_events()
+    written.append(_save(harness.results_page, "scoring_candidate_detail"))
+
+    harness.results_page.apply_policy(
+        ScoringPolicy(
+            correct_mark=Fraction(1),
+            incorrect_penalty=Fraction(1, 4),
+            mode=NegativeMarking.FIXED,
+            clamp_minimum=False,
+        )
+    )
+    harness.process_events()
+    stale = harness.results()["200002"]
+    print(
+        f"  after the policy change: 200002 stale={stale.is_stale}, "
+        f"mark kept at {stale.final_score}"
+    )
+    written.append(_save(harness.results_page, "scoring_stale_results"))
+
+    harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
     "empty": _capture_empty,
     "review": _capture_review,
     "reconciliation": _capture_reconciliation,
+    "scoring": _capture_scoring,
     "loaded": _capture_loaded,
     "question": _capture_question_region,
     "bubble": _capture_bubble_radius,

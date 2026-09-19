@@ -17,7 +17,7 @@ human verification + reproducible result processing**
 
 ## Development Status
 
-> **Pre-release. Phases 0-2 of 11 are complete; Phases 3, 4, 5, 6 and 7 are
+> **Pre-release. Phases 0-2 of 11 are complete; Phases 3-8 are
 > implemented and undergoing testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
 > canonical page, has an interactive designer for building that template, can
@@ -62,7 +62,7 @@ validated against a broad, real-world set of filled sheets.
 | 5 | Batch scan processing pipeline (persistence, resume) | Implemented | In progress | 🧪 Testing |
 | 6 | Conflict detection & human resolution | Implemented | In progress | 🧪 Testing |
 | 7 | Candidate & attendance reconciliation | Implemented | In progress | 🧪 Testing |
-| 8 | Answer-key & scoring engine | Pending | Not started | ⏳ Pending |
+| 8 | Answer-key & scoring engine | Implemented | In progress | 🧪 Testing |
 | 9 | Result management & reporting | Pending | Not started | ⏳ Pending |
 | 10 | Integration, recovery & production hardening | Pending | Not started | ⏳ Pending |
 | 11 | Release, user documentation & packaging | Pending | Not started | ⏳ Pending |
@@ -93,6 +93,7 @@ phases currently in testing:
 | 5 — Batch pipeline | Yes | Yes | Yes | **Partial** — largest measured batch is 48 real scans; no examination-scale run |
 | 6 — Conflict review | Yes | Yes | Yes | **No** — no review session with real operators on a real batch |
 | 7 — Reconciliation | Yes | Yes | Yes | **No** — no reconciliation of a real cohort against a real roster |
+| 8 — Scoring | Yes | Yes | Yes | **No** — no examination has been marked with it |
 
 - **Implementation complete** — the code exists and does what the phase set out
   to do.
@@ -291,9 +292,60 @@ phases currently in testing:
 
   See [`docs/reconciliation.md`](docs/reconciliation.md) and
   [`development/PHASE_07_HANDOFF.md`](development/PHASE_07_HANDOFF.md).
+- **Answer keys & scoring** (Phase 8, *implemented, testing in progress*):
+  turn recognised answers into marks that can be defended — **reproducible from
+  stored inputs, traceable to the exact key that produced them, and recomputed
+  rather than patched when a rule changes**:
+  - a **canonical answer string**, one character per question in question
+    order, using the template's own option labels plus `_` for a blank and `?`
+    for a **confirmed** multiple. Question *N* is character *N*, always: the
+    string is never compressed and a blank never removed;
+  - an **unresolved reading is not a `?`**. A sheet still in the Phase 6 queue
+    **blocks** scoring, naming the question, rather than being marked as a
+    blank or a multiple somebody has not actually looked at;
+  - one **independent answer key per question-paper set**, typed, pasted, or
+    read from a scanned solution sheet through the *existing* recognition
+    engine. Set codes are not assumed to be one character;
+  - **validation that names the question**: *"The answer key contains 98
+    answer(s), but this template contains 100 questions. Please add answers for
+    Questions 99-100."* Every problem is reported at once, and a stray
+    character is reported rather than silently dropped;
+  - **verification before scoring.** A key is a draft until a named person
+    checks it — including one read off a solution sheet, because recognition
+    completing does not make a key right. Only a verified key produces marks;
+  - **revisions.** A verified key is never edited: correcting it creates the
+    next revision and supersedes the old one, which is **kept**, because
+    results point at it. Every result records **the exact revision used**;
+  - **wrong questions**, flagged independently per set. Every scored candidate
+    receives full credit whatever they marked — right answer, wrong answer,
+    multiple or blank — and **no deduction is ever applied**. An absent
+    candidate stays absent;
+  - **four negative-marking modes**: none, a fixed deduction, 1 mark per 3
+    wrong, and 1 mark per 4 wrong. Fractional penalties are **never
+    truncated** — one wrong answer under the 1-per-3 rule costs exactly `1/3`;
+  - **exact arithmetic.** Every mark is a rational, never a float, and rounding
+    happens once, at the end, for display. A `-1/3` policy scores the same
+    whether or not a label is narrow;
+  - a configurable **minimum total**, recorded in the policy rather than
+    hard-coded, so a result can say whether it was clamped;
+  - an **absent candidate gets no mark**, not a zero — zero would be
+    indistinguishable from somebody who sat the paper and answered nothing;
+  - a **pre-scoring check** listing every candidate who cannot be marked, and
+    why, all at once;
+  - **stale results.** Changing a key, a rule, an answer, a set or a
+    reconciliation makes affected results stale. They keep their mark — a true
+    record of what the earlier inputs produced — and say so, and recalculating
+    runs the whole scorer again from the stored inputs. **Nothing adds a delta
+    to an existing mark**, which a test asserts by corrupting a stored score;
+  - a **question-by-question breakdown** showing what the machine read, what
+    was scored, the key, the evaluation and the exact contribution.
+
+  See [`docs/scoring.md`](docs/scoring.md) and
+  [`development/PHASE_08_HANDOFF.md`](development/PHASE_08_HANDOFF.md).
 - A PySide6 application shell with the nine workflow stages; **Project**,
-  **Template**, **Calibrate**, **Scan**, **Resolve** and **Attendance** are
-  implemented, and the remaining stages state which phase will implement them.
+  **Template**, **Calibrate**, **Scan**, **Resolve**, **Attendance**, **Answer
+  Key** and **Results** are implemented, and **Reports** states which phase
+  will implement it.
 
 ### Phase 3 architectural hardening
 
@@ -1011,6 +1063,121 @@ Full detail is in [`docs/reconciliation.md`](docs/reconciliation.md).
 > was correct — only that it was made by a named person, for a stated reason,
 > and can be traced and reversed.
 
+### Phase 8 testing status
+
+Phase 8 (Answer-Key & Scoring Engine) is implemented and covered by 247 new
+automated tests (169 unit, 22 integration, 56 GUI), plus five new
+`qtguitesting` smoke checks. The integration tests run **real recognition over
+real rendered sheets**; the unit tests assert every mark **exactly**, as a
+rational, because `assert score == 0.5` would pass for a value that is not one
+half. Full detail is in
+[`development/PHASE_08_HANDOFF.md`](development/PHASE_08_HANDOFF.md).
+
+Confirmed by the current automated suite:
+
+- [x] Every hand-calculated case in the phase brief, exactly: all-correct,
+  one wrong, blank, multiple, the `AA?_` fixed-deduction case totalling `0.50`,
+  and the 1-per-3 and 1-per-4 examples
+- [x] **Fractional penalties are not truncated** — one wrong answer under the
+  1-per-3 rule costs exactly `1/3`, two cost `2/3`, three cost `1`
+- [x] **Exact arithmetic**: `0.1 + 0.2 == 0.3`, three hundred thirds sum to
+  exactly 100, and display rounding never feeds back into a total
+- [x] **Wrong questions take precedence over everything** — a right answer, a
+  wrong answer, a multiple and a blank all receive full credit, and no
+  deduction is ever applied
+- [x] The canonical answer string keeps question *N* at position *N*, never
+  compresses, never drops a blank, and works with six-option papers and
+  non-1-based numbering
+- [x] **An unresolved reading blocks scoring**, naming the question, rather
+  than being marked as a blank or a confirmed multiple
+- [x] **An unverified key produces no marks**, and a draft read off a solution
+  sheet is still a draft
+- [x] Key validation names the question and reports **every** problem at once;
+  a stray character is reported, never dropped
+- [x] **Key revisions**: a verified key is never edited, correcting it
+  supersedes the old revision, the old revision is **kept**, and a superseded
+  revision cannot be re-verified
+- [x] **Every result records the exact key and policy revision used**, and a
+  later key does not change what an earlier mark was computed from
+- [x] **A candidate is scored against their own set only** — a deliberately
+  different Set B key makes cross-set scoring impossible to miss
+- [x] **An absent candidate has no mark**, not a zero, and gets no
+  wrong-question credit
+- [x] Scoring is blocked, with a reason, for every unresolved condition: no
+  script, an unnominated duplicate, an unknown candidate, a missing or unread
+  set, no verified key, or answers still under review
+- [x] **Recomputation never patches**: a deliberately corrupted stored score is
+  ignored and the mark is re-derived from the stored inputs
+- [x] The full key-then-policy sequence: score, change the policy, go stale,
+  recompute, change the key, go stale, recompute — with the answers and set
+  unchanged throughout and each revision recorded
+- [x] **Repeated recomputation is idempotent**
+- [x] A **cancelled** run writes nothing, rather than leaving a batch half
+  marked under two policies
+- [x] The per-question breakdown is **regenerated** and always agrees with the
+  total; a stale result explains the mark it actually has
+- [x] A Phase 6 correction changes the effective answer, leaves the machine's
+  reading intact, and makes the result stale
+- [x] Everything survives closing and reopening the project, including exact
+  `1/3` penalties and wrong-question flags
+- [x] An existing Phase 7 project upgrades cleanly by migration
+- [x] Source scans and the roster file are byte-for-byte unchanged by scoring
+- [x] The GUI event loop keeps running while a batch is marked
+- [x] Automated Qt GUI validation using `qtguitesting` (48/48 smoke checks,
+  including a draft key producing no marks, the acceptance outcomes with the
+  key revision recorded, a rule change making results stale, recomputation
+  ignoring a corrupted mark, and a withdrawn question paying everyone)
+
+Still open, and why Phase 8 is not marked complete:
+
+- [ ] **No examination has been marked with it.** Every test is synthetic or
+  uses the repository's one real sheet. No real cohort, no real answer key, no
+  operator checking a mark against a paper in front of them
+- [ ] **No examination-scale run.** Scoring ten thousand candidates is
+  arithmetic and fast, but the largest *real* batch in this project is 48 scans
+- [ ] **A key is not checked for correctness.** Verification records who
+  looked at it, which is a different and much weaker claim
+- [ ] Scoring is **per batch and per roster**; a cohort split across two
+  batches is marked twice
+- [ ] There is **no export of results yet** — reports are Phase 9
+- [ ] Section-wise or per-question mark weights are not supported: one policy
+  applies to the whole paper
+
+### Marking a batch (Phase 8)
+
+After the conflict queue is clear and the batch is reconciled. Full detail is
+in [`docs/scoring.md`](docs/scoring.md).
+
+1. Open **Answer Key**. Choose the question-paper **set**.
+2. Type or paste the correct answers, one character per question — or press
+   **Read From Solution Sheet…** to recognise a filled solution sheet. Spaces,
+   line breaks and commas are ignored; anything else is reported.
+3. Flag any **wrong questions** for this set. Every scored candidate gets full
+   credit for those, whatever they marked.
+4. Check the validation line, then **Save As New Revision**.
+5. **Verify Answer Key**. Nothing is marked against a draft. Put your name in
+   *File > Settings > Reviewer* first.
+6. Repeat for every set. Sets are independent — Set A's wrong questions need
+   not be Set B's.
+7. Open **Results**. Press **Scoring Configuration…** and set the marks, the
+   negative-marking mode and the minimum total. The preview shows a worked
+   example so a misplaced decimal point is visible before it is applied.
+8. Press **Check Before Scoring**. It lists the rules and every candidate who
+   cannot be marked, and why, together.
+9. **Calculate Results**.
+10. Work the list. A candidate who cannot be marked is a row with a reason, not
+    an absence. Select one to see their answers question by question, with what
+    the machine read beside what was scored.
+11. If you change a key, a rule or an answer, affected results say **they need
+    recalculating** and keep their old mark until you press **Calculate
+    Results** again.
+
+> **What a mark here establishes.** That it was computed by a stated rule from
+> stated answers against a stated key revision, and that all three are recorded
+> so the mark can be reproduced and defended. It is **not** a check that the
+> key is right, or that recognition read the paper correctly — Phase 4's
+> calibration and Phase 6's review are what narrow that.
+
 ### Development philosophy
 
 OMRFlow follows an incremental development process. Major functionality is
@@ -1024,7 +1191,7 @@ exists.
 
 ### Pending development
 
-Phases 8-11 have not started. Their titles, purposes and deliverables as
+Phases 9-11 have not started. Their titles, purposes and deliverables as
 currently planned are documented in
 [`development/ROADMAP.md`](development/ROADMAP.md); this project does not
 promise a delivery date for any of them, and scopes may be refined as earlier
@@ -1042,6 +1209,7 @@ Phase 4 handoff: [`development/PHASE_04_HANDOFF.md`](development/PHASE_04_HANDOF
 Phase 5 handoff: [`development/PHASE_05_HANDOFF.md`](development/PHASE_05_HANDOFF.md).
 Phase 6 handoff: [`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
 Phase 7 handoff: [`development/PHASE_07_HANDOFF.md`](development/PHASE_07_HANDOFF.md).
+Phase 8 handoff: [`development/PHASE_08_HANDOFF.md`](development/PHASE_08_HANDOFF.md).
 
 ---
 
@@ -1155,7 +1323,8 @@ OMRflow/
 │   │                         verdicts (Phase 4), batch persistence (Phase 5),
 │   │                         conflict detection policy and the review/audit
 │   │                         store (Phase 6), candidate list import and
-│   │                         reconciliation (Phase 7)
+│   │                         reconciliation (Phase 7), answer keys and
+│   │                         scoring (Phase 8)
 │   ├── resources/            packaged non-GUI assets: the candidate list
 │   │                         sample workbook (Phase 7)
 │   ├── gui/                  PySide6 window and workflow pages
@@ -1169,6 +1338,11 @@ OMRflow/
 │   │   │                        history (Phase 6, testing in progress)
 │   │   ├── attendance/          candidate list import, reconciliation table
 │   │   │                        and exception resolution (Phase 7, testing in
+│   │   │                        progress)
+│   │   ├── answer_key/          write, scan and verify one key per set
+│   │   │                        (Phase 8, testing in progress)
+│   │   ├── results/             scoring configuration, batch marking and
+│   │   │                        per-question detail (Phase 8, testing in
 │   │   │                        progress)
 │   │   └── devtools/            Tools > Developer / Testing: dataset
 │   │                            generation and benchmark results (Phase 3)
@@ -1224,6 +1398,7 @@ OMRflow/
 | [`docs/calibration_workflow.md`](docs/calibration_workflow.md) | The Calibration workflow: procedure, overlay layers, thresholds, validation status and how to recognise a bad calibration (Phase 4) |
 | [`docs/conflict_review.md`](docs/conflict_review.md) | Conflict detection and human review: what becomes a conflict, the reviewer's workflow, conflict states, provenance, the append-only audit ledger and export integration (Phase 6) |
 | [`docs/reconciliation.md`](docs/reconciliation.md) | Candidate & attendance reconciliation: the four values and why they stay apart, importing a roster, the classifications, resolving an exception, and the privacy rule (Phase 7) |
+| [`docs/scoring.md`](docs/scoring.md) | Answer keys and scoring: the canonical answer string, key revisions and verification, wrong questions, the negative-marking modes, exact arithmetic, staleness and recomputation (Phase 8) |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
@@ -1312,17 +1487,22 @@ chosen duplicate. A resolution is recorded beside the imported and recognised
 values, with the operator's name and a reason, in the same append-only ledger
 Phase 6 uses. See `docs/reconciliation.md`.
 
-**Answer keys and scoring** *(planned, Phase 8)*. Keys entered manually or read
-from solution sheets, independent per question paper set, verified before use.
-Configurable marks for correct, incorrect and blank answers, with negative
-marking optional.
+**Answer keys and scoring** *(Phase 8, implemented; testing in progress)*. Keys
+entered manually or read from solution sheets through the existing recognition
+engine, independent per question paper set, and **verified before use** —
+recognition completing is not verification. Configurable marks for correct,
+incorrect, blank and multiple answers, with four negative-marking modes;
+questions can be withdrawn per set for full credit. Marks are exact rationals,
+never floats. Every result records the **exact key revision and scoring-policy
+revision** that produced it, goes **stale** when any input changes, and is
+**recomputed from stored inputs** rather than adjusted. See
+`docs/scoring.md`.
 
 **Reports** *(planned, Phase 9)*. Roll-wise (including absentees) and
 merit-wise Excel workbooks with a user-editable layout, plus PDF export. (CSV
 export of raw recognition results already exists, from Phase 3.)
 
-**Auditability** *(Phase 6, implemented for recognition values; testing in
-progress)*. Anything that can change a result is recorded append-only: machine
+**Auditability** *(Phase 6-8, implemented; testing in progress)*. Anything that can change a result is recorded append-only: machine
 value, corrected value, timestamp, operation, reviewer and reason. Phase 6
 covers recognition values; attendance (Phase 7), answer keys (Phase 8) and
 results (Phase 9) will record into the same ledger, which was given no foreign

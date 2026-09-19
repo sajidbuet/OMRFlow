@@ -138,6 +138,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Answer Key",
         summary="Enter or scan the answer key for each question paper set.",
         phase=8,
+        implemented=True,
         details=(
             "Manual entry and recognition from solution sheets.",
             "Independent keys per set, verified before results are calculated.",
@@ -148,6 +149,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Results",
         summary="Configure marking and calculate candidate results.",
         phase=8,
+        implemented=True,
         details=(
             "Configure marks for correct, incorrect and blank answers.",
             "Enable or disable negative marking.",

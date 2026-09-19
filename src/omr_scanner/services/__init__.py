@@ -37,14 +37,24 @@ Phase status:
 # reconciliation surface is large, and `reconciliation_store.assign_script(...)`
 # reads better at a call site than an unqualified `assign_script(...)`.
 from omr_scanner.services import (
+    answer_key,
     candidate_import,
     reconciliation,
     reconciliation_store,
+    scoring,
+    scoring_store,
 )
 from omr_scanner.services.alignment_service import (
     alignment_config_from_template,
     load_scan_image,
     save_image,
+)
+from omr_scanner.services.answer_key import (
+    AnswerKeyError,
+    QuestionPlan,
+    key_from_scan,
+    plan_for,
+    read_key,
 )
 from omr_scanner.services.batch_processor import (
     BatchOptions,
@@ -87,6 +97,7 @@ from omr_scanner.services.batch_store import (
     mark_queued,
     record_results,
     recover_interrupted,
+    results_by_scan,
     resumable_scans,
     scan_ids_by_path,
     scan_paths,
@@ -217,6 +228,12 @@ from omr_scanner.services.scan_import import (
     is_supported_scan,
     natural_sort_key,
 )
+from omr_scanner.services.scoring import (
+    CandidateAnswers,
+    build_candidate_answers,
+    score_candidate,
+)
+from omr_scanner.services.scoring_store import ScoringError
 from omr_scanner.services.template_service import (
     list_templates,
     load_template,
@@ -230,6 +247,7 @@ __all__ = [
     "ORIENTATION_DEBUG_IMAGE_NAME",
     "RESULT_SCHEMA_VERSION",
     "SUPPORTED_SCAN_SUFFIXES",
+    "AnswerKeyError",
     "AnswerView",
     "AuditRecord",
     "BatchIdentity",
@@ -248,6 +266,7 @@ __all__ = [
     "CalibrationSampleReport",
     "CalibrationSession",
     "CalibrationStatus",
+    "CandidateAnswers",
     "CandidateImportError",
     "CharacterView",
     "ColumnMapping",
@@ -273,6 +292,7 @@ __all__ = [
     "ProgressSnapshot",
     "ProjectDatabase",
     "ProjectSession",
+    "QuestionPlan",
     "RecognitionEngine",
     "RecognitionOptions",
     "RecognitionOutcome",
@@ -284,6 +304,7 @@ __all__ = [
     "ScanJobStatus",
     "ScanQuality",
     "ScanResult",
+    "ScoringError",
     "SheetResolution",
     "StageTimings",
     "StatusCode",
@@ -291,7 +312,9 @@ __all__ = [
     "accept_machine_value",
     "aggregate_calibration",
     "alignment_config_from_template",
+    "answer_key",
     "apply_calibration",
+    "build_candidate_answers",
     "candidate_import",
     "categorise_error",
     "check_compatibility",
@@ -327,6 +350,7 @@ __all__ = [
     "history_for",
     "is_project_directory",
     "is_supported_scan",
+    "key_from_scan",
     "list_batches",
     "list_conflicts",
     "list_templates",
@@ -339,11 +363,13 @@ __all__ = [
     "natural_sort_key",
     "normalise_candidate_id",
     "open_project",
+    "plan_for",
     "plan_output_name",
     "preview_roster",
     "process_batch",
     "process_scan",
     "provenance_for",
+    "read_key",
     "read_project_metadata",
     "read_roster",
     "recognise_scan",
@@ -356,6 +382,7 @@ __all__ = [
     "render_overlay",
     "render_scan_results",
     "reopen",
+    "results_by_scan",
     "resumable_scans",
     "sanitise_stem",
     "save_image",
@@ -364,6 +391,9 @@ __all__ = [
     "scan_ids_by_path",
     "scan_paths",
     "scan_source_path",
+    "score_candidate",
+    "scoring",
+    "scoring_store",
     "separation_label",
     "set_batch_status",
     "sheet_resolutions",

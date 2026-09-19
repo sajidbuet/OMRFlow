@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 not started.
 
 Update this file at the end of every phase.
 
@@ -503,6 +503,43 @@ asserted by counting statements rather than by timing one machine.
 **Measured**: 10,000 candidates against 10,000 scripts reconcile in well under
 a second - an indexed match, not a per-script walk of the roster.
 
+### Answer keys and scoring (Phase 8)
+
+- **`domain.scoring` is pure arithmetic** - the canonical answer string, the
+  key, the policy, five question outcomes and `score_answers`, which reads no
+  clock, no configuration and no database. That is what makes "recompute,
+  never patch" a property a test can assert.
+- **Every mark is a `fractions.Fraction`**, never a float. `Decimal` was
+  rejected because `1/3` has no terminating decimal expansion and the 1-per-3
+  rule is a published marking scheme; three hundred thirds sum to exactly 100,
+  which a test asserts. Rounding happens once, at the end, for display.
+- **One independent answer key per set**, typed, pasted or read off a solution
+  sheet through the existing recognition engine. Set codes are not assumed to
+  be one character, validation names the question, and a stray character is
+  reported rather than dropped.
+- **Verification before scoring, and revisions that are never edited.**
+  Correcting a verified key creates the next revision and supersedes the old
+  one - which is kept, because results point at it. A key read off a solution
+  sheet is still a draft: recognition completing does not make a key right.
+- **Wrong questions**, flagged per set, pay every response in full - right,
+  wrong, multiple or blank - with no deduction. The rule is checked first,
+  above the blank and multiple rules.
+- **Four negative-marking modes**, with fractional penalties never truncated:
+  one wrong answer under the 1-per-3 rule costs exactly `1/3`.
+- **A result stores its inputs, not just its mark**: the answer string, the
+  machine's own string, the set, the key revision and the policy revision. The
+  per-question breakdown is **regenerated** by the same pure function, so a
+  detail view and a total cannot disagree - and a million-row breakdown table
+  that could is avoided.
+- **An absent candidate has no mark**, not a zero.
+- **Staleness and recomputation.** Changing a key, a rule, an answer, a set or
+  a reconciliation makes a result stale; it keeps its mark and says so, and
+  recalculating runs the whole scorer again. A test corrupts a stored score and
+  asserts the rescore ignores it. A cancelled run writes nothing.
+- Three additive tables, created by **migration 5**, with marks stored as exact
+  rational strings. Field-by-field: `docs/DATA_MODEL.md`.
+- **Phases 5, 6 and 7 are untouched.**
+
 ## What does not exist
 
 No answer-key handling, scoring or Excel/PDF reporting. There is no
@@ -513,9 +550,7 @@ of either, and a cohort split across two batches must be reconciled twice.
 Reviewer identity is a name, not an account: there is no authentication, so the
 ledger records who *said* they made a decision.
 
-`omr_scanner.reporting` contains module documentation and no code. The Answer
-Key, Results and Reports pages say which phase will implement them and do not
-simulate anything.
+`omr_scanner.reporting` contains module documentation and no code. The Reports page says which phase will implement it and does not simulate anything.
 
 **This build must not be used for examination processing.** Its recognition has
 been validated against one real sheet and geometric variants of it, not against
@@ -654,6 +689,26 @@ perspective, JPEG compression and cropping is tabulated in
 - **Phase 7 says nothing about whether an answer is right.** It accounts for
   scripts and candidates; scoring is Phase 8.
 
+### Scoring
+
+- **No examination has been marked with it.** Every test is synthetic or uses
+  the repository's one real sheet. No real cohort, no real answer key, and no
+  operator checking a mark against a paper in front of them.
+- **No examination-scale run.** Scoring is arithmetic and fast, but the largest
+  *real* batch anywhere in this project is 48 scans.
+- **A key is not checked for correctness.** Verification records who looked at
+  it - a much weaker claim, and deliberately so, because nothing in software
+  can do better.
+- **Scoring is per batch and per roster.** A cohort split across two batches is
+  marked twice, with no combined view.
+- **No result export.** Reports are Phase 9.
+- **One policy per paper.** Section-wise or per-question mark weights are not
+  supported; the model would take a policy attached to a question range without
+  changing the result shape.
+- **No manual mark override**, by design: a mark is recomputed, never edited,
+  so there is no human decision about a *mark* to audit. The decisions that
+  affect one are already audited where they are made.
+
 ### Elsewhere
 
 - The example template in `resources/templates` is illustrative. Its coordinates
@@ -670,15 +725,33 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-2690 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+2937 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
 NumPy 2.5.3, Windows 11).
 
 ```text
-pytest                2690 passed, 1 skipped
+pytest                2937 passed, 1 skipped
 ruff check .          All checks passed
-mypy                  Success: no issues found in 120 source files
-run_gui_smoke_tests   43/43 checks passed
+mypy                  Success: no issues found in 130 source files
+run_gui_smoke_tests   48/48 checks passed
 ```
+
+247 of those are Phase 8 (Answer-Key & Scoring Engine):
+`tests/unit/test_scoring.py` (71, the arithmetic as a table - the brief's
+hand-calculated cases, every negative-marking mode, wrong-question precedence,
+clamping and exactness), `tests/unit/test_answer_key.py` (43, reading a key and
+every refusal *with its message*), `tests/unit/test_scoring_store.py` (55,
+revisions, verification, staleness, recomputation-never-patching, persistence
+and the migration), `tests/integration/test_scoring_workflow.py` (22, the
+acceptance scenario with real recognition over real rendered sheets) and
+`tests/gui/test_scoring_pages.py` (56). Confirmed end-to-end through
+`scripts/run_gui_smoke_tests.py` (48/48, including a draft key producing no
+marks, the acceptance outcomes with the key revision recorded, a rule change
+making results stale, recomputation ignoring a deliberately corrupted mark, and
+a withdrawn question paying every response) and by inspecting the four
+screenshots `scripts/capture_gui_states.py --only scoring` produces - which is
+how two real defects were found and fixed: an unread set code arriving as `"_"`
+and being reported as a missing answer key, and the Results page listing the
+verified keys only when the project was opened.
 
 279 of those are Phase 7 (Candidate & Attendance Reconciliation):
 `tests/unit/test_candidate_import.py` (87, parsing, identifier normalisation,

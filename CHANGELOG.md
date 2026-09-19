@@ -8,6 +8,100 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Added — Phase 8
+
+Answer-Key & Scoring Engine: recognised answers become marks that can be
+defended — **reproducible from stored inputs, traceable to the exact key
+revision that produced them, and recomputed rather than patched when a rule
+changes**. Full detail: `development/PHASE_08_HANDOFF.md`; operator
+description: `docs/scoring.md`.
+
+- **A canonical answer string**, one character per question in question order:
+  the template's own option labels, `_` for a blank, `?` for a **confirmed**
+  multiple. Question *N* is character *N*, always — never compressed, never
+  shortened by a blank.
+- **An unresolved reading is not a `?`.** A sheet still in the Phase 6 queue
+  **blocks** scoring, naming the question, rather than being marked as a blank
+  or as a multiple nobody has actually looked at.
+- **`omr_scanner.domain.scoring`**: the arithmetic, as pure functions over
+  value objects. `score_answers` reads no clock, no configuration and no
+  database, which is what makes "recompute, never patch" testable.
+- **Exact arithmetic.** Every mark is a `fractions.Fraction`; a decimal typed
+  into the configuration is read with `Fraction(Decimal(text))` and never
+  through `float`. `Decimal` was rejected because `1/3` has no terminating
+  decimal expansion and the 1-per-3 rule is a published marking scheme.
+  Rounding happens **once**, at the end, for display, and never feeds back.
+- **`omr_scanner.services.answer_key`**: reading a key from text or from a
+  scanned solution sheet, through the *existing* recognition engine. Spaces,
+  line breaks and commas are ignored so a key pastes out of a spreadsheet;
+  **anything else is reported**, because a key silently shortened by one stray
+  character marks every candidate against the wrong questions from there on.
+- **Validation that names the question** and reports every problem at once:
+  *"The answer key contains 98 answer(s), but this template contains 100
+  questions. Please add answers for Questions 99-100."*
+- **One independent key per question-paper set**, with set codes never assumed
+  to be one character. A candidate is marked against **their own** set's key;
+  there is no fallback, ever.
+- **Verification before scoring.** A key is a draft until a named person checks
+  it — including one read off a solution sheet, because recognition completing
+  does not make a key right. Blanks and double marks on a solution sheet are
+  listed and must be dealt with first.
+- **Revisions.** A verified key is never edited: correcting it creates the next
+  revision and supersedes the old one, which is **kept**, because results point
+  at it. Revision numbering is owned by the store, so two operators cannot both
+  create "revision 2".
+- **Wrong questions**, flagged independently per set. Every scored candidate
+  receives full credit whatever they marked — right, wrong, multiple or blank —
+  and **no deduction is ever applied**. The rule is checked *first*, above the
+  blank and multiple rules, which is the ordering an implementation that
+  checked "blank first" gets wrong.
+- **Four negative-marking modes**: none, a fixed deduction, 1 mark per 3 wrong,
+  1 mark per 4 wrong. The last two deduct exactly `1/3` and `1/4` of a *mark*,
+  and **fractional penalties are never truncated** — one wrong answer costs
+  `1/3`, not nothing. Multiple answers default to the incorrect penalty and are
+  separately configurable.
+- **A configurable minimum total**, recorded in the policy rather than
+  hard-coded, and applied **once** at the end so a mid-paper dip is
+  recoverable. A result can therefore say whether it was clamped.
+- **`CandidateResult` stores its inputs**, not just its mark: the answer
+  string, the machine's own string, the set, the key revision and the policy
+  revision. **Every result records the exact revisions used**, so a later key
+  never retroactively changes what an earlier mark was computed from.
+- **The per-question breakdown is regenerated, not stored.** A million rows for
+  a ten-thousand-candidate batch would be a second copy of the truth that could
+  contradict the total; rerunning the same pure function cannot.
+- **An absent candidate has no mark**, not a zero — zero would be
+  indistinguishable from somebody who sat the paper and answered nothing.
+- **Staleness.** Changing a key, a rule, an answer, a set or a reconciliation
+  makes affected results stale. They **keep their mark** — a true record of
+  what the earlier inputs produced — and say so, and recalculating runs the
+  whole scorer again. **Nothing adds a delta to an existing mark**, asserted by
+  a test that corrupts a stored score and checks it is ignored.
+- **A cancelled run writes nothing**, rather than leaving a batch half marked
+  under two policies while claiming to be current.
+- **Three additive tables, created by migration 5**: `answer_key_revision`,
+  `scoring_policy_revision` (marks stored as exact rational strings) and
+  `candidate_result`.
+- **The Answer Key stage**: set and revision choosers, the key as text and as a
+  question-by-question table driven by one model, wrong-question flags,
+  validation, save and verify.
+- **The Results stage**: a scoring-configuration dialog with a worked-example
+  preview, a pre-scoring check listing every blocked candidate at once, batch
+  marking off the GUI thread with progress, a filterable results table, and a
+  per-question detail showing what the machine read beside what was scored.
+- **Phases 5, 6 and 7 are untouched.**
+
+### Fixed
+
+- **An unread question-paper set was reported as a missing answer key.**
+  Recognition assembles a field value with `_` for an unmarked position, so a
+  blank set code arrived as `"_"` and produced *"no verified answer key for
+  Set _"* — sending an operator to look for a key when the problem was the
+  sheet. It now reports that no set was read. (Found by inspecting a Phase 8
+  screenshot.)
+- **The Results page listed the verified keys only when the project was
+  opened**, so a key verified on the Answer Key stage left it saying "none".
+
 ### Added — Phase 7
 
 Candidate & Attendance Reconciliation: the candidate list an examination office

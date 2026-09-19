@@ -51,12 +51,14 @@ from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, ProcessingSettings, load_app_config, save_app_config
 from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
+from omr_scanner.gui.answer_key.page import AnswerKeyPage
 from omr_scanner.gui.attendance.page import AttendancePage
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
 from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.results.page import ResultsPage
 from omr_scanner.gui.review.page import ResolvePage
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
@@ -188,6 +190,10 @@ class MainWindow(QMainWindow):
                 page = ResolvePage(spec)
             elif spec.key == "attendance":
                 page = AttendancePage(spec)
+            elif spec.key == "answer_key":
+                page = AnswerKeyPage(spec)
+            elif spec.key == "results":
+                page = ResultsPage(spec)
             else:
                 page = PlaceholderPage(spec)
 
@@ -481,6 +487,32 @@ class MainWindow(QMainWindow):
         page = self._pages.get("attendance")
         return page if isinstance(page, AttendancePage) else None
 
+    def _answer_key_page(self) -> AnswerKeyPage | None:
+        """The Answer Key page, when this window built a real one."""
+        page = self._pages.get("answer_key")
+        return page if isinstance(page, AnswerKeyPage) else None
+
+    def _results_page(self) -> ResultsPage | None:
+        """The Results page, when this window built a real one."""
+        page = self._pages.get("results")
+        return page if isinstance(page, ResultsPage) else None
+
+    def broadcast_template(self, template: object | None) -> None:
+        """Tell the scoring stages which template the batch was read with.
+
+        Phase 8 needs the template for its question count and answer labels,
+        and the Scan stage is where one is loaded. Routed through the window
+        rather than page-to-page, for the same reason every other cross-page
+        message is: a page that reached into another would have to know it
+        exists.
+        """
+        answer_key = self._answer_key_page()
+        if answer_key is not None:
+            answer_key.set_template(template)  # type: ignore[arg-type]
+        results = self._results_page()
+        if results is not None:
+            results.set_template(template)  # type: ignore[arg-type]
+
     def reconcile_batch(self, batch_id: str) -> bool:
         """Open a batch's candidate reconciliation in the Attendance stage.
 
@@ -715,6 +747,12 @@ class MainWindow(QMainWindow):
             # recognised value, and asking for two would invite one to be left
             # blank.
             attendance_page.set_operator(self._config.reviewer_name)
+        answer_key_page = self._answer_key_page()
+        if answer_key_page is not None:
+            answer_key_page.set_reviewer(self._config.reviewer_name)
+        results_page = self._results_page()
+        if results_page is not None:
+            results_page.set_reviewer(self._config.reviewer_name)
 
     # ------------------------------------------------------------------
     # Internal state propagation
@@ -872,6 +910,9 @@ class MainWindow(QMainWindow):
             # is: a reconciliation worker still writing when the database goes
             # away would abort mid-transaction.
             attendance_page.shutdown()
+        results_page = self._results_page()
+        if results_page is not None:
+            results_page.shutdown()
 
         self.close_project()
         logger.info("Main window closed")

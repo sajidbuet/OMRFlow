@@ -1378,6 +1378,165 @@ def effective_identifiers(
     return found
 
 
+_SET_CODE_IS_UNKNOWN: frozenset[ConflictType] = frozenset(
+    {
+        ConflictType.SET_CODE_BLANK,
+        ConflictType.SET_CODE_MULTIPLE,
+        ConflictType.SET_CODE_UNCERTAIN,
+        ConflictType.SET_CODE_UNREADABLE,
+        ConflictType.SET_CODE_LOW_CONFIDENCE,
+    }
+)
+"""Conflicts that mean nobody yet knows which paper a sheet answers.
+
+Phase 8 refuses to mark such a sheet. Falling back to another set's key would
+produce a mark that looks ordinary and is against the wrong paper, which is the
+worst available outcome - worse than no mark at all.
+"""
+
+
+def effective_set_codes(
+    database: ProjectDatabase, batch_id: str
+) -> dict[int, EffectiveIdentifier]:
+    """Return every sheet's question-paper set after Phase 6 review.
+
+    The sibling of :func:`effective_identifiers`, and the one place scoring
+    learns which paper a candidate sat. Reading ``BatchScan.set_code_value``
+    directly would ignore every correction a reviewer made - and a sheet marked
+    against the wrong set's key is the defect this phase most has to avoid.
+
+    Multi-character set codes (``"10"``, ``"X1"``) are carried through
+    unchanged: a positional correction substitutes one printed position, which
+    is why it cannot simply index into the string.
+    """
+    with database.session() as session:
+        scans = session.scalars(
+            select(BatchScan).where(BatchScan.batch_id == batch_id)
+        ).all()
+        found = {
+            row.scan_id: EffectiveIdentifier(
+                scan_id=row.scan_id,
+                machine_value=row.set_code_value or "",
+                value=row.set_code_value or "",
+            )
+            for row in scans
+        }
+
+        conflicts = session.scalars(
+            select(ReviewConflict).where(ReviewConflict.batch_id == batch_id)
+        ).all()
+        for conflict in conflicts:
+            current = found.get(conflict.scan_id)
+            if current is None:
+                continue
+            kind = FieldKind(conflict.field_kind)
+            conflict_type = ConflictType(conflict.conflict_type)
+            state = ConflictState(conflict.state)
+
+            if state.needs_attention and (
+                conflict_type in _SET_CODE_IS_UNKNOWN
+                or conflict_type.is_processing_failure
+            ):
+                found[conflict.scan_id] = replace(current, unresolved=True)
+                continue
+
+            if kind is not FieldKind.SET_CODE or state is not ConflictState.RESOLVED:
+                continue
+            decided = _project_provenance(session, conflict)
+            if not decided.is_human_decided:
+                continue
+            found[conflict.scan_id] = replace(
+                current,
+                value=_identifier_after(current.value, conflict, decided.value),
+                source=ValueSource.HUMAN,
+                reviewer=decided.reviewer,
+                reason=decided.reason,
+            )
+    return found
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveAnswers:
+    """What one sheet's questions read as, after Phase 6 review.
+
+    Attributes:
+        scan_id: The sheet.
+        decided: Answers a named reviewer decided, keyed by printed question
+            number. Only these - a question nobody touched keeps the machine's
+            reading, which the caller already has.
+        unresolved_questions: Printed question numbers whose conflict is still
+            open or deferred. **Scoring is blocked while this is non-empty**:
+            an unread answer is not a blank, and marking it as one would award
+            a candidate's blank mark for a question they may well have answered.
+    """
+
+    scan_id: int
+    decided: dict[int, str]
+    unresolved_questions: tuple[int, ...] = ()
+
+    @property
+    def has_unresolved(self) -> bool:
+        """Whether any question on this sheet still awaits review."""
+        return bool(self.unresolved_questions)
+
+
+def effective_answers(
+    database: ProjectDatabase, batch_id: str, template: OmrTemplate
+) -> dict[int, EffectiveAnswers]:
+    """Return every sheet's reviewed answers, keyed by scan id.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch to read.
+        template: The template it was read with, to turn a conflict's group key
+            back into a printed question number.
+
+    Returns:
+        One entry per sheet that has any question conflict. A sheet with none
+        is absent from the mapping, because there is nothing to say about it
+        that the recognition result does not already say.
+
+    Two queries over the whole batch, for the same reason its siblings are: a
+    ten-thousand-sheet cohort must not open ten thousand transactions to be
+    marked.
+    """
+    numbers = _question_numbers_by_group(template)
+    found: dict[int, EffectiveAnswers] = {}
+
+    with database.session() as session:
+        conflicts = session.scalars(
+            select(ReviewConflict)
+            .where(ReviewConflict.batch_id == batch_id)
+            .where(ReviewConflict.field_kind == FieldKind.QUESTION.value)
+        ).all()
+        for conflict in conflicts:
+            number = numbers.get((conflict.zone_id, conflict.group_key))
+            if number is None:
+                continue
+            entry = found.setdefault(
+                conflict.scan_id, EffectiveAnswers(scan_id=conflict.scan_id, decided={})
+            )
+            state = ConflictState(conflict.state)
+            if state.needs_attention:
+                found[conflict.scan_id] = replace(
+                    entry,
+                    unresolved_questions=(*entry.unresolved_questions, number),
+                )
+                continue
+            if state is not ConflictState.RESOLVED:
+                continue
+            decided = _project_provenance(session, conflict)
+            if decided.is_human_decided:
+                entry.decided[number] = decided.value
+
+    return {
+        scan_id: replace(
+            entry, unresolved_questions=tuple(sorted(entry.unresolved_questions))
+        )
+        for scan_id, entry in found.items()
+    }
+
+
 def _identifier_after(current: str, conflict: ReviewConflict, decided: str) -> str:
     """Apply one resolved identifier decision to a sheet's ID.
 

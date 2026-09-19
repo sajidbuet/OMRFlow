@@ -651,6 +651,37 @@ def completed_results(
     return tuple(results)
 
 
+def results_by_scan(
+    database: ProjectDatabase, batch_id: str
+) -> dict[int, ScanResult]:
+    """Rebuild every finished scan's result, keyed by its durable scan id.
+
+    The sibling of :func:`completed_results`, which keys by nothing: scoring
+    needs to go from a candidate's script to what was read off it, and pairing
+    the two lists by position would be a silent mismatch waiting for the first
+    batch with an undecodable row in it.
+
+    A row whose stored JSON cannot be decoded is skipped with a log line rather
+    than raising - one unreadable record must not cost the other 9,999.
+    """
+    with database.session() as session:
+        rows = session.scalars(
+            select(BatchScan)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.result_json != "")
+            .order_by(BatchScan.batch_index)
+        ).all()
+        payloads = [(row.scan_id, row.filename, row.result_json) for row in rows]
+
+    found: dict[int, ScanResult] = {}
+    for scan_id, filename, payload in payloads:
+        try:
+            found[scan_id] = ScanResult.from_dict(json.loads(payload))
+        except (ValueError, TypeError, KeyError):
+            _LOGGER.exception("Stored result for %s could not be decoded", filename)
+    return found
+
+
 def check_compatibility(
     database: ProjectDatabase, batch_id: str, identity: BatchIdentity
 ) -> CompatibilityVerdict:

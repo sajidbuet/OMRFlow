@@ -28,9 +28,10 @@ entities, it finds the intended shape and relationships already agreed.
 | ReconciliationRun | Implemented (Phase 7) | `reconciliation_run` table |
 | CandidateReconciliation | Implemented (Phase 7) | `reconciliation_entry` + `reconciliation_script` |
 | ReconciliationResolution | Implemented (Phase 7) | `reconciliation_decision` table |
-| AnswerKey | Planned (Phase 8) | database |
-| ScoringConfiguration | Planned (Phase 8) | database |
-| CandidateResult | Planned (Phase 8/9) | database |
+| AnswerKey | Implemented (Phase 8) | `answer_key_revision` table |
+| ScoringConfiguration | Implemented (Phase 8) | `scoring_policy_revision` table |
+| CandidateResult | Implemented (Phase 8) | `candidate_result` table |
+| Per-question breakdown | **Not stored - regenerated** (Phase 8) | - |
 
 ## Entity relationships
 
@@ -326,32 +327,97 @@ recomputes every classification from scratch and these rows are what steer it.
 A decision is a *current* position; its history is in `audit_event`, appended in
 the same transaction and never rewritten.
 
-### AnswerKey - *Phase 8*
+### AnswerKeyRevision - *implemented (Phase 8)*
 
-One key per question paper set: `set_code`, `question_number`,
-`correct_answers`.
+One question-paper set's key, at one revision. Table `answer_key_revision`,
+unique on `(set_code, revision)`.
 
-`correct_answers` is a collection even though the first release assumes exactly
-one correct answer, so that "any of B or C is accepted" can be introduced later
-without a migration of the meaning of existing rows.
+Fields: `key_id`, `set_code`, `revision`, `answers`, `wrong_questions`,
+`first_question`, `question_count`, `status`, `source`, `source_scan`, `notes`,
+`created_at`, `verified_at`, `verified_by`.
 
-### ScoringConfiguration - *Phase 8*
+`answers` is one character per question - the canonical form described in
+[`scoring.md`](scoring.md) §2 - with no blanks and no multiples: a key gives
+exactly one correct choice per question.
 
-`marks_correct` (default +1.00), `marks_incorrect` (default -0.25),
-`marks_blank` (default 0.00), `negative_marking_enabled`, and a rounding rule.
+Invariants:
+- **A revision is never edited.** Correcting a verified key creates revision
+  *n+1* and supersedes the old one; the old row stays, because a
+  `CandidateResult` points at it and "which key produced this mark" must always
+  have an answer.
+- `status` is `draft` / `verified` / `superseded`. **Only `verified` produces
+  marks.** Recognition completing on a solution sheet does not make a key
+  right, so a scanned key arrives as a draft like any other.
+- `wrong_questions` lives on the *revision* rather than beside the set, because
+  withdrawing a question changes every mark for that set. It is part of the key,
+  not a separate setting that could drift out of step with it.
+- Revision numbering is owned by the store, not the caller, so two operators
+  cannot both create "revision 2".
+- `set_code` is not assumed to be one character.
 
-Initially uniform across all questions. Section-wise scoring is a later
-extension; it would attach a configuration to a question range rather than
-changing the per-candidate result shape.
+### ScoringPolicyRevision - *implemented (Phase 8)*
 
-### CandidateResult - *Phase 8/9*
+The marking rules, at one revision. Table `scoring_policy_revision`.
 
-Per candidate: `set_code`, `attendance_state`, `correct_count`,
-`incorrect_count`, `blank_count`, `positive_marks`, `negative_marks`,
-`final_marks`, `rank`, `processing_status`, `remarks`.
+Fields: `policy_id`, `revision`, `correct_mark`, `blank_mark`,
+`incorrect_penalty`, `multiple_penalty`, `mode`, `clamp_minimum`,
+`minimum_score`, `is_active`, `created_at`, `created_by`.
 
-`rank` is stored so that an exported report and the database agree, even when
-the report also contains an Excel `RANK.EQ` formula.
+Invariants:
+- **Every mark is stored as an exact rational string** - `"1"`, `"1/4"`,
+  `"-1/3"` - and read back with `fractions.Fraction`. A `FLOAT` column would
+  make a stored policy round-trip to something a fraction of a mark away from
+  what the operator typed, which is precisely what this phase forbids.
+- **Penalties are positive magnitudes** and are subtracted. A column that
+  accepted both signs would eventually be given the wrong one, and the paper
+  would be marked generously by half.
+- A new revision is created only when a score-affecting rule actually changes;
+  saving an unchanged policy is a no-op. Creating a revision per click would
+  make every result stale for no reason, and "stale" has to mean something.
+- `clamp_minimum` is *recorded*, not hard-coded, so a result can say whether it
+  was clamped rather than leaving it to be inferred.
+
+### CandidateResult - *implemented (Phase 8)*
+
+One candidate's mark, and everything needed to reproduce it. Table
+`candidate_result`, unique on `(roster_id, batch_id, candidate_id)`.
+
+The **authoritative inputs**: `answer_string`, `machine_answer_string`,
+`corrected_questions`, `set_code`, `answer_key_id`, `answer_key_revision`,
+`policy_id`, `policy_revision`, `first_question`, `scan_id`.
+
+The **derived** columns: `question_count`, `correct_count`, `incorrect_count`,
+`blank_count`, `multiple_count`, `wrong_question_count`, `raw_score`,
+`final_score`, `clamped`, `status`, `blocks`.
+
+Invariants:
+- **`answer_key_id` and `answer_key_revision` are the provenance the phase
+  turns on.** A result identifies the exact revisions used, so a later key does
+  not retroactively change what an earlier mark was computed from. Historical
+  key usage is never inferred from whichever key is current.
+- **The derived columns are recomputed, never patched.** Changing a rule runs
+  the scorer again over the stored inputs; nothing adds a delta to an existing
+  mark. A test asserts this by corrupting a stored score and checking the
+  rescore produces the correct value rather than the corrupted one adjusted.
+- `raw_score` and `final_score` are exact rational strings. A displayed mark is
+  that value formatted, and the formatting never feeds back.
+- `status` is `scored` / `absent` / `blocked`. **An absent candidate has no
+  mark, not a mark of zero** - zero would be indistinguishable from somebody
+  who sat the paper and answered nothing.
+- `machine_answer_string` keeps what recognition alone read, beside the
+  effective string, so a correction never costs the record of what it changed
+  from.
+
+### The per-question breakdown - *not stored; regenerated*
+
+A hundred questions across ten thousand candidates is a million rows that would
+have to be kept in step with a total they could contradict.
+
+Instead `CandidateResult` keeps its inputs and
+`scoring_store.breakdown_for()` reruns the same pure function that produced the
+mark. A detail view and a total can then never disagree, because there is only
+one calculation - and the phase's reproducibility requirement is satisfied by
+construction rather than by keeping two things in sync.
 
 ### AuditEvent - *implemented (Phase 6)*
 
@@ -403,6 +469,9 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `reconciliation_entry` | One candidate's reconciliation state. | Phase 7 (migration 4) |
 | `reconciliation_script` | One scan, and the entry it was filed under. | Phase 7 (migration 4) |
 | `reconciliation_decision` | An operator's standing decision. | Phase 7 (migration 4) |
+| `answer_key_revision` | One set's key, at one revision. | Phase 8 (migration 5) |
+| `scoring_policy_revision` | The marking rules, at one revision. | Phase 8 (migration 5) |
+| `candidate_result` | One candidate's mark and its inputs. | Phase 8 (migration 5) |
 
 ### Schema version 3 (Phase 6)
 
@@ -464,6 +533,19 @@ Asserted by `TestMigrationOntoAnExistingPhase6Project`, which winds a real
 project back to version 3 — dropping the six tables and both new columns — then
 reopens it and checks the conflicts and the ledger survived, the columns
 returned with the right default, and the ledger still refuses a `DELETE`.
+
+### Schema version 5 (Phase 8)
+
+`_migration_005_scoring` creates `answer_key_revision`,
+`scoring_policy_revision` and `candidate_result`. Purely additive: no existing
+table or column was altered, and there is nothing to convert, because this is
+the first phase that produces marks at all.
+
+A project reconciled before Phase 8 opens normally and simply has no keys until
+one is written. Asserted by
+`TestMigrationOntoAnExistingPhase7Project`, which winds a real project back to
+version 4, reopens it, and checks the roster survived and a key can then be
+stored.
 
 Key/value storage is appropriate for a handful of identity attributes. Data that
 is queried, joined, sorted or reported on - scans, candidates, results - gets
