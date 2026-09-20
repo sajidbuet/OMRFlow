@@ -61,6 +61,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from omr_scanner.services.process_containment import (
+    ensure_worker_processes_die_with_this_one,
+)
 from omr_scanner.services.recognition_service import (
     RecognitionOutcome,
     RegistrationStatus,
@@ -343,6 +346,13 @@ def _recognise_batch_in_parallel(
     """
     if not paths:
         return
+
+    # Best-effort: if this coordinator is killed abruptly, take its worker
+    # processes with it rather than leaving them orphaned (a real gap found
+    # and documented during this phase's own kill/resume testing). Safe to
+    # call unconditionally - see the function's own docstring for why every
+    # failure mode is absorbed rather than raised.
+    ensure_worker_processes_die_with_this_one()
 
     context = multiprocessing.get_context(START_METHOD)
     pending: dict[Future[WorkerOutcome], int] = {}

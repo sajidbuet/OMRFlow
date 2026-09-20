@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 from pathlib import Path
+from typing import Never
 
 import pytest
 from tests.conftest import build_answer_sheet_template
@@ -319,3 +320,37 @@ class TestWritingTheFile:
             rows = list(csv.reader(stream))
         assert len(rows) == 1
         assert tuple(rows[0][: len(BASE_COLUMNS)]) == BASE_COLUMNS
+
+    def test_an_interrupted_re_export_does_not_destroy_the_previous_file(
+        self, tmp_path: Path, template, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Re-exporting over an existing file must be atomic (Phase 10, §46).
+
+        The write goes to a temporary file first and is only moved into
+        place on success - mirroring `omr_scanner.utils.json_io.write_json_atomic`'s
+        guarantee for `project.json` - so a crash or full disk part-way
+        through a re-export leaves the previous good export exactly as it
+        was, never a half-written file in its place.
+        """
+        destination = tmp_path / "results.csv"
+        good_batch = [processed(scan("a.png", answers=(answer(1, "B"),)))]
+        export_scan_results(good_batch, template, destination)
+        original_bytes = destination.read_bytes()
+
+        def _partial_write_then_crash(
+            _processed: object, _template: object, stream: object, *, resolutions: object = None
+        ) -> Never:
+            # Some bytes genuinely reach the OS-level stream - the disk-full
+            # or power-loss case this write is racing against never happens
+            # before *any* output exists, only partway through.
+            stream.write("partial,garbage,row\n")
+            raise OSError("simulated disk failure mid-write")
+
+        monkeypatch.setattr(
+            "omr_scanner.services.scan_export.write_scan_results", _partial_write_then_crash
+        )
+        with pytest.raises(ReportingError):
+            export_scan_results(good_batch, template, destination)
+
+        assert destination.read_bytes() == original_bytes
+        assert list(tmp_path.iterdir()) == [destination]  # no leftover temp file

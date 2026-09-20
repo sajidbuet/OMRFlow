@@ -44,6 +44,8 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -265,8 +267,26 @@ def export_scan_results(
     encoding = BOM_ENCODING if include_bom else CSV_ENCODING
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with destination.open("w", encoding=encoding, newline="") as stream:
-            write_scan_results(processed, template, stream, resolutions=resolutions)
+        # Written to a temporary file in the same directory and moved into
+        # place only once it is complete (the same "an interrupted save
+        # cannot truncate an existing file" guarantee
+        # `omr_scanner.utils.json_io.write_json_atomic` gives project.json -
+        # re-exporting a results CSV over a previous one must not leave a
+        # half-written file where a good one used to be if the write is
+        # interrupted, e.g. by a full disk).
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=destination.parent, prefix=f".{destination.name}.", suffix=".tmp"
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding=encoding, newline="") as stream:
+                write_scan_results(processed, template, stream, resolutions=resolutions)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary_path.replace(destination)
+        except BaseException:
+            temporary_path.unlink(missing_ok=True)
+            raise
     except OSError as exc:
         raise ReportingError(
             f"Could not write the results CSV to '{destination}': {exc}",

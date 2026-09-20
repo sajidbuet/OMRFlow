@@ -26,10 +26,11 @@ Testability:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, qVersion
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (
@@ -68,6 +69,7 @@ from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 from omr_scanner.services import (
     ProjectSession,
     create_project,
+    diagnostics,
     open_project,
     recover_interrupted,
     review_store,
@@ -361,6 +363,14 @@ class MainWindow(QMainWindow):
         )
         self.project_health_action.triggered.connect(self._prompt_project_health)
         tools_menu.addAction(self.project_health_action)
+
+        self.diagnostic_bundle_action = QAction("Create &Diagnostic Bundle...", self)
+        self.diagnostic_bundle_action.setObjectName("diagnosticBundleAction")
+        self.diagnostic_bundle_action.setStatusTip(
+            "Save a support bundle (version, settings, health check) - never candidate data"
+        )
+        self.diagnostic_bundle_action.triggered.connect(self._prompt_create_diagnostic_bundle)
+        tools_menu.addAction(self.diagnostic_bundle_action)
         tools_menu.addSeparator()
 
         developer_menu = tools_menu.addMenu("&Developer / Testing")
@@ -585,6 +595,47 @@ class MainWindow(QMainWindow):
         if self._session is None:
             return
         ProjectHealthDialog(self._session.database, self._session.root, self).exec()
+
+    def create_diagnostic_bundle_at(self, output_path: Path) -> bool:
+        """Write a diagnostic bundle to ``output_path``. No dialog - testable directly.
+
+        Works with or without an open project: without one, the bundle
+        still carries version/environment information and a "no project
+        open" health status.
+        """
+        try:
+            diagnostics.build_diagnostic_bundle(
+                output_path,
+                database=self._session.database if self._session is not None else None,
+                project_root=self._session.root if self._session is not None else None,
+                processing=self._config.processing,
+                extra_environment={"qt_version": qVersion()},
+            )
+        except OSError as exc:
+            report_error(
+                self,
+                OMRScannerError(
+                    f"Could not write the diagnostic bundle: {exc}",
+                    user_message=f"Could not write the diagnostic bundle: {exc}",
+                ),
+                context="Create diagnostic bundle",
+            )
+            return False
+        return True
+
+    def _prompt_create_diagnostic_bundle(self) -> None:
+        """Ask where to save the diagnostic bundle, then write it."""
+        default_name = f"omrflow_diagnostics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        start = str((self._config.default_projects_root or Path.home()) / default_name)
+        destination, _filter = QFileDialog.getSaveFileName(
+            self, "Save Diagnostic Bundle", start, "Zip files (*.zip)"
+        )
+        if not destination:
+            return
+        if self.create_diagnostic_bundle_at(Path(destination)):
+            self.statusBar().showMessage(
+                f"Diagnostic bundle saved to {destination}", STATUS_MESSAGE_MS
+            )
 
     def show_settings(self) -> None:
         """Open the Settings dialog and apply whatever the user accepted.

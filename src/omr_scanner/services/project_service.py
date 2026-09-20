@@ -39,7 +39,7 @@ from omr_scanner.domain.project import (
     ProjectLayout,
     ProjectMetadata,
 )
-from omr_scanner.errors import ProjectExistsError, ProjectValidationError
+from omr_scanner.errors import OMRScannerError, ProjectExistsError, ProjectValidationError
 from omr_scanner.services.project_lock import (
     ProjectLock,
     ProjectLockHeldError,
@@ -275,6 +275,8 @@ def open_project(
         logger.info("Opened project '%s' at %s (read-only)", metadata.name, layout.root)
         return _start_session(Project(metadata, layout), database, lock=None)
 
+    _backup_before_migration_if_needed(layout)
+
     lock = force_acquire(layout.root) if force_lock else acquire(layout.root)
     try:
         database = open_project_database(layout.database_file)
@@ -284,6 +286,57 @@ def open_project(
     logger.info("Opened project '%s' at %s", metadata.name, layout.root)
 
     return _start_session(Project(metadata, layout), database, lock=lock)
+
+
+def _backup_before_migration_if_needed(layout: ProjectLayout) -> None:
+    """Snapshot the database before it is upgraded to a newer schema (§5).
+
+    Peeks at the file's current schema version through a *read-only*
+    connection - never a write of its own - and creates a backup only when
+    a real migration is about to run against an existing, already-populated
+    project (schema version ``0`` means a database that has never been
+    migrated at all, which :func:`open_project` never encounters: only
+    :func:`create_project` produces one, and it migrates it once, from
+    empty, before any examination data exists to lose).
+
+    Never fatal, and never blocks opening the project: a failed pre-migration
+    backup is logged and the project still opens (and still migrates) - a
+    missing backup is a lesser problem than refusing an examination office
+    access to their own data over a hardening feature that itself failed.
+    """
+    from omr_scanner.database.migrations import SCHEMA_VERSION
+    from omr_scanner.services import project_backup
+
+    try:
+        probe = open_project_database(layout.database_file, read_only=True)
+        try:
+            current_version = probe.schema_version
+        finally:
+            probe.close()
+    except OMRScannerError:
+        # Can't even read it read-only; the normal (write) open path below
+        # will raise its own, more specific error - nothing to back up here.
+        return
+
+    if not (0 < current_version < SCHEMA_VERSION):
+        return
+
+    try:
+        backups_dir = layout.root / project_backup.BACKUP_DIR_NAME
+        manifest = project_backup.create_backup(
+            layout.database_file,
+            backups_dir,
+            reason=f"before-migration-{current_version}-to-{SCHEMA_VERSION}",
+            schema_version=current_version,
+        )
+        logger.info(
+            "Created pre-migration backup %s (schema %d -> %d)",
+            manifest.backup_file,
+            current_version,
+            SCHEMA_VERSION,
+        )
+    except project_backup.BackupError:
+        logger.exception("Pre-migration backup failed; continuing without one")
 
 
 def read_project_metadata(project_directory: Path) -> ProjectMetadata:

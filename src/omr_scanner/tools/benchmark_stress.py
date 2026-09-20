@@ -339,6 +339,15 @@ def _write_report(
     """
     samples = telemetry.read_samples(telemetry_path)
     peak_memory_mb = max((s.process_memory_mb for s in samples), default=0.0)
+    # Recognition itself runs in the worker pool, not this coordinator
+    # process - `peak_process_memory_mb` alone materially understates real
+    # memory use, and `peak_process_cpu_percent` alone would make the
+    # coordinator look like the bottleneck when the pool is where the CPU
+    # time is actually spent (Phase 10 telemetry validation finding).
+    peak_worker_pool_memory_mb = max((s.worker_pool_memory_mb for s in samples), default=0.0)
+    peak_worker_pool_cpu_percent = max(
+        (s.worker_pool_cpu_percent for s in samples), default=0.0
+    )
     average_rate = (
         sum(s.sheets_per_second for s in samples) / len(samples) if samples else 0.0
     )
@@ -359,6 +368,8 @@ def _write_report(
             "elapsed_seconds": elapsed_seconds,
             "average_sheets_per_second": average_rate,
             "peak_process_memory_mb": peak_memory_mb,
+            "peak_worker_pool_memory_mb": peak_worker_pool_memory_mb,
+            "peak_worker_pool_cpu_percent": peak_worker_pool_cpu_percent,
             "telemetry_sample_count": len(samples),
         },
         "cumulative_batch_state": {

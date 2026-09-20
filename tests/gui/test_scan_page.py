@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QCheckBox, QProgressBar, QPushButton, QTableWidget
+from PySide6.QtWidgets import QCheckBox, QProgressBar, QPushButton, QTableView, QTableWidget
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 
 from omr_scanner.gui.main_window import MainWindow
@@ -67,6 +67,23 @@ genuinely stuck run is allowed to hang the suite."""
 
 ROLL = "120317"
 OTHER_ROLL = "120318"
+
+
+def cell(table: QTableView, row: int, column: int) -> str:
+    """The scan list's displayed text at (row, column).
+
+    ``scan_table`` is a plain ``QTableView`` over ``ScanTableModel`` (Phase
+    10, §"lazy GUI models") rather than a ``QTableWidget``, so there is no
+    ``.item(row, column).text()`` - this reads the same text through the
+    model directly.
+    """
+    value = table.model().index(row, column).data()
+    return "" if value is None else str(value)
+
+
+def row_count(table: QTableView) -> int:
+    """How many rows the scan list's model currently reports."""
+    return table.model().rowCount()
 
 
 def sheet_marks(roll: str, *, set_code: str = "A", answer: str = "B") -> dict:
@@ -216,7 +233,7 @@ class TestALaunch:
             ("outputFolderButton", QPushButton),
             ("exportCsvButton", QPushButton),
             ("renameScansCheckBox", QCheckBox),
-            ("scanTable", QTableWidget),
+            ("scanTable", QTableView),
             ("resultFieldsTable", QTableWidget),
             ("resultAnswersTable", QTableWidget),
             ("scanPreview", ScanPreviewView),
@@ -287,10 +304,10 @@ class TestCImportScan:
         path = write_sheet("IMG_0001.png")
 
         assert loaded_page.add_scan_paths([path]) == 1
-        assert loaded_page.scan_table.rowCount() == 1
-        assert loaded_page.scan_table.item(0, 0).text() == "IMG_0001.png"
-        assert loaded_page.scan_table.item(0, 3).text() == "Pending"
-        assert loaded_page.scan_table.currentRow() == 0
+        assert row_count(loaded_page.scan_table) == 1
+        assert cell(loaded_page.scan_table, 0, 0) == "IMG_0001.png"
+        assert cell(loaded_page.scan_table, 0, 3) == "Pending"
+        assert loaded_page.scan_table.currentIndex().row() == 0
 
     def test_importing_the_same_file_twice_does_not_duplicate_the_row(
         self, loaded_page: ScanPage, write_sheet
@@ -299,7 +316,7 @@ class TestCImportScan:
         loaded_page.add_scan_paths([path])
 
         assert loaded_page.add_scan_paths([path]) == 0
-        assert loaded_page.scan_table.rowCount() == 1
+        assert row_count(loaded_page.scan_table) == 1
 
     def test_a_folder_contributes_its_images_in_natural_order(
         self, loaded_page: ScanPage, write_sheet, tmp_path: Path
@@ -324,7 +341,7 @@ class TestCImportScan:
             loaded_page.select_scan(1)
 
         assert blocker.args == [1]
-        assert loaded_page.scan_table.currentRow() == 1
+        assert loaded_page.scan_table.currentIndex().row() == 1
         # Nothing has been recognised, so the page must say so rather than
         # showing a stale or invented preview.
         assert "Not processed" in loaded_page.preview_status_label.text()
@@ -337,7 +354,7 @@ class TestCImportScan:
 
         loaded_page.clear_scans()
 
-        assert loaded_page.scan_table.rowCount() == 0
+        assert row_count(loaded_page.scan_table) == 0
         assert loaded_page.state.entries == []
         assert loaded_page.preview.has_page is False
 
@@ -378,9 +395,9 @@ class TestDProcess:
     def test_the_scan_list_shows_the_roll_the_set_code_and_the_status(
         self, processed_page: ScanPage
     ):
-        assert processed_page.scan_table.item(0, 1).text() == ROLL
-        assert processed_page.scan_table.item(0, 2).text() == "A"
-        assert processed_page.scan_table.item(0, 3).text() == "Complete"
+        assert cell(processed_page.scan_table, 0, 1) == ROLL
+        assert cell(processed_page.scan_table, 0, 2) == "A"
+        assert cell(processed_page.scan_table, 0, 3) == "Complete"
 
     def test_the_results_panel_is_populated_with_every_question(
         self, processed_page: ScanPage
@@ -539,19 +556,19 @@ class TestEPreview:
     def test_stepping_next_and_previous_returns_to_the_same_scan(
         self, previewed: ScanPage
     ):
-        assert previewed.scan_table.currentRow() == 0
+        assert previewed.scan_table.currentIndex().row() == 0
 
         previewed.select_next()
-        assert previewed.scan_table.currentRow() == 1
+        assert previewed.scan_table.currentIndex().row() == 1
         previewed.select_previous()
-        assert previewed.scan_table.currentRow() == 0
+        assert previewed.scan_table.currentIndex().row() == 0
 
         # And neither end runs off the list.
         previewed.select_previous()
-        assert previewed.scan_table.currentRow() == 0
+        assert previewed.scan_table.currentIndex().row() == 0
         previewed.select_next()
         previewed.select_next()
-        assert previewed.scan_table.currentRow() == 1
+        assert previewed.scan_table.currentIndex().row() == 1
 
 
 # ----------------------------------------------------------------------
@@ -568,13 +585,13 @@ class TestFBatch:
 
         report = process(qtbot, loaded_page)
 
-        assert loaded_page.scan_table.rowCount() == len(names)
+        assert row_count(loaded_page.scan_table) == len(names)
         assert report.total == len(names)
         assert report.complete_count == len(names)
         assert all(entry.processed is not None for entry in loaded_page.state.entries)
         assert all(
-            loaded_page.scan_table.item(row, 3).text() == "Complete"
-            for row in range(loaded_page.scan_table.rowCount())
+            cell(loaded_page.scan_table, row, 3) == "Complete"
+            for row in range(row_count(loaded_page.scan_table))
         )
 
     def test_one_corrupt_file_is_flagged_and_the_batch_continues(
@@ -608,8 +625,8 @@ class TestFBatch:
         process(qtbot, loaded_page)
 
         statuses = {
-            loaded_page.scan_table.item(row, 0).text(): loaded_page.scan_table.item(row, 3).text()
-            for row in range(loaded_page.scan_table.rowCount())
+            cell(loaded_page.scan_table, row, 0): cell(loaded_page.scan_table, row, 3)
+            for row in range(row_count(loaded_page.scan_table))
         }
         assert statuses["good.png"] == "Complete"
         assert statuses["corrupt.png"] in {"Error", "Registration failed"}
@@ -666,7 +683,7 @@ class TestGRenaming:
         process(qtbot, loaded_page)
 
         assert (output / f"{ROLL}.png").exists()
-        assert loaded_page.scan_table.item(0, 4).text() == f"{ROLL}.png"
+        assert cell(loaded_page.scan_table, 0, 4) == f"{ROLL}.png"
         # The original is never moved or altered.
         assert source.exists()
 
@@ -761,11 +778,11 @@ class TestHDuplicateRolls:
     def test_the_scan_list_shows_each_output_name(self, three_duplicates):
         page, _output = three_duplicates
 
-        names = [page.scan_table.item(row, 4).text() for row in range(3)]
+        names = [cell(page.scan_table, row, 4) for row in range(3)]
         assert names == [f"{ROLL}.png", f"{ROLL}_a.png", f"{ROLL}_b.png"]
         # And every row still reports the same recognised roll, because the
         # suffix is a *file naming* decision, not a changed reading.
-        assert [page.scan_table.item(row, 1).text() for row in range(3)] == [ROLL] * 3
+        assert [cell(page.scan_table, row, 1) for row in range(3)] == [ROLL] * 3
 
     def test_a_different_roll_in_the_same_batch_keeps_its_own_plain_name(
         self, qtbot, loaded_page: ScanPage, write_sheet, tmp_path: Path
@@ -812,7 +829,7 @@ class TestIExistingFileCollision:
 
         assert (output / f"{ROLL}_a.png").exists()
         assert pre_existing.read_bytes() == original_bytes, "the earlier file was overwritten"
-        assert loaded_page.scan_table.item(0, 4).text() == f"{ROLL}_a.png"
+        assert cell(loaded_page.scan_table, 0, 4) == f"{ROLL}_a.png"
 
     def test_a_run_continues_past_whatever_suffixes_already_exist(
         self, qtbot, loaded_page: ScanPage, write_sheet, tmp_path: Path

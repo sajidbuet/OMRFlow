@@ -749,6 +749,64 @@ def resumable_scans(
     return tuple(Path(item) for item in rows)
 
 
+def resumable_scans_window(
+    database: ProjectDatabase,
+    batch_id: str,
+    *,
+    after_batch_index: int = -1,
+    limit: int,
+    include_failed: bool = False,
+) -> tuple[tuple[int, Path], ...]:
+    """Return up to ``limit`` resumable scans after ``after_batch_index``.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch to inspect.
+        after_batch_index: Only rows with a strictly greater
+            :attr:`~omr_scanner.database.models.BatchScan.batch_index` are
+            returned - the cursor from a caller's previous call, or ``-1``
+            for the first window.
+        limit: How many rows to return at most.
+        include_failed: As :func:`resumable_scans`.
+
+    Returns:
+        ``(batch_index, source_path)`` pairs, ordered by ``batch_index``, so
+        a caller's next call resumes exactly where this one left off by
+        passing back the last index it saw - never more than ``limit`` rows
+        old at once.
+
+    The bounded counterpart to :func:`resumable_scans`, which returns the
+    *entire* remaining work list in one Python tuple. For an ordinary batch
+    that is harmless; for a 100,000-sheet stress run it means the database,
+    not a Python list, stays the authoritative queue -
+    :mod:`omr_scanner.evaluation.stress_runner` uses this function, one
+    bounded window at a time, for exactly that reason. Kept as a separate
+    function rather than changing :func:`resumable_scans` itself: every
+    other caller (the Scan page's own "Resume Batch") reads an ordinary,
+    much smaller batch in one screen-worth of rows, and changing that
+    already-tested contract for a benefit only the stress harness needs
+    would be change for its own sake.
+    """
+    wanted = [
+        ScanJobStatus.PENDING.value,
+        ScanJobStatus.QUEUED.value,
+        ScanJobStatus.PROCESSING.value,
+        ScanJobStatus.CANCELLED.value,
+    ]
+    if include_failed:
+        wanted.append(ScanJobStatus.FAILED.value)
+    with database.session() as session:
+        rows = session.execute(
+            select(BatchScan.batch_index, BatchScan.source_path)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.status.in_(wanted))
+            .where(BatchScan.batch_index > after_batch_index)
+            .order_by(BatchScan.batch_index)
+            .limit(limit)
+        ).all()
+    return tuple((int(index), Path(str(path))) for index, path in rows)
+
+
 def scan_paths(database: ProjectDatabase, batch_id: str) -> tuple[Path, ...]:
     """Return every scan in the batch, in batch order.
 
@@ -1112,6 +1170,7 @@ __all__ = [
     "reprocess_failed_scans",
     "reprocessing_history",
     "resumable_scans",
+    "resumable_scans_window",
     "scan_ids_by_path",
     "scan_paths",
     "set_batch_status",

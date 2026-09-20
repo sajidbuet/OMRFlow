@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
@@ -68,6 +69,12 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.scan.preview import ScanPreviewView
+from omr_scanner.gui.scan.table_model import (
+    STATUS_COLORS,
+    STATUS_LABELS,
+    ScanEntry,
+    ScanTableModel,
+)
 from omr_scanner.gui.scan.worker import BatchWorker, PreviewWorker
 from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
 from omr_scanner.services import (
@@ -112,7 +119,7 @@ from omr_scanner.services import (
 from omr_scanner.services.recognition_models import utc_timestamp
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.evaluation.benchmark import BenchmarkReport
@@ -155,23 +162,6 @@ Long enough for every busy worker to finish the sheet it is holding - a cancel
 does not interrupt a sheet mid-warp - so the worker pool is always torn down
 before the application exits and no stray process outlives the window."""
 
-STATUS_LABELS: dict[str, str] = {
-    RecognitionOutcome.PENDING.value: "Pending",
-    RecognitionOutcome.COMPLETE.value: "Complete",
-    RecognitionOutcome.REVIEW.value: "Review",
-    RecognitionOutcome.REGISTRATION_FAILED.value: "Registration failed",
-    RecognitionOutcome.ERROR.value: "Error",
-}
-"""Plain-language names for the outcomes, shown in the scan list."""
-
-STATUS_COLORS: dict[str, QColor] = {
-    RecognitionOutcome.COMPLETE.value: QColor(226, 245, 229),
-    RecognitionOutcome.REVIEW.value: QColor(255, 244, 214),
-    RecognitionOutcome.REGISTRATION_FAILED.value: QColor(253, 226, 226),
-    RecognitionOutcome.ERROR.value: QColor(253, 226, 226),
-}
-"""Row tints. Backed up by the text in the Status column, never used alone."""
-
 FILTER_ALL = "All"
 FILTER_COMPLETED = "Completed"
 FILTER_REVIEW = "Needs review"
@@ -202,41 +192,6 @@ MARK_STATUS_LABELS: dict[str, str] = {
     "uncertain": "uncertain",
     "unreadable": "unreadable",
 }
-
-
-@dataclass
-class ScanEntry:
-    """One row of the scan list.
-
-    Attributes:
-        path: The source image.
-        processed: Its outcome once it has been through the pipeline.
-    """
-
-    path: Path
-    processed: ProcessedScan | None = None
-
-    @property
-    def outcome(self) -> str:
-        """The outcome's string value, or ``"pending"`` before processing."""
-        if self.processed is None:
-            return RecognitionOutcome.PENDING.value
-        return self.processed.outcome.value
-
-    @property
-    def identifier(self) -> str:
-        """The recognised identifier, or ``""``."""
-        return "" if self.processed is None else self.processed.result.identifier_value
-
-    @property
-    def set_code(self) -> str:
-        """The recognised set code, or ``""``."""
-        return "" if self.processed is None else self.processed.result.set_code_value
-
-    @property
-    def output_name(self) -> str:
-        """The planned or written output file name, or ``""``."""
-        return "" if self.processed is None else self.processed.output_name
 
 
 @dataclass
@@ -337,6 +292,18 @@ class ScanPage(WorkflowPage):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(PROGRESS_REFRESH_MS)
         self._refresh_timer.timeout.connect(self._refresh_progress)
+
+        # Backs `scan_table`. Reads `state.entries` directly rather than
+        # duplicating each cell into a `QTableWidgetItem` - see
+        # `omr_scanner.gui.scan.table_model` for why that matters at
+        # 100,000-sheet scale.
+        self._scan_model = ScanTableModel(lambda: self.state.entries, self)
+        # What the status filter combo currently restricts the list to, kept
+        # alongside the widget's own selection so a single finished sheet can
+        # be re-checked against it without rescanning every other row (see
+        # `_apply_status_filter_to_rows`).
+        self._active_filter: frozenset[str] | None = None
+        self._visible_count = 0
 
         self.body.addWidget(self._build_benchmark_banner())
 
@@ -663,11 +630,9 @@ class ScanPage(WorkflowPage):
         self.preview = ScanPreviewView()
         self.preview.setMinimumHeight(240)
 
-        self.scan_table = QTableWidget(0, 5)
+        self.scan_table = QTableView()
         self.scan_table.setObjectName("scanTable")
-        self.scan_table.setHorizontalHeaderLabels(
-            ["Original file", "Roll", "Set", "Status", "Output file"]
-        )
+        self.scan_table.setModel(self._scan_model)
         self.scan_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.scan_table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.scan_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -675,7 +640,11 @@ class ScanPage(WorkflowPage):
         header = self.scan_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.scan_table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        # `setModel` creates the selection model, so this can only be wired
+        # afterwards - there is nothing to connect to before it exists.
+        self.scan_table.selectionModel().selectionChanged.connect(
+            lambda *_args: self._on_table_selection_changed()
+        )
         self.scan_table.setMinimumHeight(140)
 
         # Filtering hides rows rather than rebuilding the table: the row index
@@ -1160,8 +1129,8 @@ class ScanPage(WorkflowPage):
             added += 1
 
         if added:
-            self._rebuild_scan_table()
-            if self.scan_table.currentRow() < 0:
+            self._append_scan_rows(added)
+            if self._current_row() < 0:
                 self.select_scan(0)
         _LOGGER.info("Added %d scan(s); list now holds %d", added, len(self.state.entries))
         self.progress_label.setText("")
@@ -1364,12 +1333,20 @@ class ScanPage(WorkflowPage):
         )
         return answer == QMessageBox.StandardButton.Yes
 
+    def _current_row(self) -> int:
+        """The scan list's current row, or ``-1``.
+
+        `QTableView` has no `currentRow()` convenience method the way
+        `QTableWidget` did.
+        """
+        return self.scan_table.currentIndex().row()
+
     def selected_rows(self) -> list[int]:
         """Rows currently selected in the scan list, in order."""
         rows = sorted({index.row() for index in self.scan_table.selectedIndexes()})
         if rows:
             return rows
-        current = self.scan_table.currentRow()
+        current = self._current_row()
         return [current] if current >= 0 else []
 
     def _start_batch(self, paths: Sequence[Path]) -> bool:
@@ -1525,18 +1502,15 @@ class ScanPage(WorkflowPage):
             return
         rows = sorted(self._dirty_rows)
         self._dirty_rows.clear()
-        self._suppress_selection = True
-        try:
-            for row in rows:
-                if 0 <= row < len(self.state.entries):
-                    self._update_scan_row(row, self.state.entries[row])
-        finally:
-            self._suppress_selection = False
+        self._scan_model.mark_dirty(rows)
 
         # A row that just finished may no longer belong to the active filter.
-        self._apply_status_filter()
+        # Only these rows can have changed, so only they need re-checking -
+        # not every row in the batch, which is what made this scale with the
+        # whole list instead of with what actually changed.
+        self._apply_status_filter_to_rows(rows)
 
-        current = self.scan_table.currentRow()
+        current = self._current_row()
         if current in rows and 0 <= current < len(self.state.entries):
             self._show_result(self.state.entries[current].processed)
 
@@ -1619,8 +1593,8 @@ class ScanPage(WorkflowPage):
         )
 
         self._refresh_controls()
-        if self.scan_table.currentRow() >= 0:
-            self.select_scan(self.scan_table.currentRow())
+        if self._current_row() >= 0:
+            self.select_scan(self._current_row())
         # Scored before the signal so that anything waiting on `batch_finished`
         # - a qtguitesting script, a test - already sees the benchmark result.
         if self.state.benchmark is not None and not report.cancelled:
@@ -1977,9 +1951,7 @@ class ScanPage(WorkflowPage):
         for row, entry in enumerate(self.state.entries):
             if entry.path.name == name:
                 self.select_scan(row)
-                item = self.scan_table.item(row, 0)
-                if item is not None:
-                    self.scan_table.scrollToItem(item)
+                self.scan_table.scrollTo(self._scan_model.index(row, 0))
                 return True
         return False
 
@@ -1990,7 +1962,7 @@ class ScanPage(WorkflowPage):
         """React to the user clicking a different row."""
         if self._suppress_selection:
             return
-        row = self.scan_table.currentRow()
+        row = self._current_row()
         if row >= 0:
             self.select_scan(row)
 
@@ -2011,13 +1983,13 @@ class ScanPage(WorkflowPage):
 
     def select_next(self) -> None:
         """Select the next scan in the list."""
-        row = self.scan_table.currentRow()
+        row = self._current_row()
         if row + 1 < len(self.state.entries):
             self.select_scan(row + 1)
 
     def select_previous(self) -> None:
         """Select the previous scan in the list."""
-        row = self.scan_table.currentRow()
+        row = self._current_row()
         if row > 0:
             self.select_scan(row - 1)
 
@@ -2066,7 +2038,7 @@ class ScanPage(WorkflowPage):
         self._preview_cache[result.source_path] = result
         while len(self._preview_cache) > PREVIEW_CACHE_SIZE:
             self._preview_cache.popitem(last=False)
-        row = self.scan_table.currentRow()
+        row = self._current_row()
         if (
             0 <= row < len(self.state.entries)
             and self.state.entries[row].path == result.source_path
@@ -2165,48 +2137,41 @@ class ScanPage(WorkflowPage):
     # Scan table
     # ------------------------------------------------------------------
     def _rebuild_scan_table(self) -> None:
-        """Rebuild the scan list from scratch.
+        """Tell the scan list its entries were replaced, emptied, or all changed.
 
         Also rebuilds the path-to-row index, which is what makes finishing one
         sheet an O(1) update instead of a scan of the whole list - the
         difference between linear and quadratic work over a ten-thousand-sheet
         batch.
 
-        Updates are disabled around the rebuild so that Qt lays the table out
-        once rather than after every row.
+        Used when the entries list itself was rebuilt wholesale (loading a
+        stored batch, clearing the list, reprocessing everything). Adding
+        scans to an already-populated list uses :meth:`_append_scan_rows`
+        instead, which does not disturb the current selection.
         """
         self._suppress_selection = True
-        self.scan_table.setUpdatesEnabled(False)
         try:
             self._row_by_path = {
                 entry.path: row for row, entry in enumerate(self.state.entries)
             }
             self._dirty_rows.clear()
-            self.scan_table.setRowCount(len(self.state.entries))
-            for row, entry in enumerate(self.state.entries):
-                self._update_scan_row(row, entry)
+            self._scan_model.entries_reset()
         finally:
-            self.scan_table.setUpdatesEnabled(True)
             self._suppress_selection = False
         self._apply_status_filter()
 
-    def _update_scan_row(self, row: int, entry: ScanEntry) -> None:
-        """Refresh one row of the scan list."""
-        values = (
-            entry.path.name,
-            entry.identifier,
-            entry.set_code,
-            STATUS_LABELS.get(entry.outcome, entry.outcome),
-            entry.output_name,
-        )
-        for column, text in enumerate(values):
-            item = QTableWidgetItem(text)
-            if column == 0:
-                item.setToolTip(str(entry.path))
-            self.scan_table.setItem(row, column, item)
-        tint = STATUS_COLORS.get(entry.outcome)
-        if tint is not None:
-            self._tint_row(self.scan_table, row, tint)
+    def _append_scan_rows(self, added: int) -> None:
+        """Tell the scan list that ``added`` new entries were appended.
+
+        A row-insertion notification rather than a full reset, so that adding
+        more scans to a list the user is already looking at does not clear
+        their current selection.
+        """
+        total = len(self.state.entries)
+        for row in range(total - added, total):
+            self._row_by_path[self.state.entries[row].path] = row
+        self._scan_model.entries_appended(added)
+        self._apply_status_filter_to_rows(range(total - added, total))
 
     # ------------------------------------------------------------------
     # Export
@@ -2311,22 +2276,60 @@ class ScanPage(WorkflowPage):
     # Filtering
     # ------------------------------------------------------------------
     def _apply_status_filter(self) -> None:
-        """Hide the rows the current filter excludes.
+        """Re-evaluate every row against the current filter choice.
 
         Rows are hidden, never removed: every other part of this page treats a
         table row index as an index into :attr:`ScanPageState.entries`, and a
         filter that rebuilt the table would silently break that.
+
+        Called when the filter combo itself changes, or the entries list was
+        rebuilt wholesale - anything that can invalidate every row's
+        visibility at once. A run in progress instead calls
+        :meth:`_apply_status_filter_to_rows` for just the rows that finished,
+        since re-scanning every row on every ~200ms refresh tick is exactly
+        the unbounded cost this page's large-batch design otherwise avoids.
         """
         choice = self.status_filter_combo.currentText()
-        wanted = FILTER_OUTCOMES.get(choice)
-        shown = 0
-        for row, entry in enumerate(self.state.entries):
-            visible = wanted is None or entry.outcome in wanted
+        self._active_filter = FILTER_OUTCOMES.get(choice)
+        if self._active_filter is None:
+            # The common case (no filter applied) needs no per-row work at
+            # all: nothing is hidden.
+            for row in range(len(self.state.entries)):
+                self.scan_table.setRowHidden(row, False)
+            self._visible_count = len(self.state.entries)
+        else:
+            self._visible_count = 0
+            for row, entry in enumerate(self.state.entries):
+                visible = entry.outcome in self._active_filter
+                self.scan_table.setRowHidden(row, not visible)
+                self._visible_count += visible
+        self._update_filter_count_label()
+
+    def _apply_status_filter_to_rows(self, rows: Iterable[int]) -> None:
+        """Re-evaluate visibility for specific rows only.
+
+        Every other row's visibility cannot have changed, so re-checking it
+        would only repeat work already done - this is what keeps a filtered
+        view's upkeep proportional to how many sheets just finished, not to
+        how many sheets exist in total.
+        """
+        wanted = self._active_filter
+        for row in rows:
+            if not 0 <= row < len(self.state.entries):
+                continue
+            visible = wanted is None or self.state.entries[row].outcome in wanted
+            was_hidden = self.scan_table.isRowHidden(row)
+            if was_hidden == visible:
+                self._visible_count += 1 if visible else -1
             self.scan_table.setRowHidden(row, not visible)
-            shown += visible
-        total = len(self.state.entries)
+        self._update_filter_count_label()
+
+    def _update_filter_count_label(self) -> None:
+        """Show how many rows the active filter leaves visible, or nothing."""
         self.filter_count_label.setText(
-            "" if wanted is None else f"{shown} of {total}"
+            ""
+            if self._active_filter is None
+            else f"{self._visible_count} of {len(self.state.entries)}"
         )
 
     def visible_rows(self) -> list[int]:

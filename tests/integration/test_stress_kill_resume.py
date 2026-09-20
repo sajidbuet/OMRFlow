@@ -21,11 +21,13 @@ to run it.
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from omr_scanner.database.engine import open_project_database
@@ -110,13 +112,19 @@ def test_a_forced_kill_mid_run_resumes_without_loss_or_duplication(
     resume_timeout_seconds = max(180, sheet_count * 0.1)
 
     process = _run_cli(project, sheets=sheet_count, seed=12345, create=True)
+    worker_pids: list[int] = []
     try:
         deadline = time.monotonic() + wait_for_commits_seconds
         committed_before_kill: dict[int, tuple[str, str]] = {}
         while time.monotonic() < deadline:
             time.sleep(0.2)
             committed_before_kill = _read_committed(db_path)
-            if _terminal_count(committed_before_kill) >= target_committed:
+            # Capture the coordinator's worker children while it is still
+            # alive and actually running a pool, for the orphan check below.
+            with contextlib.suppress(psutil.NoSuchProcess):
+                children = psutil.Process(process.pid).children(recursive=True)
+                worker_pids = [child.pid for child in children]
+            if worker_pids and _terminal_count(committed_before_kill) >= target_committed:
                 break
         assert _terminal_count(committed_before_kill) >= 1, (
             "The process never durably committed a single sheet before the "
@@ -133,6 +141,18 @@ def test_a_forced_kill_mid_run_resumes_without_loss_or_duplication(
     # process no chance to run its cleanup, which is exactly the scenario
     # `project_lock`'s stale-lock handling exists for.
     assert (project / LOCK_FILE_NAME).is_file()
+
+    # No orphaned worker process must survive the coordinator's abrupt
+    # death (Phase 10 audit finding: `services.process_containment` exists
+    # specifically to make this true on Windows). Give the OS a moment to
+    # finish tearing down the job object before checking.
+    time.sleep(1.0)
+    assert worker_pids, "Never captured any worker child PIDs to check - test setup issue"
+    still_alive = [pid for pid in worker_pids if psutil.pid_exists(pid)]
+    assert not still_alive, (
+        f"Worker process(es) {still_alive} survived the coordinator's forced kill - "
+        "orphaned workers were left running"
+    )
 
     # Resume: the same command, without --create, plus --force-lock - the
     # explicit "I know this is a genuine crash, not a still-running process"

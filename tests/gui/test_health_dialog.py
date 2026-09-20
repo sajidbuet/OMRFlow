@@ -26,6 +26,20 @@ def window(qtbot, tmp_path: Path) -> MainWindow:
 
 
 @pytest.fixture
+def silent_message_boxes(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Capture error dialogs instead of showing them, so tests never block."""
+    shown: list[tuple[str, str]] = []
+
+    def fake_warning(_parent: object, title: str, text: str, *_args: object) -> None:
+        shown.append((title, text))
+
+    monkeypatch.setattr(
+        "omr_scanner.gui.error_reporting.QMessageBox.warning", staticmethod(fake_warning)
+    )
+    return shown
+
+
+@pytest.fixture
 def project(workspace: Path):
     session = create_project(workspace, "Health Dialog Exam")
     yield session
@@ -125,3 +139,39 @@ class TestMainWindowWiring:
         window.create_project_at(workspace, "Wired Exam 2")
         window.close_project()
         assert window.project_health_action.isEnabled() is False
+
+
+class TestDiagnosticBundleWiring:
+    def test_the_action_exists_and_is_always_enabled(self, window: MainWindow):
+        assert window.diagnostic_bundle_action is not None
+        assert window.diagnostic_bundle_action.isEnabled() is True
+
+    def test_writing_a_bundle_with_no_project_open_succeeds(
+        self, window: MainWindow, tmp_path: Path
+    ):
+        destination = tmp_path / "bundle.zip"
+        assert window.create_diagnostic_bundle_at(destination) is True
+        assert destination.is_file()
+
+    def test_writing_a_bundle_with_a_project_open_includes_its_schema_version(
+        self, window: MainWindow, workspace: Path, tmp_path: Path
+    ):
+        import json
+        import zipfile
+
+        window.create_project_at(workspace, "Diagnostics Exam")
+        destination = tmp_path / "bundle.zip"
+        assert window.create_diagnostic_bundle_at(destination) is True
+
+        with zipfile.ZipFile(destination) as archive:
+            db_info = json.loads(archive.read("database.json"))
+        assert db_info["schema_version"] == window.session.database.schema_version
+
+    def test_a_write_failure_is_reported_not_raised(
+        self, window: MainWindow, silent_message_boxes: list[tuple[str, str]]
+    ):
+        # A directory that cannot possibly be created as a file destination.
+        impossible = Path(window.__class__.__module__).anchor  # e.g. "C:\\" itself
+        result = window.create_diagnostic_bundle_at(Path(impossible))
+        assert result is False
+        assert silent_message_boxes

@@ -419,12 +419,24 @@ class TestCThrottling:
                 registration=RegistrationStatus.REGISTERED,
             )
         )
+        # `scan_table`'s model reads `state.entries` live, so the *data* is
+        # already "Complete" the instant `_on_scan_done` sets it - there is
+        # no stale cached cell the way a `QTableWidgetItem` held one. What is
+        # still throttled is the view being *told* to repaint: that only
+        # happens through `dataChanged`, which `_flush_dirty_rows` alone
+        # emits.
+        repainted_rows: list[int] = []
+        page.scan_table.model().dataChanged.connect(
+            lambda top_left, _bottom_right, _roles=None: repainted_rows.append(top_left.row())
+        )
+
         page._on_scan_done(processed)
 
         assert page._dirty_rows == {0}
-        assert page.scan_table.item(0, 3).text() == "Pending"  # not yet drawn
+        assert repainted_rows == [], "the view was told to repaint before the refresh timer flushed"
         page._flush_dirty_rows()
-        assert page.scan_table.item(0, 3).text() == "Complete"
+        assert repainted_rows == [0]
+        assert page.scan_table.model().index(0, 3).data() == "Complete"
         assert page._dirty_rows == set()
 
     def test_rows_are_found_by_index_not_by_searching(self, loaded: ScanPage):
@@ -503,10 +515,90 @@ class TestETenThousandScans:
         )
         page._rebuild_scan_table()
 
-        assert page.scan_table.rowCount() == 10_000
+        assert page.scan_table.model().rowCount() == 10_000
         # One bar for the batch, not one per sheet - the difference between an
         # interface that scales and one that stops responding at a thousand.
         assert len(page.findChildren(QProgressBar)) == 1
+        # And no `QTableWidgetItem` either: `scan_table` is a `QTableView`
+        # backed by `ScanTableModel`, which reads `state.entries` directly
+        # rather than duplicating every cell into a Qt object - see
+        # `test_a_lazy_model_costs_orders_of_magnitude_less_than_eager_items`
+        # below for the measured difference at real scale.
+        from omr_scanner.gui.scan.table_model import ScanTableModel
+
+        assert isinstance(page.scan_table.model(), ScanTableModel)
+
+    @pytest.mark.stress
+    def test_a_lazy_model_costs_orders_of_magnitude_less_than_eager_items(
+        self, page: ScanPage, tmp_path: Path
+    ):
+        """Measured, not assumed.
+
+        The real memory/time cost of the model this page now uses versus the
+        `QTableWidgetItem`-per-cell population it replaced, at 100,000
+        sheets (Phase 10, §"lazy GUI models").
+
+        Both approaches read the exact same `entries` list - the comparison
+        is only ever about the display layer's own marginal cost, which is
+        why the entries themselves are built once, before either snapshot.
+        """
+        import gc
+        import time
+        import tracemalloc
+
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+
+        from omr_scanner.gui.scan.table_model import ScanEntry as Entry
+        from omr_scanner.gui.scan.table_model import ScanTableModel
+
+        n = 100_000
+        entries = [Entry(path=tmp_path / f"scan{index:06d}.png") for index in range(n)]
+        gc.collect()
+
+        tracemalloc.start()
+        before = tracemalloc.take_snapshot()
+        started = time.perf_counter()
+        model = ScanTableModel(lambda: entries)
+        model.entries_reset()
+        new_elapsed = time.perf_counter() - started
+        gc.collect()
+        new_bytes = sum(
+            stat.size_diff
+            for stat in tracemalloc.take_snapshot().compare_to(before, "lineno")
+            if stat.size_diff > 0
+        )
+        tracemalloc.stop()
+        del model
+        gc.collect()
+
+        tracemalloc.start()
+        before = tracemalloc.take_snapshot()
+        started = time.perf_counter()
+        table = QTableWidget(0, 5)
+        table.setRowCount(n)
+        for row, entry in enumerate(entries):
+            for column in range(5):
+                table.setItem(row, column, QTableWidgetItem(entry.path.name))
+        old_elapsed = time.perf_counter() - started
+        gc.collect()
+        old_bytes = sum(
+            stat.size_diff
+            for stat in tracemalloc.take_snapshot().compare_to(before, "lineno")
+            if stat.size_diff > 0
+        )
+        tracemalloc.stop()
+
+        # Measured on this machine: roughly 3 KB / 0.3 ms for the model versus
+        # roughly 39 MB / 17 s for 500,000 `QTableWidgetItem` objects - four
+        # orders of magnitude. The thresholds below are deliberately far
+        # looser than that, so the test asserts the real defect (unbounded
+        # eager per-cell storage) without being sensitive to machine noise.
+        assert new_bytes < old_bytes / 100, (
+            f"model {new_bytes} bytes vs QTableWidgetItem {old_bytes} bytes over {n} rows"
+        )
+        assert new_elapsed < old_elapsed / 10, (
+            f"model {new_elapsed:.3f}s vs QTableWidgetItem {old_elapsed:.3f}s over {n} rows"
+        )
 
     def test_rendering_a_ten_thousand_sheet_snapshot_is_instant(self, page: ScanPage):
         import time

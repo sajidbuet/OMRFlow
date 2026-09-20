@@ -317,7 +317,16 @@ def write_debug_overlay(
             cv2.LINE_AA,
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(path), canvas)
+    # `cv2.imwrite` cannot handle a non-ASCII path on Windows; encoding to a
+    # buffer and writing it with pathlib works everywhere, and this overlay
+    # is written under whatever directory a developer points `debug_path`
+    # at - which is not guaranteed to be ASCII-only (see
+    # `omr_scanner.services.recognition_diagnostics._write_image`, which
+    # documents and works around the same limitation).
+    success, buffer = cv2.imencode(".png", canvas)
+    if not success:  # pragma: no cover - PNG encoding of a valid array
+        raise OSError("Could not encode the orientation-marker debug overlay")
+    path.write_bytes(buffer.tobytes())
     return path
 
 

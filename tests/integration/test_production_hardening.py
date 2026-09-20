@@ -16,6 +16,7 @@ from sqlalchemy import text
 
 from omr_scanner.database.engine import open_project_database
 from omr_scanner.database.migrations import SCHEMA_VERSION
+from omr_scanner.services import project_backup, project_service
 
 
 class TestMigrationOntoAnExistingPhase9Project:
@@ -116,3 +117,61 @@ class TestMigrationOntoAnExistingPhase9Project:
                 raise AssertionError("Expected the append-only trigger to refuse a DELETE")
         finally:
             handle.close()
+
+
+class TestAutomaticBackupBeforeMigration:
+    """A backup must be created automatically before a non-trivial migration.
+
+    Phase 10 audit finding: §5 asks for this trigger explicitly; the prior
+    implementation pass built the backup mechanism itself but never wired
+    it in. Fixed and pinned here.
+    """
+
+    def test_opening_an_older_schema_project_creates_a_backup_first(
+        self, tmp_path: Path
+    ) -> None:
+        with project_service.create_project(tmp_path, "Pre-Migration Exam") as session:
+            root = session.root
+            db_path = session.database.path
+
+        # Wind the schema ledger back, without touching any table - only
+        # `current_schema_version` (which reads this ledger) needs to
+        # believe an older version is current for the trigger to fire.
+        connection = sqlite3.connect(db_path)
+        try:
+            connection.execute("DELETE FROM schema_migration WHERE version >= 7")
+            connection.commit()
+        finally:
+            connection.close()
+
+        backups_dir = root / project_backup.BACKUP_DIR_NAME
+        assert not backups_dir.exists()
+
+        with project_service.open_project(root) as reopened:
+            assert reopened.database.schema_version == SCHEMA_VERSION
+
+        entries = project_backup.list_backups(backups_dir)
+        assert len(entries) == 1
+        assert entries[0].is_complete
+        assert "before-migration" in (entries[0].manifest.reason if entries[0].manifest else "")
+
+    def test_opening_an_already_current_project_creates_no_backup(
+        self, tmp_path: Path
+    ) -> None:
+        with project_service.create_project(tmp_path, "Current Exam") as session:
+            root = session.root
+
+        with project_service.open_project(root):
+            pass
+
+        backups_dir = root / project_backup.BACKUP_DIR_NAME
+        assert project_backup.list_backups(backups_dir) == ()
+
+    def test_a_freshly_created_project_creates_no_backup(self, tmp_path: Path) -> None:
+        # Creating a project migrates it from schema 0 - there is no existing
+        # data to protect, and no backup should be made merely for that.
+        with project_service.create_project(tmp_path, "Brand New Exam") as session:
+            root = session.root
+
+        backups_dir = root / project_backup.BACKUP_DIR_NAME
+        assert not backups_dir.exists()

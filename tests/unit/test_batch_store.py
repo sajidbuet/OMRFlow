@@ -540,3 +540,92 @@ class TestStatusModel:
         # and the completed count, and a scan in it would simply disappear.
         for status in ScanJobStatus:
             assert status.is_terminal != status.is_resumable
+
+
+class TestResumableScansWindow:
+    """The bounded counterpart to `resumable_scans` (Phase 10 audit).
+
+    A 100,000-sheet stress run must never pull its entire remaining-work
+    list into one Python object; these tests pin the paging contract that
+    makes that possible.
+    """
+
+    def test_a_single_window_covers_a_small_batch(self, database, identity, tmp_path):
+        paths = paths_for(5, tmp_path)
+        batch_id = batch_store.create_batch(database, paths, identity=identity)
+
+        window = batch_store.resumable_scans_window(
+            database, batch_id, after_batch_index=-1, limit=100
+        )
+        assert [path for _index, path in window] == list(paths)
+
+    def test_the_window_is_bounded_by_limit(self, database, identity, tmp_path):
+        paths = paths_for(10, tmp_path)
+        batch_id = batch_store.create_batch(database, paths, identity=identity)
+
+        window = batch_store.resumable_scans_window(
+            database, batch_id, after_batch_index=-1, limit=3
+        )
+        assert len(window) == 3
+        assert [path for _index, path in window] == paths[:3]
+
+    def test_consecutive_windows_cover_every_scan_with_no_gap_or_overlap(
+        self, database, identity, tmp_path
+    ):
+        paths = paths_for(23, tmp_path)
+        batch_id = batch_store.create_batch(database, paths, identity=identity)
+
+        seen: list[Path] = []
+        cursor = -1
+        for _ in range(100):  # bounded loop guard, well beyond what should be needed
+            window = batch_store.resumable_scans_window(
+                database, batch_id, after_batch_index=cursor, limit=5
+            )
+            if not window:
+                break
+            cursor = window[-1][0]
+            seen.extend(path for _index, path in window)
+
+        assert seen == list(paths)
+
+    def test_a_completed_scan_is_excluded_from_the_window(
+        self, database, identity, tmp_path
+    ):
+        paths = paths_for(3, tmp_path)
+        batch_id = batch_store.create_batch(database, paths, identity=identity)
+        batch_store.record_results(
+            database, batch_id, [outcome_for(paths[0], RecognitionOutcome.COMPLETE)]
+        )
+
+        window = batch_store.resumable_scans_window(
+            database, batch_id, after_batch_index=-1, limit=100
+        )
+        assert [path for _index, path in window] == paths[1:]
+
+    def test_an_empty_window_signals_completion(self, database, identity, tmp_path):
+        paths = paths_for(2, tmp_path)
+        batch_id = batch_store.create_batch(database, paths, identity=identity)
+        for path in paths:
+            batch_store.record_results(
+                database, batch_id, [outcome_for(path, RecognitionOutcome.COMPLETE)]
+            )
+
+        window = batch_store.resumable_scans_window(
+            database, batch_id, after_batch_index=-1, limit=100
+        )
+        assert window == ()
+
+    def test_matches_resumable_scans_for_the_same_batch(
+        self, database, identity, tmp_path
+    ):
+        paths = paths_for(7, tmp_path)
+        batch_id = batch_store.create_batch(database, paths, identity=identity)
+        batch_store.record_results(
+            database, batch_id, [outcome_for(paths[3], RecognitionOutcome.COMPLETE)]
+        )
+
+        whole = batch_store.resumable_scans(database, batch_id)
+        windowed = batch_store.resumable_scans_window(
+            database, batch_id, after_batch_index=-1, limit=100
+        )
+        assert whole == tuple(path for _index, path in windowed)

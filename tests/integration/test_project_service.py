@@ -96,6 +96,32 @@ def test_create_project_accepts_a_separate_directory_name(workspace: Path):
         assert session.name == "Exam 2026"
 
 
+def test_create_project_works_under_a_long_unicode_windows_path(
+    workspace: Path, tmp_path: Path
+) -> None:
+    """A project directory need not be short or ASCII-only (Phase 10, §46).
+
+    Regression coverage for the class of bug this session found and fixed
+    in `omr_scanner.imaging.orientation_marker.write_debug_overlay`
+    (`cv2.imwrite` silently failing on a non-ASCII Windows path): everything
+    the *project* layer itself writes - `project.json`, the SQLite database,
+    the log file - must work the same way under a long, non-ASCII path as
+    under a short, ASCII one. The nested nonsense directories push the full
+    path past Windows' historical 260-character `MAX_PATH`.
+    """
+    deep_root = tmp_path / ("padding-" * 15) / ("more-padding-" * 15)
+    deep_root.mkdir(parents=True)
+    project_name = "পরীক্ষা ফলাফল ২০২৬ - café-résultats-中文"
+
+    with create_project(deep_root, project_name) as session:
+        assert len(str(session.root)) > 260
+        assert session.database.path.is_file()
+        assert (session.root / "project.json").is_file()
+
+    with open_project(session.root) as reopened:
+        assert reopened.name == project_name
+
+
 # ---------------------------------------------------------------------------
 # Opening
 # ---------------------------------------------------------------------------

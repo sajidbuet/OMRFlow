@@ -672,3 +672,62 @@ class TestWorkerRecyclingAndOpenCvThreads:
         )
 
         assert _by_index(default_threads) == _by_index(two_threads)
+
+    def test_recycling_genuinely_replaces_worker_operating_system_processes(
+        self, template, make_scan
+    ):
+        """Recycling must swap real OS processes, not merely produce correct results.
+
+        Phase 10 independent-audit finding: the test above only ever checked
+        output equivalence, which a no-op recycling implementation would
+        also satisfy.
+        """
+        import threading
+        import time
+
+        import psutil
+
+        rolls = [f"120{index:04d}" for index in range(12)]
+        paths = [make_scan(f"scan{index:03d}.png", roll=roll) for index, roll in enumerate(rolls)]
+
+        this_process = psutil.Process()
+        pid_snapshots: list[frozenset[int]] = []
+        stop = threading.Event()
+
+        def monitor() -> None:
+            while not stop.is_set():
+                try:
+                    children = frozenset(c.pid for c in this_process.children(recursive=True))
+                except psutil.Error:
+                    children = frozenset()
+                if children:
+                    pid_snapshots.append(children)
+                time.sleep(0.02)
+
+        monitor_thread = threading.Thread(target=monitor, daemon=True)
+        monitor_thread.start()
+        try:
+            # workers=2, max_tasks_per_child=2 -> a fresh pool every 4 sheets;
+            # 12 sheets is exactly 3 generations of 2 workers each.
+            results = list(
+                recognise_in_parallel(paths, template, workers=2, max_tasks_per_child=2)
+            )
+        finally:
+            stop.set()
+            monitor_thread.join(timeout=5)
+
+        assert len(results) == 12
+        all_worker_pids_ever_seen: set[int] = set()
+        for pid_set in pid_snapshots:
+            all_worker_pids_ever_seen |= pid_set
+
+        # With genuine recycling, more distinct worker PIDs were used across
+        # the whole run than the configured worker count - the whole point
+        # of §16 being an OS-process-level guarantee, not merely a setting
+        # that is read and ignored.
+        assert len(all_worker_pids_ever_seen) > 2, (
+            f"Only {len(all_worker_pids_ever_seen)} distinct worker PID(s) "
+            f"{sorted(all_worker_pids_ever_seen)} were used across 3 recycle "
+            "generations of 2 workers each - recycling did not genuinely "
+            "replace any OS process"
+        )

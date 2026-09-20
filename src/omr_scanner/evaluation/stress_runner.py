@@ -237,22 +237,35 @@ def run_stress_batch(
 
     This is what makes the mandatory kill-and-resume acceptance test
     (§30/§31) work by construction rather than by a special case: calling
-    this function again after an interruption asks
-    :func:`~omr_scanner.services.batch_store.resumable_scans` what is left,
-    exactly as resuming a real batch does, and only ever (re-)materializes
-    and (re-)processes those sheets.
-    """
-    remaining = batch_store.resumable_scans(database, batch_id)
-    if not remaining:
-        return []
+    this function again after an interruption asks the database what is
+    left, exactly as resuming a real batch does, and only ever
+    (re-)materializes and (re-)processes those sheets.
 
+    **The database, not a Python list, is the authoritative queue.** Each
+    chunk's worth of work is fetched from
+    :func:`~omr_scanner.services.batch_store.resumable_scans_window` -
+    bounded to :data:`MATERIALIZE_CHUNK_SIZE` rows - immediately before it
+    is processed, rather than the whole remaining-work list being pulled
+    into memory once at the start. A 100,000-sheet run therefore never
+    holds more than one chunk's worth of paths (2,000, by default) in
+    Python at any moment, matching the same bound
+    :func:`_materialize_chunk` already applies to the *files* it renders.
+    """
     root = scratch_root if scratch_root is not None else Path(tempfile.gettempdir())
     allocator = FilenameAllocator()
     options = BatchOptions(opencv_threads=opencv_threads, worker_recycle_after=worker_recycle_after)
     reports: list[BatchReport] = []
+    cursor = -1
 
-    for start in range(0, len(remaining), MATERIALIZE_CHUNK_SIZE):
-        chunk_virtual = list(remaining[start : start + MATERIALIZE_CHUNK_SIZE])
+    while True:
+        window = batch_store.resumable_scans_window(
+            database, batch_id, after_batch_index=cursor, limit=MATERIALIZE_CHUNK_SIZE
+        )
+        if not window:
+            break
+        cursor = window[-1][0]
+        chunk_virtual = [path for _index, path in window]
+
         materialized = _materialize_chunk(spec, template, chunk_virtual, root)
         try:
             real_paths = list(materialized.virtual_by_real.keys())

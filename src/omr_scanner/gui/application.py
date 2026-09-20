@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication
 from omr_scanner import APPLICATION_NAME, ORGANIZATION_NAME, __version__
 from omr_scanner.config import AppConfig
 from omr_scanner.gui.branding import application_icon
+from omr_scanner.gui.error_reporting import install_global_exception_handler
 from omr_scanner.gui.main_window import MainWindow
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,10 @@ def run_gui(config: AppConfig, *, initial_project: Path | None = None) -> int:
     app.setWindowIcon(application_icon())
 
     window = MainWindow(config=config)
+    # Installed with the window as parent, and before `show()`, so that any
+    # exception escaping a slot - even one triggered while the window is
+    # first laying itself out - has somewhere to attach its fallback dialog.
+    install_global_exception_handler(window)
     window.show()
 
     if initial_project is not None:

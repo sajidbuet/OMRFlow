@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import namedtuple
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -74,6 +75,72 @@ class TestFullCheckIntegrity:
             assert report.level == project_health.HealthLevel.ERROR
         finally:
             damaged.close()
+
+    def test_an_orphaned_foreign_key_is_caught_even_though_integrity_check_misses_it(
+        self, tmp_path: Path
+    ) -> None:
+        """`PRAGMA integrity_check` does not check foreign keys.
+
+        SQLite says so explicitly in its own documentation - so this is a
+        distinct code path, not a special case of the corruption test above.
+        A row that references a batch that does not exist is structurally
+        valid SQLite (no page is damaged) and must still be caught, but only
+        by `PRAGMA foreign_key_check`.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "database.sqlite"
+        open_project_database(db_path, create=True).close()
+
+        # A bare `sqlite3.connect` has foreign key enforcement off by
+        # default (unlike this project's own engine, which turns it on for
+        # every connection - see `database.engine._enable_sqlite_foreign_keys`),
+        # which is exactly what makes it possible to write this genuinely
+        # orphaned row for the test in the first place.
+        raw = sqlite3.connect(db_path)
+        try:
+            # Built from the table's own schema, one NOT NULL column at a
+            # time, rather than a hand-typed column list - a private
+            # workaround for a private test should not have to be
+            # re-diagnosed column-by-column every time the schema grows.
+            columns = raw.execute("PRAGMA table_info(batch_scan)").fetchall()
+            fixed_values = {"batch_id": "no-such-batch", "source_path": "x.png"}
+            names: list[str] = []
+            values: list[object] = []
+            for _cid, name, col_type, not_null, _default, is_pk in columns:
+                if is_pk:  # scan_id: autoincrement, left to SQLite
+                    continue
+                names.append(name)
+                if name in fixed_values:
+                    values.append(fixed_values[name])
+                elif not_null:
+                    values.append(0 if "INT" in col_type or "REAL" in col_type else "")
+                else:
+                    values.append(None)
+            placeholders = ", ".join("?" for _ in names)
+            raw.execute(
+                f"INSERT INTO batch_scan ({', '.join(names)}) VALUES ({placeholders})",
+                values,
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        database = open_project_database(db_path, read_only=True)
+        try:
+            integrity_only = project_health._integrity_check(database)
+            assert integrity_only == [], (
+                "integrity_check unexpectedly flagged the orphaned row itself - "
+                "this test's premise (that it does not check foreign keys) no "
+                "longer holds and needs re-examining"
+            )
+
+            report = project_health.full_check(database, tmp_path)
+            codes = {issue.code for issue in report.issues}
+            assert "FOREIGN_KEY_VIOLATION" in codes
+            assert report.level == project_health.HealthLevel.ERROR
+        finally:
+            database.close()
 
 
 class TestSchemaVersion:
@@ -244,3 +311,50 @@ class TestBackupPresence:
         report = project_health.full_check(database, tmp_path)
         codes = {issue.code for issue in report.issues}
         assert "NO_BACKUPS" not in codes
+
+
+_DiskUsage = namedtuple("_DiskUsage", ["total", "used", "free"])
+"""Stands in for `shutil.disk_usage`'s return value in these tests - only
+its `.free` attribute is used by `project_health._disk_space_issue`."""
+
+
+class TestDiskSpace:
+    def test_plenty_of_free_space_raises_no_finding(
+        self, database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            project_health.shutil,
+            "disk_usage",
+            lambda _path: _DiskUsage(100 * 1024**3, 50 * 1024**3, 50 * 1024**3),
+        )
+        report = project_health.full_check(database, tmp_path)
+        codes = {issue.code for issue in report.issues}
+        assert "LOW_DISK_SPACE" not in codes
+
+    def test_free_space_below_the_threshold_is_reported(
+        self, database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        below_threshold = project_health.LOW_DISK_SPACE_BYTES - 1
+        monkeypatch.setattr(
+            project_health.shutil,
+            "disk_usage",
+            lambda _path: _DiskUsage(
+                100 * 1024**3, 100 * 1024**3 - below_threshold, below_threshold
+            ),
+        )
+        report = project_health.full_check(database, tmp_path)
+        codes = {issue.code for issue in report.issues}
+        assert "LOW_DISK_SPACE" in codes
+        issue = next(item for item in report.issues if item.code == "LOW_DISK_SPACE")
+        assert issue.level == project_health.HealthLevel.WARNING
+
+    def test_a_disk_usage_query_failure_is_swallowed_not_raised(
+        self, database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise(_path: Path) -> None:
+            raise OSError("no such volume")
+
+        monkeypatch.setattr(project_health.shutil, "disk_usage", _raise)
+        report = project_health.full_check(database, tmp_path)
+        codes = {issue.code for issue in report.issues}
+        assert "LOW_DISK_SPACE" not in codes

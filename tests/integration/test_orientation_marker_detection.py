@@ -297,6 +297,34 @@ class TestDebugOverlay:
         written = write_debug_overlay(page, detection=detection, path=tmp_path / "c.png")
         assert written.is_file()
 
+    def test_the_overlay_can_be_written_under_a_non_ascii_directory_name(
+        self, tmp_path: Path
+    ):
+        """`cv2.imwrite` silently fails on a non-ASCII path on Windows.
+
+        A calibration session's debug directory is set by whoever is running
+        it and is not guaranteed to be ASCII-only - see
+        `omr_scanner.services.recognition_diagnostics._write_image`, which
+        documents and works around the exact same limitation on the read
+        side. `cv2.imread` has the same limitation, so the file is verified
+        by decoding its raw bytes instead, never by reading it back with
+        `cv2.imread`.
+        """
+        page = _blank_page()
+        _draw(page, _dash(400.0, 500.0))
+        destination = tmp_path / "café-résultats-中文" / "orientation.png"
+        detection = detect_orientation_marker(
+            page,
+            roi=BoundingBox(x=300, y=420, width=280, height=200),
+            debug_path=destination,
+        )
+        assert destination.is_file()
+        assert detection.debug_image_path == destination
+        decoded = cv2.imdecode(
+            np.fromfile(destination, dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+        assert decoded is not None
+
 
 @pytest.mark.skipif(not SAMPLE_SHEET.is_file(), reason="sample sheet not present")
 class TestTheRealSampleSheet:

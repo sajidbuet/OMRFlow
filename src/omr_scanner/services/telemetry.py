@@ -36,6 +36,7 @@ Why JSON lines, appended, not one JSON document written at the end:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -83,6 +84,25 @@ class TelemetrySample:
         disk_free_mb: Free space on the database's drive, or ``0`` when
             unknown.
         worker_count: Configured worker processes, for the report.
+        worker_pool_cpu_percent: Summed CPU usage, ``0``-``100`` per core,
+            across every currently-running worker child process (recursive -
+            recognition runs in a :class:`~concurrent.futures.ProcessPoolExecutor`
+            pool, one or more levels below this process). This is where
+            almost all recognition CPU time is actually spent;
+            ``process_cpu_percent`` alone - this process only - was found
+            during this phase's own telemetry validation to read a small
+            fraction of true load precisely because it excludes the pool,
+            which would make it look like the coordinator, not recognition
+            itself, is the bottleneck. ``0`` when running with no worker
+            pool (``workers=1``) or before any child has been observed.
+        worker_pool_memory_mb: Summed resident memory across the same worker
+            children, for the same reason - each worker loads its own copy
+            of the template and OpenCV's own buffers, which
+            ``process_memory_mb`` does not see at all.
+        worker_pool_process_count: How many worker child processes were
+            actually alive at sample time - lets a recycling run's telemetry
+            show the pool being torn down and restarted, rather than only
+            the configured ``worker_count``.
     """
 
     elapsed_seconds: float
@@ -97,6 +117,9 @@ class TelemetrySample:
     database_size_mb: float
     disk_free_mb: float
     worker_count: int
+    worker_pool_cpu_percent: float = 0.0
+    worker_pool_memory_mb: float = 0.0
+    worker_pool_process_count: int = 0
 
 
 class TelemetryRecorder:
@@ -139,6 +162,7 @@ class TelemetryRecorder:
         self._worker_count = worker_count
         self._interval = interval_seconds
         self._process = psutil.Process(os.getpid())
+        self._child_processes: dict[int, psutil.Process] = {}
         self._started_at: float | None = None
         self._last_completed = 0
         self._last_sample_time = 0.0
@@ -170,6 +194,31 @@ class TelemetryRecorder:
             except Exception:  # pragma: no cover - telemetry must never crash a run
                 _LOGGER.exception("Telemetry sample failed; continuing without it")
 
+    def _live_worker_processes(self) -> list[psutil.Process]:
+        """Refresh the tracked worker pool, priming any newly seen process.
+
+        A process's first ``cpu_percent(interval=None)`` call always reads
+        ``0.0`` - it has nothing to measure a delta against yet - exactly
+        why :meth:`start` primes this same counter for this process itself.
+        A worker discovered mid-run gets the same one-time priming call here
+        (discarded) the moment it is first seen, so its *next* sample is a
+        real delta rather than a permanent, misleading zero.
+        """
+        live: dict[int, psutil.Process] = {}
+        try:
+            children = self._process.children(recursive=True)
+        except psutil.Error:
+            children = []
+        for child in children:
+            tracked = self._child_processes.get(child.pid)
+            if tracked is None:
+                with contextlib.suppress(psutil.Error):
+                    child.cpu_percent(interval=None)
+                tracked = child
+            live[child.pid] = tracked
+        self._child_processes = live
+        return list(live.values())
+
     def _sample_once(self) -> None:
         if self._started_at is None:  # pragma: no cover - start() always sets this
             return
@@ -191,6 +240,15 @@ class TelemetryRecorder:
             except OSError:
                 pass
 
+        workers = self._live_worker_processes()
+        worker_cpu = 0.0
+        worker_memory_mb = 0.0
+        for worker in workers:
+            with contextlib.suppress(psutil.Error):
+                worker_cpu += worker.cpu_percent(interval=None)
+            with contextlib.suppress(psutil.Error):
+                worker_memory_mb += worker.memory_info().rss / (1024 * 1024)
+
         sample = TelemetrySample(
             elapsed_seconds=now - self._started_at,
             sheets_completed=completed,
@@ -204,6 +262,9 @@ class TelemetryRecorder:
             database_size_mb=database_size,
             disk_free_mb=disk_free,
             worker_count=self._worker_count,
+            worker_pool_cpu_percent=worker_cpu,
+            worker_pool_memory_mb=worker_memory_mb,
+            worker_pool_process_count=len(workers),
         )
         self.samples.append(sample)
         with self._output_path.open("a", encoding="utf-8") as handle:

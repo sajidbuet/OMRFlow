@@ -210,7 +210,7 @@ def _check_scan_page_constructs() -> CheckResult:
 
 def _check_scan_object_names() -> CheckResult:
     """Every stable selector the scenario reference lists is present."""
-    from PySide6.QtWidgets import QCheckBox, QProgressBar, QPushButton, QTableWidget
+    from PySide6.QtWidgets import QCheckBox, QProgressBar, QPushButton, QTableView, QTableWidget
 
     from omr_scanner.gui.scan.preview import ScanPreviewView
 
@@ -227,7 +227,7 @@ def _check_scan_object_names() -> CheckResult:
         ("outputFolderButton", QPushButton),
         ("exportCsvButton", QPushButton),
         ("renameScansCheckBox", QCheckBox),
-        ("scanTable", QTableWidget),
+        ("scanTable", QTableView),
         ("resultFieldsTable", QTableWidget),
         ("resultAnswersTable", QTableWidget),
         ("scanPreview", ScanPreviewView),
@@ -250,13 +250,13 @@ def _check_scan_template_and_import(image: Path) -> CheckResult:
     page = harness.page
     ok = (
         page.state.template is not None
-        and page.scan_table.rowCount() == 1
+        and page.scan_table.model().rowCount() == 1
         and page.process_all_button.isEnabled()
     )
     harness.shutdown()
     return ok, (
         f"template '{page.state.template.name}' loaded, "
-        f"{page.scan_table.rowCount()} scan(s) listed, Process All enabled"
+        f"{page.scan_table.model().rowCount()} scan(s) listed, Process All enabled"
     )
 
 
@@ -533,7 +533,7 @@ def _check_progress_panel_has_no_per_scan_widgets() -> CheckResult:
     elapsed = time.perf_counter() - started
 
     bars = len(page.findChildren(QProgressBar))
-    rows = page.scan_table.rowCount()
+    rows = page.scan_table.model().rowCount()
     page.close()
     return bars == 1 and rows == 10_000, (
         f"{rows:,} rows built in {elapsed:.2f}s with {bars} progress bar"

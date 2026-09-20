@@ -391,7 +391,7 @@ class TestTheResultsDialog:
 
         name = page.state.entries[2].path.name
         dialog.scan_requested.emit(name)
-        assert page.scan_table.currentRow() == 2
+        assert page.scan_table.currentIndex().row() == 2
 
     def test_an_unknown_scan_name_is_simply_not_found(self, scored):
         page, _report = scored
