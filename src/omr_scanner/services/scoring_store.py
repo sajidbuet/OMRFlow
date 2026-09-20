@@ -442,6 +442,18 @@ def active_policy(database: ProjectDatabase) -> StoredPolicy:
         ).first()
         if row is not None:
             return _stored_policy(row)
+        if database.read_only:
+            # Phase 10, §42: a read-only session must never write, including
+            # the conservative-default-on-first-read this function otherwise
+            # performs. Return the same default values, unpersisted, so a
+            # read-only open can still be inspected rather than failing here.
+            return StoredPolicy(
+                policy_id=0,
+                policy=ScoringPolicy(),
+                created_at=_now(),
+                created_by="",
+                is_active=True,
+            )
         created = ScoringPolicyRevision(
             revision=1,
             created_at=_now(),

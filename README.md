@@ -17,7 +17,7 @@ human verification + reproducible result processing**
 
 ## Development Status
 
-> **Pre-release. Phases 0-2 of 11 are complete; Phases 3-8 are
+> **Pre-release. Phases 0-2 of 11 are complete; Phases 3-10 are
 > implemented and undergoing testing.**
 > OMRFlow manages projects, rectifies a scanned sheet into its template's
 > canonical page, has an interactive designer for building that template, can
@@ -64,7 +64,7 @@ validated against a broad, real-world set of filled sheets.
 | 7 | Candidate & attendance reconciliation | Implemented | In progress | 🧪 Testing |
 | 8 | Answer-key & scoring engine | Implemented | In progress | 🧪 Testing |
 | 9 | Result management & reporting | Implemented | In progress | 🧪 Testing |
-| 10 | Integration, recovery & production hardening | Pending | Not started | ⏳ Pending |
+| 10 | Integration, recovery & production hardening | Implemented | In progress | 🧪 Testing |
 | 11 | Release, user documentation & packaging | Pending | Not started | ⏳ Pending |
 
 Phase titles and descriptions for 6-11 are taken directly from
@@ -1315,6 +1315,144 @@ After a batch is scored (Phase 8). Full detail is in
 > template's own candidate roster is correct, or that the underlying scan was
 > read correctly — those remain Phase 7's and Phase 3's problems.
 
+### Phase 10 testing status
+
+Phase 10 (Integration, Recovery & Production Hardening) is implemented and
+covered by 130 new automated tests (129 in the default run, 1 marked
+`stress` and run explicitly — the 10,000-sheet real kill/resume case, which
+passed; see below). Full detail, including the defects
+this phase's own testing found and fixed, is in
+[`development/PHASE_10_HANDOFF.md`](development/PHASE_10_HANDOFF.md).
+
+Confirmed by the current automated suite:
+
+- [x] Content-hash provenance and exact-duplicate-file detection, threaded
+  and off the GUI thread
+- [x] A second live open of the same project is refused; a lock a crash left
+  behind is never removed without an explicit operator decision
+- [x] A read-only session cannot write, including the two "create a default
+  row on first read" functions found, during this phase's own testing, to
+  attempt one
+- [x] A database backup is provably complete only once its manifest exists;
+  an interrupted one is reported as incomplete, never as valid; a tampered
+  one fails verification and cannot be restored
+- [x] A quick and a comprehensive health check each run correctly against a
+  database damaged at the byte level, not only against a synthetic
+  "corrupt = true" flag
+- [x] Reprocessing a sheet archives its previous machine reading before
+  resetting it, and a sheet reprocessed twice keeps both readings on record
+- [x] Reprocessing one sheet never touches an unrelated sheet in the same
+  batch
+- [x] Worker recycling and a configurable per-worker OpenCV thread count
+  change nothing about what is recognised
+- [x] A deterministic stress-sheet generator reproduces the same sheet from
+  `(seed, index)` alone, independent of the run's total sheet count
+- [x] **Real, forced (not simulated) process termination and resume**, at
+  100, 1,000 and 10,000 sheets: every previously-committed sheet's result
+  is unchanged after resume, and the final count is exactly correct (the
+  10,000-sheet run took ~23 minutes for the full kill-then-resume cycle in
+  this environment)
+- [x] Registering a full 100,000-sheet batch was executed and measured
+  directly (see the Phase 10 handoff for the exact time and peak memory)
+
+Still open, and why Phase 10 is not marked complete:
+
+- [ ] **The mandatory full-scale 100,000-sheet processing run, and its
+  1%/25%/50%/75%/99% kill-and-resume acceptance matrix, have not been
+  executed** — a scoped, agreed deferral (a multi-hour-to-multi-day
+  undertaking), not a technical limitation. The harness that runs it is
+  complete and has been exercised end to end at 100/1,000/10,000 sheets;
+  see the Phase 10 handoff for the exact commands to run it
+- [ ] **A forced kill leaves its worker processes running, orphaned** —
+  observed directly during this phase's own kill/resume testing. This does
+  not corrupt or duplicate data (workers never had database write access),
+  but nothing yet cleans them up automatically after a real crash
+- [ ] **Lazy Qt models were not built** for the Scan/Results/Resolve/
+  Attendance tables, which remain item-based widgets — a real, disclosed
+  gap against a 100,000-row *display* specifically, distinct from the
+  backend, which was verified at that scale
+- [ ] No diagnostic bundle and no global GUI exception handler
+- [ ] No automatic backup-before-migration wiring — only the manual
+  "Create Backup Now" path exists
+- [ ] No stress-scale reconciliation or reporting load test
+- [ ] No Windows-specific path testing (spaces, Unicode, another drive) and
+  no packaged-application smoke test — no packaging build exists yet
+  (Phase 11)
+
+### Production hardening (Phase 10)
+
+Phase 10 does not change what any earlier phase computes. It makes the
+existing pipeline survive abrupt termination, detect its own damage, avoid
+silent duplication, and demonstrate that its *architecture* — not its
+recognition accuracy — scales to a 100,000-sheet examination. Full detail,
+including two genuine defects this phase's own testing found and fixed, and
+exactly what remains to be run at full scale, is in
+[`development/PHASE_10_HANDOFF.md`](development/PHASE_10_HANDOFF.md).
+
+**Recovery.**
+
+- Every whole-file save (`project.json`, settings, `.omrt` templates) is
+  already atomic (temp file, `fsync`, rename) — audited this phase, not
+  newly built.
+- A batch interrupted mid-run resumes from durable per-sheet state on the
+  next project open (Phase 5, unchanged); nothing is re-read that already
+  finished.
+- **Project locking**: OMRFlow refuses to open a project another instance
+  already has open for writing. A lock left behind by a crash is never
+  removed automatically — you are shown who (or what) held it and whether
+  it looks stale, and you decide: cancel, open **read-only**, or remove the
+  lock and open for editing.
+- **Backups**: *Tools → Project Health / Recovery…* → **Create Backup Now**
+  takes a consistent snapshot using SQLite's own backup mechanism (safe
+  against a live database), never a raw file copy. A backup that did not
+  finish writing can never be mistaken for a complete one.
+- **Health checks**: the same dialog's **Run Full Check** verifies database
+  structural integrity, foreign-key consistency, schema version, source-scan
+  availability (missing or changed since import), unresolved Phase 6/7
+  exceptions, sets missing a verified Phase 8 key, and free disk space —
+  and reports what it finds without attempting to repair anything. If a
+  check fails, the guidance is to back up what remains and seek support;
+  OMRFlow does not offer a "fix it automatically" button for a damaged
+  examination database.
+- **Relinking a moved scan**: a scan's SHA-256 content hash, recorded at
+  import, is what lets a moved or renamed source file be safely reattached
+  — verified by content, never by filename alone.
+
+**Reprocessing.** Individual sheets, a selection, every currently-failed
+sheet, or a whole batch can be sent back to `pending` for reprocessing,
+without losing the machine's previous reading: it is archived first, so a
+sheet reprocessed twice keeps both readings on record, not one overwritten
+by the other. Rescoring after an answer-key or policy change, and
+regenerating a report after a layout change, already worked this way from
+Phases 8 and 9 and are unaffected.
+
+**Large-batch architecture.** Job submission has always been bounded (never
+more futures in flight than a small multiple of the worker count); worker
+processes have never written to the database directly. New this phase:
+content-hash duplicate detection, an explicit worker-recycling interval and
+a configurable OpenCV-thread count per worker (both under *File → Settings →
+Advanced*), and a deterministic synthetic-sheet generator that can register
+and address a 100,000-sheet batch without ever holding 100,000 images on
+disk or in memory at once.
+
+**Performance and reproducibility.** A headless benchmark CLI
+(`python -m omr_scanner.tools.benchmark_stress`) runs or resumes a
+deterministic synthetic stress batch of any size, with lightweight telemetry
+(CPU, memory, disk, throughput) sampled to a file every few seconds and a
+JSON report written at the end. The same `(seed, sheet_count)` always
+produces the same 100,000 logical sheets, independently addressable one at a
+time — what makes an interrupted run resumable without keeping every
+generated image around. Real, deliberate, forced process terminations
+(not simulated) were run against 100, 1,000 and 10,000-sheet batches, each
+verified to lose nothing and duplicate nothing on resume; see the Phase 10
+handoff for the exact scale validated in this environment and what remains
+for the full 100,000-sheet acceptance run.
+
+**Data protection.** Telemetry and benchmark reports contain sheet counts,
+timings and resource usage only — never candidate names, roll numbers,
+recognised answers or scan images, following the same rule Phase 7
+established for the application log.
+
 ### Development philosophy
 
 OMRFlow follows an incremental development process. Major functionality is
@@ -1328,10 +1466,10 @@ exists.
 
 ### Pending development
 
-Phases 9-11 have not started. Their titles, purposes and deliverables as
-currently planned are documented in
+Phase 11 has not started. Its title, purpose and deliverables as currently
+planned are documented in
 [`development/ROADMAP.md`](development/ROADMAP.md); this project does not
-promise a delivery date for any of them, and scopes may be refined as earlier
+promise a delivery date for it, and its scope may be refined as earlier
 phases surface real requirements.
 
 **Real-world validation remains pending for every phase that needs it.**
@@ -1347,6 +1485,8 @@ Phase 5 handoff: [`development/PHASE_05_HANDOFF.md`](development/PHASE_05_HANDOF
 Phase 6 handoff: [`development/PHASE_06_HANDOFF.md`](development/PHASE_06_HANDOFF.md).
 Phase 7 handoff: [`development/PHASE_07_HANDOFF.md`](development/PHASE_07_HANDOFF.md).
 Phase 8 handoff: [`development/PHASE_08_HANDOFF.md`](development/PHASE_08_HANDOFF.md).
+Phase 9 handoff: [`development/PHASE_09_HANDOFF.md`](development/PHASE_09_HANDOFF.md).
+Phase 10 handoff: [`development/PHASE_10_HANDOFF.md`](development/PHASE_10_HANDOFF.md).
 
 ---
 

@@ -21,7 +21,7 @@ that cannot be tested.
 | 7 | Candidate & Attendance Reconciliation | Implemented; testing in progress - see `development/PHASE_07_HANDOFF.md` |
 | 8 | Answer-Key & Scoring Engine | Implemented; testing in progress - see `development/PHASE_08_HANDOFF.md` |
 | 9 | Result Management & Reporting | Implemented; testing in progress - see `development/PHASE_09_HANDOFF.md` |
-| 10 | Integration, Recovery & Production Hardening | Not started |
+| 10 | Integration, Recovery & Production Hardening | Implemented; 100,000-sheet acceptance run pending - see `development/PHASE_10_HANDOFF.md` |
 | 11 | Release, User Documentation & Packaging | Not started |
 
 ---
@@ -378,16 +378,58 @@ fifty candidates.
 
 **Purpose.** Make the whole thing survive real, imperfect use.
 
-**Deliverables.** Autosave and crash recovery; reprocessing of individual sheets
-and whole batches; performance work on large batches; end-to-end validation from
-template to report; database integrity checks and repair guidance.
+**Delivered as** `services.scan_provenance` (SHA-256 content-hash provenance
+and exact-duplicate detection, threaded and off the GUI thread),
+`services.project_lock` (plain-file project locking with an explicit,
+never-automatic stale-lock override), a genuine SQLite read-only connection
+mode (`database.engine.open_project_database(read_only=True)`),
+`services.project_backup` (SQLite-online-API snapshots with a
+manifest-written-last completeness guarantee), `services.project_health`
+(cheap `quick_check` plus a comprehensive `full_check` - integrity,
+foreign keys, schema version, stale jobs, source-scan availability,
+unresolved Phase 6/7 exceptions, missing Phase 8 keys, backup presence,
+free disk space - and deliberately no repair path), reprocessing
+primitives added to `services.batch_store` (`mark_for_reprocessing` and its
+`reprocess_failed_scans`/`reprocess_batch` wrappers, archiving a sheet's
+superseded result to the new append-only `batch_scan_history` table before
+resetting it), worker recycling and configurable OpenCV threads
+(`config.processing.ProcessingSettings`, wired through
+`services.parallel_batch` as a sequence of short-lived pools rather than
+`ProcessPoolExecutor`'s own `max_tasks_per_child` - see
+`development/PHASE_10_HANDOFF.md` §8 for why that stdlib parameter was
+found to hang), `evaluation.stress_dataset` (a deterministic,
+index-addressable synthetic-sheet generator - sheet *N* of an
+arbitrarily large run reproduces independently from `seed + N` alone) and
+`evaluation.stress_runner` (bounded-disk-usage orchestration reusing the
+*unmodified* `services.batch_processor`/`services.parallel_batch`
+pipeline), `services.telemetry` and `tools.benchmark_stress` (a headless
+CLI for running and resuming a stress batch, with a machine-readable
+report), one additive migration (`batch_scan` content-hash columns,
+`batch_scan_history`, `processing_manifest`), and a `gui.health_dialog`
+("Project Health & Recovery", one dialog for both concerns) plus an
+Advanced section in the Settings dialog. Full detail, including two
+genuinely new defects this phase's own testing found and fixed:
+`development/PHASE_10_HANDOFF.md`.
 
-**Major tests.** Full end-to-end run on a synthetic examination; kill-and-resume
-at each stage; performance benchmarks on a large batch; integrity check detects a
-deliberately damaged project.
+**Exit criteria - partially met.** An interrupted examination resumes
+without data loss, proven by real forced process terminations (not
+simulated) at 100, 1,000 and 10,000 sheets, each verified to leave every
+previously-committed sheet's result unchanged and to reach the exact
+correct final count on resume. Registering a full 100,000-sheet batch was
+executed and measured directly. **Not yet met:** the mandatory full-scale
+100,000-sheet *processing* run and its 1%/25%/50%/75%/99% kill-and-resume
+acceptance matrix were not executed in this environment - a scoped,
+agreed deferral (a multi-hour-to-multi-day undertaking), not a technical
+limitation; the harness that runs it is complete and exercised at smaller
+scale. Performance limits are documented only as far as the executed runs
+measured them.
 
-**Exit criteria.** An interrupted examination can be resumed without data loss; a
-complete run is reproducible; performance limits are documented.
+**Not done.** Lazy Qt models for the Scan/Results/Resolve/Attendance
+tables (a real, disclosed gap against a 100,000-row *display*, distinct
+from the backend, which was verified against that scale) - a diagnostic
+bundle, a global GUI exception handler, automatic backup-before-migration
+wiring, stress-scale roster/reconciliation/reporting load testing, and
+Windows path/packaging-specific testing (no packaging build exists yet).
 
 ---
 

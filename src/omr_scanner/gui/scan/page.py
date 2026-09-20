@@ -1393,6 +1393,8 @@ class ScanPage(WorkflowPage):
             rename_with_identifier=self.state.rename_enabled,
             with_preview=False,
             recognition=self._engine_options(),
+            opencv_threads=self.state.processing.opencv_threads,
+            worker_recycle_after=self.state.processing.worker_recycle_after,
         )
         workers = self.planned_worker_count(len(paths))
         self._final_report = None

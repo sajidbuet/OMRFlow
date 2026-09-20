@@ -54,6 +54,7 @@ from sqlalchemy import CursorResult, delete, func, select, update
 
 from omr_scanner.database.models import (
     BatchScan,
+    BatchScanHistory,
     BatchStatus,
     ScanBatch,
     ScanJobStatus,
@@ -539,6 +540,179 @@ def recover_interrupted(database: ProjectDatabase) -> tuple[int, int]:
     return repaired
 
 
+@dataclass(frozen=True, slots=True)
+class ReprocessingRecord:
+    """One archived, superseded recognition result (Phase 10, §12/§13).
+
+    Attributes:
+        scan_id: The scan this history entry belongs to.
+        previous_status: What :class:`~omr_scanner.database.models.ScanJobStatus`
+            the row carried immediately before this reprocessing.
+        previous_outcome: The superseded recognition outcome.
+        previous_attempt_count: How many attempts the row had recorded.
+        reason: Why reprocessing was requested.
+        requested_by: Who requested it, if known.
+        archived_at: When this record was written.
+    """
+
+    scan_id: int
+    previous_status: str
+    previous_outcome: str
+    previous_attempt_count: int
+    reason: str
+    requested_by: str
+    archived_at: datetime
+
+
+def _scan_ids_with_status(
+    database: ProjectDatabase, batch_id: str, statuses: Sequence[str]
+) -> tuple[int, ...]:
+    with database.session() as session:
+        rows = session.scalars(
+            select(BatchScan.scan_id)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.status.in_(list(statuses)))
+            .order_by(BatchScan.batch_index)
+        ).all()
+    return tuple(int(row) for row in rows)
+
+
+def mark_for_reprocessing(
+    database: ProjectDatabase,
+    batch_id: str,
+    scan_ids: Sequence[int],
+    *,
+    reason: str,
+    requested_by: str = "",
+) -> int:
+    """Return the named scans to ``pending``, archiving their current result first.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch the scans belong to. A scan id that does not
+            belong to this batch is silently skipped rather than treated as
+            an error - reprocessing is always scoped to one batch, like
+            every other batch operation.
+        scan_ids: Which scans to reprocess. Duplicates are harmless.
+        reason: Why reprocessing was requested (§12: "template edited",
+            "answer key changed", an operator's own note, ...). Recorded
+            verbatim in the archived history row.
+        requested_by: Who asked, if known.
+
+    Returns:
+        How many scans were actually changed. A scan already ``pending``
+        with no recorded result is left alone and not counted - there is
+        nothing to archive and nothing to change, so re-requesting it is a
+        harmless no-op rather than a fabricated history entry.
+
+    This is the one primitive "reprocess one sheet", "reprocess selected
+    sheets", "reprocess failed sheets" and "reprocess the whole batch" (§12)
+    are all built from - see :func:`reprocess_failed_scans` and
+    :func:`reprocess_batch` below. It touches nothing else: not
+    ``scan_batch``'s own status (recomputed by :func:`finalise_batch` once
+    processing actually runs again, never set here), and not Phase 6's or
+    Phase 7's own audit ledgers, which record human decisions about a value -
+    a different question from "recognition was asked to run again on this
+    sheet", which is what :class:`~omr_scanner.database.models.BatchScanHistory`
+    exists to answer instead.
+    """
+    moment = _now()
+    wanted = set(scan_ids)
+    if not wanted:
+        return 0
+    with database.session() as session:
+        rows = session.scalars(
+            select(BatchScan)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.scan_id.in_(wanted))
+        ).all()
+        changed = 0
+        for row in rows:
+            if row.status == ScanJobStatus.PENDING.value and not row.result_json:
+                continue
+            session.add(
+                BatchScanHistory(
+                    scan_id=row.scan_id,
+                    batch_id=batch_id,
+                    previous_status=row.status,
+                    previous_outcome=row.outcome,
+                    previous_attempt_count=row.attempt_count,
+                    previous_result_json=row.result_json,
+                    previous_content_sha256=row.content_sha256,
+                    reason=reason,
+                    requested_by=requested_by,
+                    archived_at=moment,
+                )
+            )
+            row.status = ScanJobStatus.PENDING.value
+            row.started_at = None
+            row.finished_at = None
+            changed += 1
+        if changed:
+            session.execute(
+                update(ScanBatch).where(ScanBatch.batch_id == batch_id).values(updated_at=moment)
+            )
+    if changed:
+        _LOGGER.info(
+            "Marked %d scan(s) in batch %s for reprocessing (%s)", changed, batch_id, reason
+        )
+    return changed
+
+
+def reprocess_failed_scans(
+    database: ProjectDatabase, batch_id: str, *, reason: str, requested_by: str = ""
+) -> int:
+    """Reprocess every currently-``failed`` scan in a batch. See :func:`mark_for_reprocessing`."""
+    ids = _scan_ids_with_status(database, batch_id, [ScanJobStatus.FAILED.value])
+    return mark_for_reprocessing(database, batch_id, ids, reason=reason, requested_by=requested_by)
+
+
+def reprocess_batch(
+    database: ProjectDatabase, batch_id: str, *, reason: str, requested_by: str = ""
+) -> int:
+    """Reprocess every scan in a batch, whatever its current state.
+
+    See :func:`mark_for_reprocessing`. Used for "reprocess the complete
+    batch" (§12) - after, for instance, a template's geometry has changed
+    and every previously-completed result is no longer trustworthy.
+    """
+    with database.session() as session:
+        ids = session.scalars(
+            select(BatchScan.scan_id).where(BatchScan.batch_id == batch_id)
+        ).all()
+    return mark_for_reprocessing(
+        database, batch_id, [int(item) for item in ids], reason=reason, requested_by=requested_by
+    )
+
+
+def reprocessing_history(database: ProjectDatabase, scan_id: int) -> tuple[ReprocessingRecord, ...]:
+    """Return every superseded result archived for one scan, oldest first.
+
+    This is what preserves §13's guarantee for the recognition stage itself:
+    reprocessing a sheet twice leaves two records here, not one overwritten
+    row, so "what did the machine read the first time, and why was it asked
+    to look again" always has an answer.
+    """
+    with database.session() as session:
+        rows = session.scalars(
+            select(BatchScanHistory)
+            .where(BatchScanHistory.scan_id == scan_id)
+            .order_by(BatchScanHistory.archived_at)
+        ).all()
+    return tuple(
+        ReprocessingRecord(
+            scan_id=row.scan_id,
+            previous_status=row.previous_status,
+            previous_outcome=row.previous_outcome,
+            previous_attempt_count=row.previous_attempt_count,
+            reason=row.reason,
+            requested_by=row.requested_by,
+            archived_at=row.archived_at,
+        )
+        for row in rows
+    )
+
+
 def resumable_scans(
     database: ProjectDatabase, batch_id: str, *, include_failed: bool = False
 ) -> tuple[Path, ...]:
@@ -917,6 +1091,7 @@ __all__ = [
     "BatchSummary",
     "CompatibilityVerdict",
     "ErrorCategory",
+    "ReprocessingRecord",
     "ScanJobStatus",
     "categorise_error",
     "check_compatibility",
@@ -928,10 +1103,14 @@ __all__ = [
     "list_batches",
     "load_summary",
     "mark_cancelled",
+    "mark_for_reprocessing",
     "mark_queued",
     "new_batch_id",
     "record_results",
     "recover_interrupted",
+    "reprocess_batch",
+    "reprocess_failed_scans",
+    "reprocessing_history",
     "resumable_scans",
     "scan_ids_by_path",
     "scan_paths",

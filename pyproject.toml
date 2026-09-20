@@ -34,6 +34,10 @@ dependencies = [
     "numpy>=1.26",                  # Phase 1 - imaging / bubble metrics
     "pandas>=2.2",                  # Phase 7 - candidate list import/export
     "openpyxl>=3.1",                # Phase 9 - Excel reporting
+    # Phase 10 - cross-platform PID liveness (project locking, task-lease
+    # recovery) and process/system telemetry (CPU, RAM, disk) for the
+    # production-hardening benchmark. No heavier monitoring stack is used.
+    "psutil>=5.9",
 ]
 
 [project.optional-dependencies]
@@ -90,9 +94,10 @@ omr_scanner = [
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config -m \"not stress\""
 markers = [
     "gui: tests that instantiate Qt widgets (require a usable Qt platform plugin)",
+    "stress: large-scale (thousands of sheets) production-hardening runs; excluded from the default test run by addopts, run explicitly with `-m stress`",
 ]
 filterwarnings = ["error::DeprecationWarning:omr_scanner.*"]
 
@@ -195,6 +200,14 @@ ignore_missing_imports = true
 module = ["omr_scanner.gui.*"]
 disallow_subclassing_any = false
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+# psutil ships no bundled type stubs and `types-psutil` is a separate package
+# this project's dependency set does not carry; the untyped boundary is kept
+# local to the handful of Phase 10 modules that call it (process/PID liveness,
+# telemetry), exactly like the openpyxl override above.
+module = ["psutil.*"]
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 # This module intentionally branches on sys.platform. mypy analyses one platform

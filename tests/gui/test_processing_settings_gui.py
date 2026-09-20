@@ -267,6 +267,37 @@ class TestCWorkerSelector:
 
 
 # ----------------------------------------------------------------------
+# Test C3 - the advanced (production hardening) controls (Phase 10, §16/§18)
+# ----------------------------------------------------------------------
+class TestC3AdvancedSettings:
+    def test_the_dialog_has_an_advanced_section(self, dialog: SettingsDialog):
+        group = dialog.findChild(QGroupBox, "advancedSettingsGroup")
+        assert group is not None
+
+    def test_opencv_threads_defaults_to_one(self, dialog: SettingsDialog):
+        assert dialog.opencv_threads_spin.value() == 1
+        assert dialog.processing_settings().opencv_threads == 1
+
+    def test_worker_recycling_defaults_to_the_documented_default(self, dialog: SettingsDialog):
+        from omr_scanner.config.processing import DEFAULT_WORKER_RECYCLE_AFTER
+
+        assert dialog.worker_recycle_spin.value() == DEFAULT_WORKER_RECYCLE_AFTER
+
+    def test_worker_recycling_can_be_disabled_with_zero(self, dialog: SettingsDialog):
+        dialog.worker_recycle_spin.setValue(0)
+        assert dialog.processing_settings().worker_recycle_after == 0
+
+    def test_the_choice_survives_a_round_trip_through_processing_settings(
+        self, dialog: SettingsDialog
+    ):
+        dialog.opencv_threads_spin.setValue(4)
+        dialog.worker_recycle_spin.setValue(250)
+        settings = dialog.processing_settings()
+        assert settings.opencv_threads == 4
+        assert settings.worker_recycle_after == 250
+
+
+# ----------------------------------------------------------------------
 # Test C2 - the diagnostics controls
 # ----------------------------------------------------------------------
 class TestC2Diagnostics:

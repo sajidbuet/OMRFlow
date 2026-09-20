@@ -21,6 +21,7 @@ from omr_scanner.services import (
     open_project,
     read_project_metadata,
 )
+from omr_scanner.services.project_lock import ProjectLockHeldError
 from omr_scanner.utils.json_io import read_json, write_json_atomic
 from omr_scanner.utils.logging_setup import configure_logging
 
@@ -207,3 +208,48 @@ def test_closed_project_releases_its_files(workspace: Path):
     root.rename(moved)
 
     assert ProjectLayout(moved).database_file.is_file()
+
+
+# ---------------------------------------------------------------------------
+# Project locking and read-only mode (Phase 10, §3, §42)
+# ---------------------------------------------------------------------------
+def test_a_second_open_of_the_same_project_is_refused(workspace: Path):
+    with create_project(workspace, "Locked Exam") as first:
+        root = first.root
+        with pytest.raises(ProjectLockHeldError):
+            open_project(root)
+
+
+def test_the_lock_is_released_on_close_and_the_project_reopens(workspace: Path):
+    with create_project(workspace, "Reopenable Exam") as first:
+        root = first.root
+    # `first` has closed by now (context manager exited).
+    with open_project(root) as second:
+        assert second.name == "Reopenable Exam"
+
+
+def test_force_lock_removes_an_existing_lock_and_opens(workspace: Path):
+    with create_project(workspace, "Force Unlocked Exam") as first:
+        root = first.root
+        with open_project(root, force_lock=True) as second:
+            assert second.name == "Force Unlocked Exam"
+
+
+def test_read_only_open_does_not_take_the_lock_and_forbids_writes(workspace: Path):
+    with create_project(workspace, "Read Only Exam") as created:
+        root = created.root
+
+    with open_project(root, read_only=True) as session:
+        assert session.read_only is True
+        # A second, ordinary (writable) open must still succeed: read-only
+        # sessions never hold the write lock at all.
+        with open_project(root) as writer:
+            assert writer.read_only is False
+
+
+def test_read_only_open_coexists_with_an_already_open_writer(workspace: Path):
+    with create_project(workspace, "Coexisting Exam") as writer:
+        root = writer.root
+        with open_project(root, read_only=True) as reader:
+            assert reader.read_only is True
+            assert reader.name == "Coexisting Exam"

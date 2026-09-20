@@ -75,6 +75,35 @@ used, not rejected when it is read."""
 DEFAULT_CUSTOM_WORKERS = 4
 """Where the custom worker selector starts before the user has chosen."""
 
+DEFAULT_OPENCV_THREADS = 1
+"""OpenCV's own internal thread count inside each worker *process*.
+
+Kept at one by default for the reason :mod:`omr_scanner.services.parallel_batch`'s
+module docstring already gives: the parallelism in this application comes
+from *processes*, not from OpenCV's own thread pool, and N worker processes
+each spawning several OpenCV threads oversubscribes the machine's cores for
+no benefit. An advanced setting, not a default a user is expected to touch -
+see :data:`MAX_CONFIGURABLE_OPENCV_THREADS`."""
+
+MAX_CONFIGURABLE_OPENCV_THREADS = 16
+"""Ceiling accepted in a stored configuration, for the same reason
+:data:`MAX_CONFIGURABLE_WORKERS` has one: a value from a different machine's
+settings file must load, not fail validation, even if it would be unwise here."""
+
+DEFAULT_WORKER_RECYCLE_AFTER = 500
+"""Sheets a worker process reads before it is replaced (Phase 10, §16).
+
+Chosen as a conservative default that recycles a worker often enough to
+bound native-library memory growth (OpenCV decoders, NumPy allocations) over
+a very long run, without recycling so often that the fixed cost of starting
+a fresh process - re-importing OpenCV, re-sending the template - starts to
+matter. See ``development/PHASE_10_HANDOFF.md`` for the benchmark this was
+chosen from. ``0`` disables recycling entirely."""
+
+MAX_CONFIGURABLE_WORKER_RECYCLE_AFTER = 1_000_000
+"""Effectively "never" as a stored upper bound, for the same reason
+:data:`MAX_CONFIGURABLE_WORKERS` has one."""
+
 
 class ProcessingMode(StrEnum):
     """How the worker count for a batch is decided."""
@@ -128,6 +157,20 @@ class ProcessingSettings(BaseModel):
     )
     diagnostics_enabled: bool = False
     diagnostics_dir: Path | None = None
+    opencv_threads: int = Field(
+        default=DEFAULT_OPENCV_THREADS, ge=1, le=MAX_CONFIGURABLE_OPENCV_THREADS
+    )
+    """OpenCV's internal thread count *inside each worker process* (Phase 10,
+    §18). Not the same axis as :attr:`worker_count` - that is how many
+    processes run at once; this is how many native threads each one may use
+    for its own image operations."""
+    worker_recycle_after: int = Field(
+        default=DEFAULT_WORKER_RECYCLE_AFTER,
+        ge=0,
+        le=MAX_CONFIGURABLE_WORKER_RECYCLE_AFTER,
+    )
+    """Sheets a worker processes before being replaced (Phase 10, §16).
+    ``0`` disables recycling."""
 
     @property
     def writes_diagnostics(self) -> bool:
@@ -196,11 +239,29 @@ class ProcessingSettings(BaseModel):
         clamped = max(1, min(int(workers), MAX_CONFIGURABLE_WORKERS))
         return self.model_copy(update={"worker_count": clamped})
 
+    def with_opencv_threads(self, threads: int) -> ProcessingSettings:
+        """Return a copy with OpenCV's per-worker thread count set, clamped."""
+        clamped = max(1, min(int(threads), MAX_CONFIGURABLE_OPENCV_THREADS))
+        return self.model_copy(update={"opencv_threads": clamped})
+
+    def with_worker_recycle_after(self, sheets: int) -> ProcessingSettings:
+        """Return a copy with the worker-recycle interval set, clamped.
+
+        ``0`` disables recycling and is a valid, deliberate choice - not
+        clamped up to the minimum the way a worker or thread *count* would be.
+        """
+        clamped = max(0, min(int(sheets), MAX_CONFIGURABLE_WORKER_RECYCLE_AFTER))
+        return self.model_copy(update={"worker_recycle_after": clamped})
+
 
 __all__ = [
     "AUTOMATIC_WORKER_LIMIT",
     "DEFAULT_CUSTOM_WORKERS",
+    "DEFAULT_OPENCV_THREADS",
+    "DEFAULT_WORKER_RECYCLE_AFTER",
+    "MAX_CONFIGURABLE_OPENCV_THREADS",
     "MAX_CONFIGURABLE_WORKERS",
+    "MAX_CONFIGURABLE_WORKER_RECYCLE_AFTER",
     "RESERVED_CPU_COUNT",
     "ProcessingMode",
     "ProcessingSettings",

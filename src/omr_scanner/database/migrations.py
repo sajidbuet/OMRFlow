@@ -44,9 +44,11 @@ from omr_scanner.database.models import (
     AuditEvent,
     Base,
     BatchScan,
+    BatchScanHistory,
     CandidateResult,
     CandidateRoster,
     GeneratedReport,
+    ProcessingManifest,
     ProjectSetting,
     ReconciliationDecision,
     ReconciliationEntryRow,
@@ -261,6 +263,66 @@ def _migration_006_reporting(connection: Connection) -> None:
     )
 
 
+def _migration_007_production_hardening(connection: Connection) -> None:
+    """Add Phase 10 provenance and reprocessing history.
+
+    Three parts, all additive.
+
+    **``batch_scan`` gains ``content_sha256``/``content_hash_algorithm``.**
+    Existing rows are left at the column defaults (``''``/``'sha256'``) rather
+    than backfilled: hashing a scan already on disk means reading it again,
+    and a batch processed before this version can simply be re-hashed the next
+    time it is opened for reprocessing or a health check, rather than paying
+    that cost for every project the moment it upgrades.
+
+    **``batch_scan_history`` and its immutability triggers** are new -
+    nothing before this version ever reprocessed a completed sheet, so there
+    is no existing data to migrate into it.
+
+    **``processing_manifest``** is new for the same reason: no version before
+    this one assembled one.
+    """
+    existing = {
+        row[1] for row in connection.execute(text("PRAGMA table_info(batch_scan)")).all()
+    }
+    if "content_sha256" not in existing:
+        connection.execute(
+            text("ALTER TABLE batch_scan ADD COLUMN content_sha256 VARCHAR(64) NOT NULL DEFAULT ''")
+        )
+    if "content_hash_algorithm" not in existing:
+        connection.execute(
+            text(
+                "ALTER TABLE batch_scan ADD COLUMN content_hash_algorithm "
+                "VARCHAR(20) NOT NULL DEFAULT 'sha256'"
+            )
+        )
+
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[BatchScanHistory.__tablename__],
+            Base.metadata.tables[ProcessingManifest.__tablename__],
+        ],
+    )
+    for statement in (
+        """
+        CREATE TRIGGER IF NOT EXISTS batch_scan_history_is_append_only_update
+        BEFORE UPDATE ON batch_scan_history
+        BEGIN
+            SELECT RAISE(ABORT, 'batch_scan_history is append-only: rows cannot be updated');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS batch_scan_history_is_append_only_delete
+        BEFORE DELETE ON batch_scan_history
+        BEGIN
+            SELECT RAISE(ABORT, 'batch_scan_history is append-only: rows cannot be deleted');
+        END
+        """,
+    ):
+        connection.execute(text(statement))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -300,6 +362,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "report_layout_config, generated_report"
         ),
         apply=_migration_006_reporting,
+    ),
+    Migration(
+        version=7,
+        description=(
+            "Phase 10 production hardening: batch_scan content-hash columns, "
+            "batch_scan_history, processing_manifest"
+        ),
+        apply=_migration_007_production_hardening,
     ),
 )
 

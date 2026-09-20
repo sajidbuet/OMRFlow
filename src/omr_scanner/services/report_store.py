@@ -431,6 +431,14 @@ def get_layout_config(database: ProjectDatabase, set_code: str = "") -> StoredLa
                 updated_by=default.updated_by,
             )
         moment = _now()
+        if database.read_only:
+            # Phase 10, §42: never write from a read-only session, including
+            # this function's own "create the project default on first read"
+            # behaviour. The unpersisted default (`config_id=0`) is what a
+            # freshly-created project would show anyway.
+            return StoredLayoutConfig(
+                config_id=0, set_code="", settings=rx.LayoutSettings(), updated_at=moment,
+            )
         created = ReportLayoutConfig(set_code="", created_at=moment, updated_at=moment)
         session.add(created)
         session.flush()

@@ -291,6 +291,22 @@ class BatchScan(Base):
         DateTime(timezone=True), nullable=True
     )
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    """SHA-256 of the source file's bytes (Phase 10, §9/§10).
+
+    Computed once, at registration - not at read time - so that duplicate
+    detection and later "has this file changed since import" checks never have
+    to re-read the file to get an answer they already have. Empty for a scan
+    whose source could not be read at registration time (recorded, not fatal:
+    the scan still fails, later, with a readable reason) and for a virtual
+    stress-test source, which is identified by seed and index instead - see
+    :mod:`omr_scanner.evaluation.stress_dataset`.
+    """
+    content_hash_algorithm: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="sha256"
+    )
+    """Named rather than assumed, so a stronger algorithm can be introduced
+    later without reinterpreting old hashes as the new kind."""
 
     def __repr__(self) -> str:
         """Return a debugging representation naming the file and its state."""
@@ -1101,4 +1117,97 @@ class GeneratedReport(Base):
         return (
             f"GeneratedReport(id={self.report_id}, set={self.set_code!r}, "
             f"type={self.report_type!r}, status={self.status!r})"
+        )
+
+
+# ----------------------------------------------------------------------
+# Phase 10 - Integration, recovery & production hardening.
+#
+# Nothing here duplicates Phase 5's batch state or Phase 6's audit ledger -
+# both are reused as-is. This section adds exactly two things those phases
+# had no reason to need: a place to keep a *superseded* recognition result
+# when a sheet is deliberately reprocessed (`BatchScanHistory`), and a
+# reproducibility snapshot of what a batch was run with (`ProcessingManifest`).
+# See `services/batch_store.py::mark_for_reprocessing` and
+# `services/processing_manifest.py`.
+# ----------------------------------------------------------------------
+
+
+class BatchScanHistory(Base):
+    """A recognition result a reprocessing run has superseded.
+
+    **Append-only** (enforced by triggers, same pattern as :class:`AuditEvent`).
+    :class:`BatchScan` holds only the *current* result - Phase 5's own design,
+    kept unchanged here - so reprocessing a completed sheet would otherwise
+    overwrite the only record of what the machine read the first time. This
+    table exists so it does not: before
+    :func:`~omr_scanner.services.batch_store.mark_for_reprocessing` resets a
+    row to ``pending``, it archives the row's current state here, first.
+
+    This is deliberately separate from Phase 6's :class:`AuditEvent` ledger.
+    That ledger records *human decisions about a machine value*; this table
+    records that recognition itself was asked to run again, by whom, and what
+    it had produced immediately before - a different question, about the
+    recognition stage rather than the review stage, and one Phase 6 was never
+    asked to answer.
+    """
+
+    __tablename__ = "batch_scan_history"
+    __table_args__ = (
+        Index("ix_batch_scan_history_scan", "scan_id", "archived_at"),
+    )
+
+    history_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("batch_scan.scan_id", ondelete="CASCADE"), nullable=False
+    )
+    batch_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_status: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    previous_outcome: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    previous_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    previous_result_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    previous_content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    requested_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    archived_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the archived scan."""
+        return f"BatchScanHistory(scan_id={self.scan_id}, archived_at={self.archived_at!r})"
+
+
+class ProcessingManifest(Base):
+    """A reproducibility snapshot: exactly what a batch was run with.
+
+    One row per manifest generation - not one per batch - because a manifest
+    may reasonably be regenerated (an operator asking "what produced this?"
+    after answer keys or scoring were later revised should still be able to
+    see the manifest as it stood right after processing, not a snapshot
+    quietly rewritten under it). See
+    :func:`omr_scanner.services.processing_manifest.build_manifest`, which
+    assembles :attr:`payload_json` by reading the tables Phases 1-9 already
+    maintain - :class:`ScanBatch`'s own fingerprints, answer-key and
+    scoring-policy revisions, report template associations - rather than
+    duplicating any of them here.
+    """
+
+    __tablename__ = "processing_manifest"
+    __table_args__ = (
+        Index("ix_processing_manifest_batch", "batch_id", "generated_at"),
+    )
+
+    manifest_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="CASCADE"), nullable=False
+    )
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    application_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the batch and moment."""
+        return (
+            f"ProcessingManifest(batch_id={self.batch_id!r}, "
+            f"generated_at={self.generated_at!r})"
         )

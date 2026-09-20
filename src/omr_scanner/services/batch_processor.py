@@ -107,6 +107,14 @@ class BatchOptions:
             covers. When given it supersedes ``metrics_config`` and
             ``with_preview``, which remain for the callers (and tests) that
             only ever needed those two.
+        opencv_threads: OpenCV's internal thread count inside each worker
+            process, for a multi-worker run (Phase 10, §18). Ignored on a
+            single-worker run, which reads in this thread with no pool at
+            all.
+        worker_recycle_after: Sheets a worker process reads before being
+            replaced, for a multi-worker run (Phase 10, §16). ``0`` (the
+            dataclass default) disables recycling, matching every run before
+            this phase.
     """
 
     output_dir: Path | None = None
@@ -114,6 +122,8 @@ class BatchOptions:
     with_preview: bool = False
     metrics_config: BubbleMetricsConfig | None = None
     recognition: RecognitionOptions | None = None
+    opencv_threads: int = 1
+    worker_recycle_after: int = 0
 
     @property
     def writes_files(self) -> bool:
@@ -602,6 +612,8 @@ def _run_parallel(
         workers=workers,
         options=options.engine_options(),
         should_cancel=should_cancel,
+        opencv_threads=options.opencv_threads,
+        max_tasks_per_child=options.worker_recycle_after or None,
     )
     try:
         for index, result in results:

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
@@ -56,6 +56,7 @@ from omr_scanner.gui.attendance.page import AttendancePage
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
 from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
+from omr_scanner.gui.health_dialog import ProjectHealthDialog
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.reports.page import ReportsPage
@@ -71,6 +72,7 @@ from omr_scanner.services import (
     recover_interrupted,
     review_store,
 )
+from omr_scanner.services.project_lock import ProjectLockHeldError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.evaluation.ground_truth import DatasetManifest
@@ -350,6 +352,17 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.exit_action)
 
         tools_menu = self.menuBar().addMenu("&Tools")
+
+        self.project_health_action = QAction("&Project Health / Recovery...", self)
+        self.project_health_action.setObjectName("projectHealthAction")
+        self.project_health_action.setEnabled(False)
+        self.project_health_action.setStatusTip(
+            "Check database integrity and create or restore a project backup"
+        )
+        self.project_health_action.triggered.connect(self._prompt_project_health)
+        tools_menu.addAction(self.project_health_action)
+        tools_menu.addSeparator()
+
         developer_menu = tools_menu.addMenu("&Developer / Testing")
 
         self.generate_dataset_action = QAction("&Generate Synthetic Test Dataset...", self)
@@ -431,6 +444,47 @@ class MainWindow(QMainWindow):
         self._adopt_session(session)
         return True
 
+    def open_project_resolving_lock(
+        self, directory: Path, *, action: Literal["read_only", "force"]
+    ) -> bool:
+        """Open a project whose lock conflict has already been shown to a human.
+
+        Args:
+            directory: Project root directory.
+            action: The choice already made - ``"read_only"`` or ``"force"``
+                (remove the existing lock and open for editing). There is
+                deliberately no ``"cancel"`` value: a cancel is simply not
+                calling this method at all.
+
+        Returns:
+            Whether the project was opened.
+
+        Testable on its own, with no dialog involved - the dialog that
+        produces ``action`` is :meth:`_prompt_open_project`'s job. Splitting
+        the two is the same convention this codebase already uses wherever a
+        choice requires a modal dialog but the resulting action must still be
+        exercised directly by a test (see, for Phase 9,
+        `gui.reports.page.ReportsPage.associate_template` beside its
+        dialog-owning `prompt_select_template`) - a modal opened from inside
+        a method a test calls directly hangs a headless run indefinitely,
+        which is exactly the defect class this split exists to prevent.
+        """
+        try:
+            session = open_project(
+                directory,
+                read_only=(action == "read_only"),
+                force_lock=(action == "force"),
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Open project")
+            return False
+        self._adopt_session(session)
+        if action == "read_only":
+            self.statusBar().showMessage(
+                "Project opened read-only - no changes can be saved.", STATUS_MESSAGE_MS
+            )
+        return True
+
     def close_project(self) -> None:
         """Close the open project, releasing its database and log handler."""
         if self._session is None:
@@ -459,18 +513,78 @@ class MainWindow(QMainWindow):
         self.create_project_at(Path(parent_directory), name.strip())
 
     def _prompt_open_project(self) -> None:
-        """Ask for a project folder, then open it."""
+        """Ask for a project folder, then open it.
+
+        A lock conflict gets its own follow-up dialog here, rather than
+        inside :meth:`open_project_at`, precisely so that method stays free
+        of modal dialogs and safe to call directly from a test (see the
+        module docstring's "Testability" section).
+        """
         start_dir = self._config.default_projects_root or Path.home()
         directory = QFileDialog.getExistingDirectory(
             self, "Open project folder", str(start_dir)
         )
         if not directory:
             return
-        self.open_project_at(Path(directory))
+        path = Path(directory)
+        try:
+            session = open_project(path)
+        except ProjectLockHeldError as exc:
+            self._prompt_resolve_lock_conflict(path, exc)
+            return
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Open project")
+            self._forget_recent_project(path)
+            return
+        self._adopt_session(session)
+
+    def _prompt_resolve_lock_conflict(
+        self, directory: Path, conflict: ProjectLockHeldError
+    ) -> None:
+        """Show the lock-conflict choices and act on whichever one is picked.
+
+        Never removes the lock or opens read-only on its own (Phase 10, §3):
+        every choice here is the explicit human decision the phase brief
+        requires before a lock - even one this process judges likely stale -
+        is disturbed.
+        """
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Project already open")
+        staleness = (
+            "It looks like that process is no longer running, but this cannot "
+            "be confirmed with certainty."
+            if conflict.holder.likely_stale
+            else "That process appears to still be running."
+        )
+        box.setText(
+            f"{conflict.holder.describe()}\n\n{staleness}\n\n"
+            "Opening for editing anyway could let two processes write to the "
+            "same project database at once."
+        )
+        read_only_button = box.addButton("Open Read-Only", QMessageBox.ButtonRole.ActionRole)
+        remove_button = box.addButton(
+            "Remove Lock and Open", QMessageBox.ButtonRole.DestructiveRole
+        )
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        clicked = box.clickedButton()
+
+        if clicked is read_only_button:
+            self.open_project_resolving_lock(directory, action="read_only")
+        elif clicked is remove_button:
+            self.open_project_resolving_lock(directory, action="force")
 
     def _show_about(self) -> None:
         """Show the About dialog: identity, authorship and licence."""
         AboutDialog(self).exec()
+
+    def _prompt_project_health(self) -> None:
+        """Open Project Health & Recovery for the current project."""
+        if self._session is None:
+            return
+        ProjectHealthDialog(self._session.database, self._session.root, self).exec()
 
     def show_settings(self) -> None:
         """Open the Settings dialog and apply whatever the user accepted.
@@ -858,7 +972,8 @@ class MainWindow(QMainWindow):
         if self._session is not None:
             self._session.close()
         self._session = session
-        self._recover_interrupted_batches(session)
+        if not session.read_only:
+            self._recover_interrupted_batches(session)
         self._remember_recent_project(session.root)
         self._broadcast_project_change()
         self.statusBar().showMessage(f"Project '{session.name}' is open", STATUS_MESSAGE_MS)
@@ -894,6 +1009,7 @@ class MainWindow(QMainWindow):
 
         has_project = self._session is not None
         self.close_project_action.setEnabled(has_project)
+        self.project_health_action.setEnabled(has_project)
 
         if self._session is None:
             self.setWindowTitle(APPLICATION_NAME)

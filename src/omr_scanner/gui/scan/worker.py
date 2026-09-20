@@ -47,6 +47,7 @@ Progress, and why it is *pulled* rather than pushed:
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, QThread, Signal
@@ -62,6 +63,7 @@ from omr_scanner.services import (
     ScanResult,
     process_batch,
     recognise_scan,
+    scan_provenance,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -69,6 +71,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services import BatchRecorder, ProgressSnapshot
+
+_LOGGER = logging.getLogger(__name__)
 
 TERMINAL_OUTCOMES: dict[str, JobStatus] = {
     RecognitionOutcome.COMPLETE.value: JobStatus.SUCCESS,
@@ -182,6 +186,7 @@ class BatchWorker(QThread):
 
     def run(self) -> None:
         """Process the batch. Runs on the worker thread; touches no widget."""
+        self._hash_sources_for_provenance()
         try:
             report = process_batch(
                 self._paths,
@@ -204,6 +209,23 @@ class BatchWorker(QThread):
         self._flush_recorder()
         self._tracker.finish(cancelled=report.cancelled)
         self.finished_report.emit(report)
+
+    def _hash_sources_for_provenance(self) -> None:
+        """Fingerprint this batch's source files, off the GUI thread (Phase 10, §9/§10).
+
+        A no-op with no project open (no recorder, nothing to persist a hash
+        into) - which is exactly the benchmark and headless-tool situation.
+        Never allowed to fail the run: provenance is a safety net, not a
+        precondition for reading a sheet.
+        """
+        if self._recorder is None:
+            return
+        try:
+            scan_provenance.compute_hashes_for_batch(
+                self._recorder.database, self._recorder.batch_id
+            )
+        except Exception:
+            _LOGGER.exception("Content-hash provenance pass failed; processing continues")
 
     def _flush_recorder(self) -> None:
         """Commit whatever the recorder still holds, if there is one."""

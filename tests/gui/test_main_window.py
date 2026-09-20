@@ -217,6 +217,56 @@ def test_opening_an_invalid_folder_reports_an_error(
     assert silent_message_boxes[0][0] == "Open project"
 
 
+def test_opening_a_locked_project_directly_reports_an_error(
+    window: MainWindow, workspace: Path, silent_message_boxes: list[tuple[str, str]]
+):
+    """Confirm `open_project_at` reports a lock conflict as a plain error.
+
+    It never shows the resolution dialog (Phase 10, §3) - only the ordinary
+    error report, so it stays a plain, hang-free, testable method. The
+    three-choice follow-up belongs to `_prompt_open_project` alone.
+    """
+    from omr_scanner.services import create_project
+
+    with create_project(workspace, "Locked Exam") as first:
+        root = first.root
+
+        opened = window.open_project_at(root)
+
+        assert opened is False
+        assert window.session is None
+        assert silent_message_boxes
+        assert silent_message_boxes[0][0] == "Open project"
+
+
+def test_open_project_resolving_lock_can_open_read_only(
+    window: MainWindow, workspace: Path
+):
+    from omr_scanner.services import create_project
+
+    with create_project(workspace, "Read Only Via Resolve") as first:
+        root = first.root
+
+        opened = window.open_project_resolving_lock(root, action="read_only")
+
+        assert opened is True
+        assert window.session is not None
+        assert window.session.read_only is True
+
+
+def test_open_project_resolving_lock_can_force_open(window: MainWindow, workspace: Path):
+    from omr_scanner.services import create_project
+
+    with create_project(workspace, "Force Via Resolve") as first:
+        root = first.root
+
+        opened = window.open_project_resolving_lock(root, action="force")
+
+        assert opened is True
+        assert window.session is not None
+        assert window.session.read_only is False
+
+
 def test_recent_projects_are_recorded_in_the_configuration(
     window: MainWindow, workspace: Path, tmp_path: Path
 ):

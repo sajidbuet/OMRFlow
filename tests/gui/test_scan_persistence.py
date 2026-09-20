@@ -472,7 +472,7 @@ class TestCrashRecoveryThroughTheWindow:
     def test_opening_a_project_repairs_stale_processing_rows(
         self, qtbot, tmp_path, workspace, template
     ):
-        from omr_scanner.services import create_project, open_project
+        from omr_scanner.services import create_project
 
         session = create_project(workspace, "Interrupted Examination")
         root = session.root
@@ -492,14 +492,13 @@ class TestCrashRecoveryThroughTheWindow:
         qtbot.addWidget(window)
         assert window.open_project_at(root) is True
 
-        reopened = open_project(root)
-        try:
-            summary = batch_store.load_summary(reopened.database, batch_id)
-            assert summary.status == BatchStatus.INTERRUPTED.value
-            assert summary.pending == 4
-            assert summary.failed == 0
-        finally:
-            reopened.close()
+        # A second live open of the same project is now refused (Phase 10,
+        # §3) - the window's own already-open session is what this test
+        # inspects, rather than opening a second one.
+        summary = batch_store.load_summary(window.session.database, batch_id)
+        assert summary.status == BatchStatus.INTERRUPTED.value
+        assert summary.pending == 4
+        assert summary.failed == 0
         window.close_project()
 
     def test_a_stale_row_is_never_recovered_as_a_failure(

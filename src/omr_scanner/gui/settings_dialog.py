@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.config import AppConfig
 from omr_scanner.config.processing import (
+    MAX_CONFIGURABLE_OPENCV_THREADS,
     ProcessingMode,
     ProcessingSettings,
     detected_cpu_count,
@@ -109,6 +110,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.addWidget(self._build_processing_group())
+        layout.addWidget(self._build_advanced_group())
         layout.addWidget(self._build_diagnostics_group())
         layout.addWidget(self._build_reviewer_group())
 
@@ -166,6 +168,41 @@ class SettingsDialog(QDialog):
         self.explanation_label.setObjectName("processingExplanationLabel")
         self.explanation_label.setWordWrap(True)
         form.addRow(self.explanation_label)
+        return box
+
+    def _build_advanced_group(self) -> QGroupBox:
+        """Build the Advanced section: OpenCV threads and worker recycling.
+
+        Phase 10, §16/§18. Deliberately its own, collapsed-looking section
+        below the everyday "Parallel workers" choice: these two numbers tune
+        *how* a worker process behaves, not *how many* run, and a normal
+        operator never needs to touch either - the defaults are chosen from
+        measurement (``development/PHASE_10_HANDOFF.md``), not left to guess.
+        """
+        box = QGroupBox("Advanced (production hardening)")
+        box.setObjectName("advancedSettingsGroup")
+        form = QFormLayout(box)
+
+        self.opencv_threads_spin = QSpinBox()
+        self.opencv_threads_spin.setObjectName("opencvThreadsSpinBox")
+        self.opencv_threads_spin.setRange(1, MAX_CONFIGURABLE_OPENCV_THREADS)
+        self.opencv_threads_spin.setToolTip(
+            "OpenCV's own internal thread count inside each worker process. "
+            "Leave at 1 unless you have measured a benefit on this machine - "
+            "the parallel workers above are what OMRFlow uses for speed."
+        )
+        form.addRow("OpenCV threads per worker:", self.opencv_threads_spin)
+
+        self.worker_recycle_spin = QSpinBox()
+        self.worker_recycle_spin.setObjectName("workerRecycleSpinBox")
+        self.worker_recycle_spin.setRange(0, 100_000)
+        self.worker_recycle_spin.setSpecialValueText("Disabled")
+        self.worker_recycle_spin.setToolTip(
+            "Replace every worker process after this many sheets, pool-wide, "
+            "to bound native-library memory growth on a very long run. "
+            "0 disables recycling."
+        )
+        form.addRow("Recycle workers after (sheets):", self.worker_recycle_spin)
         return box
 
     def _build_reviewer_group(self) -> QGroupBox:
@@ -268,6 +305,8 @@ class SettingsDialog(QDialog):
         # into range rather than rejected - the configuration file travels with
         # the user, the hardware does not.
         self.worker_spin.setValue(min(processing.worker_count, self._cpu_count))
+        self.opencv_threads_spin.setValue(processing.opencv_threads)
+        self.worker_recycle_spin.setValue(processing.worker_recycle_after)
         self._refresh()
 
     @property
@@ -290,6 +329,8 @@ class SettingsDialog(QDialog):
             worker_count=self.worker_spin.value(),
             diagnostics_enabled=self.diagnostics_checkbox.isChecked(),
             diagnostics_dir=self._diagnostics_dir,
+            opencv_threads=self.opencv_threads_spin.value(),
+            worker_recycle_after=self.worker_recycle_spin.value(),
         )
 
     # ------------------------------------------------------------------

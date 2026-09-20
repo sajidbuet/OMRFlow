@@ -35,6 +35,10 @@ entities, it finds the intended shape and relationships already agreed.
 | ReportTemplateAssociation | Implemented (Phase 9) | `report_template_association` table |
 | ReportLayoutConfig | Implemented (Phase 9) | `report_layout_config` table |
 | GeneratedReport | Implemented (Phase 9) | `generated_report` table |
+| BatchScanHistory (superseded reprocessing results) | Implemented (Phase 10) | `batch_scan_history` table |
+| ProcessingManifest (reproducibility snapshot) | Implemented (Phase 10) | `processing_manifest` table |
+| Content-hash provenance (per scan) | Implemented (Phase 10) | `batch_scan.content_sha256`/`content_hash_algorithm` columns |
+| Project backup manifest | Implemented (Phase 10) | Filesystem sidecar JSON, deliberately **not** a database table - see below |
 
 ## Entity relationships
 
@@ -523,6 +527,8 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `report_template_association` | One set's chosen result template and column mapping. | Phase 9 (migration 6) |
 | `report_layout_config` | Header/logo/font/page-setup configuration, project or per-set. | Phase 9 (migration 6) |
 | `generated_report` | One report-generation attempt and its provenance. | Phase 9 (migration 6) |
+| `batch_scan_history` | A scan's superseded status/outcome/result, archived before reprocessing. Append-only, trigger-enforced, like `audit_event`. | Phase 10 (migration 7) |
+| `processing_manifest` | A reproducibility snapshot, assembled from Phases 5-9's own tables rather than duplicating them. | Phase 10 (migration 7) |
 
 ### Schema version 3 (Phase 6)
 
@@ -614,6 +620,36 @@ A project scored before Phase 9 opens normally and simply has no template
 association or generated reports until one is created. Asserted the same way
 migration 5 was: a real project wound back to version 5, reopened, and checked
 its Phase 8 data survived and a template can then be associated.
+
+### Schema version 7 (Phase 10)
+
+`_migration_007_production_hardening` adds `content_sha256` and
+`content_hash_algorithm` columns to `batch_scan` (via `ALTER TABLE ADD
+COLUMN`, following migration 4's own precedent for adding columns to an
+existing table), and creates `batch_scan_history` and `processing_manifest`,
+plus `batch_scan_history`'s two append-only triggers.
+
+Existing rows are **left at the column defaults** (`''`/`'sha256'`) rather
+than backfilled: hashing a scan already on disk means reading it again, and
+a project upgraded from an earlier schema version is simply re-hashed the
+next time it is opened for reprocessing or a health check, rather than
+paying that cost for every project the moment it upgrades.
+
+A project processed before Phase 10 opens normally, gains the two new
+tables and columns with no reprocessing history and no content hashes yet,
+and every earlier phase's data is untouched - asserted by
+`TestMigrationOntoAnExistingPhase9Project`, which winds a real project back
+to version 6, drops both new tables, reopens it, and checks the tables
+return and the append-only triggers refuse an `UPDATE` and a `DELETE`
+against a freshly inserted row.
+
+Backups (`services.project_backup`) are deliberately **not** a database
+table. A backup's manifest lives beside it on disk as a sidecar JSON file,
+written only after the backup itself finishes and is hashed - so a backup
+of a database that is itself damaged can still be found and read from the
+filesystem, and so an incomplete backup (a `.sqlite3` file with no
+manifest) can never be recorded as complete by the very database it might
+be a backup *of*.
 
 Each phase adds its tables together with a migration; see
 `docs/DEVELOPMENT_GUIDE.md`.

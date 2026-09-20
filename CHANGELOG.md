@@ -8,6 +8,75 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Added — Phase 10
+
+Integration, Recovery & Production Hardening: the pipeline survives abrupt
+termination, detects its own damage, avoids silent duplication, and
+demonstrates that its architecture scales to a 100,000-sheet examination.
+No recognition, scoring or reporting rule changed. Full detail:
+`development/PHASE_10_HANDOFF.md`.
+
+- **`omr_scanner.services.scan_provenance`**: streaming SHA-256 content
+  hashing (bounded memory regardless of file size), exact-duplicate-scan
+  detection, source-scan availability classification (present/missing/
+  changed), and hash-verified relinking of a moved scan. Wired into the
+  Scan page's background worker thread, never the GUI thread.
+- **`omr_scanner.services.project_lock`**: a second OMRFlow process cannot
+  open a project another already has open for writing. A lock left behind
+  by a crash is never removed automatically; the operator is shown who (or
+  what) held it and chooses cancel, read-only, or an explicit override.
+- **A genuine SQLite read-only connection mode**
+  (`database.engine.open_project_database(read_only=True)`), refusing every
+  write at the database level, not by application convention alone.
+- **`omr_scanner.services.project_backup`**: snapshots via SQLite's own
+  online backup API (safe against a live database, never a raw file copy),
+  with a manifest written only after the backup finishes and is hashed, so
+  an interrupted backup can never be mistaken for a complete one.
+- **`omr_scanner.services.project_health`**: an on-demand comprehensive
+  check (structural integrity, foreign keys, schema version, stale jobs,
+  source-scan availability, unresolved Phase 6/7 exceptions, sets missing a
+  verified Phase 8 key, backup presence, free disk space) with deliberately
+  no repair action.
+- **Reprocessing** (`services.batch_store.mark_for_reprocessing` and its
+  `reprocess_failed_scans`/`reprocess_batch` wrappers): a sheet's superseded
+  machine reading is archived, append-only, before it is reset to `pending`
+  — reprocessed twice, it keeps both readings on record.
+- **Worker recycling and configurable OpenCV threads**
+  (`config.processing.ProcessingSettings`), exposed under *File → Settings →
+  Advanced*.
+- **`omr_scanner.evaluation.stress_dataset`**: a deterministic,
+  index-addressable synthetic-sheet generator for the mandatory
+  100,000-sheet stress test — sheet *N* reproduces independently from
+  `(seed, N)` alone, across 15 case kinds.
+- **`omr_scanner.evaluation.stress_runner`** and
+  **`omr_scanner.tools.benchmark_stress`**: bounded-disk-usage orchestration
+  reusing the unmodified batch pipeline, and a headless CLI to run or resume
+  a stress batch of any size, with telemetry and a JSON report.
+- **`gui.health_dialog.ProjectHealthDialog`**: one dialog, *Tools → Project
+  Health / Recovery…*, for both the health check and backup/restore.
+
+### Fixed — Phase 10 (found during its own testing, before release)
+
+- A modal-dialog-in-a-testable-method hang was designed around, not
+  reintroduced, for the new project-lock-conflict dialog — the third time
+  this defect class has been specifically guarded against (Phases 8 and 9
+  each found and fixed a real instance).
+- `ProcessPoolExecutor`'s own `max_tasks_per_child` parameter was found, by
+  a minimal reproduction with no OMRFlow code involved, to hang permanently
+  on this platform after one worker-recycle generation. Worker recycling is
+  implemented instead as a sequence of short-lived pools.
+- The stress-test virtual source-path scheme (`stress://seed/index`) did
+  not survive a `pathlib.Path` round trip on Windows, silently losing its
+  own prefix. Fixed by choosing a path-separator-free identity string.
+- The benchmark CLI's first version closed only a `ProjectDatabase`, never
+  the `ProjectSession` that holds the project lock — every run after the
+  first refused to open, even after a clean exit.
+- Killing the batch coordinator process leaves its worker processes
+  running, orphaned (observed directly during forced kill/resume testing).
+  Does not affect data integrity (workers never had database write access);
+  automatic cleanup is not yet implemented — see
+  `development/PHASE_10_HANDOFF.md` §8/§12.
+
 ### Added — Phase 9
 
 Result Management & Reporting: Phase 8's stored marks become the workbooks an

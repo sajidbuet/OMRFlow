@@ -631,3 +631,44 @@ class TestSharedAllocator:
             "2103123_c.png",
         ]
         assert len(list(output.iterdir())) == 4
+
+
+def _by_index(results: list[tuple[int, object]]) -> list[tuple[int, str]]:
+    return sorted(
+        ((index, result.identifier_value) for index, result in results),
+        key=lambda pair: pair[0],
+    )
+
+
+class TestWorkerRecyclingAndOpenCvThreads:
+    """Phase 10, §16/§18: neither knob may change what is recognised or lose a job."""
+
+    def test_recycling_every_two_sheets_produces_the_same_results_as_no_recycling(
+        self, template, batch_of_six
+    ):
+        without_recycling = list(
+            recognise_in_parallel(batch_of_six, template, workers=2, max_tasks_per_child=None)
+        )
+        with_recycling = list(
+            recognise_in_parallel(
+                batch_of_six, template, workers=2, max_tasks_per_child=2
+            )
+        )
+
+        assert _by_index(without_recycling) == _by_index(with_recycling)
+        # Every sheet arrived exactly once - recycling a worker between tasks
+        # never drops or duplicates a job.
+        assert len(with_recycling) == len(batch_of_six)
+        assert not multiprocessing.active_children()
+
+    def test_a_small_opencv_thread_count_does_not_change_recognition(
+        self, template, batch_of_six
+    ):
+        default_threads = list(
+            recognise_in_parallel(batch_of_six, template, workers=2, opencv_threads=1)
+        )
+        two_threads = list(
+            recognise_in_parallel(batch_of_six, template, workers=2, opencv_threads=2)
+        )
+
+        assert _by_index(default_threads) == _by_index(two_threads)

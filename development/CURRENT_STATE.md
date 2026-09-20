@@ -1,8 +1,8 @@
 # Current state
 
-**Updated:** 2026-09-19
+**Updated:** 2026-09-20
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented, independently audited and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. The audit found nine defects that the green suite had not, three of which produced quietly wrong marks; all are repaired and pinned by tests. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 (Result Management & Reporting) implemented and tested: each set's own result/absentee workbook is the authoritative roster (order, Roll No., name, existing absentee markers), Phase 7/8 supply attendance and marks, generation never opens the original template for writing (proven by SHA-256), every present candidate's rank is an Excel `RANK.EQ` formula the application's own ranking is checked against directly, a readiness check blocks Final Export on any registered/template/score disagreement, and an existing output file is never silently overwritten. During its own testing this phase independently rediscovered the exact "modal dialog opened from an automatic worker-completion callback can hang the application" defect Phase 8's audit had already fixed once, in a brand-new page - both are now fixed. No real examination office's own workbook has been reported on, and PDF export (via LibreOffice) has no real-engine verification in this build environment, since LibreOffice was not installed there.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented, independently audited and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. The audit found nine defects that the green suite had not, three of which produced quietly wrong marks; all are repaired and pinned by tests. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 (Result Management & Reporting) implemented and tested: each set's own result/absentee workbook is the authoritative roster (order, Roll No., name, existing absentee markers), Phase 7/8 supply attendance and marks, generation never opens the original template for writing (proven by SHA-256), every present candidate's rank is an Excel `RANK.EQ` formula the application's own ranking is checked against directly, a readiness check blocks Final Export on any registered/template/score disagreement, and an existing output file is never silently overwritten. During its own testing this phase independently rediscovered the exact "modal dialog opened from an automatic worker-completion callback can hang the application" defect Phase 8's audit had already fixed once, in a brand-new page - both are now fixed. No real examination office's own workbook has been reported on, and PDF export (via LibreOffice) has no real-engine verification in this build environment, since LibreOffice was not installed there. Phase 10 (Integration, Recovery & Production Hardening) implemented and tested: content-hash provenance and duplicate-scan detection, project locking with an explicit never-automatic stale-lock override, a genuine SQLite read-only mode, SQLite-online-API backups with a manifest-written-last completeness guarantee, a database health check (integrity, foreign keys, schema version, unresolved exceptions, missing keys, backup presence, free disk space) with deliberately no repair path, reprocessing primitives that archive a sheet's superseded reading before resetting it, worker recycling and configurable OpenCV threads, a deterministic index-addressable 100,000-sheet synthetic stress-dataset generator, a headless benchmark CLI with telemetry, and a Project Health & Recovery dialog. Real, forced (not simulated) process terminations were run and resumed cleanly at 100, 1,000 and 10,000 sheets; full 100,000-sheet batch *registration* was executed and measured directly. The mandatory full-scale 100,000-sheet *processing* run and its 1%/25%/50%/75%/99% kill-and-resume acceptance matrix were not executed - an explicit, scoped deferral, not a technical limitation - and lazy Qt models for large result tables were not built, both disclosed in `development/PHASE_10_HANDOFF.md`.
 
 Update this file at the end of every phase.
 
@@ -600,7 +600,14 @@ project-wide view of either, and a cohort split across two batches must be
 reconciled twice; reporting is per batch and per roster for the same reason.
 Reviewer identity is a name, not an account: there is no authentication, so the
 ledger records who *said* they made a decision. There is no Windows Excel COM
-PDF adapter - PDF export requires LibreOffice.
+PDF adapter - PDF export requires LibreOffice. The Scan, Results, Resolve and
+Attendance tables are item-based `QTableWidget`s, not lazy Qt models - a
+disclosed Phase 10 gap against a 100,000-row *display* specifically (see
+`development/PHASE_10_HANDOFF.md`); the backend was verified at that scale
+independently of the GUI. A forced kill of the batch coordinator leaves its
+worker processes running, orphaned, until found and terminated by hand -
+data is never affected (workers never had database write access), but
+nothing cleans them up automatically yet.
 
 **This build must not be used for examination processing.** Its recognition has
 been validated against one real sheet and geometric variants of it, not against
@@ -775,14 +782,16 @@ perspective, JPEG compression and cropping is tabulated in
 
 ## Test status
 
-3004 tests passing, 1 skipped (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
-NumPy 2.5.3, Windows 11).
+3332 tests passing, 2 skipped, plus 1 explicitly-run large-scale test not
+part of the default suite (Python 3.12.7, PySide6 6.11.2, OpenCV 5.0.0,
+NumPy 2.5.3, psutil 7.2.2, Windows 11).
 
 ```text
-pytest                3004 passed, 1 skipped
-ruff check .          All checks passed
-mypy                  Success: no issues found in 130 source files
-run_gui_smoke_tests   48/48 checks passed
+pytest (default set)     3332 passed, 2 skipped, 1 deselected
+pytest -m stress         1 passed (10,000-sheet real forced-kill/resume)
+ruff check .             All checks passed
+mypy                     Success: no issues found in 150 source files
+run_gui_smoke_tests      52/52 checks passed
 ```
 
 314 of those are Phase 8 (Answer-Key & Scoring Engine):
@@ -839,6 +848,43 @@ modal dialog opened from a worker-completion callback can hang the
 application indefinitely" defect Phase 8's own audit had already fixed once
 (`ResultsPage._on_scored`) - this time in `ReportsPage._on_generated`, for the
 routine case of a blocked or failed set in a multi-set generation run.
+
+130 of those are Phase 10 (Integration, Recovery & Production Hardening):
+`tests/unit/test_scan_provenance.py` (18, streaming SHA-256 hashing, exact-
+duplicate detection, availability classification, verified relinking),
+`tests/unit/test_project_lock.py` (10), `tests/unit/test_project_backup.py`
+(11, manifest-written-last completeness, tamper detection, never-overwrite
+restore), `tests/unit/test_project_health.py` (13, including a database
+damaged at the byte level, not only a synthetic flag),
+`tests/unit/test_readonly_defaults.py` (2), `tests/unit/test_stress_dataset.py`
+(18, determinism, distribution, the exact-duplicate and duplicate-roll case
+kinds, a Windows-path round-trip regression test),
+`tests/unit/test_telemetry.py` (9), `tests/integration/test_production_hardening.py`
+(2), `tests/integration/test_reprocessing.py` (8, real recognition, archived
+history, one-sheet isolation), `tests/integration/test_stress_runner.py` (8,
+bounded chunk materialisation, permanent-identity rewriting, resume),
+`tests/integration/test_stress_kill_resume.py` (2 in the default run - 100
+and 1,000 real forced-kill sheets - plus 1 marked `stress`, 10,000 sheets,
+also passing), `tests/gui/test_health_dialog.py` (13), and 15 additions to
+existing files (locking/read-only in `test_project_service.py`, the
+lock-conflict dialog split in `test_main_window.py`, worker recycling and
+OpenCV threads in `test_parallel_batch.py`, the Advanced settings section in
+`test_processing_settings_gui.py`). Confirmed end-to-end through
+`scripts/run_gui_smoke_tests.py` (52/52, unchanged - Phase 10 added no new
+smoke checks of its own this pass) and by genuine, forced process
+terminations of the real CLI at 100, 1,000 and 10,000 sheets, each verified
+to lose nothing and duplicate nothing on resume.
+
+This phase's own testing found and fixed two genuinely new defects (a
+Windows-incompatible virtual-path scheme, and a project-lock never released
+by the benchmark CLI) and one platform limitation that changed the worker-
+recycling design entirely: `ProcessPoolExecutor`'s own `max_tasks_per_child`
+parameter was found, in a minimal reproduction with no OMRFlow code
+involved, to hang permanently on this platform after one recycle
+generation. Detail in `development/PHASE_10_HANDOFF.md` §8. The mandatory
+full-scale 100,000-sheet kill/resume acceptance matrix was not executed -
+an explicit, scoped deferral, not a technical limitation; see the handoff
+for the exact commands to run it.
 Detail in `development/PHASE_09_HANDOFF.md` §9.
 
 279 of those are Phase 7 (Candidate & Attendance Reconciliation):

@@ -40,6 +40,12 @@ from omr_scanner.domain.project import (
     ProjectMetadata,
 )
 from omr_scanner.errors import ProjectExistsError, ProjectValidationError
+from omr_scanner.services.project_lock import (
+    ProjectLock,
+    ProjectLockHeldError,
+    acquire,
+    force_acquire,
+)
 from omr_scanner.utils.json_io import read_json, write_json_atomic
 from omr_scanner.utils.logging_setup import attach_log_file, detach_log_file
 
@@ -48,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ProjectDatabase",
+    "ProjectLockHeldError",
     "ProjectSession",
     "create_project",
     "is_project_directory",
@@ -84,11 +91,19 @@ class ProjectSession:
         project: Project,
         database: ProjectDatabase,
         log_handler: logging.Handler | None = None,
+        *,
+        lock: ProjectLock | None = None,
     ) -> None:
         self.project = project
         self.database = database
         self._log_handler = log_handler
+        self._lock = lock
         self._closed = False
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this session's database connection may not be written to."""
+        return self.database.read_only
 
     @property
     def name(self) -> str:
@@ -118,6 +133,9 @@ class ProjectSession:
             detach_log_file(self._log_handler)
             self._log_handler = None
         self.database.close()
+        if self._lock is not None:
+            self._lock.release()
+            self._lock = None
 
     def __enter__(self) -> ProjectSession:
         """Enter a context manager that closes the session on exit."""
@@ -193,17 +211,37 @@ def create_project(
 
     logger.info("Created project '%s' at %s", metadata.name, layout.root)
 
-    database = open_project_database(layout.database_file, create=True)
+    lock = acquire(layout.root)
+    try:
+        database = open_project_database(layout.database_file, create=True)
+    except Exception:
+        lock.release()
+        raise
     _store_identity(database, metadata)
 
-    return _start_session(Project(metadata, layout), database)
+    return _start_session(Project(metadata, layout), database, lock=lock)
 
 
-def open_project(project_directory: Path) -> ProjectSession:
+def open_project(
+    project_directory: Path,
+    *,
+    read_only: bool = False,
+    force_lock: bool = False,
+) -> ProjectSession:
     """Open an existing project directory.
 
     Args:
         project_directory: Directory containing ``project.json``.
+        read_only: Open without taking the write lock and without allowing
+            any database write (Phase 10, §42). Chosen by the operator, or by
+            the caller automatically when the schema is newer than this
+            build supports (§8) - never silently.
+        force_lock: Remove an existing lock file before opening, because the
+            operator has already been shown it and decided it is safe to
+            remove. Ignored when ``read_only`` is set - a read-only open
+            never needs the lock at all. See
+            :mod:`omr_scanner.services.project_lock` for why this module
+            never makes that decision on its own.
 
     Returns:
         An open :class:`ProjectSession`.
@@ -211,7 +249,10 @@ def open_project(project_directory: Path) -> ProjectSession:
     Raises:
         ProjectValidationError: The directory is not a valid project.
         DatabaseError: The database exists but could not be opened or migrated.
-        SchemaVersionError: The database was written by a newer build.
+        SchemaVersionError: Not read-only, and the database was written by a
+            newer build.
+        ProjectLockHeldError: Not read-only, ``force_lock`` was not given, and
+            another OMRFlow process already holds this project's lock.
     """
     metadata = read_project_metadata(project_directory)
     layout = ProjectLayout(project_directory)
@@ -224,14 +265,25 @@ def open_project(project_directory: Path) -> ProjectSession:
 
     # Missing sub-directories are repaired rather than rejected: a synchronisation
     # tool that drops empty folders must not make an otherwise valid project
-    # unopenable.
-    for directory in layout.all_directories():
-        directory.mkdir(exist_ok=True)
+    # unopenable. Never attempted in read-only mode.
+    if not read_only:
+        for directory in layout.all_directories():
+            directory.mkdir(exist_ok=True)
 
-    database = open_project_database(layout.database_file)
+    if read_only:
+        database = open_project_database(layout.database_file, read_only=True)
+        logger.info("Opened project '%s' at %s (read-only)", metadata.name, layout.root)
+        return _start_session(Project(metadata, layout), database, lock=None)
+
+    lock = force_acquire(layout.root) if force_lock else acquire(layout.root)
+    try:
+        database = open_project_database(layout.database_file)
+    except Exception:
+        lock.release()
+        raise
     logger.info("Opened project '%s' at %s", metadata.name, layout.root)
 
-    return _start_session(Project(metadata, layout), database)
+    return _start_session(Project(metadata, layout), database, lock=lock)
 
 
 def read_project_metadata(project_directory: Path) -> ProjectMetadata:
@@ -299,7 +351,9 @@ def is_project_directory(path: Path) -> bool:
     return layout.project_file.is_file() and layout.database_file.is_file()
 
 
-def _start_session(project: Project, database: ProjectDatabase) -> ProjectSession:
+def _start_session(
+    project: Project, database: ProjectDatabase, *, lock: ProjectLock | None = None
+) -> ProjectSession:
     """Attach the per-project log file and build the session."""
     handler: logging.Handler | None = None
     try:
@@ -316,7 +370,7 @@ def _start_session(project: Project, database: ProjectDatabase) -> ProjectSessio
         project.name,
         database.schema_version,
     )
-    return ProjectSession(project, database, handler)
+    return ProjectSession(project, database, handler, lock=lock)
 
 
 def _store_identity(database: ProjectDatabase, metadata: ProjectMetadata) -> None:

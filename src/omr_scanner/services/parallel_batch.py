@@ -110,6 +110,32 @@ the pool starts, not once per sheet: they are the same for every page of a
 batch, and re-sending (and re-validating) them a thousand times would cost more
 than some of the pages."""
 
+DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
+"""Sheets processed, across the whole pool, before every worker is replaced
+(Phase 10, §16). ``None`` means a worker lives for the whole run, which is
+what every caller before this phase already did.
+
+**Deliberately not implemented via** :class:`~concurrent.futures.ProcessPoolExecutor`'s
+own ``max_tasks_per_child`` constructor argument, despite that being the
+obvious first choice. During this phase's own testing, a minimal
+reproduction with no OMRFlow code involved at all - just
+``ProcessPoolExecutor(max_workers=2, mp_context=spawn, initializer=...,
+max_tasks_per_child=2)`` submitting six trivial tasks - hung permanently
+after exactly four of the six completed, on this project's supported
+platform (Python 3.12.7, Windows, the ``spawn`` start method this module
+already requires). The pool's automatic worker-replacement logic did not
+resubmit the two tasks still queued once both original workers had reached
+their limit. Given that finding, shipping the stdlib parameter as "worker
+recycling" would mean a real examination batch could hang indefinitely the
+first time enough sheets crossed a recycle boundary - exactly the failure
+mode this whole phase exists to prevent, and worse than having no recycling
+at all. :func:`recognise_in_parallel` instead recycles by running a fresh,
+short-lived pool per bounded *slice* of the batch (see
+:func:`_recognise_batch_in_parallel`): provably safe, at the cost of a full
+drain (every in-flight sheet in a slice finishes) at each recycle boundary
+rather than a seamless mid-stream worker swap. See
+``development/PHASE_10_HANDOFF.md`` for the reproduction."""
+
 
 @dataclass(frozen=True, slots=True)
 class WorkerOutcome:
@@ -131,7 +157,9 @@ class WorkerOutcome:
 
 
 def worker_initialise(
-    template: OmrTemplate, options: RecognitionOptions | None = None
+    template: OmrTemplate,
+    options: RecognitionOptions | None = None,
+    opencv_threads: int = 1,
 ) -> None:
     """Prepare one worker process. Runs once per process, in that process.
 
@@ -140,6 +168,9 @@ def worker_initialise(
         options: Engine options, or ``None`` for the defaults. Immutable, so
             every worker reads with exactly the settings the parent chose and
             no worker can change another's.
+        opencv_threads: OpenCV's own internal thread count for this process
+            (Phase 10, §18). Defaults to one, for the reason the module
+            docstring gives: the processes are the parallelism.
     """
     global _WORKER_TEMPLATE, _WORKER_OPTIONS
     _WORKER_TEMPLATE = template
@@ -152,15 +183,15 @@ def worker_initialise(
     logging.getLogger("omr_scanner").addHandler(logging.NullHandler())
     logging.getLogger("omr_scanner").propagate = False
 
-    _limit_worker_threads()
+    _limit_worker_threads(opencv_threads)
 
 
-def _limit_worker_threads() -> None:
-    """Keep each worker to one OpenCV thread; the processes are the parallelism."""
+def _limit_worker_threads(opencv_threads: int = 1) -> None:
+    """Cap this worker's OpenCV thread pool; the processes are the parallelism."""
     try:
         import cv2
 
-        cv2.setNumThreads(1)
+        cv2.setNumThreads(max(1, opencv_threads))
     except Exception:  # pragma: no cover - OpenCV always present in practice
         pass
 
@@ -221,6 +252,8 @@ def recognise_in_parallel(
     workers: int,
     options: RecognitionOptions | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    opencv_threads: int = 1,
+    max_tasks_per_child: int | None = DEFAULT_MAX_TASKS_PER_CHILD,
 ) -> Generator[tuple[int, ScanResult], None, None]:
     """Recognise every scan in ``paths`` across ``workers`` processes.
 
@@ -238,25 +271,87 @@ def recognise_in_parallel(
             not yet started is cancelled, the pool is shut down, and iteration
             stops - sheets already inside a worker are allowed to finish, since
             OpenCV cannot be interrupted part-way through a warp.
+        opencv_threads: OpenCV's own internal thread count inside each worker
+            process (Phase 10, §18). See
+            :attr:`omr_scanner.config.processing.ProcessingSettings.opencv_threads`.
+        max_tasks_per_child: Sheets a worker process reads, in total across
+            the whole pool, before every worker is replaced with a fresh one
+            (Phase 10, §16), or ``None`` to let workers live for the whole
+            run. See
+            :attr:`omr_scanner.config.processing.ProcessingSettings.worker_recycle_after`
+            **and the important caveat in the module docstring** about why
+            this is implemented as a pool restart between bounded batches
+            rather than via :class:`~concurrent.futures.ProcessPoolExecutor`'s
+            own ``max_tasks_per_child`` parameter.
 
     Yields:
-        ``(index, result)`` in **completion** order, which on a multicore run is
-        not submission order. Restoring the submitted order is the caller's job
-        and is what keeps CSV rows and duplicate-name suffixes deterministic.
+        ``(index, result)`` in **completion** order within each recycle batch
+        (not overall submission order - restoring that is the caller's job,
+        as ever), and batches strictly in submission order relative to each
+        other.
+    """
+    if not paths:
+        return
+
+    total = len(paths)
+    batch_size = total if not max_tasks_per_child else max(max_tasks_per_child * workers, workers)
+    started = time.perf_counter()
+    delivered = 0
+    cancelled = False
+
+    for batch_start in range(0, total, batch_size):
+        batch_paths = paths[batch_start : batch_start + batch_size]
+        for local_index, result in _recognise_batch_in_parallel(
+            batch_paths,
+            template,
+            workers=workers,
+            options=options,
+            should_cancel=(None if cancelled else should_cancel),
+            opencv_threads=opencv_threads,
+        ):
+            yield batch_start + local_index, result
+            delivered += 1
+        if should_cancel is not None and should_cancel():
+            cancelled = True
+        if cancelled:
+            break
+
+    _LOGGER.info(
+        "Parallel recognition finished: %d of %d scan(s) on %d worker(s) in %.2fs",
+        delivered,
+        total,
+        workers,
+        time.perf_counter() - started,
+    )
+
+
+def _recognise_batch_in_parallel(
+    paths: Sequence[Path],
+    template: OmrTemplate,
+    *,
+    workers: int,
+    options: RecognitionOptions | None,
+    should_cancel: Callable[[], bool] | None,
+    opencv_threads: int,
+) -> Generator[tuple[int, ScanResult], None, None]:
+    """Run one pool, start to finish, over one bounded slice of the batch.
+
+    Everything :func:`recognise_in_parallel` used to do directly, unchanged -
+    this is that same bounded-submission loop, extracted so a fresh pool can
+    be started for each recycle-sized slice of a larger run. Indices yielded
+    are local to ``paths``; the caller offsets them back to the whole batch.
     """
     if not paths:
         return
 
     context = multiprocessing.get_context(START_METHOD)
-    started = time.perf_counter()
     pending: dict[Future[WorkerOutcome], int] = {}
-    delivered = 0
 
     executor = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=context,
         initializer=worker_initialise,
-        initargs=(template, options),
+        initargs=(template, options, opencv_threads),
     )
     queue_depth = max(workers * QUEUE_DEPTH_PER_WORKER, workers)
     submitted = 0
@@ -295,19 +390,11 @@ def recognise_in_parallel(
             for future in done:
                 index = pending.pop(future)
                 yield index, _outcome_of(future, index, paths[index]).result
-                delivered += 1
     finally:
         # `cancel_futures` drops anything still queued; the wait then lets the
         # sheets already inside a worker finish, so no process is killed
         # mid-write and none is left behind when the pool closes.
         executor.shutdown(wait=True, cancel_futures=True)
-        _LOGGER.info(
-            "Parallel recognition finished: %d of %d scan(s) on %d worker(s) in %.2fs",
-            delivered,
-            len(paths),
-            workers,
-            time.perf_counter() - started,
-        )
 
 
 def _outcome_of(

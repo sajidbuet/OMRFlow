@@ -65,9 +65,10 @@ class ProjectDatabase:
         path: The database file the engine points at.
     """
 
-    def __init__(self, engine: Engine, path: Path) -> None:
+    def __init__(self, engine: Engine, path: Path, *, read_only: bool = False) -> None:
         self._engine = engine
         self._path = path
+        self._read_only = read_only
         self._session_factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @property
@@ -84,6 +85,18 @@ class ProjectDatabase:
     def schema_version(self) -> int:
         """Schema version currently recorded in the database."""
         return current_schema_version(self._engine)
+
+    @property
+    def read_only(self) -> bool:
+        """Whether this connection was opened read-only (Phase 10, §42).
+
+        A read-only connection never runs migrations and any write inside
+        :meth:`session` fails at the SQLite level - the GUI uses this flag to
+        visibly disable actions rather than let them fail silently, per the
+        phase brief's explicit requirement that a read-only mode must never
+        let an action look like it succeeded when it could not write.
+        """
+        return self._read_only
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -131,6 +144,7 @@ def open_project_database(
     *,
     create: bool = False,
     echo: bool = False,
+    read_only: bool = False,
 ) -> ProjectDatabase:
     """Open a project database, applying any pending schema migrations.
 
@@ -140,17 +154,33 @@ def open_project_database(
             a missing file is an error, which is what distinguishes "open an
             existing project" from "create a new one".
         echo: Forward SQL statements to the logger; debugging aid only.
+        read_only: Open the file without writing to it at all - no migration
+            is attempted, even if one is pending, and every write inside
+            :meth:`ProjectDatabase.session` fails at the SQLite level.
+            Incompatible with ``create``. This is the safe-mode path (Phase
+            10, §8/§42): a project a newer build wrote, or one whose health
+            check failed, can still be *looked at* without risking a write
+            this build's migrations do not understand, or a write to a
+            database already known to be damaged.
 
     Returns:
-        An open :class:`ProjectDatabase` at :data:`~omr_scanner.database.SCHEMA_VERSION`.
+        An open :class:`ProjectDatabase`, at :data:`~omr_scanner.database.SCHEMA_VERSION`
+        unless ``read_only`` left it at whatever version the file already had.
 
     Raises:
-        DatabaseError: The file is missing (and ``create`` is ``False``), is not
-            a database, or could not be migrated.
-        SchemaVersionError: The file was written by a newer OMRFlow build.
+        DatabaseError: The file is missing, is not a database, ``read_only``
+            and ``create`` were both given, or (not read-only) a migration
+            failed.
+        SchemaVersionError: Not read-only, and the file was written by a newer
+            OMRFlow build.
     """
     resolved = database_path.expanduser().resolve()
 
+    if read_only and create:
+        raise DatabaseError(
+            "open_project_database: read_only and create are mutually exclusive",
+            user_message="Internal error opening the project database.",
+        )
     if not create and not resolved.is_file():
         raise DatabaseError(
             f"Project database not found: {resolved}",
@@ -161,6 +191,16 @@ def open_project_database(
             f"Cannot create database, directory does not exist: {resolved.parent}",
             user_message="The project folder does not exist.",
         )
+
+    if read_only:
+        # A URI connection, so SQLite itself refuses a write rather than this
+        # merely being an application-level convention nothing enforces.
+        engine = create_engine(
+            f"sqlite:///file:{resolved.as_posix()}?mode=ro&uri=true", echo=echo, future=True
+        )
+        event.listen(engine, "connect", _enable_sqlite_foreign_keys)
+        logger.info("Project database %s opened read-only", resolved.name)
+        return ProjectDatabase(engine, resolved, read_only=True)
 
     engine = create_engine(f"sqlite:///{resolved}", echo=echo, future=True)
     event.listen(engine, "connect", _enable_sqlite_foreign_keys)
