@@ -367,6 +367,81 @@ def _check_scan_page_reports_its_worker_plan(image: Path) -> CheckResult:
     return planned == 1, f"single core plans {planned} worker(s); label reads '{text}'"
 
 
+def _check_processing_section_is_readable(image: Path) -> CheckResult:
+    """Step 4's Processing buttons keep their full size, and never overlap.
+
+    Guards the layout defect this pass fixed: the left-hand control column
+    (Template + Scans + Processing + Output) has no scroll area, and its
+    combined minimum height - about 900 logical pixels, nearly half of which
+    is the Processing group's seven buttons, status line and progress readout
+    - used to become the *whole page's* minimum height. Any window shorter
+    than that (a laptop at 1366x768, a restored rather than maximised window,
+    or higher Windows display scaling) left Qt nothing to do but compress
+    every widget in the column below its own size hint, which is what made
+    button icons and text overlap.
+
+    The control column is now inside its own ``QScrollArea``, so this checks
+    both the symptom (no overlap, nothing squeezed, at the normal window size)
+    and the mechanism (the buttons still have their full, uncompressed size at
+    a genuinely short one, because the column scrolls instead).
+    """
+    from PySide6.QtWidgets import QScrollArea
+
+    harness = build_scan_page([image])
+    page = harness.page
+    buttons = [
+        page.process_all_button,
+        page.process_selected_button,
+        page.resume_button,
+        page.retry_failed_button,
+        page.reprocess_button,
+        page.cancel_button,
+        page.review_button,
+    ]
+
+    zero_sized = [b.objectName() for b in buttons if b.width() <= 0 or b.height() <= 0]
+    overlaps = [
+        (a.objectName(), b.objectName())
+        for i, a in enumerate(buttons)
+        for b in buttons[i + 1 :]
+        if a.geometry().intersects(b.geometry())
+    ]
+    squeezed = [b.objectName() for b in buttons if b.height() < b.sizeHint().height()]
+    status_collides = page.workers_label.geometry().intersects(
+        page.process_all_button.geometry()
+    )
+    footer_collides = page.review_button.geometry().intersects(
+        page.batch_state_label.geometry()
+    )
+
+    scroll_area = page.findChild(QScrollArea, "scanControlScrollArea")
+    page.resize(1280, 620)
+    harness.process_events(rounds=4)
+    still_full_size = all(b.geometry().height() == b.sizeHint().height() for b in buttons)
+    page.resize(1600, 1000)
+    harness.process_events(rounds=4)
+    survived_resize = all(b.isVisible() for b in buttons)
+
+    harness.shutdown()
+
+    ok = (
+        not zero_sized
+        and not overlaps
+        and not squeezed
+        and not status_collides
+        and not footer_collides
+        and scroll_area is not None
+        and still_full_size
+        and survived_resize
+    )
+    return ok, (
+        f"{len(buttons)} button(s): no overlap={not overlaps}, "
+        f"none squeezed={not squeezed}, scroll area present="
+        f"{scroll_area is not None}, full size kept at 1280x620="
+        f"{still_full_size}"
+    )
+
+
 def _check_multicore_batch_matches_single_core(image: Path) -> CheckResult:
     """Two copies of the real sample read identically on one core and on two."""
     import shutil
@@ -1379,6 +1454,10 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "scan page reports its worker plan",
                     lambda: _check_scan_page_reports_its_worker_plan(args.image),
+                ),
+                (
+                    "processing section is readable and never overlaps",
+                    lambda: _check_processing_section_is_readable(args.image),
                 ),
                 (
                     "multicore reads the same as single core",

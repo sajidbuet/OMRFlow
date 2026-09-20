@@ -898,6 +898,7 @@ class TestJCsvExport:
         assert record["value_source"] == "machine"
         assert record["unresolved_conflicts"] == "0"
 
+
     def test_the_roll_the_set_code_and_the_answers_are_correct(self, exported):
         _page, path = exported
         rows = self.read_rows(path)
@@ -949,3 +950,143 @@ class TestJCsvExport:
 
         assert written is not None
         assert written.suffix == ".csv"
+
+
+# ----------------------------------------------------------------------
+# Test K - the Processing section's layout (readability/robustness pass)
+# ----------------------------------------------------------------------
+def _lay_out(page: ScanPage, *, width: int, height: int) -> None:
+    """Give ``page`` real laid-out geometry at this size, without a visible window.
+
+    Geometry is only propagated to children on a show/resize cycle - a
+    scroll area or splitter keeps its default sizes otherwise - so a test that
+    reads a child's height has to ask for one. ``WA_DontShowOnScreen`` runs
+    the whole layout path without mapping a window onto the developer's
+    desktop. Same technique as
+    ``tests/gui/test_template_designer_toolbar.py``'s ``_lay_out``.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    page.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    page.show()
+    page.resize(width, height)
+    for _ in range(3):
+        QApplication.processEvents()
+
+
+# Window heights to exercise the control column at: a roomy desktop, a
+# standard laptop panel, and shorter still - the range over which the column
+# used to have no choice but to compress its widgets before it had its own
+# scroll area. Width is held at a normal value throughout; this defect was
+# about vertical space, not horizontal.
+PROCESSING_TEST_HEIGHTS = [1000, 900, 768, 700, 620]
+
+_PROCESSING_BUTTON_NAMES = [
+    "process_all_button",
+    "process_selected_button",
+    "resume_button",
+    "retry_failed_button",
+    "reprocess_button",
+    "cancel_button",
+    "review_button",
+]
+
+
+class TestKProcessingSectionLayout:
+    """The Processing group's buttons keep their full size and never overlap.
+
+    Root cause of the reported clipping/overlap: the left-hand control column
+    (Template + Scans + Processing + Output, stacked with no scroll area) had
+    a combined minimum height of roughly 900 logical pixels - nearly half of
+    it the Processing group's seven buttons, status line and progress readout
+    - and that became the *whole page's* minimum height. Any window shorter
+    than that left Qt nothing to do but compress every widget in the column
+    below its own size hint. The column now lives in its own ``QScrollArea``,
+    so it is laid out at full size regardless of the window, and a short
+    window scrolls instead.
+
+    These assert the structural contract (real geometry, no overlap, no
+    compression below size hint) rather than pixel positions, which
+    ``docs/TESTING.md`` rules out for GUI tests - the same style
+    ``test_template_designer_toolbar.py`` uses for its own layout-polish pass.
+    """
+
+    def _buttons(self, page: ScanPage) -> list[QPushButton]:
+        return [getattr(page, name) for name in _PROCESSING_BUTTON_NAMES]
+
+    @pytest.mark.parametrize("height", PROCESSING_TEST_HEIGHTS)
+    def test_every_button_has_real_positive_geometry(self, page: ScanPage, height: int):
+        _lay_out(page, width=1600, height=height)
+        for button in self._buttons(page):
+            assert button.width() > 0 and button.height() > 0, button.objectName()
+
+    @pytest.mark.parametrize("height", PROCESSING_TEST_HEIGHTS)
+    def test_no_two_processing_buttons_overlap(self, page: ScanPage, height: int):
+        _lay_out(page, width=1600, height=height)
+        buttons = self._buttons(page)
+        for i, a in enumerate(buttons):
+            for b in buttons[i + 1 :]:
+                assert not a.geometry().intersects(b.geometry()), (
+                    f"{a.objectName()} overlaps {b.objectName()} at height={height}"
+                )
+
+    @pytest.mark.parametrize("height", PROCESSING_TEST_HEIGHTS)
+    def test_no_button_is_compressed_below_its_own_size_hint(
+        self, page: ScanPage, height: int
+    ):
+        # The assertion that actually distinguishes "scrolls" from "squeezes":
+        # at every one of these heights, down to a window shorter than the
+        # column's own content, a button must render at exactly the size it
+        # asked for - never smaller.
+        _lay_out(page, width=1600, height=height)
+        for button in self._buttons(page):
+            assert button.geometry().height() >= button.sizeHint().height(), (
+                f"{button.objectName()} was compressed at height={height}: "
+                f"{button.geometry().height()}px < sizeHint "
+                f"{button.sizeHint().height()}px"
+            )
+
+    def test_the_status_line_does_not_collide_with_the_first_button(self, page: ScanPage):
+        _lay_out(page, width=1600, height=620)
+        assert not page.workers_label.geometry().intersects(
+            page.process_all_button.geometry()
+        )
+
+    def test_the_footer_warning_does_not_collide_with_the_last_button(self, page: ScanPage):
+        _lay_out(page, width=1600, height=620)
+        assert not page.review_button.geometry().intersects(
+            page.batch_state_label.geometry()
+        )
+
+    def test_a_short_window_scrolls_the_column_instead_of_squeezing_it(
+        self, page: ScanPage
+    ):
+        from PySide6.QtWidgets import QScrollArea
+
+        _lay_out(page, width=1600, height=620)
+        scroll_area = page.findChild(QScrollArea, "scanControlScrollArea")
+        assert scroll_area is not None
+        assert scroll_area.widgetResizable() is True
+
+    def test_the_page_survives_being_resized_repeatedly(self, page: ScanPage):
+        # Grow, shrink, grow again - the sequence a user resizing or
+        # maximising/restoring a real window produces.
+        for width, height in [(1600, 1000), (1280, 620), (1920, 1080), (1366, 768)]:
+            _lay_out(page, width=width, height=height)
+        for button in self._buttons(page):
+            assert button.isVisible()
+            assert button.geometry().height() >= button.sizeHint().height()
+
+    def test_processing_button_signals_still_reach_their_handlers(
+        self, qtbot, loaded_page: ScanPage, write_sheet
+    ):
+        # The layout rebuild must not have duplicated or dropped a connection.
+        # Process All is the one action safe to actually invoke here; the
+        # others' handlers are exercised end-to-end by TestD-TestJ above, and
+        # this only guards that rebuilding the container did not change *how*
+        # a click reaches the handler it always reached.
+        loaded_page.add_scan_paths([write_sheet("IMG_0001.png")])
+        assert loaded_page.process_all_button.isEnabled()
+        with qtbot.waitSignal(loaded_page.batch_finished, timeout=BATCH_TIMEOUT_MS):
+            loaded_page.process_all_button.click()

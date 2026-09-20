@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTableWidget,
@@ -340,6 +341,11 @@ class ScanPage(WorkflowPage):
         self.body.addWidget(self._build_benchmark_banner())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        # A collapsible pane lets a user drag the divider until a column's
+        # controls are squeezed to nothing - the same unreadable-button defect
+        # this pass exists to fix, just reachable by hand instead of by a short
+        # window. Every pane keeps at least its laid-out size.
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(self._build_controls())
         splitter.addWidget(self._build_centre())
         splitter.addWidget(self._build_results_panel())
@@ -355,10 +361,26 @@ class ScanPage(WorkflowPage):
     # Construction
     # ------------------------------------------------------------------
     def _build_controls(self) -> QWidget:
-        """Build the left-hand control column."""
+        """Build the left-hand control column, in a scroll area.
+
+        Four group boxes stacked without one need roughly 900 logical pixels
+        to lay out at their natural size - the Processing group alone, with
+        seven action buttons, a status line and the progress readout, needs
+        about 450 of them. A window shorter than that (a laptop at 1366x768,
+        a restored rather than maximised window, or higher Windows display
+        scaling asking for the same layout in fewer logical pixels) leaves
+        Qt nothing to do but compress every widget in the column below its
+        own size hint, which is what made button text and icons overlap.
+
+        The scroll area breaks that dependency: the column inside it is
+        always laid out at its full, uncompressed size, and a short window
+        gets a scrollbar instead of a squeezed button. ``setWidgetResizable``
+        keeps the column's *width* tracking the viewport - the buttons still
+        fill the same 290-pixel column as before - while its height is free
+        to exceed the viewport and scroll.
+        """
         panel = QWidget()
         panel.setObjectName("scanControlPanel")
-        panel.setMaximumWidth(CONTROL_PANEL_WIDTH + 60)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 6, 0)
         layout.setSpacing(8)
@@ -420,6 +442,7 @@ class ScanPage(WorkflowPage):
             "File > Settings > Processing."
         )
         process_layout.addWidget(self.workers_label)
+        process_layout.addSpacing(4)
 
         self.process_all_button = QPushButton(load_icon("scan-line"), "Process All")
         self.process_all_button.setObjectName("processAllButton")
@@ -468,6 +491,11 @@ class ScanPage(WorkflowPage):
         )
         self.review_button.clicked.connect(self.request_review)
         process_layout.addWidget(self.review_button)
+
+        # A visible gap between the action stack and the status text below it,
+        # wider than the buttons' own spacing - so the two read as separate
+        # groups rather than one more item in the button list.
+        process_layout.addSpacing(6)
 
         self.conflict_label = QLabel("")
         self.conflict_label.setObjectName("batchConflictLabel")
@@ -519,7 +547,15 @@ class ScanPage(WorkflowPage):
         layout.addWidget(output_box)
 
         layout.addStretch(1)
-        return panel
+
+        scroll = QScrollArea()
+        scroll.setObjectName("scanControlScrollArea")
+        scroll.setWidget(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setMaximumWidth(CONTROL_PANEL_WIDTH + 60)
+        return scroll
 
     def _build_benchmark_banner(self) -> QWidget:
         """Build the strip that says this page is scoring a labelled dataset.

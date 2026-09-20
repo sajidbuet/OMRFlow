@@ -8,6 +8,24 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Fixed — Step 4 Scan GUI readability/layout refinement
+
+The left-hand control column on the Scan stage (Template, Scans, Processing,
+Output) had no scroll area, so its combined natural height - about 900
+logical pixels, nearly half of it the Processing group's seven action
+buttons, status line and progress readout - became the whole page's minimum
+height. On any window shorter than that (a smaller laptop panel, a restored
+rather than maximised window, or higher Windows display scaling), Qt had no
+choice but to compress every widget in the column below its own size hint,
+which is what made Processing's button labels and icons overlap and clip.
+
+The column now lives in its own scroll area, so it always lays out at full,
+uncompressed size; a short window scrolls it instead of squeezing it. The
+splitter separating it from the preview and results panels no longer lets a
+dragged divider collapse it either. Presentation only - no processing,
+multiprocessing, cancellation, resume, retry, reprocessing or conflict-review
+behaviour changed. `src/omr_scanner/gui/scan/page.py`.
+
 ### Added — Phase 8
 
 Answer-Key & Scoring Engine: recognised answers become marks that can be
