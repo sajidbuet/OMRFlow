@@ -161,10 +161,15 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Reports",
         summary="Export roll-wise and merit-wise reports.",
         phase=9,
+        implemented=True,
         details=(
-            "Roll-wise workbook including absent candidates.",
+            "Associate an independent result template with each set.",
+            "Roll-wise workbook including absent candidates, with Excel "
+            "rank formulas.",
             "Merit-wise workbook ordered by result.",
-            "User-editable Excel layout and PDF export.",
+            "Summary, Answer Key and Processing Log sheets.",
+            "User-editable report header, logo, fonts and page setup.",
+            "PDF export where LibreOffice is available.",
         ),
     ),
 )

@@ -17,6 +17,7 @@ from omr_scanner import APPLICATION_NAME
 from omr_scanner.config import AppConfig, load_app_config
 from omr_scanner.gui.main_window import NO_PROJECT_STATUS, MainWindow
 from omr_scanner.gui.pages import WORKFLOW_PAGES
+from omr_scanner.gui.pages.placeholder_page import PlaceholderPage
 
 pytestmark = pytest.mark.gui
 
@@ -59,24 +60,49 @@ def test_navigation_switches_the_visible_page(window: MainWindow):
     assert window.stack.currentWidget().spec.key == WORKFLOW_PAGES[2].key
 
 
-def test_unimplemented_pages_say_so(window: MainWindow):
-    # Phase 2 replaced the Template placeholder, Phase 3 the Scan one, Phase 4
-    # the Calibration one and Phase 6 the Resolve one, so this walks forward -
-    # by key, never a hard-coded index - to whichever stage is still honestly
-    # unimplemented, and fails loudly once every stage is built rather than
-    # quietly passing on nothing.
-    index, spec = next(
-        (index, spec)
-        for index, spec in enumerate(WORKFLOW_PAGES)
-        if not spec.is_implemented
+def test_a_placeholder_page_says_so(qtbot):
+    # This used to walk WORKFLOW_PAGES looking for whichever real stage was
+    # still honestly unimplemented - by design, so it would "fail loudly once
+    # every stage is built rather than quietly passing on nothing" (its own
+    # former docstring). Phase 9 implementing Reports was that moment: no
+    # catalog entry is unimplemented any longer (see
+    # test_every_workflow_stage_is_no_longer_a_placeholder below), so the
+    # thing this test exists to check - that PlaceholderPage itself renders
+    # its notice correctly - is now verified against a page built directly
+    # from a synthetic spec instead of depending on the live catalog having
+    # one left. PlaceholderPage's own contract is what matters here, not
+    # which phase currently happens to be incomplete.
+    from omr_scanner.gui.pages.catalog import WorkflowPageSpec
+
+    spec = WorkflowPageSpec(
+        key="_test_unimplemented",
+        title="Future Stage",
+        summary="A stage a later phase will implement.",
+        phase=99,
+        details=("Do the thing.",),
     )
-    page = window.stack.widget(index)
+    page = PlaceholderPage(spec)
+    qtbot.addWidget(page)
     texts = [label.text() for label in page.findChildren(QLabel)]
 
-    assert page.spec.key == spec.key
-    assert page.spec.phase > 0
+    assert spec.is_implemented is False
     assert any("Not implemented yet" in text for text in texts)
-    assert any(f"phase {page.spec.phase}" in text for text in texts)
+    assert any("phase 99" in text for text in texts)
+    assert any("Do the thing." in text for text in texts)
+
+
+def test_every_workflow_stage_is_no_longer_a_placeholder(window: MainWindow):
+    # The positive statement test_a_placeholder_page_says_so's own docstring
+    # points to: as of Phase 9, every stage in the real navigation is a real
+    # page. A future phase that adds a new WORKFLOW_PAGES entry (Phase 10/11
+    # add no new GUI stage per development/ROADMAP.md) would need to update
+    # this alongside it.
+    for index, spec in enumerate(WORKFLOW_PAGES):
+        assert spec.is_implemented, f"{spec.key} is still a placeholder"
+        page = window.stack.widget(index)
+        assert not isinstance(page, PlaceholderPage), (
+            f"{spec.key} is still rendering the placeholder widget"
+        )
 
 
 def test_the_resolve_page_is_no_longer_a_placeholder(window: MainWindow):

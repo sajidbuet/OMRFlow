@@ -1117,6 +1117,123 @@ def build_scoring_pages(
     return harness
 
 
+@dataclass(frozen=True, slots=True)
+class ReportsHarness:
+    """A Reports page over a scored, verified batch, with Set A's template
+    already associated - the state "open Result Management and generate"
+    starts from."""
+
+    page: object
+    session: object
+    batch_id: str
+    roster_id: int
+    template: object
+    operator: str
+    template_path: Path
+
+    @property
+    def database(self) -> object:
+        """The open project's database."""
+        return self.session.database
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting. See `DesignerHarness`."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def settle(self) -> None:
+        """Give the page real laid-out geometry without showing a window."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        widget: QWidget = self.page  # type: ignore[assignment]
+        widget.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+        widget.show()
+        widget.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.process_events()
+
+    def shutdown(self) -> None:
+        """Close the page, then the project."""
+        self.page.close()
+        self.session.close()
+
+
+def build_reports_page(
+    *, operator: str = "Dr. Smoke Test", timeout_ms: int = 120_000
+) -> ReportsHarness:
+    """Build the Reports page over a scored batch, Set A's template associated.
+
+    Reuses :func:`build_scoring_pages`'s exact roster and scan set (Roll
+    No./Name/Total (90) - already the phase brief's own sample wording) so a
+    Phase 9 smoke check exercises the real Phase 7/8 pipeline underneath it,
+    not a synthetic shortcut.
+    """
+    from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
+    from omr_scanner.gui.reports.page import ReportsPage
+    from omr_scanner.services import report_store
+    from omr_scanner.services.report_template import suggest_mapping
+
+    scoring = build_scoring_pages(operator=operator, timeout_ms=timeout_ms)
+    scoring.write_key("A", "A" * scoring.plan.question_count)
+    scoring.verify_key("A")
+    scoring.score(timeout_ms=timeout_ms)
+
+    work = OUTPUT_ROOT / "reports" / uuid_hex()
+    work.mkdir(parents=True, exist_ok=True)
+    template_path = work / "set_a_result.xlsx"
+    import openpyxl
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Rollwise"
+    sheet.append(["Sl.No.", "Roll No.", "Name", "Total (90)", "Merit"])
+    # Only the candidates genuinely on Set A's own roster: 200001/200002 sat
+    # and were scored against Set A; 200003 is the roster's own confirmed
+    # absentee (marked here exactly as reconciliation has it, matching a real
+    # absentee sheet); 200004 sat a *different* set ("Z", with no key at all)
+    # and does not belong on Set A's template - including it would be exactly
+    # the "candidate scored against a different set" defect the readiness
+    # check exists to catch.
+    for index, (roll, name, marks) in enumerate(
+        (
+            ("200001", "CANDIDATE A", None),
+            ("200002", "CANDIDATE B", None),
+            ("200003", "CANDIDATE C", "ABSENT"),
+        ),
+        start=1,
+    ):
+        sheet.append([index, roll, name, marks, "---" if marks == "ABSENT" else None])
+    workbook.save(template_path)
+    workbook.close()
+
+    preview_headers = ["Sl.No.", "Roll No.", "Name", "Total (90)", "Merit"]
+    mapping = suggest_mapping(preview_headers).to_mapping()
+    report_store.associate_template(
+        scoring.database, "A", template_path, mapping, sheet_name="Rollwise",
+        updated_by=operator,
+    )
+
+    reports_spec = next(item for item in WORKFLOW_PAGES if item.key == "reports")
+    reports_page = ReportsPage(reports_spec)
+    reports_page.on_project_changed(scoring.session)
+    reports_page.set_reviewer(operator)
+    reports_page.set_template(scoring.template)
+    reports_page.set_batch(scoring.batch_id)
+
+    scoring.key_page.close()
+    scoring.results_page.close()
+
+    harness = ReportsHarness(
+        page=reports_page, session=scoring.session, batch_id=scoring.batch_id,
+        roster_id=scoring.roster_id, template=scoring.template, operator=operator,
+        template_path=template_path,
+    )
+    harness.settle()
+    return harness
+
+
 def uuid_hex() -> str:
     """A short unique directory name, so repeated runs never collide."""
     import uuid

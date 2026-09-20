@@ -2,7 +2,7 @@
 
 **Updated:** 2026-09-19
 **Version:** 0.1.0.dev0
-**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented, independently audited and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. The audit found nine defects that the green suite had not, three of which produced quietly wrong marks; all are repaired and pinned by tests. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 not started.
+**Current phase:** Phase 3 (Recognition Engine v1) implemented, architecturally hardened, and measurable through developer testing tools (synthetic dataset generator + recognition benchmark); accuracy validation still pending a real dataset. Phase 4 (Template Calibration & Validation) implemented and tested; it makes Phase 3's own real-dataset validation safer and more systematic, but does not itself constitute that validation. Phase 5 (Batch Scan Processing Pipeline) implemented and tested: batches are now durable and resumable, and original scans are provably unmodified - but Phase 5 makes a batch *reliable*, not *accurate*, and says nothing about whether the values it recorded are correct. Phase 6 (Conflict Detection & Human Resolution) implemented and tested: every value the machine was unsure about is now reviewable, and every final value traces back to either the machine or a named human correction with a reason - but Phase 6 makes ambiguity *visible*, not *rarer*; a confidently wrong reading never reaches the queue, and no review session with real operators has been run. Phase 7 (Candidate & Attendance Reconciliation) implemented and tested: a candidate list imports from CSV or Excel, every script maps to exactly one registered candidate or to an explicit reviewable exception, and the imported value, the machine's reading and every human decision stay independently traceable - but no real cohort has been reconciled against a real roster, and Phase 7 accounts for scripts, not answers. Phase 8 (Answer-Key & Scoring Engine) implemented, independently audited and tested: answer keys are written or scanned, verified before use and versioned, and every mark records the exact key and policy revision that produced it and is recomputed - never patched - when an input changes. The audit found nine defects that the green suite had not, three of which produced quietly wrong marks; all are repaired and pinned by tests. But no examination has been marked with it, and a key is not checked for correctness. Phase 9 (Result Management & Reporting) implemented and tested: each set's own result/absentee workbook is the authoritative roster (order, Roll No., name, existing absentee markers), Phase 7/8 supply attendance and marks, generation never opens the original template for writing (proven by SHA-256), every present candidate's rank is an Excel `RANK.EQ` formula the application's own ranking is checked against directly, a readiness check blocks Final Export on any registered/template/score disagreement, and an existing output file is never silently overwritten. During its own testing this phase independently rediscovered the exact "modal dialog opened from an automatic worker-completion callback can hang the application" defect Phase 8's audit had already fixed once, in a brand-new page - both are now fixed. No real examination office's own workbook has been reported on, and PDF export (via LibreOffice) has no real-engine verification in this build environment, since LibreOffice was not installed there.
 
 Update this file at the end of every phase.
 
@@ -540,17 +540,67 @@ a second - an indexed match, not a per-script walk of the roster.
   rational strings. Field-by-field: `docs/DATA_MODEL.md`.
 - **Phases 5, 6 and 7 are untouched.**
 
+### Result management and reporting (Phase 9)
+
+- **A set's own result/absentee template is authoritative for its roster** -
+  order, Roll No., name and existing absentee markers are the template's;
+  Phase 7/8 supply attendance and marks. Nothing in Phases 1-8 otherwise
+  records which set an absent candidate (who has no script) was assigned to,
+  which is why the template is mandatory rather than a convenience.
+- **`domain.reporting` is pure**: standard competition ranking
+  (`compute_ranks`), a dynamic `RANK.EQ` formula generator (the marks column
+  and the row range are always derived, never hard-coded), spreadsheet-
+  injection-safe text, and the readiness-issue vocabulary.
+- **`services.report_template`** reads a real workbook - header-row detection
+  tolerant of decorative title rows above the real header, column mapping
+  that reports ambiguity (two equally plausible Roll No. or Marks columns)
+  rather than guessing, reusing Phase 7's own identifier normalisation.
+- **`services.report_readiness`** cross-checks the template's roster against
+  Phase 7's reconciliation and Phase 8's scoring: a template candidate not in
+  the project, a registered candidate missing from the template, a duplicate
+  Roll No., an absentee-status mismatch, a present candidate with no score, an
+  unresolved exception - every one a named, addressable issue, never silently
+  dropped.
+- **The original template is never opened for writing.** Generation copies
+  its bytes first; a test hashes the file with SHA-256 before and after and
+  asserts they match.
+- **`reporting.excel`** builds Rollwise (populated in the copy, in place),
+  Meritwise (mark descending, Roll No. ascending as a deterministic
+  tie-break), Summary, Answer Key and Processing Log, plus layout
+  (header/logo/font/page setup) that changes nothing when left at its
+  defaults.
+- **`reporting.pdf`** is a dependency-injected exporter abstraction over
+  LibreOffice's headless conversion - the engine that actually recalculates
+  the `RANK.EQ` formulas before rendering. Reports plainly, never pretends to
+  succeed, when no engine is available.
+- **`services.report_store`** persists per-set templates and layout,
+  records an append-only `GeneratedReport` audit row per attempt (including
+  failures), and enforces **regenerate, never patch**: every generation
+  rebuilds the whole workbook from Phase 7/8's current stored state.
+- **An existing output file is never silently overwritten** - a second
+  generation writes `..._1`.
+- One additive migration (**migration 6**): `report_template_association`,
+  `report_layout_config`, `generated_report`. Field-by-field:
+  `docs/DATA_MODEL.md`.
+- **An adversarial defect found and fixed during this phase's own testing**:
+  `ReportsPage._on_generated` - a worker-completion callback - opened a modal
+  `QMessageBox` for the routine case of a blocked or failed set, which no
+  automated or headless context could dismiss. The identical defect class
+  Phase 8's own audit had already fixed once (`ResultsPage._on_scored`),
+  rediscovered independently in a new page. Fixed with an inline status
+  label.
+- **Phases 1-8 are untouched.**
+
 ## What does not exist
 
-No answer-key handling, scoring or Excel/PDF reporting. There is no
-batch-browser dialog: `adopt_batch` and `list_batches` exist and are tested, but
-nothing in the UI lists previous batches to pick from yet. The conflict queue
-and the reconciliation are both **per batch** — there is no project-wide view
-of either, and a cohort split across two batches must be reconciled twice.
+There is no batch-browser dialog: `adopt_batch` and `list_batches` exist and
+are tested, but nothing in the UI lists previous batches to pick from yet. The
+conflict queue and the reconciliation are both **per batch** — there is no
+project-wide view of either, and a cohort split across two batches must be
+reconciled twice; reporting is per batch and per roster for the same reason.
 Reviewer identity is a name, not an account: there is no authentication, so the
-ledger records who *said* they made a decision.
-
-`omr_scanner.reporting` contains module documentation and no code. The Reports page says which phase will implement it and does not simulate anything.
+ledger records who *said* they made a decision. There is no Windows Excel COM
+PDF adapter - PDF export requires LibreOffice.
 
 **This build must not be used for examination processing.** Its recognition has
 been validated against one real sheet and geometric variants of it, not against
@@ -761,6 +811,35 @@ no questions at all, a template edited after recognition cost candidates the
 multiple-answer deduction, and a candidate recorded absent whose script had
 turned up was filed as a settled "Absent". Detail in
 `development/PHASE_08_HANDOFF.md` §11a.
+
+179 of those are Phase 9 (Result Management & Reporting):
+`tests/unit/test_reporting.py` (65, ranking - including the brief's own worked
+example and a 20,000-candidate timing check - the `RANK.EQ` formula generator,
+spreadsheet-injection safety, safe filenames, the total-marks header,
+readiness vocabulary), `tests/unit/test_report_template.py` (35, the sample's
+own structure and every documented variation - a different sheet name, a
+header on row 3+ with decorative rows above it, `ABS`/lowercase `absent`,
+leading-zero rolls, Unicode names, duplicate rolls, malformed workbooks),
+`tests/unit/test_excel_report.py` (34, template preservation by SHA-256,
+Rollwise/Meritwise/Summary/Answer-Key/Processing-Log content, layout page
+setup and graceful degradation, missing/real logo degradation),
+`tests/unit/test_pdf_export.py` (8, one
+conditionally skipped - the exporter abstraction, fully testable without a
+PDF engine, plus a real-LibreOffice test that runs only where one is
+installed), `tests/integration/test_report_generation.py` (25, the phase
+brief's six acceptance scenarios end to end against real Phase 7/8 services,
+plus the schema-6 migration onto an existing Phase 8 project)
+and `tests/gui/test_reports_page.py` (12). Confirmed end-to-end through
+`scripts/run_gui_smoke_tests.py` (52/52, including associating a template,
+generating an XLSX with every candidate row and a working rank formula, and a
+second generation never overwriting the first).
+
+During its own testing this phase independently rediscovered the exact "a
+modal dialog opened from a worker-completion callback can hang the
+application indefinitely" defect Phase 8's own audit had already fixed once
+(`ResultsPage._on_scored`) - this time in `ReportsPage._on_generated`, for the
+routine case of a blocked or failed set in a multi-set generation run.
+Detail in `development/PHASE_09_HANDOFF.md` §9.
 
 279 of those are Phase 7 (Candidate & Attendance Reconciliation):
 `tests/unit/test_candidate_import.py` (87, parsing, identifier normalisation,

@@ -1384,6 +1384,95 @@ def _check_a_wrong_question_pays_everyone() -> CheckResult:
     )
 
 
+def _check_reports_page_lists_the_associated_set() -> CheckResult:
+    """Phase 9: Result Management shows the set and its associated template."""
+    from _harness import build_reports_page
+
+    harness = build_reports_page()
+    overview = harness.page.state.sets[0] if harness.page.state.sets else None
+    ok = (
+        overview is not None
+        and overview.set_code == "A"
+        and overview.template is not None
+        and overview.has_verified_key
+    )
+    detail = (
+        f"set={overview.set_code if overview else None}, "
+        f"template={'associated' if overview and overview.template else 'none'}, "
+        f"key_verified={overview.has_verified_key if overview else False}"
+    )
+    harness.shutdown()
+    return ok, detail
+
+
+def _check_generating_xlsx_produces_every_row_and_rank_formulas() -> CheckResult:
+    """Phase 9: Rollwise keeps every candidate, including the absentee, with
+    Excel rank formulas over scored candidates."""
+    import openpyxl
+
+    from _harness import build_reports_page
+
+    harness = build_reports_page()
+    from PySide6.QtCore import QElapsedTimer
+    from PySide6.QtWidgets import QApplication
+
+    done: list[object] = []
+    harness.page.reports_generated.connect(lambda: done.append(True))
+    harness.page.set_table.selectRow(0)
+    harness.page.generate_selected_xlsx()
+    clock = QElapsedTimer()
+    clock.start()
+    while not done and clock.elapsed() < 60_000:
+        QApplication.processEvents()
+
+    outputs = list((harness.session.project.layout.exports_dir).glob("*.xlsx"))
+    ok = bool(outputs) and bool(done)
+    rolls: list[object] = []
+    rank_formula = ""
+    if outputs:
+        workbook = openpyxl.load_workbook(outputs[0])
+        sheet = workbook["Rollwise"]
+        rolls = [sheet.cell(row=r, column=2).value for r in range(2, 5)]
+        rank_formula = str(sheet.cell(row=2, column=5).value)
+        ok = ok and rolls == ["200001", "200002", "200003"]
+        ok = ok and "RANK.EQ" in rank_formula
+    harness.shutdown()
+    return ok, (
+        f"generated={bool(outputs)}, rolls={rolls}, "
+        f"rank formula present={'RANK.EQ' in rank_formula}"
+    )
+
+
+def _check_a_second_generation_does_not_overwrite_the_first() -> CheckResult:
+    """Phase 9: an existing output file is never silently replaced."""
+    from _harness import build_reports_page
+
+    from omr_scanner.services import report_store
+
+    harness = build_reports_page()
+    outcome1 = report_store.generate_xlsx(
+        harness.database, harness.roster_id, harness.batch_id, harness.template, "A",
+        project_name="GUI Test Examination",
+        output_dir=harness.session.project.layout.exports_dir,
+        computed_by=harness.operator,
+    )
+    outcome2 = report_store.generate_xlsx(
+        harness.database, harness.roster_id, harness.batch_id, harness.template, "A",
+        project_name="GUI Test Examination",
+        output_dir=harness.session.project.layout.exports_dir,
+        computed_by=harness.operator,
+    )
+    ok = (
+        outcome1.ok and outcome2.ok
+        and outcome1.output_path != outcome2.output_path
+        and outcome1.output_path.exists()
+        and outcome2.output_path.exists()
+    )
+    detail = f"first={outcome1.output_path.name}, second={outcome2.output_path.name}"
+    harness.shutdown()
+    return ok, detail
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -1548,6 +1637,18 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "a wrong question pays everyone",
                     _check_a_wrong_question_pays_everyone,
+                ),
+                (
+                    "reports page lists the associated set",
+                    _check_reports_page_lists_the_associated_set,
+                ),
+                (
+                    "generating xlsx produces every row and rank formulas",
+                    _check_generating_xlsx_produces_every_row_and_rank_formulas,
+                ),
+                (
+                    "a second generation does not overwrite the first",
+                    _check_a_second_generation_does_not_overwrite_the_first,
                 ),
                 ("no worker processes left behind", _check_no_worker_processes_are_left_behind),
             ]

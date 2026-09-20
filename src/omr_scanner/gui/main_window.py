@@ -58,6 +58,7 @@ from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.reports.page import ReportsPage
 from omr_scanner.gui.results.page import ResultsPage
 from omr_scanner.gui.review.page import ResolvePage
 from omr_scanner.gui.scan.page import ScanPage
@@ -202,7 +203,14 @@ class MainWindow(QMainWindow):
                 answer_key_page.key_verified.connect(self._on_answer_key_changed)
                 page = answer_key_page
             elif spec.key == "results":
-                page = ResultsPage(spec)
+                results_page = ResultsPage(spec)
+                # A recomputed result must be reflected the next time the
+                # Reports stage is opened - the same "one stage changes what
+                # another stage shows" rule as the answer-key wiring above.
+                results_page.scored.connect(self._on_results_changed)
+                page = results_page
+            elif spec.key == "reports":
+                page = ReportsPage(spec)
             else:
                 page = PlaceholderPage(spec)
 
@@ -506,6 +514,11 @@ class MainWindow(QMainWindow):
         page = self._pages.get("results")
         return page if isinstance(page, ResultsPage) else None
 
+    def _reports_page(self) -> ReportsPage | None:
+        """The Reports page, when this window built a real one."""
+        page = self._pages.get("reports")
+        return page if isinstance(page, ReportsPage) else None
+
     def broadcast_template(self, template: object | None) -> None:
         """Tell the scoring stages which template the batch was read with.
 
@@ -521,28 +534,47 @@ class MainWindow(QMainWindow):
         results = self._results_page()
         if results is not None:
             results.set_template(template)  # type: ignore[arg-type]
+        reports = self._reports_page()
+        if reports is not None:
+            reports.set_template(template)  # type: ignore[arg-type]
 
     def _on_answer_key_changed(self, _key_id: int) -> None:
-        """Tell the Results stage that this project's keys have moved on.
+        """Tell the Results and Reports stages that this project's keys have moved on.
 
         Verifying a key changes which candidates can be marked and makes every
-        result computed under the previous revision stale. The Results stage
-        cannot see that happen - it is a different page - so it is told, and
-        re-reads. Which key changed is deliberately not used: the stage
-        re-reads everything rather than patching one row, which is the rule the
-        scoring engine itself follows.
+        result computed under the previous revision stale, and changes which
+        sets are "ready" for the Reports stage's readiness check. Neither
+        stage can see that happen - each is a different page - so both are
+        told, and re-read. Which key changed is deliberately not used: each
+        stage re-reads everything rather than patching one row, which is the
+        rule the scoring engine itself follows.
         """
         results = self._results_page()
         if results is not None:
             results.refresh_table()
+        reports = self._reports_page()
+        if reports is not None:
+            reports.refresh_table()
+
+    def _on_results_changed(self) -> None:
+        """Tell the Reports stage that scoring has been (re)calculated.
+
+        A recomputed mark, a newly scored candidate, or a batch that just
+        went stale all change what the Reports stage's readiness check and
+        set overview should show.
+        """
+        reports = self._reports_page()
+        if reports is not None:
+            reports.refresh_table()
 
     def _on_batch_finished(self, report: object) -> None:
         """Point the scoring stages at a batch that has just been processed.
 
-        Both stages pick up a batch when a project is *opened*. A batch scanned
-        during the session would otherwise be invisible to them until the
-        project was closed and reopened, and "Calculate Results" would go on
-        saying it had nothing to mark with a freshly read cohort on disk.
+        All three stages pick up a batch when a project is *opened*. A batch
+        scanned during the session would otherwise be invisible to them until
+        the project was closed and reopened, and "Calculate Results" - or
+        "Generate XLSX" - would go on saying it had nothing to work with, with
+        a freshly read cohort sitting on disk.
 
         The batch id comes from the Scan stage rather than from ``report``,
         which summarises what was read and does not name the batch it was
@@ -557,6 +589,9 @@ class MainWindow(QMainWindow):
         results = self._results_page()
         if results is not None:
             results.set_batch(batch_id)
+        reports = self._reports_page()
+        if reports is not None:
+            reports.set_batch(batch_id)
         answer_key = self._answer_key_page()
         session = self._session
         if answer_key is None or session is None:
@@ -811,6 +846,9 @@ class MainWindow(QMainWindow):
         results_page = self._results_page()
         if results_page is not None:
             results_page.set_reviewer(self._config.reviewer_name)
+        reports_page = self._reports_page()
+        if reports_page is not None:
+            reports_page.set_reviewer(self._config.reviewer_name)
 
     # ------------------------------------------------------------------
     # Internal state propagation
@@ -971,6 +1009,9 @@ class MainWindow(QMainWindow):
         results_page = self._results_page()
         if results_page is not None:
             results_page.shutdown()
+        reports_page = self._reports_page()
+        if reports_page is not None:
+            reports_page.shutdown()
 
         self.close_project()
         logger.info("Main window closed")

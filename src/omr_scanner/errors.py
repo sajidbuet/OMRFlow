@@ -166,4 +166,16 @@ class RecognitionError(OMRScannerError):
 
 
 class ReportingError(OMRScannerError):
-    """Reserved for Phase 9: Excel/PDF export failures."""
+    """Excel/PDF export failures (Phase 9).
+
+    The `omr_scanner.reporting` package's own base - see
+    :class:`omr_scanner.reporting.excel.ExcelReportError` and
+    :class:`omr_scanner.reporting.pdf.PdfExportError`. Service-layer failures
+    that merely *use* reporting (reading a template, persisting a generation
+    record) are their own independent `OMRScannerError` subclasses instead -
+    :class:`omr_scanner.services.report_template.ReportTemplateError`,
+    :class:`omr_scanner.services.report_store.ReportStoreError` - following
+    the same pattern Phase 7's `CandidateImportError` and
+    `ReconciliationError` already set for services that are closely related
+    but not the same layer.
+    """

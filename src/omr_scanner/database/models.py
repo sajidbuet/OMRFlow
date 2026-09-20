@@ -933,3 +933,172 @@ class CandidateResult(Base):
             f"CandidateResult(id={self.result_id}, status={self.status!r}, "
             f"key_rev={self.answer_key_revision}, policy_rev={self.policy_revision})"
         )
+
+
+# ----------------------------------------------------------------------
+# Phase 9 - Result management & reporting.
+#
+# A generated workbook is an output, never the primary record - the tables
+# below exist to make a report *traceable* to what produced it, not to hold a
+# second copy of a candidate's mark. See `reporting/excel.py` (the mechanics)
+# and `services/report_store.py` (persistence and orchestration).
+# ----------------------------------------------------------------------
+
+
+class ReportTemplateAssociation(Base):
+    """The result/absentee workbook an operator has selected for one set.
+
+    **One row per set, updated in place** rather than revisioned. Unlike an
+    answer key or a scoring policy, a template association is not
+    score-affecting - it is presentation input, and re-selecting a template
+    for a set is "change what file this points to", not "supersede a prior
+    official standard". :class:`GeneratedReport` is what remains reproducible
+    per generation, by recording this row's hash *at that moment*.
+    """
+
+    __tablename__ = "report_template_association"
+    __table_args__ = (
+        UniqueConstraint("set_code", name="report_template_association_set"),
+    )
+
+    association_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+    set_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    template_path: Mapped[str] = mapped_column(Text, nullable=False)
+    template_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    sheet_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    header_row: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    roll_column: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    marks_column: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    serial_column: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name_column: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rank_column: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation. Names no candidate."""
+        return (
+            f"ReportTemplateAssociation(set={self.set_code!r}, "
+            f"sheet={self.sheet_name!r})"
+        )
+
+
+class ReportLayoutConfig(Base):
+    """Report presentation settings: header text, logo, fonts, page setup.
+
+    :attr:`set_code` is ``""`` for the project-wide default and a real set
+    code for a per-set override (§16: "Allow set-specific override if
+    needed, but provide sensible project-level defaults"). A generation looks
+    up the row for its own set first and falls back to the ``""`` row.
+
+    Column headers, logo and page setup only ever *supplement* a template
+    that does not already define them - see ``docs/reporting.md`` "Layout
+    preservation is the default" - so every text field empty is a valid,
+    common configuration meaning "use the template exactly as supplied".
+    """
+
+    __tablename__ = "report_layout_config"
+    __table_args__ = (
+        UniqueConstraint("set_code", name="report_layout_config_set"),
+    )
+
+    config_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    set_code: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    title_text: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    subtitle_text: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    examination_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    footer_text: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    column_header_overrides_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
+    auto_update_marks_header: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+
+    logo_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    logo_max_width_px: Mapped[int] = mapped_column(Integer, nullable=False, default=120)
+    logo_max_height_px: Mapped[int] = mapped_column(Integer, nullable=False, default=120)
+
+    font_family: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    title_font_size: Mapped[int] = mapped_column(Integer, nullable=False, default=14)
+    header_font_size: Mapped[int] = mapped_column(Integer, nullable=False, default=11)
+    body_font_size: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    bold_headers: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    page_size: Mapped[str] = mapped_column(String(10), nullable=False, default="A4")
+    orientation: Mapped[str] = mapped_column(String(10), nullable=False, default="portrait")
+    margin_top_mm: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)
+    margin_bottom_mm: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)
+    margin_left_mm: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)
+    margin_right_mm: Mapped[float] = mapped_column(Float, nullable=False, default=20.0)
+    fit_to_width: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    scale_percent: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    center_horizontally: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    repeat_header_row: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation."""
+        return f"ReportLayoutConfig(set={self.set_code!r})"
+
+
+class GeneratedReport(Base):
+    """One report-generation attempt, and everything it was computed from.
+
+    **Append-only.** A new generation writes a new row rather than editing
+    the last one for that set - the same rule Phase 8's key and policy
+    revisions follow - so "what did the Set A report look like on the day it
+    was filed" always has an answer, even after a later regeneration.
+
+    Deliberately holds no candidate data (§21, §49): counts, hashes and
+    revision numbers only. The generated workbook itself, on disk at
+    :attr:`output_path`, is where the candidate information lives.
+    """
+
+    __tablename__ = "generated_report"
+    __table_args__ = (
+        Index("ix_generated_report_set", "set_code", "generated_at"),
+    )
+
+    report_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    set_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    report_type: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    template_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    template_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    answer_key_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    layout_config_snapshot_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}"
+    )
+
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    present_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    absent_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    scored_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    unresolved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warnings_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+
+    output_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    output_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    status: Mapped[str] = mapped_column(String(15), nullable=False, default="failed")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    generated_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    application_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation. Deliberately names no candidate."""
+        return (
+            f"GeneratedReport(id={self.report_id}, set={self.set_code!r}, "
+            f"type={self.report_type!r}, status={self.status!r})"
+        )

@@ -8,6 +8,67 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Added — Phase 9
+
+Result Management & Reporting: Phase 8's stored marks become the workbooks an
+examination office files — per set, independently, from a copy of the
+office's own result/absentee template. Full detail:
+`development/PHASE_09_HANDOFF.md`; operator description: `docs/reporting.md`.
+
+- **A set's own result template is authoritative for its roster.** Order,
+  Roll No., name and existing absentee markers are the template's; Phase 7/8
+  supply attendance and marks. This is why an absentee can appear on a
+  report at all — nothing in Phases 1-8 records which set an absent
+  candidate (who has no script) was assigned to.
+- **`omr_scanner.domain.reporting`**: standard competition ranking
+  (`compute_ranks`, checked against the brief's own `90, 88, 88, 85 → 1, 2,
+  2, 4` example), the dynamic `RANK.EQ` formula generator (never a hard-coded
+  column or row range), spreadsheet-injection mitigation for user-controlled
+  text, and the readiness-issue vocabulary.
+- **`omr_scanner.services.report_template`**: reads a real institution's
+  workbook — header-row detection tolerant of decorative title rows, column
+  mapping that reports ambiguity rather than guessing (reusing Phase 7's own
+  identifier normalisation and header-matching algorithm, promoted to public
+  names for exactly this reuse).
+- **`omr_scanner.services.report_readiness`**: cross-checks a template's
+  roster against Phase 7's reconciliation and Phase 8's scoring, producing
+  every disagreement as a named, addressable issue — a missing candidate, a
+  duplicate Roll No., an absentee-status mismatch, a present candidate with
+  no score — never silently concealed.
+- **`omr_scanner.reporting.excel`**: builds Rollwise (populated in place
+  inside a *copy* of the template — the original is proven, by SHA-256,
+  never opened for writing), Meritwise (sorted by mark descending, Roll No.
+  ascending as a deterministic tie-break), Summary, Answer Key and
+  Processing Log sheets, plus header/logo/font/page-setup layout that
+  changes nothing when left at its defaults.
+- **`omr_scanner.reporting.pdf`**: a dependency-injected PDF exporter
+  abstraction over LibreOffice's headless conversion (which is what actually
+  recalculates the `RANK.EQ` formulas before rendering); reports plainly,
+  never pretends to succeed, when no PDF engine is available.
+- **`omr_scanner.services.report_store`**: per-set template and layout
+  persistence, the append-only `GeneratedReport` audit trail, and
+  **regenerate-never-patch** orchestration — every generation rebuilds the
+  whole workbook from Phase 7/8's current stored state.
+- **Never silently overwrites an existing report.** A second generation
+  writes `<name>_1.xlsx`; the first file is untouched.
+- **The Reports stage**: a per-set overview table, template
+  association/validation, a report-layout dialog, background generation with
+  progress, and "Generate All Sets" — one set's failure never hides
+  another's success.
+- **Phases 1-8 are untouched.**
+
+### Fixed — Phase 9 (found during its own testing, before release)
+
+- **An automatic worker-completion callback could hang the application
+  indefinitely.** `ReportsPage._on_generated` opened a modal `QMessageBox`
+  summary whenever a generation run included a blocked or failed set — a
+  routine outcome, not an exceptional one — and nothing in an automated or
+  headless context could ever dismiss it. The same defect class Phase 8's
+  `ResultsPage._on_scored` was fixed for during that phase's own audit,
+  rediscovered independently here. Replaced with an inline status label; a
+  genuine worker exception is still shown, as text, never as a blocking
+  dialog.
+
 ### Fixed — Step 4 Scan GUI readability/layout refinement
 
 The left-hand control column on the Scan stage (Template, Scans, Processing,

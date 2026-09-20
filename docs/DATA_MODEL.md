@@ -32,6 +32,9 @@ entities, it finds the intended shape and relationships already agreed.
 | ScoringConfiguration | Implemented (Phase 8) | `scoring_policy_revision` table |
 | CandidateResult | Implemented (Phase 8) | `candidate_result` table |
 | Per-question breakdown | **Not stored - regenerated** (Phase 8) | - |
+| ReportTemplateAssociation | Implemented (Phase 9) | `report_template_association` table |
+| ReportLayoutConfig | Implemented (Phase 9) | `report_layout_config` table |
+| GeneratedReport | Implemented (Phase 9) | `generated_report` table |
 
 ## Entity relationships
 
@@ -419,6 +422,51 @@ mark. A detail view and a total can then never disagree, because there is only
 one calculation - and the phase's reproducibility requirement is satisfied by
 construction rather than by keeping two things in sync.
 
+### ReportTemplateAssociation - *implemented (Phase 9)*
+
+Which result/absentee workbook an operator selected for one set, and its
+column mapping. Table `report_template_association`, unique on `set_code`.
+
+**One row per set, updated in place** rather than revisioned - unlike an
+answer key or scoring policy, selecting a different template is not
+score-affecting; it changes presentation, not what a candidate is worth. What
+must remain reproducible per generation - the template path, its SHA-256 hash
+at that moment - is captured on `GeneratedReport` instead, so a filed report
+stays traceable even after the association has since changed.
+
+Fields: `template_path`, `template_sha256`, `sheet_name`, `roll_column`,
+`marks_column`, `serial_column`, `name_column`, `rank_column`.
+
+### ReportLayoutConfig - *implemented (Phase 9)*
+
+Header/subtitle/footer text, logo, fonts and page setup. Table
+`report_layout_config`. `set_code=""` is the project-wide default; a real set
+code is a per-set override, looked up first and falling back to the default
+row.
+
+Every field left at its class default means "preserve the template exactly as
+supplied" - layout only ever *supplements* what a template does not already
+define.
+
+### GeneratedReport - *implemented (Phase 9)*
+
+One report-generation attempt, and everything it was computed from. Table
+`generated_report`, **append-only** - a new generation writes a new row rather
+than editing the last one for that set, the same rule Phase 8's key and policy
+revisions follow.
+
+Fields: `set_code`, `report_type` (`xlsx` / `pdf_rollwise` / `pdf_meritwise`),
+`template_path`, `template_sha256`, `answer_key_revision`, `policy_revision`,
+`layout_config_snapshot_json`, `candidate_count`/`present_count`/
+`absent_count`/`scored_count`/`unresolved_count`, `warnings_json`,
+`output_path`, `output_sha256`, `status`, `error_message`, `generated_at`,
+`generated_by`, `application_version`.
+
+Deliberately holds no candidate data - counts, revisions and hashes only. The
+generated workbook on disk, at `output_path`, is where the candidate
+information lives; this row exists to make that file traceable to its inputs,
+not to duplicate it.
+
 ### AuditEvent - *implemented (Phase 6)*
 
 Append-only history of anything that can change a result. Table `audit_event`.
@@ -472,6 +520,9 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `answer_key_revision` | One set's key, at one revision. | Phase 8 (migration 5) |
 | `scoring_policy_revision` | The marking rules, at one revision. | Phase 8 (migration 5) |
 | `candidate_result` | One candidate's mark and its inputs. | Phase 8 (migration 5) |
+| `report_template_association` | One set's chosen result template and column mapping. | Phase 9 (migration 6) |
+| `report_layout_config` | Header/logo/font/page-setup configuration, project or per-set. | Phase 9 (migration 6) |
+| `generated_report` | One report-generation attempt and its provenance. | Phase 9 (migration 6) |
 
 ### Schema version 3 (Phase 6)
 
@@ -551,6 +602,18 @@ Key/value storage is appropriate for a handful of identity attributes. Data that
 is queried, joined, sorted or reported on - scans, candidates, results - gets
 properly typed tables in the phase that introduces it. Do not extend
 `project_setting` into a general-purpose object store.
+
+### Schema version 6 (Phase 9)
+
+`_migration_006_reporting` creates `report_template_association`,
+`report_layout_config` and `generated_report`. Purely additive, following
+migration 5's own precedent exactly: a project scored before this version has
+never been reported on, so nothing needs converting.
+
+A project scored before Phase 9 opens normally and simply has no template
+association or generated reports until one is created. Asserted the same way
+migration 5 was: a real project wound back to version 5, reopened, and checked
+its Phase 8 data survived and a template can then be associated.
 
 Each phase adds its tables together with a migration; see
 `docs/DEVELOPMENT_GUIDE.md`.

@@ -63,7 +63,7 @@ validated against a broad, real-world set of filled sheets.
 | 6 | Conflict detection & human resolution | Implemented | In progress | 🧪 Testing |
 | 7 | Candidate & attendance reconciliation | Implemented | In progress | 🧪 Testing |
 | 8 | Answer-key & scoring engine | Implemented | In progress | 🧪 Testing |
-| 9 | Result management & reporting | Pending | Not started | ⏳ Pending |
+| 9 | Result management & reporting | Implemented | In progress | 🧪 Testing |
 | 10 | Integration, recovery & production hardening | Pending | Not started | ⏳ Pending |
 | 11 | Release, user documentation & packaging | Pending | Not started | ⏳ Pending |
 
@@ -94,6 +94,7 @@ phases currently in testing:
 | 6 — Conflict review | Yes | Yes | Yes | **No** — no review session with real operators on a real batch |
 | 7 — Reconciliation | Yes | Yes | Yes | **No** — no reconciliation of a real cohort against a real roster |
 | 8 — Scoring | Yes | Yes | Yes | **No** — no examination has been marked with it |
+| 9 — Reporting | Yes | Yes | Yes | **No** — no real examination office's own workbook has been reported on, and PDF export has no real-LibreOffice verification in the build environment (not installed there) |
 
 - **Implementation complete** — the code exists and does what the phase set out
   to do.
@@ -1166,7 +1167,6 @@ Still open, and why Phase 8 is not marked complete:
   looked at it, which is a different and much weaker claim
 - [ ] Scoring is **per batch and per roster**; a cohort split across two
   batches is marked twice
-- [ ] There is **no export of results yet** — reports are Phase 9
 - [ ] Section-wise or per-question mark weights are not supported: one policy
   applies to the whole paper
 
@@ -1204,6 +1204,116 @@ in [`docs/scoring.md`](docs/scoring.md).
 > so the mark can be reproduced and defended. It is **not** a check that the
 > key is right, or that recognition read the paper correctly — Phase 4's
 > calibration and Phase 6's review are what narrow that.
+
+### Phase 9 testing status
+
+Phase 9 (Result Management & Reporting) is implemented and covered by 179 new
+automated tests (142 unit, 25 integration, 12 GUI), plus 3 new `qtguitesting`
+smoke checks. The integration tests run the phase brief's own six acceptance
+scenarios end to end against real Phase 7/8 services; the unit tests assert
+every generated workbook by reading it back with `openpyxl`, not by inspecting
+internal state.
+
+Confirmed by the current automated suite:
+
+- [x] **Standard competition ranking**, checked against the brief's own
+  worked example (`90, 88, 88, 85 → 1, 2, 2, 4`) and against a hand-built
+  `RANK.EQ` truth table, including ties, zero, decimal and negative marks, and
+  a 20,000-candidate timing check
+- [x] **The Excel rank formula is generated, never hard-coded** — the marks
+  column and the first/last row are derived from the template's own mapping
+  and row count in every test, including one where the row range is neither
+  `2` nor `230`
+- [x] **No candidate row is lost.** The supplied sample's own shape (Sl.No./
+  Roll No./Name/Total (90)/Merit) round-trips completely; every documented
+  variation is covered — a different worksheet name, a header starting on row
+  3+ with decorative rows above it, extra columns, merged header cells,
+  `ABS`/lowercase `absent`, leading-zero Roll Nos., Unicode names, an empty
+  name, and a duplicate Roll No. (kept and reported, never silently dropped)
+- [x] **Absent candidates remain in the Rollwise list**, in their original
+  position, with the canonical `ABSENT`/`---` marker — never deleted, never
+  sorted away
+- [x] **Present candidates carry the exact stored score**, as a number, at
+  the same two-decimal precision Phase 8's own display already uses
+- [x] **The original template is provably unmodified** — SHA-256 before and
+  after every generation, byte for byte identical
+- [x] **A readiness check blocks Final Export** for every condition the brief
+  lists: no template, no verified key, a template candidate not in the
+  project, a registered candidate missing from the template, a duplicate Roll
+  No., an absentee-status mismatch, a present candidate with no score, and an
+  unresolved reconciliation exception — every issue names what is wrong,
+  never a stack trace
+- [x] **A Preview still generates**, showing every readiness issue as a
+  warning rather than refusing outright
+- [x] **Per-set isolation**: two sets with deliberately different templates
+  and keys produce workbooks that cannot cross-contaminate — proven by giving
+  each set a key that would mark the *other* set's candidates at zero if it
+  were ever used against them, and confirming neither is
+- [x] **An existing output file is never silently overwritten** — a second
+  generation writes `..._1`, and the first file is untouched
+- [x] **Regenerate, never patch**: changing the scoring policy and
+  regenerating produces a new report from the new stored marks, never a
+  patched cell in the old one
+- [x] **Spreadsheet-injection protection**: a candidate name beginning with
+  `=`, `+`, `-` or `@` is quoted, never left as a live formula, in every sheet
+  that writes user-controlled text
+- [x] **Unicode names and project text** (Bangla tested explicitly) survive
+  every sheet unchanged
+- [x] **PDF export is dependency-injected and testable without a PDF
+  engine** — the orchestration (readiness, regenerate-before-export, single-
+  sheet extraction, no-silent-overwrite, graceful "unavailable" failure) is
+  fully tested with a fake exporter; a real-LibreOffice test exists and is
+  skipped, honestly, in this build environment
+- [x] Automated Qt GUI validation using `qtguitesting` (52/52 smoke checks,
+  including associating a template, generating an XLSX with every row and a
+  working rank formula, and a second generation never overwriting the first)
+
+Still open, and why Phase 9 is not marked complete:
+
+- [ ] **No real examination has been reported on.** Every test is synthetic
+  or uses this project's rendered sheets; no institution's own result
+  template, filled by a real cohort, has been fed through this pipeline
+- [ ] **No real-LibreOffice PDF verification.** LibreOffice was not installed
+  in the environment this phase was built and tested in; the exporter
+  abstraction and everything around it are fully tested by dependency
+  injection, but a real conversion has not been observed
+- [ ] **No Windows Excel COM PDF adapter** — deliberately not built; see
+  `development/PHASE_09_HANDOFF.md` §12
+- [ ] **No examination-scale run** — the largest real cohort anywhere in this
+  project remains under fifty candidates
+- [ ] Reporting is **per batch and per roster**, following Phase 8's own
+  limitation — a cohort split across two batches is reported on twice
+
+### Generating a report (Phase 9)
+
+After a batch is scored (Phase 8). Full detail is in
+[`docs/reporting.md`](docs/reporting.md).
+
+1. Open **Reports**. Each row is a set with a verified key or a scored script.
+2. **Select Template…** for a set and choose its result/absentee `.xlsx`
+   workbook. Confirm the suggested column mapping — Roll No. and Marks are
+   never guessed when two columns are equally plausible.
+3. **Validate** to see every readiness issue at once, or **Preview** to
+   generate a draft with issues shown as warnings rather than blocks.
+4. **Report Layout…** to set a header/logo/font/page setup, per project or
+   per set. Leaving everything blank preserves the template exactly.
+5. **Generate XLSX** for the selected set, or **Generate All Sets** for every
+   set the project has evidence of — one set's failure never hides another's
+   success.
+6. **Generate PDF** where LibreOffice is installed; otherwise XLSX generation
+   still works and PDF export says plainly that it is unavailable.
+7. If you change the answer key, the scoring configuration, an effective
+   answer, or the associated template, the next generation reads the current
+   stored state and writes a fresh file — nothing here ever patches a cell in
+   a previously generated report.
+
+> **What a generated report establishes.** That every mark, rank and
+> attendance status on it was read from Phase 7/8's stored state at the moment
+> of generation, that the rank is provably the same rank the workbook's own
+> formula computes, and that the exact template, key revision and policy
+> revision it was built from are recorded. It is **not** a check that the
+> template's own candidate roster is correct, or that the underlying scan was
+> read correctly — those remain Phase 7's and Phase 3's problems.
 
 ### Development philosophy
 
@@ -1351,7 +1461,9 @@ OMRflow/
 │   │                         conflict detection policy and the review/audit
 │   │                         store (Phase 6), candidate list import and
 │   │                         reconciliation (Phase 7), answer keys and
-│   │                         scoring (Phase 8)
+│   │                         scoring (Phase 8), result templates,
+│   │                         readiness and report generation/persistence
+│   │                         (Phase 9)
 │   ├── resources/            packaged non-GUI assets: the candidate list
 │   │                         sample workbook (Phase 7)
 │   ├── gui/                  PySide6 window and workflow pages
@@ -1371,6 +1483,9 @@ OMRflow/
 │   │   ├── results/             scoring configuration, batch marking and
 │   │   │                        per-question detail (Phase 8, testing in
 │   │   │                        progress)
+│   │   ├── reports/             per-set result templates, readiness,
+│   │   │                        report layout and XLSX/PDF generation
+│   │   │                        (Phase 9, testing in progress)
 │   │   └── devtools/            Tools > Developer / Testing: dataset
 │   │                            generation and benchmark results (Phase 3)
 │   ├── imaging/              pixel algorithms: alignment, plus per-bubble
@@ -1383,8 +1498,11 @@ OMRflow/
 │   │                         test cases, dataset planner and renderer,
 │   │                         benchmark, error categories and the benchmark
 │   │                         session (Phase 3)
-│   ├── reporting/            RESERVED - XLSX/PDF export (Phase 9; CSV export
-│   │                         already exists in services/scan_export.py)
+│   ├── reporting/            XLSX/PDF report generation mechanics (Phase 9):
+│   │                         `excel.py` builds the workbook, `pdf.py` is the
+│   │                         LibreOffice-backed exporter abstraction. CSV
+│   │                         export already existed, in
+│   │                         services/scan_export.py
 │   └── utils/                logging setup, atomic JSON
 │
 ├── tests/
@@ -1426,6 +1544,7 @@ OMRflow/
 | [`docs/conflict_review.md`](docs/conflict_review.md) | Conflict detection and human review: what becomes a conflict, the reviewer's workflow, conflict states, provenance, the append-only audit ledger and export integration (Phase 6) |
 | [`docs/reconciliation.md`](docs/reconciliation.md) | Candidate & attendance reconciliation: the four values and why they stay apart, importing a roster, the classifications, resolving an exception, and the privacy rule (Phase 7) |
 | [`docs/scoring.md`](docs/scoring.md) | Answer keys and scoring: the canonical answer string, key revisions and verification, wrong questions, the negative-marking modes, exact arithmetic, staleness and recomputation (Phase 8) |
+| [`docs/reporting.md`](docs/reporting.md) | Result management and reporting: why a template defines set membership, associating and validating a template, Rollwise/Meritwise/Summary/Answer-Key/Processing-Log sheets, ranking, readiness, layout configuration, PDF export and no-silent-overwrite (Phase 9) |
 | [`docs/TESTING.md`](docs/TESTING.md) | Testing strategy and the test-fixture policy |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | How to use what currently exists |
 | [`docs/decisions/`](docs/decisions/) | Architecture decision records |
@@ -1524,6 +1643,20 @@ never floats. Every result records the **exact key revision and scoring-policy
 revision** that produced it, goes **stale** when any input changes, and is
 **recomputed from stored inputs** rather than adjusted. See
 `docs/scoring.md`.
+
+**Result management and reporting** *(Phase 9, implemented; testing in
+progress)*. Each set's own result/absentee workbook is **the authoritative
+roster** — order, Roll No., name and existing absentee markers are its, not
+recreated; Phase 7/8's stored state supplies attendance and marks. Generation
+copies the template's bytes and populates a copy — **the original is never
+opened for writing**, proven by SHA-256. Rollwise keeps every candidate,
+absent or present, with a dynamic `RANK.EQ` formula the application's own
+ranking is checked against directly; Meritwise, Summary, Answer Key and
+Processing Log sheets accompany it. A readiness check blocks Final Export
+while any registered/template/score disagreement stands; a Preview shows the
+same issues as warnings. Existing output files are never overwritten
+silently, and PDF export runs through LibreOffice, reporting plainly when it
+is unavailable rather than pretending to succeed. See `docs/reporting.md`.
 
 **Reports** *(planned, Phase 9)*. Roll-wise (including absentees) and
 merit-wise Excel workbooks with a user-editable layout, plus PDF export. (CSV

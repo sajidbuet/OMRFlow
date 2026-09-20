@@ -151,16 +151,30 @@ def _clean_text(value: object) -> str:
 # ----------------------------------------------------------------------
 # Column mapping
 # ----------------------------------------------------------------------
-_ID_HEADERS: tuple[str, ...] = (
+ID_HEADERS: tuple[str, ...] = (
     "roll no.", "roll no", "roll number", "rollno", "roll",
     "candidate id", "candidate no", "candidate number", "candidate",
     "student id", "student no", "student number",
     "registration no", "registration number", "reg no", "reg. no.",
     "exam roll", "id",
 )
-_NAME_HEADERS: tuple[str, ...] = (
+"""Column headers recognised as a candidate identifier.
+
+Public (not ``_ID_HEADERS``) because :mod:`omr_scanner.services.report_template`
+(Phase 9) recognises the same identifier column in a result template and must
+agree with the roster importer about what "looks like a Roll No." means - two
+different answers to the same question would let a candidate match one file
+and not the other.
+"""
+_ID_HEADERS = ID_HEADERS
+"""Backward-compatible alias for the name this module used before Phase 9."""
+
+NAME_HEADERS: tuple[str, ...] = (
     "candidate name", "student name", "name of candidate", "name",
 )
+"""Column headers recognised as a candidate's name. Public for the same
+reason as :data:`ID_HEADERS`."""
+_NAME_HEADERS = NAME_HEADERS
 _ATTENDANCE_HEADERS: tuple[str, ...] = (
     "attendance", "status", "result", "marks", "mark", "score",
     "total", "obtained", "total marks",

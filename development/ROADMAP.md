@@ -20,7 +20,7 @@ that cannot be tested.
 | 6 | Conflict Detection & Human Resolution | Implemented; testing in progress - see `development/PHASE_06_HANDOFF.md` |
 | 7 | Candidate & Attendance Reconciliation | Implemented; testing in progress - see `development/PHASE_07_HANDOFF.md` |
 | 8 | Answer-Key & Scoring Engine | Implemented; testing in progress - see `development/PHASE_08_HANDOFF.md` |
-| 9 | Result Management & Reporting | Not started |
+| 9 | Result Management & Reporting | Implemented; testing in progress - see `development/PHASE_09_HANDOFF.md` |
 | 10 | Integration, Recovery & Production Hardening | Not started |
 | 11 | Release, User Documentation & Packaging | Not started |
 
@@ -331,17 +331,46 @@ are Phase 9.
 
 **Purpose.** Deliver the outputs an examination office actually files.
 
-**Deliverables.** Result review; ranking; roll-wise workbook including absentees;
-merit-wise workbook; summary, answer-key and processing-log sheets;
-user-editable Excel layout (headers, logo, fonts, page setup); PDF export.
+**Delivered as** `domain.reporting` (competition ranking, the dynamic
+`RANK.EQ` formula generator, spreadsheet-injection safety, readiness
+vocabulary), `services.report_template` (reading a real institution's own
+result/absentee workbook - header-row detection tolerant of decorative rows,
+column mapping that reports ambiguity rather than guessing, reusing Phase 7's
+own identifier normalisation), `services.report_readiness` (cross-checking a
+template's roster against Phase 7/8's canonical state), the `reporting`
+package's `excel.py` (Rollwise/Meritwise/Summary/Answer-Key/Processing-Log
+generation into a *copy* of the template, never the original) and `pdf.py`
+(a dependency-injected exporter abstraction over LibreOffice's headless
+conversion), `services.report_store` (per-set template/layout persistence,
+the append-only generation audit, and "regenerate, never patch"
+orchestration), one additive migration (`report_template_association`,
+`report_layout_config`, `generated_report`), and the `gui.reports` stage.
+Full detail: `development/PHASE_09_HANDOFF.md`; operator description:
+`docs/reporting.md`.
 
-**Major tests.** Generated workbooks open and contain every registered candidate;
-ranking matches the stored ranks; absentees appear correctly; a customised
-template produces the customised layout.
+**Exit criteria - met.** Both Rollwise and Meritwise reports are produced from
+a complete, reconciled and scored project and verified against the database -
+every candidate the template lists appears, absentees are retained with their
+canonical marker, present candidates carry the exact stored `final_score`, and
+every rank is an Excel `RANK.EQ` formula whose semantics the application's own
+`compute_ranks` is checked against directly, including the brief's own
+`90, 88, 88, 85 -> 1, 2, 2, 4` example. Exports never overwrite an existing
+file silently - a second generation writes `..._1`, proven by a dedicated
+test. The original template is proven byte-for-byte unmodified by SHA-256
+before/after every generation. Two independent sets, given deliberately
+different templates and keys, are proven to produce workbooks that cannot
+cross-contaminate.
 
-**Exit criteria.** Both report types are produced from a complete project and
-verified against the database; exports never overwrite an existing file
-silently.
+**Not done.** No real examination office's own workbook has been reported on -
+every test is synthetic or reuses this project's rendered sheets. PDF export
+has no real-LibreOffice verification in the environment this phase was built
+in (LibreOffice was not installed there); the exporter abstraction, its
+availability detection and its orchestration are fully tested by dependency
+injection, and the one test needing a real engine is present and correctly
+skipped, not deleted or weakened. No Windows Excel COM PDF adapter. Reporting
+remains per batch and per roster, following Phase 8's own limitation. No
+examination-scale run - the largest real cohort in this project remains under
+fifty candidates.
 
 ---
 

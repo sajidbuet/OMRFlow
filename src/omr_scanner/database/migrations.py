@@ -46,12 +46,15 @@ from omr_scanner.database.models import (
     BatchScan,
     CandidateResult,
     CandidateRoster,
+    GeneratedReport,
     ProjectSetting,
     ReconciliationDecision,
     ReconciliationEntryRow,
     ReconciliationRun,
     ReconciliationScript,
     RegisteredCandidate,
+    ReportLayoutConfig,
+    ReportTemplateAssociation,
     ReviewConflict,
     ScanBatch,
     SchemaMigration,
@@ -241,6 +244,23 @@ def _migration_005_scoring(connection: Connection) -> None:
     )
 
 
+def _migration_006_reporting(connection: Connection) -> None:
+    """Add Phase 9 report templates, layout configuration and generation audit.
+
+    Purely additive, following migration 5's own precedent: a project scored
+    before this version has never been reported on, so nothing needs
+    converting, and every table Phases 1-8 rely on is untouched.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[ReportTemplateAssociation.__tablename__],
+            Base.metadata.tables[ReportLayoutConfig.__tablename__],
+            Base.metadata.tables[GeneratedReport.__tablename__],
+        ],
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -272,6 +292,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "candidate_result"
         ),
         apply=_migration_005_scoring,
+    ),
+    Migration(
+        version=6,
+        description=(
+            "Phase 9 reporting: report_template_association, "
+            "report_layout_config, generated_report"
+        ),
+        apply=_migration_006_reporting,
     ),
 )
 

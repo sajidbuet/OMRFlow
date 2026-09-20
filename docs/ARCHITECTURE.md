@@ -53,7 +53,7 @@ above it.
 | `omr_scanner.recognition` | Turning measurements into logical values with confidence, missing/multiple-mark handling *(Phase 3)*. Conflict resolution is Phase 6. | Pixel access, OpenCV, persistence, Qt. |
 | `omr_scanner.database` | Schema, migrations, engine and session lifetime. | Workflow logic, Qt, OpenCV. |
 | `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results, judge a calibration run (`calibration_service`, Phase 4). Owns all side effects. | Widgets, dialogs, Qt imports of any kind. |
-| `omr_scanner.reporting` | CSV/XLSX/PDF generation. *(reserved - Phase 9)* | Result calculation, Qt. |
+| `omr_scanner.reporting` | XLSX/PDF generation mechanics *(Phase 9)*: `excel.py` populates a copied result template and builds the supporting sheets; `pdf.py` is the LibreOffice-backed exporter abstraction. CSV export is `services.scan_export`. | Result calculation, Qt, the database. |
 | `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.calibration` (Phase 4) verifies and tunes a template against representative scans before a batch; `gui.scan` (Phase 3) is the batch scanning workspace, including benchmark mode; `gui.devtools` (Phase 3) is the Tools > Developer / Testing front end to `evaluation`. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
 | `omr_scanner.evaluation` | Judging the engine: the ground-truth schema, the named test cases and dataset planner, the renderer, the benchmark and its error categories, and the benchmark session *(Phase 3)*. Sits *above* services, beside the GUI. | Qt; any recognition of its own - a benchmark that re-implements the engine measures itself. |
 | `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
@@ -107,7 +107,9 @@ OMRScannerError
 │   ├── InvalidPageGeometryError      code = "INVALID_PAGE_GEOMETRY"
 │   └── AlignmentTransformError       code = "ALIGNMENT_TRANSFORM_FAILED"
 ├── RecognitionError    (reserved - Phase 3)
-└── ReportingError      (reserved - Phase 9)
+└── ReportingError      Excel/PDF generation failures (Phase 9)
+    ├── ExcelReportError  A workbook could not be built
+    └── PdfExportError    A PDF could not be produced
 ```
 
 Each carries two messages: `str(exc)` is technical and goes to the log;
