@@ -38,6 +38,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from omr_scanner import __version__
+from omr_scanner.domain.exam_sets import MAX_EXAM_NAME_LENGTH
 
 PROJECT_FILE_NAME = "project.json"
 """Discovery document at the root of every project."""
@@ -45,12 +46,23 @@ PROJECT_FILE_NAME = "project.json"
 DATABASE_FILE_NAME = "database.sqlite"
 """Authoritative working data store, next to ``project.json``."""
 
-PROJECT_FORMAT_VERSION = 1
+PROJECT_FORMAT_VERSION = 2
 """Version of the ``project.json`` document format.
 
 Bumped only for breaking changes. A build refuses to open a project whose
 format version is greater than this value, because it cannot know what the
 newer build meant.
+
+History:
+    1. Phase 0. ``project_format_version``, ``project_id``, ``name``,
+       ``description``, timestamps, ``created_with``.
+    2. Adds :attr:`ProjectMetadata.exam_name`. Reading is backward
+       compatible - a version 1 document simply has no ``exam_name`` and
+       loads with an empty one - but writing is not, because
+       :class:`ProjectMetadata` forbids unknown fields, so a version 1 build
+       handed a version 2 document would reject it as invalid. The bump is
+       what turns that into the accurate "created with a newer version of
+       OMRFlow" message instead.
 """
 
 MAX_PROJECT_NAME_LENGTH = 120
@@ -200,7 +212,16 @@ class ProjectMetadata(BaseModel):
         project_id: Stable identifier, generated once at creation. Report files
             and database rows reference it, so it must never be regenerated for
             an existing project.
-        name: Display name of the examination.
+        name: Name of the project *as a workspace*. Doubles as the default
+            folder name, and is therefore validated as a portable directory
+            name. Use :attr:`exam_name` for the examination's real title.
+        exam_name: Title of the examination this project processes, as it
+            should read on a report - for example *"Recruitment Exam,
+            Bangladesh Submarine Cable Regulatory Authority"*. Free text: it
+            is never used as a path, so none of :attr:`name`'s folder-name
+            restrictions apply to it. Empty only for a project created before
+            this field existed; :attr:`Project.exam_name` falls back to
+            :attr:`name` for those.
         description: Optional free text.
         created_at: Creation timestamp (timezone aware, UTC).
         modified_at: Last time the metadata document was written.
@@ -212,6 +233,7 @@ class ProjectMetadata(BaseModel):
     project_format_version: int = PROJECT_FORMAT_VERSION
     project_id: str = Field(default_factory=lambda: str(uuid4()))
     name: str = Field(min_length=1, max_length=MAX_PROJECT_NAME_LENGTH)
+    exam_name: str = Field(default="", max_length=MAX_EXAM_NAME_LENGTH)
     description: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     modified_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -234,6 +256,19 @@ class ProjectMetadata(BaseModel):
             raise ValueError("Project name must not end with a period")
         return stripped
 
+    @field_validator("exam_name")
+    @classmethod
+    def _trim_exam_name(cls, value: str) -> str:
+        """Trim surrounding whitespace; allow empty for a pre-v2 project.
+
+        Blank is a legitimate *stored* state (a project created before this
+        field existed, or one whose exam name has not been filled in yet) but
+        never a legitimate *submitted* one - see
+        :func:`omr_scanner.domain.exam_sets.validate_exam_name`, which the
+        service layer applies to operator input before it reaches here.
+        """
+        return value.strip()
+
     @field_validator("created_at", "modified_at")
     @classmethod
     def _require_timezone(cls, value: datetime) -> datetime:
@@ -249,6 +284,28 @@ class ProjectMetadata(BaseModel):
     def touched(self) -> Self:
         """Return a copy with ``modified_at`` set to now."""
         return self.model_copy(update={"modified_at": datetime.now(UTC)})
+
+    def with_exam_name(self, exam_name: str) -> Self:
+        """Return a copy carrying a new examination name, marked as modified.
+
+        Args:
+            exam_name: The already-validated name (see
+                :func:`omr_scanner.domain.exam_sets.validate_exam_name`).
+
+        The copy also declares the current
+        :data:`PROJECT_FORMAT_VERSION`, because the document about to be
+        written *is* a current-format document: it contains ``exam_name``.
+        Leaving a project that predates this field claiming to be version 1
+        while writing a version 2 field into it would make the stored version
+        a lie.
+        """
+        return self.model_copy(
+            update={
+                "exam_name": exam_name.strip(),
+                "project_format_version": PROJECT_FORMAT_VERSION,
+                "modified_at": datetime.now(UTC),
+            }
+        )
 
 
 class Project:
@@ -270,6 +327,20 @@ class Project:
     def name(self) -> str:
         """Display name of the project."""
         return self.metadata.name
+
+    @property
+    def exam_name(self) -> str:
+        """Title of the examination, for display.
+
+        Falls back to :attr:`name` for a project created before
+        ``project.json`` carried an examination name, so that every caller
+        has something truthful to show without having to know which format
+        version the project came from. The *stored* value is left empty in
+        that case rather than being silently backfilled - see
+        ``docs/DATA_MODEL.md`` for why an unanswered question is recorded as
+        unanswered.
+        """
+        return self.metadata.exam_name or self.metadata.name
 
     @property
     def root(self) -> Path:

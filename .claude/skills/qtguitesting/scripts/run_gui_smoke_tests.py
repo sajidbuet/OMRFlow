@@ -1473,6 +1473,68 @@ def _check_a_second_generation_does_not_overwrite_the_first() -> CheckResult:
     return ok, detail
 
 
+def _check_project_configuration_defines_sets_that_survive_a_reopen() -> CheckResult:
+    """The Project Configuration dialog, driven end to end against real files.
+
+    Builds the brief's own example - one exam name, three sets - through the
+    dialog itself, then closes the project and opens it again from disk, so
+    what is asserted is what a reopened project actually contains rather
+    than what a widget still happens to be holding.
+    """
+    import shutil
+
+    from _harness import OUTPUT_ROOT
+
+    from omr_scanner.gui.project_config_dialog import ProjectConfigDialog
+    from omr_scanner.services import create_project, open_project, project_sets
+
+    workspace = OUTPUT_ROOT / "project_configuration"
+    shutil.rmtree(workspace, ignore_errors=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    exam_name = "Recruitment Exam, Bangladesh Submarine Cable Regulatory Authority"
+    wanted = (
+        ("10", "Name of Post: Assistant Engineer (Electrical)"),
+        ("11", "Name of Post: Assistant Engineer (Civil)"),
+        ("12", "Name of Post: Assistant Engineer (Mechanical)"),
+    )
+
+    session = create_project(workspace, "BSCRA Recruitment")
+    dialog = ProjectConfigDialog(session)
+    dialog.exam_name_edit.setText(exam_name)
+    saved = dialog.save_exam_name()
+    added = [dialog.add_set(code, description) for code, description in wanted]
+    duplicate_refused = not dialog.add_set("10", "A second Set 10")
+    duplicate_message = dialog.sets_status_label.text()
+    rows_shown = dialog.sets_table.rowCount()
+    dialog.deleteLater()
+    root = session.root
+    session.close()
+
+    with open_project(root) as reopened:
+        stored = project_sets.list_sets(reopened.database)
+        reloaded = tuple((item.code, item.description) for item in stored)
+        reloaded_exam_name = reopened.exam_name
+        stable_ids = len({item.set_id for item in stored})
+
+    ok = (
+        saved
+        and all(added)
+        and duplicate_refused
+        and rows_shown == 3
+        and reloaded == wanted
+        and reloaded_exam_name == exam_name
+        and stable_ids == 3
+    )
+    detail = (
+        f"exam name {'kept' if reloaded_exam_name == exam_name else 'LOST'}; "
+        f"{len(reloaded)} set(s) reloaded {'correctly' if reloaded == wanted else 'WRONG'}; "
+        f"duplicate {'refused' if duplicate_refused else 'ACCEPTED'} "
+        f"({duplicate_message[:60]})"
+    )
+    return ok, detail
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -1522,6 +1584,10 @@ def main(argv: list[str] | None = None) -> int:
             _check_tools_menu_offers_the_developer_commands,
         ),
         ("benchmark results dialog constructs", _check_benchmark_dialog_constructs),
+        (
+            "project configuration defines sets that survive a reopen",
+            _check_project_configuration_defines_sets_that_survive_a_reopen,
+        ),
     ]
 
     # The Scan checks drive the real template that describes the real sample.

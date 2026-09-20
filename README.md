@@ -72,6 +72,24 @@ Phase titles and descriptions for 6-11 are taken directly from
 plan; see that document for each phase's purpose, deliverables and exit
 criteria.
 
+### Examination sets: a multi-part enhancement
+
+Work running alongside the numbered phases, to let one project describe an
+examination that is divided into several sets (one per post, paper or
+category). It is being delivered in parts, and only the first has been built:
+
+| Part | Description | Development | Testing | Status |
+|---|---|---|---|---|
+| 1 | Project configuration: exam name, and a variable number of persistent, uniquely identified sets | Implemented | Implemented & tested | 🧪 Testing |
+| 2 | One attendance workbook per set; attendance imported per set | Not started | Not started | ⏳ Pending |
+| 3 | Set-aware reporting: reports inheriting attendance layouts, roll-wise and merit-wise sheets per set | Not started | Not started | ⏳ Pending |
+
+Part 1 changes project creation, project configuration and the persistence
+behind them, and **nothing else** — attendance import, reconciliation,
+scoring, result generation and report generation all behave exactly as they
+did before. A set defined today is a definition that later parts will link
+to; nothing downstream reads it yet.
+
 ### Status legend
 
 - ✅ **Complete** — implementation and its required testing are both finished.
@@ -111,6 +129,9 @@ phases currently in testing:
 - Create, close, reopen and validate a project (a folder with a metadata file,
   a SQLite database and the standard working sub-directories); invalid or
   damaged projects are refused with a readable message.
+- **Project configuration — examination name and sets** (*implemented and
+  tested*): *File > Project Configuration...* describes what the project is
+  processing. See "Describing the examination and its sets" below.
 - Load, validate and save versioned `.omrt` template documents.
 - **Geometric normalisation** (Phase 1): detect the four printed registration
   markers on a scan, resolve which way up the page is, and correct rotation,
@@ -347,6 +368,59 @@ phases currently in testing:
   **Template**, **Calibrate**, **Scan**, **Resolve**, **Attendance**, **Answer
   Key** and **Results** are implemented, and **Reports** states which phase
   will implement it.
+
+### Describing the examination and its sets
+
+*File > Project Configuration...* is where a project says what it is
+processing. It opens automatically once a new project has been created, and
+can be reopened at any time to change any of it.
+
+**Exam name.** The title of the examination, as it should read on a report —
+for example *Recruitment Exam, Bangladesh Submarine Cable Regulatory
+Authority*. This is **not** the project's folder name, and is deliberately not
+restricted to characters a folder name allows: a title containing `:` or `/`
+is perfectly ordinary and is accepted. The folder name is asked for once, when
+the project is created, and is shown beside the exam name so the two are never
+confused. Leading and trailing whitespace is trimmed; a blank name is refused.
+
+**Sets.** An examination is often divided into sets — one per post, paper or
+category — and a project may define **any number** of them, from one to fifty
+or more. Each set has:
+
+| | |
+|---|---|
+| **Set code** | What is printed on the paper and shown as *Set 10*. Codes need not be sequential or numeric: `1`, `2`, `10`, `11`, `A`, `B`, `EEE-01` are all accepted. Whitespace is trimmed; a blank code is refused; **a duplicate code is refused with a message naming the set that already uses it, and never silently overwrites it**. |
+| **Description** | Free text explaining what the set is, e.g. *Name of Post: Assistant Engineer (Electrical)*. May be long, and is otherwise unrestricted. |
+
+Sets can be added, edited, deleted and reordered, and every change is written
+to the project database as it is made — there is no separate save step, and
+nothing is held only in the dialog. An example project therefore reads:
+
+```text
+Exam name:  Recruitment Exam, Bangladesh Submarine Cable Regulatory Authority
+
+Set  Description
+10   Name of Post: Assistant Engineer (Electrical)
+11   Name of Post: Assistant Engineer (Civil)
+12   Name of Post: Assistant Engineer (Mechanical)
+```
+
+**Each set also carries a stable internal identifier**, generated once and
+never reused — not the row's position in the table, and not the code, which an
+operator may legitimately correct later. That identifier is what the later
+parts of this enhancement will link attendance, candidates and results to, so
+that fixing a typo in a set code cannot detach the data already filed under it.
+
+**Existing projects are unaffected and open normally.** One created before
+this feature simply starts with no sets defined and shows its project name as
+the exam name until a fuller title is entered. Nothing is invented from its
+existing data: if the project already mentions set codes in its answer keys or
+scanned sheets, the dialog *offers* to add those codes — without descriptions,
+because the old data records that a set was processed, never what it was for —
+and adding them is the operator's decision. A set whose papers were never
+scanned cannot appear in that list, which is precisely why it is a suggestion
+and not a migration. See [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md), "Schema
+version 8", for exactly what happens.
 
 ### Phase 3 architectural hardening
 
@@ -1526,6 +1600,12 @@ planned are documented in
 [`development/ROADMAP.md`](development/ROADMAP.md); this project does not
 promise a delivery date for it, and its scope may be refined as earlier
 phases surface real requirements.
+
+**The examination-sets enhancement is one part of three.** Part 1 (project
+configuration: exam name and sets) is implemented and tested. Part 2
+(attendance per set) and Part 3 (set-aware reporting: roll-wise and merit-wise
+sheets inheriting attendance layouts) have **not been started**, and no
+attendance, scoring or reporting behaviour has been changed for them yet.
 
 **Real-world validation remains pending for every phase that needs it.**
 Implemented, automated tests passing, synthetic dataset validated, real scanned

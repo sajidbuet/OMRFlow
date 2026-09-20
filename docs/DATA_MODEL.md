@@ -14,6 +14,7 @@ entities, it finds the intended shape and relationships already agreed.
 | Entity | Status | Storage |
 |---|---|---|
 | Project | Implemented (Phase 0) | `project.json` + `project_setting` table |
+| ExamSet (the project's own registry of sets) | Implemented (project configuration) | `project_set` table |
 | Template, Zone, FieldDefinition, RegistrationMarker, OrientationMarker, BubbleGrid, RecognitionSettings | Implemented (Phase 0) | `.omrt` document |
 | ScanBatch | Implemented (Phase 5) | `scan_batch` table |
 | BatchScan (one scan in a batch) | Implemented (Phase 5) | `batch_scan` table |
@@ -44,6 +45,7 @@ entities, it finds the intended shape and relationships already agreed.
 
 ```mermaid
 erDiagram
+    PROJECT ||--o{ EXAM_SET : "is divided into"
     PROJECT ||--o{ TEMPLATE : "uses"
     PROJECT ||--o{ SCAN : "contains"
     PROJECT ||--o{ CANDIDATE : "registers"
@@ -77,14 +79,46 @@ database is the authoritative store for working data.
 
 | Field | Type | Notes |
 |---|---|---|
-| `project_format_version` | int | Refuses to open a newer format. |
+| `project_format_version` | int | Refuses to open a newer format. Currently 2. |
 | `project_id` | uuid string | Stable; never regenerated. Referenced by exports. |
-| `name` | str | Also the default folder name; validated as a portable folder name. |
+| `name` | str | The workspace's name, and the default folder name; validated as a portable folder name. |
+| `exam_name` | str | The examination's title, as it should read on a report. Free text - it is never a path, so none of `name`'s folder-name restrictions apply. Empty only in a format-version-1 document; `Project.exam_name` then falls back to `name`. |
 | `description` | str | Free text. |
 | `created_at`, `modified_at` | datetime (UTC, aware) | Naive timestamps are rejected. |
 | `created_with` | str | OMRFlow version, for diagnostics. |
 
 Directory layout and rationale: `docs/decisions/ADR-0002-project-on-disk-layout.md`.
+
+### ExamSet - *implemented*
+
+The project's own registry of the sets one examination is divided into - a set
+code as printed on the paper, and what it means. Table `project_set`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `set_id` | 32-char hex string | Stable identity, generated once (`uuid4().hex`, the same form `scan_batch.batch_id` uses). Never a row number, and never reissued when a code is corrected. This is what later phases should link attendance, candidates and results to. |
+| `code` | str(32) | Operator-visible: `10`, `A`, `EEE-01`. Unique within the project, enforced by a constraint as well as by the service layer. Same width and same value-space as the `set_code` columns below, so the two can be joined directly. |
+| `description` | text | Free text, e.g. `Name of Post: Assistant Engineer (Electrical)`. May be empty and may be long. |
+| `display_order` | int | The operator's own ordering, renumbered densely from zero. |
+| `created_at`, `updated_at` | datetime (UTC, aware) | |
+
+**How this relates to the `set_code` that Phases 8 and 9 already use.**
+`answer_key_revision.set_code`, `report_template_association.set_code`,
+`report_layout_config.set_code`, `generated_report.set_code` and
+`batch_scan.set_code_value` are all *references* to a set by the code printed
+on the paper. `project_set` is the *definition* side: which codes this
+examination uses, and what each one means. The code string is deliberately the
+same value in both.
+
+**No foreign key joins them yet, on purpose.** Declaring one would change how
+answer keys, scoring and reports behave, which the pass that introduced this
+table was explicitly scoped out of. The join is made possible here; making it
+belongs to the phase that needs it.
+
+Deletion goes through `project_sets.references_to_set`, which is the single
+place a future phase declares what depends on a set. It currently returns
+nothing - because nothing does - and `delete_set` consults it anyway, so that
+adding those links later cannot silently start orphaning records.
 
 ### Template and its parts - *implemented*
 
@@ -529,6 +563,35 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `generated_report` | One report-generation attempt and its provenance. | Phase 9 (migration 6) |
 | `batch_scan_history` | A scan's superseded status/outcome/result, archived before reprocessing. Append-only, trigger-enforced, like `audit_event`. | Phase 10 (migration 7) |
 | `processing_manifest` | A reproducibility snapshot, assembled from Phases 5-9's own tables rather than duplicating them. | Phase 10 (migration 7) |
+| `project_set` | The project's own registry of examination sets: code, description, order, stable id. | Project configuration (migration 8) |
+
+### Schema version 8 (project configuration)
+
+`_migration_008_project_sets` creates `project_set`. Purely additive, and
+deliberately **not** backfilled.
+
+- **A project created before this version opens normally** and starts with an
+  empty set list, which the operator fills in from *File -> Project
+  Configuration...*.
+- **Nothing is inferred from existing data.** The set codes an older project
+  already contains (`answer_key_revision.set_code`,
+  `batch_scan.set_code_value`) record what *happened* - a key that was
+  entered, a code recognition read off a sheet - not which sets the
+  examination was *meant* to have. A set whose papers were never scanned would
+  simply be missing, and nothing in the data says so, so inventing registry
+  entries from them would be the application asserting something it cannot
+  know. `project_sets.suggest_sets_from_existing_data` exists so the interface
+  can *offer* those codes as a starting point; accepting them is the
+  operator's decision.
+- **`project.json` format version 1 -> 2.** Reading is backward compatible: a
+  version 1 document has no `exam_name` and loads with an empty one, and
+  `Project.exam_name` falls back to `name` so every caller has something
+  truthful to show. The stored version stays at 1 until something is actually
+  written; setting an examination name rewrites the document as version 2.
+  The bump exists because `ProjectMetadata` forbids unknown fields, so an
+  *older* build handed a version 2 document would otherwise reject it as
+  corrupt rather than saying "this project was created with a newer version of
+  OMRFlow".
 
 ### Schema version 3 (Phase 6)
 

@@ -49,6 +49,7 @@ from omr_scanner.database.models import (
     CandidateRoster,
     GeneratedReport,
     ProcessingManifest,
+    ProjectSet,
     ProjectSetting,
     ReconciliationDecision,
     ReconciliationEntryRow,
@@ -323,6 +324,37 @@ def _migration_007_production_hardening(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+def _migration_008_project_sets(connection: Connection) -> None:
+    """Add the project's own registry of examination sets: ``project_set``.
+
+    Purely additive, and deliberately **not** backfilled.
+
+    A project created before this version has no list of sets anywhere to
+    convert from. The set codes it does contain live on rows that describe
+    something that *happened* - an answer key that was entered
+    (``answer_key_revision.set_code``), a report that was generated
+    (``generated_report.set_code``), a sheet whose printed set code
+    recognition read (``batch_scan.set_code_value``) - and inventing registry
+    entries from them would put the application in the position of asserting,
+    with no evidence and no description to show, which sets an examination
+    was *intended* to have. A project that has processed papers for sets 10
+    and 11 might have three more that were never scanned.
+
+    The honest behaviour, and the one implemented here, is that an upgraded
+    project simply starts with an empty set list that the operator fills in
+    from *Project Configuration*, while every existing answer key, report and
+    scan keeps working exactly as before - none of them consult this table.
+    :func:`omr_scanner.services.project_sets.suggest_sets_from_existing_data`
+    exists so the interface can *offer* the codes already present as a
+    starting point, which is a suggestion the operator accepts or rejects,
+    not a silent migration.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[Base.metadata.tables[ProjectSet.__tablename__]],
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -370,6 +402,11 @@ MIGRATIONS: tuple[Migration, ...] = (
             "batch_scan_history, processing_manifest"
         ),
         apply=_migration_007_production_hardening,
+    ),
+    Migration(
+        version=8,
+        description="Project-level examination sets: project_set",
+        apply=_migration_008_project_sets,
     ),
 )
 

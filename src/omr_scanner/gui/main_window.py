@@ -60,6 +60,7 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.health_dialog import ProjectHealthDialog
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.project_config_dialog import ProjectConfigDialog
 from omr_scanner.gui.reports.page import ReportsPage
 from omr_scanner.gui.results.page import ResultsPage
 from omr_scanner.gui.review.page import ResolvePage
@@ -330,6 +331,15 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        self.project_config_action = QAction("Project &Configuration...", self)
+        self.project_config_action.setObjectName("projectConfigAction")
+        self.project_config_action.setEnabled(False)
+        self.project_config_action.setStatusTip(
+            "Set this project's examination name and the sets it is divided into"
+        )
+        self.project_config_action.triggered.connect(self._prompt_project_configuration)
+        file_menu.addAction(self.project_config_action)
+
         self.close_project_action = QAction("&Close Project", self)
         self.close_project_action.setEnabled(False)
         self.close_project_action.triggered.connect(self.close_project)
@@ -415,12 +425,17 @@ class MainWindow(QMainWindow):
         """The application configuration this window is working from."""
         return self._config
 
-    def create_project_at(self, parent_directory: Path, name: str) -> bool:
+    def create_project_at(
+        self, parent_directory: Path, name: str, *, exam_name: str | None = None
+    ) -> bool:
         """Create a project and open it, replacing any currently open project.
 
         Args:
             parent_directory: Folder that will contain the new project folder.
-            name: Display name of the examination.
+            name: Name of the project workspace; also its folder name.
+            exam_name: Title of the examination. Defaults to ``name``, which
+                an operator can replace with a fuller title - one that need
+                not be a legal folder name - in *Project Configuration*.
 
         Returns:
             ``True`` when the project was created and opened, ``False`` when the
@@ -428,7 +443,7 @@ class MainWindow(QMainWindow):
             never propagate into Qt's event loop.
         """
         try:
-            session = create_project(parent_directory, name)
+            session = create_project(parent_directory, name, exam_name=exam_name)
         except OMRScannerError as exc:
             report_error(self, exc, context="Create project")
             return False
@@ -508,7 +523,16 @@ class MainWindow(QMainWindow):
     # Dialog-owning commands
     # ------------------------------------------------------------------
     def _prompt_create_project(self) -> None:
-        """Ask for a location and a name, then create the project."""
+        """Ask for a location and a name, create the project, then configure it.
+
+        The folder name is asked for first and on its own because it is the
+        one answer that cannot be changed afterwards without moving files on
+        disk. Everything that *can* be changed later - the examination's real
+        title, the sets it is divided into - is collected in *Project
+        Configuration*, which opens straight afterwards so that a new project
+        is configured in one continuous flow rather than left half-described
+        until somebody finds the menu item.
+        """
         start_dir = self._config.default_projects_root or Path.home()
         parent_directory = QFileDialog.getExistingDirectory(
             self, "Select the folder that will contain the project", str(start_dir)
@@ -516,11 +540,14 @@ class MainWindow(QMainWindow):
         if not parent_directory:
             return
 
-        name, accepted = QInputDialog.getText(self, "New project", "Project name:")
+        name, accepted = QInputDialog.getText(
+            self, "New project", "Project name (used as the folder name):"
+        )
         if not accepted or not name.strip():
             return
 
-        self.create_project_at(Path(parent_directory), name.strip())
+        if self.create_project_at(Path(parent_directory), name.strip()):
+            self._prompt_project_configuration()
 
     def _prompt_open_project(self) -> None:
         """Ask for a project folder, then open it.
@@ -595,6 +622,18 @@ class MainWindow(QMainWindow):
         if self._session is None:
             return
         ProjectHealthDialog(self._session.database, self._session.root, self).exec()
+
+    def _prompt_project_configuration(self) -> None:
+        """Open Project Configuration for the current project.
+
+        The dialog writes every change as it is made, so there is nothing to
+        apply here; the window only has to redisplay the project afterwards,
+        because the examination name it shows may have changed.
+        """
+        if self._session is None:
+            return
+        ProjectConfigDialog(self._session, self).exec()
+        self._broadcast_project_change()
 
     def create_diagnostic_bundle_at(self, output_path: Path) -> bool:
         """Write a diagnostic bundle to ``output_path``. No dialog - testable directly.
@@ -1061,6 +1100,7 @@ class MainWindow(QMainWindow):
         has_project = self._session is not None
         self.close_project_action.setEnabled(has_project)
         self.project_health_action.setEnabled(has_project)
+        self.project_config_action.setEnabled(has_project)
 
         if self._session is None:
             self.setWindowTitle(APPLICATION_NAME)

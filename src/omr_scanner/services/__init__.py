@@ -43,6 +43,7 @@ from omr_scanner.services import (
     process_containment,
     project_backup,
     project_health,
+    project_sets,
     reconciliation,
     reconciliation_store,
     report_readiness,
@@ -165,6 +166,7 @@ from omr_scanner.services.project_service import (
     is_project_directory,
     open_project,
     read_project_metadata,
+    update_exam_name,
 )
 from omr_scanner.services.recognition_diagnostics import (
     render_overlay,
@@ -381,6 +383,7 @@ __all__ = [
     "process_scan",
     "project_backup",
     "project_health",
+    "project_sets",
     "provenance_for",
     "read_key",
     "read_project_metadata",
@@ -417,6 +420,7 @@ __all__ = [
     "sync_conflicts",
     "sync_duplicate_identifiers",
     "telemetry",
+    "update_exam_name",
     "validate_reason",
     "validate_reviewer",
     "write_calibration_report",

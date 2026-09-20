@@ -33,6 +33,7 @@ from pydantic import ValidationError
 
 from omr_scanner.database import ProjectDatabase, open_project_database
 from omr_scanner.database.models import ProjectSetting, SettingKey
+from omr_scanner.domain.exam_sets import validate_exam_name
 from omr_scanner.domain.project import (
     PROJECT_FORMAT_VERSION,
     Project,
@@ -60,6 +61,7 @@ __all__ = [
     "is_project_directory",
     "open_project",
     "read_project_metadata",
+    "update_exam_name",
 ]
 """``ProjectDatabase`` is re-exported deliberately.
 
@@ -111,6 +113,11 @@ class ProjectSession:
         return self.project.name
 
     @property
+    def exam_name(self) -> str:
+        """Title of the examination, falling back to the project name."""
+        return self.project.exam_name
+
+    @property
     def root(self) -> Path:
         """Absolute root directory of the open project."""
         return self.project.root
@@ -157,6 +164,7 @@ def create_project(
     *,
     description: str = "",
     directory_name: str | None = None,
+    exam_name: str | None = None,
 ) -> ProjectSession:
     """Create a new project directory and open it.
 
@@ -165,21 +173,37 @@ def create_project(
 
     Args:
         parent_directory: Folder that will contain the project directory.
-        name: Display name of the examination.
+        name: Name of the project workspace; also the default folder name, so
+            it must be usable as one.
         description: Optional free text stored in ``project.json``.
         directory_name: Folder name to use. Defaults to ``name``; supply it when
             the display name is unsuitable as a folder name.
+        exam_name: Title of the examination, free text with none of ``name``'s
+            folder-name restrictions. Defaults to ``name``, which is what a
+            project created from a single "project name" prompt should read
+            as until an operator sets a fuller title in *Project
+            Configuration*.
 
     Returns:
         An open :class:`ProjectSession` for the new project.
 
     Raises:
-        ProjectValidationError: ``name`` is not a usable project name, or the
-            directory could not be created.
+        ProjectValidationError: ``name`` is not a usable project name, the
+            examination name is not usable, or the directory could not be
+            created.
         ProjectExistsError: The target directory already exists and is not empty.
     """
     try:
-        metadata = ProjectMetadata(name=name, description=description)
+        resolved_exam_name = validate_exam_name(exam_name if exam_name is not None else name)
+    except ValueError as exc:
+        raise ProjectValidationError(
+            f"Invalid examination name: {exc}", user_message=str(exc)
+        ) from exc
+
+    try:
+        metadata = ProjectMetadata(
+            name=name, description=description, exam_name=resolved_exam_name
+        )
     except ValidationError as exc:
         raise ProjectValidationError(
             f"Invalid project metadata: {exc}",
@@ -339,6 +363,57 @@ def _backup_before_migration_if_needed(layout: ProjectLayout) -> None:
         logger.exception("Pre-migration backup failed; continuing without one")
 
 
+def update_exam_name(session: ProjectSession, exam_name: str) -> ProjectMetadata:
+    """Change the open project's examination name and write it to disk.
+
+    Args:
+        session: The open project session. Its
+            :attr:`~ProjectSession.project` is updated in place so that every
+            page already holding it sees the new name without reopening.
+        exam_name: The new title. Trimmed and validated here.
+
+    Returns:
+        The metadata as stored.
+
+    Raises:
+        ProjectValidationError: The name is blank or too long, the session is
+            read-only, or ``project.json`` could not be written.
+
+    ``project.json`` is rewritten through
+    :func:`omr_scanner.utils.json_io.write_json_atomic`, so an interrupted
+    save leaves the previous document intact rather than a truncated one.
+    The database's mirrored copy is updated in the same call, for the same
+    reason it exists at all: a ``database.sqlite`` found without its
+    ``project.json`` should still say which examination it belongs to.
+    """
+    if session.read_only:
+        raise ProjectValidationError(
+            "Cannot change the examination name of a read-only session",
+            user_message="This project is open read-only, so it cannot be changed.",
+        )
+
+    try:
+        validated = validate_exam_name(exam_name)
+    except ValueError as exc:
+        raise ProjectValidationError(
+            f"Invalid examination name: {exc}", user_message=str(exc)
+        ) from exc
+
+    updated = session.project.metadata.with_exam_name(validated)
+    try:
+        write_json_atomic(session.project.layout.project_file, updated.model_dump(mode="json"))
+    except OSError as exc:
+        raise ProjectValidationError(
+            f"Could not write {session.project.layout.project_file}: {exc}",
+            user_message="The project file could not be saved. Check your permissions.",
+        ) from exc
+
+    session.project.metadata = updated
+    _store_identity(session.database, updated)
+    logger.info("Examination name set to %r for %s", validated, session.root)
+    return updated
+
+
 def read_project_metadata(project_directory: Path) -> ProjectMetadata:
     """Read and validate ``project.json`` without opening the database.
 
@@ -435,6 +510,7 @@ def _store_identity(database: ProjectDatabase, metadata: ProjectMetadata) -> Non
     values = {
         SettingKey.PROJECT_ID: metadata.project_id,
         SettingKey.PROJECT_NAME: metadata.name,
+        SettingKey.EXAM_NAME: metadata.exam_name,
         SettingKey.PROJECT_FORMAT_VERSION: str(metadata.project_format_version),
         SettingKey.CREATED_WITH: metadata.created_with,
     }

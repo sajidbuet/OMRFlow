@@ -26,9 +26,17 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.pages.catalog import WorkflowPageSpec
-from omr_scanner.services import ProjectSession
+from omr_scanner.services import ProjectSession, project_sets
 
 NO_PROJECT_TEXT = "No project is open. Create a new project or open an existing one."
+
+NO_SETS_TEXT = "None defined yet - see File > Project Configuration..."
+
+MAX_SETS_LISTED = 8
+"""How many set codes are named before the summary says "and N more".
+
+A project may legitimately define fifty; naming them all would turn a
+one-line summary into a paragraph. The full list is one menu item away."""
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M UTC"
 
@@ -66,7 +74,16 @@ class ProjectPage(WorkflowPage):
         self._details.setVisible(False)
 
         self._value_labels: dict[str, QLabel] = {}
-        for caption in ("Name", "Description", "Location", "Project ID", "Created", "Modified"):
+        for caption in (
+            "Exam name",
+            "Sets",
+            "Name",
+            "Description",
+            "Location",
+            "Project ID",
+            "Created",
+            "Modified",
+        ):
             value = QLabel("")
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             value.setWordWrap(True)
@@ -81,6 +98,8 @@ class ProjectPage(WorkflowPage):
             return
 
         metadata = session.project.metadata
+        self._value_labels["Exam name"].setText(session.exam_name)
+        self._value_labels["Sets"].setText(self._describe_sets(session))
         self._value_labels["Name"].setText(metadata.name)
         self._value_labels["Description"].setText(metadata.description or "-")
         self._value_labels["Location"].setText(str(session.root))
@@ -90,3 +109,18 @@ class ProjectPage(WorkflowPage):
 
         self._empty_label.setVisible(False)
         self._details.setVisible(True)
+
+    def _describe_sets(self, session: ProjectSession) -> str:
+        """Summarise the sets this project defines, in one line.
+
+        Read here rather than cached because this page is redisplayed
+        whenever the project changes, which includes returning from *Project
+        Configuration* - the one place that can have just changed the answer.
+        """
+        sets = project_sets.list_sets(session.database)
+        if not sets:
+            return NO_SETS_TEXT
+        listed = ", ".join(item.display_label for item in sets[:MAX_SETS_LISTED])
+        if len(sets) > MAX_SETS_LISTED:
+            listed += f", and {len(sets) - MAX_SETS_LISTED} more"
+        return f"{len(sets)} defined - {listed}"

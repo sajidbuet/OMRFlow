@@ -447,3 +447,52 @@ previous version opens existing projects.
 
 **Exit criteria.** A non-developer can install OMRFlow and complete an
 examination following the user guide alone.
+
+---
+
+## Examination sets - a cross-phase enhancement
+
+Not a numbered phase: an enhancement that runs alongside them, letting one
+project describe an examination divided into several sets (one per post, paper
+or category) and carry that division through attendance and reporting. It is
+deliberately split so each part is independently testable before the next
+depends on it.
+
+### Part 1 - Project configuration - *implemented and tested*
+
+**Purpose.** Let a project state the examination's name and define a variable
+number of persistent, uniquely identified sets, each with an operator-visible
+code and a description.
+
+**Delivered.** `project.json` gains `exam_name` (format version 1 -> 2, read
+backward compatible); the `project_set` table (migration 8) holds each set's
+stable `set_id`, `code`, `description` and `display_order`;
+`domain/exam_sets.py` holds the validation rules; `services/project_sets.py`
+holds the persistence, including `references_to_set`, the single place a later
+part declares what blocks deletion; *File > Project Configuration...* is the
+editor, and opens automatically after a new project is created.
+
+**Deliberately excluded.** Attendance, reconciliation, scoring, result
+generation and reporting are untouched. No existing `set_code` column gained a
+foreign key to `project_set`; the join is made *possible*, not made.
+
+**Tests.** `tests/unit/test_exam_sets.py` (31),
+`tests/integration/test_project_sets.py` (45),
+`tests/gui/test_project_config_dialog.py` (40), plus one end-to-end check in
+the `qtguitesting` smoke suite.
+
+### Part 2 - Attendance per set - *not started*
+
+**Purpose.** Assign one attendance workbook per set and import attendance per
+set, rather than once per project.
+
+**Depends on.** Part 1's stable `set_id`, which attendance records will
+reference.
+
+### Part 3 - Set-aware reporting - *not started*
+
+**Purpose.** Reports that inherit the attendance workbook's layout; roll-wise
+sheets generated from attendance templates; merit-wise sheets per set, with
+absent rows removed from merit-wise output.
+
+**Depends on.** Part 2.

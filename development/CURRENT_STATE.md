@@ -26,6 +26,23 @@ Update this file at the end of every phase.
   runs in the per-user configuration file.
 - Logging: an application log plus a per-project log while a project is open.
 
+### Project configuration: exam name and sets (examination-sets enhancement, Part 1)
+
+- `project.json` carries `exam_name` - the examination's title, free text, with
+  none of the folder-name restrictions `name` has. Format version 1 -> 2;
+  version 1 documents still open and fall back to `name` for display.
+- The `project_set` table (schema 8) holds the project's own registry of sets:
+  a stable `set_id` (`uuid4().hex`), an operator-visible `code`, a free-text
+  `description` and a `display_order`. Any number of sets, codes need not be
+  sequential or numeric.
+- *File > Project Configuration...* edits both, and opens automatically after a
+  new project is created. Add / Edit / Delete / Move Up / Move Down, each
+  committed as it is made. Duplicate and blank codes are refused with a message
+  naming the conflict; an existing set is never overwritten.
+- **Nothing downstream consumes a set yet.** Attendance, scoring and reporting
+  are unchanged, and no existing `set_code` column has a foreign key to
+  `project_set` - Parts 2 and 3 of the enhancement have not been started.
+
 ### Geometric normalisation (Phase 1)
 
 - `omr_scanner.imaging.align_sheet(image, config=...)` turns an arbitrary scan

@@ -110,6 +110,7 @@ class SettingKey:
 
     PROJECT_ID = "project_id"
     PROJECT_NAME = "project_name"
+    EXAM_NAME = "exam_name"
     PROJECT_FORMAT_VERSION = "project_format_version"
     CREATED_WITH = "created_with"
 
@@ -1211,3 +1212,52 @@ class ProcessingManifest(Base):
             f"ProcessingManifest(batch_id={self.batch_id!r}, "
             f"generated_at={self.generated_at!r})"
         )
+
+
+# ----------------------------------------------------------------------
+# Project-level examination sets
+# ----------------------------------------------------------------------
+class ProjectSet(Base):
+    """One operator-defined division of the examination this project processes.
+
+    The project's own registry of which sets exist - ``Set 10 - Name of Post:
+    Assistant Engineer (Electrical)`` - as distinct from the bare ``set_code``
+    strings that :class:`AnswerKeyRevision`,
+    :class:`ReportTemplateAssociation`, :class:`GeneratedReport` and
+    :attr:`BatchScan.set_code_value` already carry. Those are *references* to
+    a set by the code printed on the paper; this table is where a project says
+    what those codes mean.
+
+    :attr:`code` deliberately uses the same ``String(32)`` those columns use,
+    and holds the same value, so that a later phase can join them directly.
+    **No foreign key is declared from them to here yet**: doing so would
+    change how answer keys and reports behave, which the phase that
+    introduced this table was explicitly scoped out of. The join is possible;
+    it is simply not yet made.
+
+    :attr:`set_id` - not :attr:`code`, and never a row number - is what
+    attendance, candidates and results should link to when they gain that
+    relationship, because an operator may legitimately correct a code
+    (a typo, a renumbered paper) long after data has been attached to the set
+    it names.
+    """
+
+    __tablename__ = "project_set"
+    __table_args__ = (
+        # One definition per code. The service layer checks this first and
+        # reports it in plain language; the constraint is what guarantees it
+        # even if some future caller forgets to.
+        UniqueConstraint("code", name="project_set_code"),
+        Index("ix_project_set_order", "display_order"),
+    )
+
+    set_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the set and its code."""
+        return f"ProjectSet(set_id={self.set_id!r}, code={self.code!r})"
