@@ -1535,6 +1535,127 @@ def _check_project_configuration_defines_sets_that_survive_a_reopen() -> CheckRe
     return ok, detail
 
 
+def _check_per_set_attendance_and_reports_end_to_end() -> CheckResult:
+    """The Part 2 workflow, driven through the real Attendance and Reports pages.
+
+    Three sets, three different attendance workbooks, assigned through the
+    Attendance page's own method; then the project is closed and reopened
+    from disk and the Reports page is asked which sets it sees and what each
+    one's template is. Finally a set with no attendance is asked to generate
+    and must be refused by name.
+
+    Deliberately asserts on what a *reopened* project contains, not on
+    widget state left over from the same session.
+    """
+    import shutil
+
+    import openpyxl
+    from _harness import OUTPUT_ROOT
+
+    from omr_scanner.gui.attendance.page import AttendancePage
+    from omr_scanner.gui.pages import WORKFLOW_PAGES
+    from omr_scanner.gui.reports.page import ReportsPage
+    from omr_scanner.services import (
+        candidate_import,
+        create_project,
+        open_project,
+        project_sets,
+        report_store,
+    )
+
+    workspace = OUTPUT_ROOT / "per_set_attendance"
+    shutil.rmtree(workspace, ignore_errors=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    exam_name = "Recruitment Exam, Bangladesh Submarine Cable Regulatory Authority"
+    posts = {
+        "10": "Name of Post: Assistant Engineer (Electrical)",
+        "11": "Name of Post: Assistant Engineer (Civil)",
+        "12": "Name of Post: Assistant Engineer (Mechanical)",
+    }
+
+    def write_attendance(path: Path, code: str, rolls: list[str]) -> Path:
+        workbook = openpyxl.Workbook()
+        sheet = workbook.active
+        sheet.title = f"Attendance {code}"
+        sheet["A1"] = "Bangladesh Submarine Cable Regulatory Authority"
+        sheet["A2"] = posts[code]
+        for column, text in enumerate(
+            ("Sl.No.", "Roll No.", "Name", "Total", "Merit"), start=1
+        ):
+            sheet.cell(row=3, column=column, value=text)
+        for offset, roll in enumerate(rolls):
+            sheet.cell(row=4 + offset, column=1, value=offset + 1)
+            sheet.cell(row=4 + offset, column=2, value=roll)
+            sheet.cell(row=4 + offset, column=3, value=f"CANDIDATE {roll}")
+        workbook.save(path)
+        workbook.close()
+        return path
+
+    session = create_project(workspace, "BSCRA Recruitment", exam_name=exam_name)
+    sets = {
+        code: project_sets.add_set(session.database, code, description)
+        for code, description in posts.items()
+    }
+
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+    attendance_page = AttendancePage(spec)
+    attendance_page.on_project_changed(session)
+    attendance_page.set_operator("Smoke Operator")
+
+    # Sets 10 and 11 get their own workbook; Set 12 deliberately gets none.
+    assigned: list[str] = []
+    for code, rolls in (("10", ["10001", "10002"]), ("11", ["10001", "11002"])):
+        path = write_attendance(workspace / f"set{code}_attendance.xlsx", code, rolls)
+        attendance_page.select_set(sets[code].set_id)
+        validation = candidate_import.read_roster(path)
+        if attendance_page.commit_roster(validation, source_path=path):
+            assigned.append(code)
+
+    listed_sets = attendance_page.set_table.rowCount()
+    attendance_page.shutdown()
+    attendance_page.deleteLater()
+    root = session.root
+    session.close()
+
+    # Reopen from disk and ask the Reports page what it sees.
+    reopened = open_project(root)
+    reports_spec = next(item for item in WORKFLOW_PAGES if item.key == "reports")
+    reports_page = ReportsPage(reports_spec)
+    reports_page.on_project_changed(reopened)
+    rows = {
+        row.set_code: row for row in reports_page.state.sets if row.set_code in posts
+    }
+    templates = {code: rows[code].template_file for code in rows}
+
+    # Set 12 has no attendance: generating it must be refused by name.
+    refusal = report_store.generate_for_set(
+        reopened.database, sets["12"].set_id, "no-such-batch", None,  # type: ignore[arg-type]
+        project_name="BSCRA Recruitment", output_dir=workspace / "exports",
+    )
+    reports_page.shutdown()
+    reports_page.deleteLater()
+    reopened.close()
+
+    ok = (
+        assigned == ["10", "11"]
+        and listed_sets == 3
+        and len(rows) == 3
+        and templates.get("10") == "set10_attendance.xlsx"
+        and templates.get("11") == "set11_attendance.xlsx"
+        and not templates.get("12")
+        and refusal.status == "blocked"
+        and any("Set 12" in text for text in refusal.warnings)
+    )
+    detail = (
+        f"{listed_sets} set(s) listed; templates after reopen: "
+        f"10={templates.get('10') or 'none'} 11={templates.get('11') or 'none'} "
+        f"12={templates.get('12') or 'none'}; Set 12 generation "
+        f"{refusal.status}"
+    )
+    return ok, detail
+
+
 def _check_no_worker_processes_are_left_behind() -> CheckResult:
     """Nothing from a finished batch is still running."""
     import multiprocessing
@@ -1587,6 +1708,10 @@ def main(argv: list[str] | None = None) -> int:
         (
             "project configuration defines sets that survive a reopen",
             _check_project_configuration_defines_sets_that_survive_a_reopen,
+        ),
+        (
+            "per-set attendance and reports, end to end",
+            _check_per_set_attendance_and_reports_end_to_end,
         ),
     ]
 

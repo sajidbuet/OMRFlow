@@ -27,6 +27,22 @@ How to add a migration (Phase 1 onward):
        that performs the change with explicit SQL or ``table.create(connection)``.
     3. Add a test that opens a database created at the previous version and
        asserts the upgrade succeeds.
+
+A consequence of ``create_all`` worth knowing before you write one:
+    Migrations 2-8 build their tables with ``Base.metadata.create_all``, which
+    reflects **today's** models rather than the models as they stood when that
+    migration was written. So a *column added later* to one of those tables
+    appears in a brand-new database the moment its creating migration runs -
+    ``candidate_roster.set_id``, added by migration 9, is present from
+    migration 4 in any database created now - while a database written by an
+    older build gains it from migration 9's ``ALTER TABLE``.
+
+    Both routes arrive at the same schema, which is why every ``ALTER`` here
+    is guarded by a ``PRAGMA table_info`` check instead of assuming the column
+    is absent. It also means a historical schema cannot be reproduced by
+    running the migration list with a cap: a test that needs a genuinely
+    old-shaped table must write that table's DDL out (see
+    ``tests/integration/test_project_sets.py::TestUpgradingFromSchemaEight``).
 """
 
 from __future__ import annotations
@@ -355,6 +371,70 @@ def _migration_008_project_sets(connection: Connection) -> None:
     )
 
 
+def _migration_009_per_set_attendance(connection: Connection) -> None:
+    """Scope attendance to a set, and link a result template to one.
+
+    Two additive columns, and **no backfill**, which is the whole point.
+
+    ``candidate_roster.set_id`` is what makes attendance per-set: a candidate
+    is only ever reached through a roster, so a roster that knows its set makes
+    every candidate, every reconciliation entry and every stored mark belong to
+    that set transitively - without touching
+    :class:`~omr_scanner.database.models.RegisteredCandidate`,
+    :class:`~omr_scanner.database.models.ReconciliationEntryRow` or
+    :class:`~omr_scanner.database.models.CandidateResult`, whose existing
+    ``roster_id`` foreign keys already carry the isolation.
+
+    ``report_template_association.set_id`` and ``source_kind`` record which
+    defined set a result template belongs to and whether it arrived as that
+    set's attendance workbook.
+
+    **An existing roster keeps ``set_id`` NULL.** A project processed before
+    this version has exactly one roster for the whole examination, and nothing
+    in the data says which of several later-defined sets it was meant to be.
+    Guessing would silently attach one set's candidate list to another set's
+    report - the precise failure this phase exists to prevent - so the roster
+    is left unassigned, reported as such, and assigned only by an operator.
+    The same reasoning applies to a template association that predates the set
+    registry: its ``set_code`` still resolves it for every existing Phase 9
+    path, and ``set_id`` is filled in when a set with that code is known.
+    """
+    existing = {
+        row[1]
+        for row in connection.execute(text("PRAGMA table_info(candidate_roster)")).all()
+    }
+    if "set_id" not in existing:
+        connection.execute(
+            text("ALTER TABLE candidate_roster ADD COLUMN set_id VARCHAR(32) NULL "
+                 "REFERENCES project_set(set_id)")
+        )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_candidate_roster_set_active "
+            "ON candidate_roster (set_id, is_active)"
+        )
+    )
+
+    association = {
+        row[1]
+        for row in connection.execute(
+            text("PRAGMA table_info(report_template_association)")
+        ).all()
+    }
+    if "set_id" not in association:
+        connection.execute(
+            text("ALTER TABLE report_template_association ADD COLUMN set_id VARCHAR(32) "
+                 "NULL REFERENCES project_set(set_id)")
+        )
+    if "source_kind" not in association:
+        connection.execute(
+            text(
+                "ALTER TABLE report_template_association ADD COLUMN source_kind "
+                "VARCHAR(20) NOT NULL DEFAULT 'manual'"
+            )
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -407,6 +487,14 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=8,
         description="Project-level examination sets: project_set",
         apply=_migration_008_project_sets,
+    ),
+    Migration(
+        version=9,
+        description=(
+            "Per-set attendance and templates: candidate_roster.set_id, "
+            "report_template_association.set_id/source_kind"
+        ),
+        apply=_migration_009_per_set_attendance,
     ),
 )
 

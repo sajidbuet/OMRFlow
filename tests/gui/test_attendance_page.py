@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QMessageBox, QPushButton
 
 from omr_scanner.config import AppConfig
@@ -30,7 +30,13 @@ from omr_scanner.gui.attendance.import_dialog import RosterImportDialog
 from omr_scanner.gui.attendance.page import AttendancePage
 from omr_scanner.gui.main_window import MainWindow
 from omr_scanner.gui.pages import WORKFLOW_PAGES
-from omr_scanner.services import batch_store, reconciliation_store
+from omr_scanner.services import (
+    batch_store,
+    open_project,
+    project_sets,
+    reconciliation_store,
+    set_attendance,
+)
 from omr_scanner.services.candidate_import import (
     ColumnMapping,
     read_roster,
@@ -766,9 +772,363 @@ class TestWindowIntegration:
             window.close()
 
 
+# ----------------------------------------------------------------------
+# Per-Set attendance (Part 2)
+# ----------------------------------------------------------------------
+SET_ROSTERS: dict[str, str] = {
+    # Roll 100001 is deliberately in *both* sets: two different people who
+    # happen to share a roll number across two independent posts.
+    "10": (
+        "Roll No.,Name,Total,Merit\n"
+        "100001,ELECTRICAL A,55,1\n"
+        "100002,ELECTRICAL B,ABSENT,---\n"
+    ),
+    "11": (
+        "Roll No.,Name,Total,Merit\n"
+        "100001,CIVIL A,70,1\n"
+        "200002,CIVIL B,60,2\n"
+        "200003,CIVIL C,abs,---\n"
+    ),
+}
+
+
+def _set_roster_file(tmp_path: Path, code: str) -> Path:
+    """A candidate list for one set, named after it so the pairing is visible."""
+    path = tmp_path / f"set{code}_attendance.csv"
+    path.write_text(SET_ROSTERS[code], encoding="utf-8")
+    return path
+
+
+def _assign(page: AttendancePage, code: str, path: Path, qtbot=None) -> object:
+    """Assign an attendance file to a set through the page's own method.
+
+    Pass ``qtbot`` when the test goes on to read reconciliation results:
+    ``commit_roster`` reconciles on a worker thread, so ``state.entries`` is
+    not populated until the ``reconciled`` signal arrives - the same reason
+    the module-level :func:`import_roster` helper waits for it.
+    """
+    exam_set = next(
+        item.exam_set for item in page.state.sets if item.exam_set.code == code
+    )
+    assert page.select_set(exam_set.set_id) is True
+    validation = read_roster(path)
+    if qtbot is None:
+        assert page.commit_roster(validation, source_path=path) is True
+    else:
+        with qtbot.waitSignal(page.reconciled, timeout=10_000):
+            assert page.commit_roster(validation, source_path=path) is True
+    return exam_set
+
+
+@pytest.fixture
+def three_sets(project_session: ProjectSession):
+    """The brief's own example: one exam, three posts."""
+    database = project_session.database
+    return [
+        project_sets.add_set(database, "10", "Name of Post: Assistant Engineer (Electrical)"),
+        project_sets.add_set(database, "11", "Name of Post: Assistant Engineer (Civil)"),
+        project_sets.add_set(database, "12", "Name of Post: Assistant Engineer (Mechanical)"),
+    ]
+
+
+@pytest.fixture
+def set_page(qtbot, project_session: ProjectSession, batch, three_sets):
+    """An Attendance page on a project that defines three sets."""
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+    attendance = AttendancePage(spec)
+    qtbot.addWidget(attendance)
+    attendance.on_project_changed(project_session)
+    attendance.set_operator(OPERATOR)
+    attendance.set_batch(batch)
+    yield attendance
+    attendance.close()
+
+
+class TestSetsAreListed:
+    def test_every_defined_set_has_a_row(self, set_page: AttendancePage):
+        assert set_page.set_table.rowCount() == 3
+        codes = [
+            set_page.set_table.item(row, 0).text()
+            for row in range(set_page.set_table.rowCount())
+        ]
+        assert codes == ["Set 10", "Set 11", "Set 12"]
+
+    def test_each_row_shows_its_description(self, set_page: AttendancePage):
+        descriptions = [
+            set_page.set_table.item(row, 1).text()
+            for row in range(set_page.set_table.rowCount())
+        ]
+        assert descriptions[0] == "Name of Post: Assistant Engineer (Electrical)"
+        assert descriptions[2] == "Name of Post: Assistant Engineer (Mechanical)"
+
+    def test_the_exam_name_is_shown(self, set_page: AttendancePage, project_session):
+        assert project_session.exam_name in set_page.exam_label.text()
+
+    def test_a_set_without_attendance_says_so(self, set_page: AttendancePage):
+        assert set_page.set_table.item(0, 2).text() == "None assigned"
+        assert "No attendance file assigned" in set_page.set_table.item(0, 5).text()
+
+    def test_the_first_set_is_selected_to_begin_with(self, set_page: AttendancePage):
+        chosen = set_page.selected_set()
+        assert chosen is not None
+        assert chosen.code == "10"
+
+    def test_the_row_carries_the_stable_id_not_its_position(
+        self, set_page: AttendancePage, three_sets
+    ):
+        stored = set_page.set_table.item(1, 0).data(Qt.ItemDataRole.UserRole)
+        assert stored == three_sets[1].set_id
+        assert stored not in {"0", "1", "2"}
+
+    def test_the_no_sets_notice_is_hidden_when_sets_exist(
+        self, set_page: AttendancePage
+    ):
+        assert set_page.no_sets_label.isVisibleTo(set_page) is False
+
+
+class TestProjectWithoutSets:
+    def test_the_page_points_at_project_configuration(self, page: AttendancePage):
+        assert page.no_sets_label.isVisibleTo(page) is True
+        assert "Project Configuration" in page.no_sets_label.text()
+
+    def test_the_set_table_is_hidden(self, page: AttendancePage):
+        assert page.set_table.isVisibleTo(page) is False
+
+    def test_attendance_still_works_unscoped(self, imported: AttendancePage):
+        # The 56 tests above already prove this in depth; this states it.
+        assert imported.selected_set() is None
+        assert imported.state.roster is not None
+        assert imported.state.roster.set_id is None
+
+
+class TestAssigningPerSet:
+    def test_each_set_takes_its_own_file(self, set_page: AttendancePage, tmp_path):
+        for code in ("10", "11"):
+            _assign(set_page, code, _set_roster_file(tmp_path, code))
+        files = {
+            set_page.set_table.item(row, 0).text(): set_page.set_table.item(row, 2).text()
+            for row in range(set_page.set_table.rowCount())
+        }
+        assert files["Set 10"] == "set10_attendance.csv"
+        assert files["Set 11"] == "set11_attendance.csv"
+        assert files["Set 12"] == "None assigned"
+
+    def test_the_candidate_count_is_per_set(self, set_page: AttendancePage, tmp_path):
+        for code in ("10", "11"):
+            _assign(set_page, code, _set_roster_file(tmp_path, code))
+        counts = {
+            set_page.set_table.item(row, 0).text(): set_page.set_table.item(row, 3).text()
+            for row in range(set_page.set_table.rowCount())
+        }
+        assert counts["Set 10"] == "2"
+        assert counts["Set 11"] == "3"
+
+    def test_assigning_one_set_leaves_the_others_alone(
+        self, set_page: AttendancePage, tmp_path, three_sets
+    ):
+        _assign(set_page, "10", _set_roster_file(tmp_path, "10"))
+        _assign(set_page, "11", _set_roster_file(tmp_path, "11"))
+        database = set_page.database
+        first = reconciliation_store.active_roster(database, three_sets[0].set_id)
+        second = reconciliation_store.active_roster(database, three_sets[1].set_id)
+        assert first is not None and second is not None
+        assert first.roster_id != second.roster_id
+        assert first.source_name == "set10_attendance.csv"
+        assert second.source_name == "set11_attendance.csv"
+
+    def test_a_set_with_no_file_still_has_no_roster(
+        self, set_page: AttendancePage, tmp_path, three_sets
+    ):
+        """§15: nothing is borrowed from a neighbouring set."""
+        _assign(set_page, "10", _set_roster_file(tmp_path, "10"))
+        third = reconciliation_store.active_roster(
+            set_page.database, three_sets[2].set_id
+        )
+        assert third is None
+        assert set_page.select_set(three_sets[2].set_id) is True
+        assert set_page.state.roster is None
+        assert "no candidate list imported" in set_page.roster_label.text()
+
+    def test_selecting_a_set_shows_only_its_candidates(
+        self, qtbot, set_page: AttendancePage, tmp_path, three_sets
+    ):
+        for code in ("10", "11"):
+            _assign(set_page, code, _set_roster_file(tmp_path, code), qtbot)
+
+        set_page.select_set(three_sets[0].set_id)
+        set_page.refresh_table()
+        set_page.status_filter.setCurrentIndex(0)
+        names = {entry.display_name for entry in set_page.state.entries}
+        assert "ELECTRICAL A" in names
+        assert not any(name.startswith("CIVIL") for name in names)
+
+        set_page.select_set(three_sets[1].set_id)
+        set_page.refresh_table()
+        set_page.status_filter.setCurrentIndex(0)
+        names = {entry.display_name for entry in set_page.state.entries}
+        assert "CIVIL A" in names
+        assert not any(name.startswith("ELECTRICAL") for name in names)
+
+    def test_the_same_roll_in_two_sets_does_not_collide(
+        self, qtbot, set_page: AttendancePage, tmp_path, three_sets
+    ):
+        """Roll 100001 exists in both sets and means two different people."""
+        for code in ("10", "11"):
+            _assign(set_page, code, _set_roster_file(tmp_path, code), qtbot)
+
+        set_page.select_set(three_sets[0].set_id)
+        set_page.refresh_table()
+        set_page.status_filter.setCurrentIndex(0)
+        electrical = {e.candidate_id: e.display_name for e in set_page.state.entries}
+
+        set_page.select_set(three_sets[1].set_id)
+        set_page.refresh_table()
+        set_page.status_filter.setCurrentIndex(0)
+        civil = {e.candidate_id: e.display_name for e in set_page.state.entries}
+
+        assert electrical["100001"] == "ELECTRICAL A"
+        assert civil["100001"] == "CIVIL A"
+
+    def test_replacing_one_sets_file_is_confirmed_and_scoped(
+        self, set_page: AttendancePage, tmp_path, monkeypatch
+    ):
+        asked: list[str] = []
+
+        def refuse(*args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+            asked.append(str(args[2]) if len(args) > 2 else "")
+            return QMessageBox.StandardButton.No
+
+        _assign(set_page, "10", _set_roster_file(tmp_path, "10"))
+        monkeypatch.setattr(QMessageBox, "question", refuse)
+        other = tmp_path / "replacement.csv"
+        other.write_text("Roll No.,Name\n300001,SOMEBODY\n", encoding="utf-8")
+        assert set_page.import_from(other) is False
+        assert asked and "Set 10 already uses" in asked[0]
+        assert "No other set is affected" in asked[0]
+
+
+class TestPerSetPersistence:
+    def test_the_association_survives_close_and_reopen(
+        self, set_page: AttendancePage, project_session, tmp_path
+    ):
+        for code in ("10", "11"):
+            _assign(set_page, code, _set_roster_file(tmp_path, code))
+        root = project_session.root
+        set_page.close()
+        project_session.close()
+
+        with open_project(root) as reopened:
+            overview = {
+                status.exam_set.code: status
+                for status in set_attendance.attendance_overview(reopened.database)
+            }
+        assert overview["10"].attendance_file == "set10_attendance.csv"
+        assert overview["11"].attendance_file == "set11_attendance.csv"
+        assert overview["12"].has_attendance is False
+
+    def test_a_fresh_page_shows_the_same_pairing(
+        self, qtbot, set_page: AttendancePage, project_session, batch, tmp_path
+    ):
+        _assign(set_page, "11", _set_roster_file(tmp_path, "11"))
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+        fresh = AttendancePage(spec)
+        qtbot.addWidget(fresh)
+        try:
+            fresh.on_project_changed(project_session)
+            fresh.set_batch(batch)
+            files = {
+                fresh.set_table.item(row, 0).text(): fresh.set_table.item(row, 2).text()
+                for row in range(fresh.set_table.rowCount())
+            }
+            assert files["Set 11"] == "set11_attendance.csv"
+            assert files["Set 10"] == "None assigned"
+        finally:
+            fresh.close()
+
+
+class TestManySets:
+    def test_thirty_sets_stay_listed_and_selectable(
+        self, qtbot, project_session: ProjectSession, batch
+    ):
+        database = project_session.database
+        created = [
+            project_sets.add_set(database, f"S{index:02d}", f"Post number {index}")
+            for index in range(30)
+        ]
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+        page = AttendancePage(spec)
+        qtbot.addWidget(page)
+        try:
+            page.on_project_changed(project_session)
+            assert page.set_table.rowCount() == 30
+            # The last one is reachable by its own id, not by scrolling luck.
+            assert page.select_set(created[-1].set_id) is True
+            chosen = page.selected_set()
+            assert chosen is not None and chosen.code == "S29"
+        finally:
+            page.close()
+
+
+class TestReadOnlyProject:
+    def test_choosing_a_file_is_disabled(self, qtbot, project_session, batch, tmp_path):
+        database = project_session.database
+        project_sets.add_set(database, "10", "Electrical")
+        root = project_session.root
+        project_session.close()
+
+        with open_project(root, read_only=True) as reader:
+            spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+            page = AttendancePage(spec)
+            qtbot.addWidget(page)
+            try:
+                page.on_project_changed(reader)
+                assert page.set_table.rowCount() == 1
+                assert page.import_button.isEnabled() is False
+                assert page.assign_existing_button.isEnabled() is False
+            finally:
+                page.close()
+
+
+class TestLegacyRosterAssignment:
+    def test_an_unassigned_list_is_offered_but_never_attached_automatically(
+        self, qtbot, project_session: ProjectSession, batch, roster_file: Path
+    ):
+        """§29: migration left it unassigned; only an operator resolves it."""
+        database = project_session.database
+        reconciliation_store.import_roster(database, read_roster(roster_file))
+        exam_set = project_sets.add_set(database, "10", "Electrical")
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "attendance")
+        page = AttendancePage(spec)
+        qtbot.addWidget(page)
+        try:
+            page.on_project_changed(project_session)
+            page.set_operator(OPERATOR)
+            page.set_batch(batch)
+            # Offered...
+            assert page.assign_existing_button.isVisibleTo(page) is True
+            # ...and until it is taken up, the set genuinely has nothing.
+            assert reconciliation_store.active_roster(database, exam_set.set_id) is None
+            assert page.state.roster is None
+
+            assert page.assign_existing_roster() is True
+            attached = reconciliation_store.active_roster(database, exam_set.set_id)
+            assert attached is not None
+            assert attached.source_name == "candidates.csv"
+            assert page.assign_existing_button.isVisibleTo(page) is False
+        finally:
+            page.close()
+
+
 class TestStableObjectNames:
     def test_the_widgets_can_be_found_by_name(self, page: AttendancePage):
         for name in (
+            "attendanceExamNameLabel",
+            "attendanceNoSetsLabel",
+            "setAttendanceTable",
+            "unassignedRosterLabel",
+            "assignExistingRosterButton",
             "activeRosterLabel",
             "importRosterButton",
             "downloadSampleTemplateButton",

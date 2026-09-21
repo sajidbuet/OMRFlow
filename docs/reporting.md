@@ -54,6 +54,31 @@ about the template is copied into the project - the file path and its
 SHA-256 hash are recorded, so a report can always say which file it came from
 and whether it changed.
 
+### 3a. Usually you do not associate one by hand
+
+Since per-set attendance, assigning a Set's attendance workbook in the
+**Attendance** stage *also* makes that workbook the Set's result template
+(`source_kind = "attendance"`). That is the intended route: the office's
+attendance sheet already carries the heading, the post, the widths, the
+borders and the logo that the result must carry, so the result is built by
+copying it.
+
+**Choosing a template here remains available**, and is what an operator does
+when the attendance file cannot serve as one. The policy is explicit, never a
+silent substitution:
+
+| The Set's attendance file | Becomes the result template? | If not, what happens |
+|---|---|---|
+| `.xlsx`/`.xlsm` with a marks column | Yes, automatically | - |
+| `.xlsx` with **no** marks column | No | The Set reports that there is nowhere to write a mark; add the column, or choose a different template here |
+| `.xlsx` whose Roll No. or marks column is ambiguous | No | The Set reports it; choose the workbook here, where the mapping dialog asks |
+| `.csv` | **No - a CSV has no layout** | The CSV is still fully used for candidates and reconciliation; a result needs an `.xlsx` template chosen here |
+
+A Set with no template is refused generation by name
+(`"No attendance/template workbook has been assigned to Set 11."`). It never
+falls back to another Set's workbook, to the most recently used one, or to a
+generic sheet.
+
 ## 4. Validating and previewing
 
 **Validate** runs every readiness check (§8) and shows every issue at once -
@@ -98,9 +123,21 @@ own representation, not the only place the number exists.
 
 Every generated workbook also carries:
 
-* **Meritwise** - scored, present candidates only, sorted by mark descending
-  and Roll No. ascending as a deterministic tie-break, with its own `RANK.EQ`
-  formulas over its own row range.
+* **`meritwise`** - **a copy of the completed Rollwise sheet**, not a freshly
+  built table: the institution heading, the post name, the logo, the column
+  widths, the borders, the row heights and the page setup all come with it,
+  and only the row membership and the row order differ. Absentees and anyone
+  without a decided mark are removed; the rest are ordered by mark descending
+  and Roll No. ascending as a deterministic tie-break, the serial column is
+  renumbered 1..N, and the rank column is rewritten as `RANK.EQ` over this
+  sheet's own row range - so **tied candidates still share a rank**, and the
+  row order never implies a merit difference that does not exist.
+
+  Rows freed by removing absentees are blanked in place rather than deleted,
+  which keeps anything printed *below* the table - a signature line, a
+  footer - exactly where the template put it. A merged cell spanning several
+  **candidate** rows cannot survive reordering and is reported as a warning
+  on the generation; merges in heading rows are unaffected.
 * **Summary** - registered/present/absent/scored/unresolved counts, the
   maximum/highest/lowest/mean/median score, the scoring configuration in
   force, the answer-key revision, and when it was generated. A statistic that
@@ -185,3 +222,24 @@ missing means blocked, not borrowed from elsewhere. See the phase's per-set
 isolation tests for the specific defect this guards: a deliberately different
 key for each of two sets, checked to prove neither's candidates can end up
 scored, or reported, against the other's paper.
+
+### 13a. …and per-set candidates
+
+Since per-set attendance, isolation extends to the candidates themselves.
+Each set has **its own roster**, and everything that identifies a candidate,
+a reconciliation state or a stored mark has always hung off a roster:
+
+```text
+project_set (set_id) -> candidate_roster (set_id) -> registered_candidate
+                                                  -> reconciliation_entry
+                                                  -> candidate_result
+```
+
+So Roll `10001` can be registered in Set 10 *and* Set 11 and mean two
+different people with two different marks. `report_store.generate_for_set`
+resolves both the roster and the template from the `set_id` - not from the
+code, and not from any project-wide "current" value - so there is no reachable
+path by which one set's candidate list or mark can reach another set's
+workbook. `tests/integration/test_multi_set_reports.py` asserts exactly that,
+including on a roll deliberately shared between two sets with a different mark
+in each.

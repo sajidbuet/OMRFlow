@@ -430,6 +430,314 @@ class TestLegacyProjects:
             assert [item.code for item in project_sets.list_sets(reopened.database)] == ["10"]
 
 
+class TestUpgradingFromSchemaEight:
+    """Migration 9 (per-set attendance), against a real schema-8 database.
+
+    ADR-0003's rule: every migration ships with a test that upgrades a
+    database created at the previous version.
+
+    The schema-8 database is built by running the project's **own** migration
+    list, truncated at version 8 - not by mutating a schema-9 file. Dropping
+    the columns afterwards is not even possible (SQLite refuses to drop a
+    column named in a foreign key), and more importantly a file assembled by
+    subtraction would not be the thing a previous build actually wrote.
+    """
+
+    def _build_schema_8_database(self, path: Path) -> None:
+        """Run migrations 1-8 against ``path``, exactly as the old build did."""
+        from datetime import UTC, datetime
+
+        from sqlalchemy import create_engine, insert
+
+        from omr_scanner.database import migrations as migration_module
+        from omr_scanner.database.models import SchemaMigration
+
+        path.unlink(missing_ok=True)
+        engine = create_engine(f"sqlite:///{path}")
+        try:
+            for migration in migration_module.MIGRATIONS:
+                if migration.version > 8:
+                    break
+                with engine.begin() as connection:
+                    migration.apply(connection)
+                    connection.execute(
+                        insert(SchemaMigration).values(
+                            version=migration.version,
+                            description=migration.description,
+                            applied_at=datetime.now(UTC),
+                            applied_by_version="0.0.0-test",
+                        )
+                    )
+        finally:
+            engine.dispose()
+
+    def _columns(self, root: Path, table: str) -> set[str]:
+        connection = sqlite3.connect(root / "database.sqlite")
+        try:
+            return {
+                row[1]
+                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+        finally:
+            connection.close()
+
+    @pytest.fixture
+    def schema_8_root(self, workspace: Path) -> Path:
+        """A project at schema 8, carrying one roster, as a pre-Part-2 one would."""
+        from sqlalchemy import create_engine, insert
+
+        from omr_scanner.database.models import CandidateRoster, RegisteredCandidate
+
+        with create_project(workspace, "Legacy Attendance", exam_name=EXAM_NAME) as session:
+            root = session.root
+
+        database_file = root / "database.sqlite"
+        self._build_schema_8_database(database_file)
+
+        # One roster, imported the way the old build would have: with no set.
+        from datetime import UTC, datetime
+
+        engine = create_engine(f"sqlite:///{database_file}")
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    insert(CandidateRoster).values(
+                        roster_id=1,
+                        created_at=datetime.now(UTC),
+                        source_name="roster.csv",
+                        candidate_count=2,
+                        is_active=True,
+                    )
+                )
+                connection.execute(
+                    insert(RegisteredCandidate),
+                    [
+                        {
+                            "roster_id": 1,
+                            "candidate_id": "10001",
+                            "display_name": "Alia",
+                            "row_order": 0,
+                            "imported_attendance": "present",
+                        },
+                        {
+                            "roster_id": 1,
+                            "candidate_id": "10002",
+                            "display_name": "Bashir",
+                            "row_order": 1,
+                            "imported_attendance": "absent",
+                        },
+                    ],
+                )
+        finally:
+            engine.dispose()
+        return root
+
+    def test_a_new_database_already_has_the_columns_from_create_all(
+        self, schema_8_root: Path
+    ) -> None:
+        """Worth stating, because it is surprising and it is not a bug.
+
+        Migrations 2-8 build their tables with
+        ``Base.metadata.create_all``, which reflects **today's** models - so a
+        database created now gains ``candidate_roster.set_id`` at migration 4,
+        not at migration 9. A database written by an older build gains it at
+        migration 9 instead, through ``ALTER TABLE``
+        (:meth:`test_the_alter_path_adds_the_columns_to_an_old_shaped_table`
+        exercises that route directly). Both arrive at the same schema, which
+        is why migration 9 guards every ``ALTER`` with a ``PRAGMA table_info``
+        check rather than assuming the column is missing.
+        """
+        assert "set_id" in self._columns(schema_8_root, "candidate_roster")
+
+    def test_the_alter_path_adds_the_columns_to_an_old_shaped_table(
+        self, tmp_path: Path
+    ) -> None:
+        """Migration 9 against tables that genuinely lack its columns."""
+        from sqlalchemy import create_engine, text
+
+        from omr_scanner.database.migrations import _migration_009_per_set_attendance
+
+        database_file = tmp_path / "old_shape.sqlite"
+        engine = create_engine(f"sqlite:///{database_file}")
+        try:
+            with engine.begin() as connection:
+                # The pre-migration-9 shape of the two tables, written out so
+                # the ALTER path is exercised against a table that really is
+                # missing the columns.
+                connection.execute(
+                    text(
+                        "CREATE TABLE candidate_roster ("
+                        " roster_id INTEGER NOT NULL PRIMARY KEY,"
+                        " created_at DATETIME NOT NULL,"
+                        " source_name VARCHAR(255) NOT NULL DEFAULT '',"
+                        " is_active BOOLEAN NOT NULL DEFAULT 1)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE TABLE report_template_association ("
+                        " association_id INTEGER NOT NULL PRIMARY KEY,"
+                        " set_code VARCHAR(32) NOT NULL,"
+                        " template_path TEXT NOT NULL)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "INSERT INTO candidate_roster "
+                        "(roster_id, created_at, source_name, is_active) "
+                        "VALUES (1, '2026-01-01 00:00:00', 'old.csv', 1)"
+                    )
+                )
+
+            with engine.begin() as connection:
+                _migration_009_per_set_attendance(connection)
+
+            with engine.connect() as connection:
+                roster_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        text("PRAGMA table_info(candidate_roster)")
+                    ).all()
+                }
+                association_columns = {
+                    row[1]
+                    for row in connection.execute(
+                        text("PRAGMA table_info(report_template_association)")
+                    ).all()
+                }
+                surviving = connection.execute(
+                    text("SELECT source_name, set_id FROM candidate_roster")
+                ).all()
+        finally:
+            engine.dispose()
+
+        assert "set_id" in roster_columns
+        assert {"set_id", "source_kind"} <= association_columns
+        # The existing row survives, and is left unassigned rather than guessed at.
+        assert surviving == [("old.csv", None)]
+
+    def test_running_it_twice_is_harmless(self, tmp_path: Path) -> None:
+        """A migration must be safe to re-run after a rolled-back attempt."""
+        from sqlalchemy import create_engine, text
+
+        from omr_scanner.database.migrations import _migration_009_per_set_attendance
+
+        database_file = tmp_path / "twice.sqlite"
+        engine = create_engine(f"sqlite:///{database_file}")
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "CREATE TABLE candidate_roster ("
+                        " roster_id INTEGER NOT NULL PRIMARY KEY,"
+                        " is_active BOOLEAN NOT NULL DEFAULT 1)"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE TABLE report_template_association ("
+                        " association_id INTEGER NOT NULL PRIMARY KEY,"
+                        " set_code VARCHAR(32) NOT NULL)"
+                    )
+                )
+            for _ in range(2):
+                with engine.begin() as connection:
+                    _migration_009_per_set_attendance(connection)
+        finally:
+            engine.dispose()
+
+    def test_opening_it_upgrades_to_the_current_schema(self, schema_8_root: Path) -> None:
+        with open_project(schema_8_root) as session:
+            assert session.database.schema_version == SCHEMA_VERSION
+
+    def test_the_columns_exist_afterwards(self, schema_8_root: Path) -> None:
+        with open_project(schema_8_root):
+            pass
+        assert "set_id" in self._columns(schema_8_root, "candidate_roster")
+        assert "set_id" in self._columns(schema_8_root, "report_template_association")
+        assert "source_kind" in self._columns(
+            schema_8_root, "report_template_association"
+        )
+
+    def test_the_existing_roster_survives_with_its_candidates(
+        self, schema_8_root: Path
+    ) -> None:
+        from omr_scanner.services import reconciliation_store
+
+        with open_project(schema_8_root) as session:
+            rosters = reconciliation_store.list_rosters(session.database)
+            assert len(rosters) == 1
+            candidates = reconciliation_store.roster_candidates(
+                session.database, rosters[0].roster_id
+            )
+        assert {item.candidate_id for item in candidates} == {"10001", "10002"}
+
+    def test_the_existing_roster_is_left_unassigned_rather_than_guessed_at(
+        self, schema_8_root: Path
+    ) -> None:
+        """§29: migration must not attach an ambiguous roster to a set."""
+        from omr_scanner.services import reconciliation_store
+
+        with open_project(schema_8_root) as session:
+            project_sets.add_set(session.database, "10", "Electrical")
+            project_sets.add_set(session.database, "11", "Civil")
+
+            unassigned = reconciliation_store.unassigned_rosters(session.database)
+            assert len(unassigned) == 1
+            assert unassigned[0].set_id is None
+
+            # And neither set has silently acquired it.
+            for item in project_sets.list_sets(session.database):
+                assert reconciliation_store.active_roster(
+                    session.database, item.set_id
+                ) is None
+
+    def test_an_operator_can_assign_it_explicitly_and_that_persists(
+        self, schema_8_root: Path
+    ) -> None:
+        from omr_scanner.services import reconciliation_store
+
+        with open_project(schema_8_root) as session:
+            ten = project_sets.add_set(session.database, "10", "Electrical")
+            orphan = reconciliation_store.unassigned_rosters(session.database)[0]
+            reconciliation_store.assign_roster_to_set(
+                session.database, orphan.roster_id, ten.set_id
+            )
+            set_id = ten.set_id
+
+        with open_project(schema_8_root) as reopened:
+            attached = reconciliation_store.active_roster(reopened.database, set_id)
+            assert attached is not None
+            assert attached.roster_id == orphan.roster_id
+            assert attached.set_id == set_id
+            assert reconciliation_store.unassigned_rosters(reopened.database) == ()
+
+    def test_a_roster_cannot_be_moved_to_a_second_set(self, schema_8_root: Path) -> None:
+        from omr_scanner.services import reconciliation_store
+        from omr_scanner.services.reconciliation_store import ReconciliationError
+
+        with open_project(schema_8_root) as session:
+            ten = project_sets.add_set(session.database, "10", "Electrical")
+            eleven = project_sets.add_set(session.database, "11", "Civil")
+            orphan = reconciliation_store.unassigned_rosters(session.database)[0]
+            reconciliation_store.assign_roster_to_set(
+                session.database, orphan.roster_id, ten.set_id
+            )
+            with pytest.raises(ReconciliationError, match="already belongs"):
+                reconciliation_store.assign_roster_to_set(
+                    session.database, orphan.roster_id, eleven.set_id
+                )
+
+    def test_an_unscoped_roster_is_still_found_by_an_unscoped_lookup(
+        self, schema_8_root: Path
+    ) -> None:
+        """An old single-set project keeps working exactly as it did."""
+        from omr_scanner.services import reconciliation_store
+
+        with open_project(schema_8_root) as session:
+            assert reconciliation_store.active_roster(session.database) is not None
+
+
 class TestSuggestionsFromExistingData:
     def test_a_project_with_no_history_suggests_nothing(self, project_session) -> None:
         assert project_sets.suggest_sets_from_existing_data(project_session.database) == ()

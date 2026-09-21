@@ -479,9 +479,37 @@ class CandidateRoster(Base):
     """
 
     __tablename__ = "candidate_roster"
-    __table_args__ = (Index("ix_candidate_roster_active", "is_active"),)
+    __table_args__ = (
+        Index("ix_candidate_roster_active", "is_active"),
+        Index("ix_candidate_roster_set_active", "set_id", "is_active"),
+    )
 
     roster_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    set_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("project_set.set_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    """Which examination set this roster belongs to.
+
+    The persistent relationship key for per-set attendance: a candidate is
+    reached only through a roster, and a roster belongs to exactly one set, so
+    the same roll number in two sets is two unrelated candidates in two
+    unrelated rosters and cannot collide (the uniqueness constraint on
+    :class:`RegisteredCandidate` is per roster, never project-wide).
+
+    ``NULL`` means "imported before per-set attendance existed" - a project
+    that had one roster for the whole examination. Nothing guesses which set
+    such a roster belongs to; see
+    :func:`omr_scanner.services.reconciliation_store.unassigned_rosters` and
+    the migration note in ``docs/DATA_MODEL.md``.
+
+    ``ondelete="RESTRICT"``: deleting a set that still has attendance
+    imported against it must fail loudly rather than cascade away an
+    examination's candidate list - see
+    :func:`omr_scanner.services.project_sets.references_to_set`, which
+    reports this as a blocking reference before the database ever has to.
+    """
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     source_sheet: Mapped[str] = mapped_column(String(255), nullable=False, default="")
@@ -982,6 +1010,27 @@ class ReportTemplateAssociation(Base):
         Integer, primary_key=True, autoincrement=True
     )
     set_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    set_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("project_set.set_id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    """The defined set this template belongs to, when there is one.
+
+    :attr:`set_code` remains the row's identity because every Phase 8/9 path
+    already looks a template up by the code printed on the paper. This column
+    is the *persistent* link to :class:`ProjectSet`, so that correcting a set's
+    code does not orphan its template, and so that a template can never be
+    silently reached through a set it does not belong to.
+
+    ``NULL`` for a template associated before sets were defined, and for a
+    code that names no defined set (which stays possible on purpose: a project
+    may have answer keys for a set nobody has entered into the registry yet).
+    """
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")
+    """How this template came to be chosen: ``"attendance"`` when it is the
+    workbook imported as that set's attendance list - the case Part 2 makes
+    ordinary - or ``"manual"`` when an operator picked a separate file."""
     template_path: Mapped[str] = mapped_column(Text, nullable=False)
     template_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     sheet_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")

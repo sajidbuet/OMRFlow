@@ -60,7 +60,7 @@ class TestTemplatePreservation:
         output = tmp_path / "output.xlsx"
         rx.copy_into(template, output)
         rx.populate_rollwise(output, built_roster, _decisions(built_roster))
-        rx.add_meritwise_sheet(output, [])
+        rx.build_meritwise_from_rollwise(output, built_roster, ())
         after = sha256_of(template)
         assert before == after
 
@@ -256,58 +256,88 @@ class TestRollwise:
 
 # ----------------------------------------------------------------------
 class TestMeritwise:
-    def test_descending_marks(self, generated):
-        _template, _built_roster, output = generated
-        candidates = [
-            rx.MeritCandidate(roll="1", name="A", final_score=Fraction(50)),
-            rx.MeritCandidate(roll="2", name="B", final_score=Fraction(90)),
-            rx.MeritCandidate(roll="3", name="C", final_score=Fraction(70)),
-        ]
-        rx.add_meritwise_sheet(output, candidates)
-        workbook = openpyxl.load_workbook(output)
-        sheet = workbook[rx.MERITWISE_SHEET_NAME]
-        rolls = [sheet.cell(row=r, column=2).value for r in range(2, 5)]
-        assert rolls == ["2", "3", "1"]
+    """Meritwise is now a *copy* of the completed Rollwise sheet.
 
-    def test_tied_marks_break_by_roll_ascending(self, generated):
-        _template, _built_roster, output = generated
-        candidates = [
-            rx.MeritCandidate(roll="300", name="C", final_score=Fraction(80)),
-            rx.MeritCandidate(roll="100", name="A", final_score=Fraction(80)),
-            rx.MeritCandidate(roll="200", name="B", final_score=Fraction(80)),
-        ]
-        rx.add_meritwise_sheet(output, candidates)
-        workbook = openpyxl.load_workbook(output)
-        sheet = workbook[rx.MERITWISE_SHEET_NAME]
-        rolls = [sheet.cell(row=r, column=2).value for r in range(2, 5)]
-        assert rolls == ["100", "200", "300"]
+    These cover membership, ordering and regeneration at this module's own
+    level. The formatting the copy has to carry over - merges, fonts, fills,
+    borders, widths, heights, page setup, print titles, headers/footers and
+    the logo - is asserted in ``tests/unit/test_meritwise_workbook.py``
+    against a workbook built to contain every one of them.
+    """
 
-    def test_absentees_are_never_in_the_input_and_never_appear(self, generated):
-        # The absence exclusion is the caller's contract; this asserts the
-        # sheet contains exactly what it was given, nothing more.
-        _template, _built_roster, output = generated
-        rx.add_meritwise_sheet(output, [rx.MeritCandidate("1", "A", Fraction(10))])
-        workbook = openpyxl.load_workbook(output)
-        sheet = workbook[rx.MERITWISE_SHEET_NAME]
-        assert sheet.max_row == 2  # header + one candidate
+    def _order(self, built_roster, rolls) -> tuple[rx.MeritwiseRow, ...]:
+        """Merit order expressed as the Rollwise rows to keep."""
+        by_roll = {row.roll: row.sheet_row_number for row in built_roster.rows}
+        return tuple(
+            rx.MeritwiseRow(source_row_number=by_roll[roll], roll=roll) for roll in rolls
+        )
 
-    def test_regenerating_replaces_rather_than_duplicates_the_sheet(self, generated):
-        _template, _built_roster, output = generated
-        rx.add_meritwise_sheet(output, [rx.MeritCandidate("1", "A", Fraction(10))])
-        rx.add_meritwise_sheet(output, [rx.MeritCandidate("2", "B", Fraction(20))])
-        workbook = openpyxl.load_workbook(output)
-        assert workbook.sheetnames.count(rx.MERITWISE_SHEET_NAME) == 1
-        sheet = workbook[rx.MERITWISE_SHEET_NAME]
-        assert sheet.max_row == 2
-
-    def test_a_candidate_name_starting_with_equals_is_not_a_live_formula(self, generated):
-        _template, _built_roster, output = generated
-        rx.add_meritwise_sheet(
-            output, [rx.MeritCandidate("1", "=cmd|'/c calc'!A1", Fraction(10))]
+    def test_rows_appear_in_the_order_given(self, generated):
+        _template, built_roster, output = generated
+        rolls = [row.roll for row in built_roster.rows if row.roll][:3]
+        rx.build_meritwise_from_rollwise(
+            output, built_roster, self._order(built_roster, reversed(rolls))
         )
         workbook = openpyxl.load_workbook(output)
         sheet = workbook[rx.MERITWISE_SHEET_NAME]
-        assert sheet.cell(row=2, column=3).value.startswith("'=")
+        first = built_roster.first_data_row_number
+        column = built_roster.mapping.roll + 1
+        written = [sheet.cell(row=first + i, column=column).value for i in range(3)]
+        assert written == list(reversed(rolls))
+
+    def test_a_roll_left_out_does_not_appear(self, generated):
+        _template, built_roster, output = generated
+        rolls = [row.roll for row in built_roster.rows if row.roll]
+        kept, dropped = rolls[:2], rolls[2:]
+        rx.build_meritwise_from_rollwise(
+            output, built_roster, self._order(built_roster, kept)
+        )
+        workbook = openpyxl.load_workbook(output)
+        sheet = workbook[rx.MERITWISE_SHEET_NAME]
+        column = built_roster.mapping.roll + 1
+        present = {
+            sheet.cell(row=r, column=column).value for r in range(1, sheet.max_row + 1)
+        }
+        assert set(kept) <= present
+        assert not (set(dropped) & present)
+
+    def test_regenerating_replaces_rather_than_duplicates_the_sheet(self, generated):
+        _template, built_roster, output = generated
+        rolls = [row.roll for row in built_roster.rows if row.roll]
+        for _ in range(2):
+            rx.build_meritwise_from_rollwise(
+                output, built_roster, self._order(built_roster, rolls[:1])
+            )
+        workbook = openpyxl.load_workbook(output)
+        assert workbook.sheetnames.count(rx.MERITWISE_SHEET_NAME) == 1
+
+    def test_an_old_capitalised_sheet_is_replaced_not_left_beside_the_new_one(
+        self, generated
+    ):
+        """A workbook regenerated from an earlier build carried "Meritwise"."""
+        _template, built_roster, output = generated
+        workbook = openpyxl.load_workbook(output)
+        workbook.create_sheet("Meritwise")
+        workbook.save(output)
+        workbook.close()
+
+        rolls = [row.roll for row in built_roster.rows if row.roll]
+        rx.build_meritwise_from_rollwise(
+            output, built_roster, self._order(built_roster, rolls[:1])
+        )
+        reopened = openpyxl.load_workbook(output)
+        names = [name.casefold() for name in reopened.sheetnames]
+        assert names.count("meritwise") == 1
+
+    def test_the_result_reports_what_it_did(self, generated):
+        _template, built_roster, output = generated
+        rolls = [row.roll for row in built_roster.rows if row.roll]
+        result = rx.build_meritwise_from_rollwise(
+            output, built_roster, self._order(built_roster, rolls[:1])
+        )
+        assert result.sheet_name == rx.MERITWISE_SHEET_NAME
+        assert result.rows_written == 1
+        assert result.rows_removed == len(rolls) - 1
 
 
 # ----------------------------------------------------------------------
@@ -490,13 +520,34 @@ class TestLayout:
 # ----------------------------------------------------------------------
 class TestUnicode:
     def test_unicode_names_survive_meritwise(self, generated):
-        _template, _built_roster, output = generated
-        rx.add_meritwise_sheet(
-            output, [rx.MeritCandidate("1", "মোহাম্মদ রহিম", Fraction(90))]
-        )
+        """The name is copied from the Rollwise cell, so it must survive intact.
+
+        Unlike the old generated table, nothing re-encodes or re-escapes a
+        name here - which is also why the old formula-injection guard on a
+        name beginning with ``=`` no longer applies: the value is the
+        operator's own cell, copied, never a string this application writes.
+        """
+        _template, built_roster, output = generated
+        first = next(row for row in built_roster.rows if row.roll)
+        name_column = (built_roster.mapping.name or 0) + 1
+
         workbook = openpyxl.load_workbook(output)
-        sheet = workbook[rx.MERITWISE_SHEET_NAME]
-        assert sheet.cell(row=2, column=3).value == "মোহাম্মদ রহিম"
+        workbook[built_roster.sheet].cell(
+            row=first.sheet_row_number, column=name_column, value="মোহাম্মদ রহিম"
+        )
+        workbook.save(output)
+        workbook.close()
+
+        rx.build_meritwise_from_rollwise(
+            output,
+            built_roster,
+            (rx.MeritwiseRow(source_row_number=first.sheet_row_number, roll=first.roll),),
+        )
+        reopened = openpyxl.load_workbook(output)
+        sheet = reopened[rx.MERITWISE_SHEET_NAME]
+        assert sheet.cell(
+            row=built_roster.first_data_row_number, column=name_column
+        ).value == "মোহাম্মদ রহিম"
 
     def test_unicode_project_name_in_summary(self, generated):
         _template, _built_roster, output = generated

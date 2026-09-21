@@ -15,6 +15,8 @@ entities, it finds the intended shape and relationships already agreed.
 |---|---|---|
 | Project | Implemented (Phase 0) | `project.json` + `project_setting` table |
 | ExamSet (the project's own registry of sets) | Implemented (project configuration) | `project_set` table |
+| Per-Set attendance (a roster belongs to one set) | Implemented (per-set attendance) | `candidate_roster.set_id` |
+| Per-Set result template | Implemented (per-set attendance) | `report_template_association.set_id` / `source_kind` |
 | Template, Zone, FieldDefinition, RegistrationMarker, OrientationMarker, BubbleGrid, RecognitionSettings | Implemented (Phase 0) | `.omrt` document |
 | ScanBatch | Implemented (Phase 5) | `scan_batch` table |
 | BatchScan (one scan in a batch) | Implemented (Phase 5) | `batch_scan` table |
@@ -46,6 +48,10 @@ entities, it finds the intended shape and relationships already agreed.
 ```mermaid
 erDiagram
     PROJECT ||--o{ EXAM_SET : "is divided into"
+    EXAM_SET ||--o| CANDIDATE_ROSTER : "attendance for"
+    EXAM_SET ||--o| REPORT_TEMPLATE : "result template for"
+    CANDIDATE_ROSTER ||--o{ CANDIDATE : "registers"
+    CANDIDATE_ROSTER ||--o{ CANDIDATE_RESULT : "scopes"
     PROJECT ||--o{ TEMPLATE : "uses"
     PROJECT ||--o{ SCAN : "contains"
     PROJECT ||--o{ CANDIDATE : "registers"
@@ -118,7 +124,43 @@ belongs to the phase that needs it.
 Deletion goes through `project_sets.references_to_set`, which is the single
 place a future phase declares what depends on a set. It currently returns
 nothing - because nothing does - and `delete_set` consults it anyway, so that
-adding those links later cannot silently start orphaning records.
+adding those links later cannot silently start orphaning records. The database
+backs this up independently: `candidate_roster.set_id` and
+`report_template_association.set_id` are both `ON DELETE RESTRICT`, so
+deleting a set that still has attendance imported against it fails loudly
+rather than cascading an examination's candidate list away.
+
+### How a set isolates its candidates, results and report
+
+The relationship that does the work is **one roster per set**:
+
+```text
+project_set (set_id)
+   └── candidate_roster (set_id)           one active roster per set
+         ├── registered_candidate           unique per (roster_id, candidate_id)
+         ├── reconciliation_run / _entry     keyed by (roster_id, batch_id)
+         └── candidate_result                unique per (roster_id, batch_id, candidate_id)
+```
+
+Everything below the roster was **already** keyed by `roster_id` before this
+change; giving the roster a `set_id` therefore makes candidates, reconciliation
+state and stored marks belong to a set transitively, without altering a single
+one of those tables. That is why roll `10001` can exist independently in Set 10
+and Set 11: they are two rows in two different rosters, and the uniqueness
+constraint has always been per roster, never project-wide.
+
+The result template is resolved by `set_id` first and only then by `set_code`
+(`report_store.get_template_association_for_set`), and a row matched by code
+while carrying a *different* `set_id` is deliberately not returned - which is
+what stops one set's workbook from ever being reached from another set's
+generation.
+
+**`set_code` is still the machine-readable key** that recognition reads off a
+sheet and that answer keys, layout configuration and generated-report audit
+rows use. `project_set` is the explicit mapping between that string and the
+persistent `set_id`, and `project_sets.set_by_code` is the one place the
+translation happens - rather than string matching spread through the
+application.
 
 ### Template and its parts - *implemented*
 
@@ -564,6 +606,32 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `batch_scan_history` | A scan's superseded status/outcome/result, archived before reprocessing. Append-only, trigger-enforced, like `audit_event`. | Phase 10 (migration 7) |
 | `processing_manifest` | A reproducibility snapshot, assembled from Phases 5-9's own tables rather than duplicating them. | Phase 10 (migration 7) |
 | `project_set` | The project's own registry of examination sets: code, description, order, stable id. | Project configuration (migration 8) |
+| `candidate_roster.set_id` | Which set an attendance list belongs to. NULL for a roster imported before attendance was per-set. | Per-set attendance (migration 9) |
+| `report_template_association.set_id` / `source_kind` | Which set a result template belongs to, and whether it arrived as that set's attendance workbook. | Per-set attendance (migration 9) |
+
+### Schema version 9 (per-set attendance and templates)
+
+`_migration_009_per_set_attendance` adds two nullable columns and one index.
+Purely additive, and deliberately **not** backfilled.
+
+- **An existing roster keeps `set_id` NULL.** A project processed before this
+  version has exactly one roster for the whole examination, and nothing in the
+  data says which of several later-defined sets it was meant to be. Guessing
+  would attach one set's candidate list to another set's report - the precise
+  failure this work exists to prevent. The roster is therefore left
+  *unassigned*, reported as such by
+  `reconciliation_store.unassigned_rosters`, and attached to a set only by an
+  operator, through `assign_roster_to_set` (§29's "explicit user resolution").
+- **A template association that predates the set registry keeps `set_id`
+  NULL** too. Its `set_code` still resolves it for every existing Phase 9
+  path, and `set_id` is filled in the next time a template is associated for a
+  set with that code.
+- **`source_kind` defaults to `'manual'`**, which is what every pre-existing
+  association genuinely was: chosen by an operator, not derived from an
+  attendance import.
+- **An old single-set project keeps working**: with no sets defined, the
+  unscoped roster is still found by `active_roster(database)` (no set
+  argument), and `generate_xlsx` without a `set_id` behaves exactly as before.
 
 ### Schema version 8 (project configuration)
 

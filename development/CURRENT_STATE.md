@@ -39,9 +39,34 @@ Update this file at the end of every phase.
   new project is created. Add / Edit / Delete / Move Up / Move Down, each
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
-- **Nothing downstream consumes a set yet.** Attendance, scoring and reporting
-  are unchanged, and no existing `set_code` column has a foreign key to
-  `project_set` - Parts 2 and 3 of the enhancement have not been started.
+### Per-set attendance and set-aware reporting (examination-sets enhancement, Part 2)
+
+- Each set has **its own attendance workbook**. `candidate_roster.set_id`
+  (schema 9) is the persistent relationship; "the active roster" is now per
+  set, and a set with no attendance returns `None` rather than falling back to
+  another set's.
+- Because `registered_candidate`, `reconciliation_*` and `candidate_result`
+  were already keyed by `roster_id`, scoping the roster to a set scopes all of
+  them - so the same roll number in two sets is two unrelated candidates, and
+  no table below the roster had to change.
+- An `.xlsx` attendance workbook **is** that set's result template
+  (`report_template_association.set_id`/`source_kind`). A CSV is still fully
+  usable for reconciliation but cannot supply a layout, and says so.
+- `report_store.generate_for_set` resolves a set's own roster and own template
+  and refuses - naming the set - if either is missing. There is no reachable
+  fallback to another set's workbook.
+- `meritwise` is a **copy of the completed rollwise sheet** with absentees
+  removed and rows reordered by merit, so it keeps the heading, post details,
+  logo, widths, borders and print setup. `RANK.EQ` still supplies the rank, so
+  tied candidates still share one.
+- Pillow is now a runtime dependency: without it openpyxl silently drops a
+  workbook's images when saving, which would have deleted an institution's
+  logo from its own report.
+- `candidate_import` now searches the first 15 non-blank rows for the header
+  row. Without that, a real attendance sheet - institution name and post above
+  the table - could not be imported at all.
+- **Still synthetic-only.** No real attendance workbook and no real scanned
+  cohort has been processed end to end.
 
 ### Geometric normalisation (Phase 1)
 

@@ -535,23 +535,74 @@ def _is_blank_row(row: Sequence[object]) -> bool:
     return all(_clean_text(cell) == "" for cell in row)
 
 
+MAX_HEADER_SEARCH_ROWS = 15
+"""How many leading rows are searched for the header row.
+
+A real examination office's attendance sheet carries its institution name,
+the examination title and the post above the table - the very features that
+make it worth using as the result template later - so the header is routinely
+*not* the first non-blank row. Fifteen is generous for that decoration and
+still cheap to scan.
+
+Matches :data:`omr_scanner.services.report_template.MAX_HEADER_SEARCH_ROWS`,
+which solved the same problem for result templates first; attendance files
+and result templates are the same workbooks, so they must agree about where
+a table starts."""
+
+
+def _header_score(headers: Sequence[str]) -> int:
+    """How strongly a row reads as a header row.
+
+    Scored, not pattern-matched: a decorative title row happens to contain
+    words, and the question is which row contains the *column names*. An ID
+    column is what makes a roster a roster, so it is weighted highest.
+    """
+    cleaned = [_clean_text(cell) for cell in headers]
+    if not any(cleaned):
+        return 0
+    score = 0
+    if _best_column(cleaned, _ID_HEADERS, exclude=set()) is not None:
+        score += 3
+    if _best_column(cleaned, _NAME_HEADERS, exclude=set()) is not None:
+        score += 2
+    if _best_column(cleaned, _ATTENDANCE_HEADERS, exclude=set()) is not None:
+        score += 1
+    return score
+
+
 def _split_header(rows: Sequence[Sequence[object]], path: Path) -> tuple[
     tuple[str, ...], list[Sequence[object]]
 ]:
-    """Separate the header row from the data rows."""
-    for index, row in enumerate(rows):
-        if _is_blank_row(row):
-            continue
-        headers = tuple(_clean_text(cell) for cell in row)
-        data = [item for item in rows[index + 1 :] if not _is_blank_row(item)]
-        return headers, data
-    raise CandidateImportError(
-        "Roster file is empty",
-        user_message=(
-            f"'{path.name}' contains no rows. Check that you selected the "
-            "right file, and the right worksheet if it is a workbook."
-        ),
-    )
+    """Separate the header row from the data rows.
+
+    Searches the first :data:`MAX_HEADER_SEARCH_ROWS` non-blank rows and takes
+    the one that reads most strongly as a header, rather than assuming the
+    first non-blank row is it. A file whose header *is* its first row - every
+    CSV this importer has ever accepted - scores highest there and behaves
+    exactly as before.
+    """
+    candidates: list[tuple[int, Sequence[object]]] = [
+        (index, row) for index, row in enumerate(rows) if not _is_blank_row(row)
+    ]
+    if not candidates:
+        raise CandidateImportError(
+            "Roster file is empty",
+            user_message=(
+                f"'{path.name}' contains no rows. Check that you selected the "
+                "right file, and the right worksheet if it is a workbook."
+            ),
+        )
+
+    best_index, _best_row = candidates[0]
+    best_score = 0
+    for index, row in candidates[:MAX_HEADER_SEARCH_ROWS]:
+        score = _header_score([_clean_text(cell) for cell in row])
+        if score > best_score:
+            best_index, best_score = index, score
+
+    headers = tuple(_clean_text(cell) for cell in rows[best_index])
+    data = [item for item in rows[best_index + 1 :] if not _is_blank_row(item)]
+    return headers, data
 
 
 def preview_roster(

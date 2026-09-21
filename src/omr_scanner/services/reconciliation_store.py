@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Select, delete, func, select
 
 from omr_scanner.database.models import (
     AuditEvent,
@@ -90,6 +90,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _LOGGER = logging.getLogger(__name__)
 
+_ANY_SET: Any = object()
+"""Sentinel for "every set" in :func:`list_rosters`.
+
+``None`` already means something specific there - the unscoped rosters a
+project had before attendance was per-set - so "no filter at all" needs a
+value of its own rather than reusing it."""
+
 ENTITY_CANDIDATE = "candidate"
 ENTITY_SCRIPT = "script"
 TARGET_CANDIDATE = "candidate"
@@ -127,6 +134,9 @@ class RosterSummary:
     has_attendance_column: bool
     is_active: bool
     imported_by: str = ""
+    set_id: str | None = None
+    """The examination set this roster belongs to, or ``None`` for a roster
+    imported before attendance was per-set."""
 
     @property
     def describe(self) -> str:
@@ -263,6 +273,7 @@ def import_roster(
     *,
     imported_by: str = "",
     activate: bool = True,
+    set_id: str | None = None,
 ) -> int:
     """Store a validated roster and, by default, make it the active one.
 
@@ -272,6 +283,11 @@ def import_roster(
             :func:`omr_scanner.services.candidate_import.read_roster`.
         imported_by: Who imported it, if known.
         activate: Whether this becomes the roster reconciliation reads.
+        set_id: The examination set this attendance list belongs to. Activating
+            supersedes the previous active roster **for that set only** -
+            importing Set 11's list must never deactivate Set 10's. ``None``
+            keeps the pre-Part-2 behaviour of one unscoped roster per project,
+            which is what a project with no defined sets still uses.
 
     Returns:
         The new roster's id.
@@ -299,12 +315,16 @@ def import_roster(
     mapping = validation.mapping
     with database.session() as session:
         if activate:
+            # Scoped to this set: another set's active roster is untouched,
+            # because they are independent candidate lists that merely happen
+            # to belong to the same examination.
             for row in session.scalars(
-                select(CandidateRoster).where(CandidateRoster.is_active.is_(True))
+                _active_roster_query(set_id)
             ).all():
                 row.is_active = False
 
         roster = CandidateRoster(
+            set_id=set_id,
             created_at=_now(),
             source_name=validation.source_name,
             source_sheet=validation.sheet,
@@ -355,25 +375,113 @@ def import_roster(
     return roster_id
 
 
-def list_rosters(database: ProjectDatabase) -> tuple[RosterSummary, ...]:
-    """Return every imported roster, newest first."""
+def _active_roster_query(set_id: str | None) -> Select[tuple[CandidateRoster]]:
+    """Select the active roster(s) belonging to one set, or to no set.
+
+    ``set_id=None`` deliberately matches only rosters whose ``set_id`` *is*
+    NULL rather than every roster: "the project's unscoped roster" and "Set
+    10's roster" are different things, and a query that confused them would
+    hand one set's candidate list to another - see §19.
+    """
+    query = select(CandidateRoster).where(CandidateRoster.is_active.is_(True))
+    if set_id is None:
+        return query.where(CandidateRoster.set_id.is_(None))
+    return query.where(CandidateRoster.set_id == set_id)
+
+
+def list_rosters(
+    database: ProjectDatabase, *, set_id: str | None = _ANY_SET
+) -> tuple[RosterSummary, ...]:
+    """Return imported rosters, newest first.
+
+    Args:
+        database: The open project database.
+        set_id: Which set's rosters to list. Omit for *every* roster in the
+            project, pass a set id for that set's, or pass ``None`` for the
+            unscoped rosters a pre-Part-2 project has. The sentinel default
+            exists because ``None`` is itself a meaningful value here.
+    """
     with database.session() as session:
-        rows = session.scalars(
-            select(CandidateRoster).order_by(CandidateRoster.roster_id.desc())
-        ).all()
-        return tuple(_roster_summary(row) for row in rows)
+        query = select(CandidateRoster).order_by(CandidateRoster.roster_id.desc())
+        if set_id is not _ANY_SET:
+            query = (
+                query.where(CandidateRoster.set_id.is_(None))
+                if set_id is None
+                else query.where(CandidateRoster.set_id == set_id)
+            )
+        return tuple(_roster_summary(row) for row in session.scalars(query).all())
 
 
-def active_roster(database: ProjectDatabase) -> RosterSummary | None:
-    """Return the roster reconciliation reads, or ``None`` if none is active."""
+def active_roster(
+    database: ProjectDatabase, set_id: str | None = None
+) -> RosterSummary | None:
+    """Return the roster reconciliation reads for one set, or ``None``.
+
+    Args:
+        database: The open project database.
+        set_id: The set whose attendance list is wanted. ``None`` asks for the
+            project's unscoped roster - the only kind that exists before sets
+            are defined, and the only kind a project with no sets ever has.
+
+    A set with no imported attendance returns ``None`` **rather than falling
+    back** to another set's roster or to the unscoped one. That refusal is the
+    point: §15 requires a missing attendance workbook to stop the work with a
+    message, never to borrow a neighbour's.
+    """
     with database.session() as session:
         row = session.scalars(
-            select(CandidateRoster)
-            .where(CandidateRoster.is_active.is_(True))
+            _active_roster_query(set_id)
             .order_by(CandidateRoster.roster_id.desc())
             .limit(1)
         ).first()
         return _roster_summary(row) if row is not None else None
+
+
+def unassigned_rosters(database: ProjectDatabase) -> tuple[RosterSummary, ...]:
+    """Return rosters imported before attendance was per-set.
+
+    What migration 9 deliberately refused to guess at. An interface can offer
+    these to an operator to assign to a set explicitly (§29); nothing assigns
+    one automatically.
+    """
+    return list_rosters(database, set_id=None)
+
+
+def assign_roster_to_set(
+    database: ProjectDatabase, roster_id: int, set_id: str
+) -> None:
+    """Attach an existing roster to a set, and make it that set's active one.
+
+    The explicit resolution §29 asks for: an operator states which set a
+    pre-Part-2 candidate list belongs to, rather than the application
+    inferring it.
+
+    Raises:
+        ReconciliationError: No such roster, or it already belongs to a
+            different set - re-pointing a roster that candidates, results and
+            reconciliation entries already hang off would change which set
+            those records belong to, which is not an edit this makes quietly.
+    """
+    with database.session() as session:
+        target = session.get(CandidateRoster, roster_id)
+        if target is None:
+            raise ReconciliationError(
+                f"Roster {roster_id} not found",
+                user_message="That candidate list is no longer in this project.",
+            )
+        if target.set_id is not None and target.set_id != set_id:
+            raise ReconciliationError(
+                f"Roster {roster_id} already belongs to set {target.set_id}",
+                user_message=(
+                    "That candidate list already belongs to a different set. "
+                    "Import it again for this set instead."
+                ),
+            )
+        for row in session.scalars(_active_roster_query(set_id)).all():
+            row.is_active = False
+        target.set_id = set_id
+        target.is_active = True
+    _LOGGER.info("Roster %d assigned to set %s", roster_id, set_id)
 
 
 def _roster_summary(row: CandidateRoster) -> RosterSummary:
@@ -390,6 +498,7 @@ def _roster_summary(row: CandidateRoster) -> RosterSummary:
         has_attendance_column=row.has_attendance_column,
         is_active=row.is_active,
         imported_by=row.imported_by,
+        set_id=row.set_id,
     )
 
 
@@ -407,9 +516,9 @@ def set_active_roster(database: ProjectDatabase, roster_id: int) -> None:
                 f"Roster {roster_id} not found",
                 user_message="That candidate list is no longer in this project.",
             )
-        for row in session.scalars(
-            select(CandidateRoster).where(CandidateRoster.is_active.is_(True))
-        ).all():
+        # Only among this roster's own set: activating Set 11's older list
+        # must not deactivate Set 10's current one.
+        for row in session.scalars(_active_roster_query(target.set_id)).all():
             row.is_active = False
         target.is_active = True
     _LOGGER.info("Active candidate roster changed: roster=%d", roster_id)

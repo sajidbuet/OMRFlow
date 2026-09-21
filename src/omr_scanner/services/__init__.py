@@ -52,6 +52,7 @@ from omr_scanner.services import (
     scan_provenance,
     scoring,
     scoring_store,
+    set_attendance,
     telemetry,
 )
 from omr_scanner.services.alignment_service import (
@@ -415,6 +416,7 @@ __all__ = [
     "scoring",
     "scoring_store",
     "separation_label",
+    "set_attendance",
     "set_batch_status",
     "sheet_resolutions",
     "sync_conflicts",

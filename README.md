@@ -81,14 +81,17 @@ category). It is being delivered in parts, and only the first has been built:
 | Part | Description | Development | Testing | Status |
 |---|---|---|---|---|
 | 1 | Project configuration: exam name, and a variable number of persistent, uniquely identified sets | Implemented | Implemented & tested | 🧪 Testing |
-| 2 | One attendance workbook per set; attendance imported per set | Not started | Not started | ⏳ Pending |
-| 3 | Set-aware reporting: reports inheriting attendance layouts, roll-wise and merit-wise sheets per set | Not started | Not started | ⏳ Pending |
+| 2 | Per-Set attendance: one attendance workbook per set, candidates scoped to their set | Implemented | Implemented & tested (synthetic) | 🧪 Testing |
+| 2 | Set-aware report generation: each set's result built from its own attendance workbook | Implemented | Implemented & tested (synthetic) | 🧪 Testing |
+| 2 | Rollwise result sheet from the attendance template | Implemented | Implemented & tested (synthetic) | 🧪 Testing |
+| 2 | `meritwise` sheet copied from the completed rollwise sheet | Implemented | Implemented & tested (synthetic) | 🧪 Testing |
 
-Part 1 changes project creation, project configuration and the persistence
-behind them, and **nothing else** — attendance import, reconciliation,
-scoring, result generation and report generation all behave exactly as they
-did before. A set defined today is a definition that later parts will link
-to; nothing downstream reads it yet.
+**Real-data validation is still pending for all of it.** Everything above is
+verified against synthetic workbooks and synthetic examinations built by the
+test suite — no real examination office's attendance file, and no real scanned
+cohort, has been processed end to end. That is the difference between
+"implemented and tested" and "complete", and it is why none of these rows says
+Complete.
 
 ### Status legend
 
@@ -421,6 +424,66 @@ and adding them is the operator's decision. A set whose papers were never
 scanned cannot appear in that list, which is precisely why it is a suggestion
 and not a migration. See [`docs/DATA_MODEL.md`](docs/DATA_MODEL.md), "Schema
 version 8", for exactly what happens.
+
+### One attendance workbook per Set, and the result built on it
+
+Each Set gets **its own attendance file**, assigned in the *Attendance* stage.
+Set 10's `set10_attendance.xlsx` and Set 11's `set11_attendance.xlsx` are
+independent: different candidate lists, different headings, different
+formatting. **One Set's workbook is never used for another Set's result** — a
+Set with no attendance file assigned stops with
+*"No attendance/template workbook has been assigned to Set 11."* rather than
+borrowing its neighbour's, falling back to the most recently imported file, or
+quietly producing a generic report.
+
+**The attendance workbook is also the result template.** When the file is an
+`.xlsx`, it becomes that Set's layout source: generating the result copies the
+workbook and writes marks into the office's own sheet, so the institution
+name, the post, the column widths, the borders, the print setup and the logo
+all come through. What is preserved has been measured rather than assumed —
+see "What the generated workbook preserves" below.
+
+**Rollwise** keeps every registered candidate, absentees included; an
+absentee's mark cell reads the project's existing absence marker rather than a
+fabricated number, and their rank cell shows the absence marker too.
+
+**`meritwise`** is a *copy of the completed rollwise sheet* — not a freshly
+built table — with absentees removed and the remaining rows sorted by merit.
+It therefore keeps the same heading, post details, logo and print setup as the
+roll list. Ranking stays the `RANK.EQ` formula the project already used, now
+over the meritwise sheet's own row range, so tied candidates still share a
+rank; row order breaks ties by ascending roll purely so Excel has an order to
+print, never to imply a difference in merit.
+
+**CSV attendance is still fully supported for reconciliation** — but a CSV has
+no formatting to build a result on, so a Set whose attendance came from a CSV
+needs an `.xlsx` result template chosen separately in the *Reports* stage
+before its result can be generated. That is stated explicitly rather than
+silently substituting a generic layout.
+
+**Candidates are scoped to their Set.** Roll `10001` may exist in Set 10 and
+Set 11 as two unrelated candidates; a mark from one can never populate the
+other. The relationship key is the Set's stable internal id, not its code and
+not a row position.
+
+### What the generated workbook preserves
+
+Measured against openpyxl with a workbook built to contain every feature, and
+asserted in `tests/unit/test_meritwise_workbook.py` — not claimed:
+
+| Preserved | Notes |
+|---|---|
+| Merged cells, fonts, fills, borders, number formats, alignment | Including on the `meritwise` copy |
+| Column widths, row heights | Row heights travel with the row when it moves |
+| Page orientation, paper size, scaling, margins | |
+| Freeze panes, print titles, print area, headers/footers | Restored explicitly on the copy — `copy_worksheet` drops them |
+| Static text, headings, and formulas unrelated to result fields | |
+| Logos/images | Requires Pillow, which is now a dependency **because** openpyxl silently *destroys* images on save without it |
+
+Known limitation: a merged cell that spans several **candidate rows** cannot
+survive those rows being reordered on `meritwise`. That is reported as a
+warning on the generation rather than silently mangled; merges in heading rows
+(the usual case) are unaffected.
 
 ### Phase 3 architectural hardening
 
@@ -1601,11 +1664,13 @@ planned are documented in
 promise a delivery date for it, and its scope may be refined as earlier
 phases surface real requirements.
 
-**The examination-sets enhancement is one part of three.** Part 1 (project
-configuration: exam name and sets) is implemented and tested. Part 2
-(attendance per set) and Part 3 (set-aware reporting: roll-wise and merit-wise
-sheets inheriting attendance layouts) have **not been started**, and no
-attendance, scoring or reporting behaviour has been changed for them yet.
+**The examination-sets enhancement: Parts 1 and 2 are implemented.** Project
+configuration (exam name and sets), per-Set attendance, set-aware report
+generation, the rollwise sheet built on the attendance template, and the
+`meritwise` sheet copied from it are all implemented and covered by automated
+tests — **against synthetic data only**. No real examination office's
+attendance workbook and no real scanned cohort has been processed end to end,
+so none of it is marked complete.
 
 **Real-world validation remains pending for every phase that needs it.**
 Implemented, automated tests passing, synthetic dataset validated, real scanned

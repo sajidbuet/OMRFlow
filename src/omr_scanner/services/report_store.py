@@ -65,7 +65,7 @@ from omr_scanner.services.report_template import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
 
     from omr_scanner.database.engine import ProjectDatabase
@@ -202,12 +202,17 @@ class StoredTemplateAssociation:
     mapping: ReportColumnMapping
     updated_at: datetime
     updated_by: str = ""
+    set_id: str | None = None
+    source_kind: str = "manual"
+    """``"attendance"`` when this workbook is also the set's attendance list."""
 
 
 def _to_association(row: ReportTemplateAssociation) -> StoredTemplateAssociation:
     return StoredTemplateAssociation(
         association_id=row.association_id,
         set_code=row.set_code,
+        set_id=row.set_id,
+        source_kind=row.source_kind,
         template_path=row.template_path,
         template_sha256=row.template_sha256,
         sheet_name=row.sheet_name,
@@ -231,8 +236,23 @@ def associate_template(
     *,
     sheet_name: str,
     updated_by: str = "",
+    set_id: str | None = None,
+    source_kind: str = "manual",
 ) -> StoredTemplateAssociation:
     """Record (or replace) the result template for one set.
+
+    Args:
+        database: The open project database.
+        set_code: The code this template belongs to.
+        template_path: The workbook. Never modified - generation copies it.
+        mapping: Which column holds what.
+        sheet_name: The worksheet the roster is read from.
+        updated_by: Who chose it.
+        set_id: The defined set's stable identifier, when the code names one.
+            Stored alongside ``set_code`` so a later correction to the code
+            cannot orphan the template.
+        source_kind: ``"attendance"`` when this workbook is also the set's
+            attendance list, ``"manual"`` when it was chosen separately.
 
     Raises:
         ReportStoreError: The template cannot be hashed (typically: it has
@@ -255,6 +275,9 @@ def associate_template(
         if row is None:
             row = ReportTemplateAssociation(set_code=set_code, created_at=moment)
             session.add(row)
+        if set_id is not None:
+            row.set_id = set_id
+        row.source_kind = source_kind
         row.template_path = str(template_path)
         row.template_sha256 = digest
         row.sheet_name = sheet_name
@@ -315,10 +338,46 @@ def list_template_associations(
         return {row.set_code: _to_association(row) for row in rows}
 
 
+def get_template_association_for_set(
+    database: ProjectDatabase, set_id: str, set_code: str
+) -> StoredTemplateAssociation | None:
+    """Return the template belonging to one defined set, or ``None``.
+
+    Resolution is by :attr:`set_id` first - the persistent link - and only
+    then by ``set_code``, which covers a template associated before sets were
+    defined. A row matched by code while carrying a *different* ``set_id`` is
+    deliberately **not** returned: it belongs to another set, and handing it
+    over is exactly the cross-set substitution §15 forbids.
+    """
+    with database.session() as session:
+        row = session.scalars(
+            select(ReportTemplateAssociation).where(
+                ReportTemplateAssociation.set_id == set_id
+            )
+        ).first()
+        if row is not None:
+            return _to_association(row)
+
+        row = session.scalars(
+            select(ReportTemplateAssociation).where(
+                ReportTemplateAssociation.set_code == set_code,
+                ReportTemplateAssociation.set_id.is_(None),
+            )
+        ).first()
+        return _to_association(row) if row is not None else None
+
+
 def load_roster_for_set(
-    database: ProjectDatabase, set_code: str
+    database: ProjectDatabase, set_code: str, set_id: str | None = None
 ) -> TemplateRoster:
     """Read the associated template fresh, for validation or generation.
+
+    Args:
+        database: The open project database.
+        set_code: The set's code.
+        set_id: The defined set's stable identifier, when there is one. Given,
+            the template is resolved by it - so a template belonging to a
+            *different* set that happens to share a code is never read.
 
     Raises:
         ReportStoreError: No template is associated with ``set_code``.
@@ -333,7 +392,11 @@ def load_roster_for_set(
     """
     from pathlib import Path as _Path
 
-    association = get_template_association(database, set_code)
+    association = (
+        get_template_association_for_set(database, set_id, set_code)
+        if set_id is not None
+        else get_template_association(database, set_code)
+    )
     if association is None:
         raise ReportStoreError(
             f"No template associated with set {set_code}",
@@ -665,6 +728,86 @@ def check_readiness(
     return block_stale_results_for_final_export(report) if for_final_export else report
 
 
+class SetGenerationRefusedError(ReportStoreError):
+    """A set cannot be generated because something it needs is missing.
+
+    Raised *before* any file is written, and never satisfied by substituting
+    another set's data - see :func:`resolve_set_sources`.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class SetSources:
+    """Which roster and which template one defined set's report comes from.
+
+    Distinct from :class:`SetGenerationInputs`, which holds the Phase 7/8
+    *facts* a report is built from. This holds the two things that decide
+    **whose** facts those are - and both are resolved from the set, which is
+    what makes cross-set contamination impossible by construction rather than
+    by care: there is no project-wide roster or template to fall back to.
+    """
+
+    set_id: str
+    set_code: str
+    set_description: str
+    roster_id: int
+    association: StoredTemplateAssociation
+
+
+def resolve_set_sources(database: ProjectDatabase, set_id: str) -> SetSources:
+    """Resolve one set's roster and template, or refuse with a reason.
+
+    The §15 guard, in one place. A set with no attendance workbook, or with
+    attendance but no usable result template, stops here with a message that
+    **names the set**. Nothing falls back to another set's workbook, to the
+    most recently imported roster, or to a project-wide default, because no
+    such fallback is reachable from this function: the roster is looked up by
+    ``set_id``, and the template by ``set_id`` first (see
+    :func:`get_template_association_for_set`).
+
+    Raises:
+        SetGenerationRefused: No such set, no attendance, or no template.
+    """
+    from omr_scanner.services import project_sets, reconciliation_store
+
+    exam_set = project_sets.get_set(database, set_id)
+    if exam_set is None:
+        raise SetGenerationRefusedError(
+            f"No set with id {set_id!r}",
+            user_message="That set no longer exists in this project.",
+        )
+
+    roster = reconciliation_store.active_roster(database, set_id)
+    if roster is None:
+        raise SetGenerationRefusedError(
+            f"Set {exam_set.code} has no attendance roster",
+            user_message=(
+                "No attendance/template workbook has been assigned to "
+                f"Set {exam_set.code}."
+            ),
+        )
+
+    association = get_template_association_for_set(database, set_id, exam_set.code)
+    if association is None:
+        raise SetGenerationRefusedError(
+            f"Set {exam_set.code} has no result template",
+            user_message=(
+                f"Set {exam_set.code} has no result template workbook. Its "
+                "attendance file cannot supply one (a CSV has no layout, and "
+                "a workbook needs a marks column), so choose a template for "
+                "this set before generating its result."
+            ),
+        )
+
+    return SetSources(
+        set_id=set_id,
+        set_code=exam_set.code,
+        set_description=exam_set.description,
+        roster_id=roster.roster_id,
+        association=association,
+    )
+
+
 # ----------------------------------------------------------------------
 # Generation
 # ----------------------------------------------------------------------
@@ -698,6 +841,7 @@ def generate_xlsx(
     computed_by: str = "",
     final: bool = True,
     should_cancel: Callable[[], bool] | None = None,
+    set_id: str | None = None,
 ) -> GenerationOutcome:
     """Generate one set's XLSX report from canonical stored data.
 
@@ -722,6 +866,12 @@ def generate_xlsx(
         should_cancel: Polled once before the (fast, in-memory) work begins;
             reporting has no long per-candidate loop worth checking mid-way,
             unlike Phase 8's batch scoring.
+        set_id: The defined set this report belongs to, when there is one.
+            Given, both the result template and the roster are resolved by it,
+            so a project whose sets share a code - or whose sets share roll
+            numbers - cannot have one set's template or candidates reached
+            from another's generation. Prefer :func:`generate_for_set`, which
+            resolves it and refuses missing inputs up front.
 
     Returns:
         The outcome, always backed by a :class:`GeneratedReport` audit row -
@@ -736,7 +886,7 @@ def generate_xlsx(
         )
 
     try:
-        roster = load_roster_for_set(database, set_code)
+        roster = load_roster_for_set(database, set_code, set_id)
     except (ReportStoreError, ReportTemplateError) as exc:
         return _record_failure(database, set_code, "xlsx", exc, moment)
 
@@ -759,7 +909,11 @@ def generate_xlsx(
     warnings: list[str] = list(readiness.describe()) if readiness.has_warnings else []
 
     try:
-        association = get_template_association(database, set_code)
+        association = (
+            get_template_association_for_set(database, set_id, set_code)
+            if set_id is not None
+            else get_template_association(database, set_code)
+        )
         assert association is not None  # load_roster_for_set already required this
         layout = get_layout_config(database, set_code).settings
 
@@ -788,17 +942,24 @@ def generate_xlsx(
             for item in decisions.values()
             if not item.is_absent and item.final_score is not None
         ]
-        merit_candidates: list[rx.MeritCandidate] = []
-        for row in roster.rows:
-            decision = decisions.get(row.roll)
-            if decision is None or decision.is_absent or decision.final_score is None:
-                continue
-            merit_candidates.append(
-                rx.MeritCandidate(
-                    roll=row.roll, name=row.name, final_score=decision.final_score
-                )
-            )
-        rx.add_meritwise_sheet(output_path, merit_candidates)
+        meritwise = rx.build_meritwise_from_rollwise(
+            output_path,
+            roster,
+            _meritwise_order(roster, decisions),
+            serial_column=(
+                association.mapping.serial + 1
+                if association.mapping.serial is not None
+                else None
+            ),
+            rank_column=(
+                association.mapping.rank + 1
+                if association.mapping.rank is not None
+                else None
+            ),
+            marks_column=association.mapping.marks + 1,
+            scratch_dir=output_dir,
+        )
+        warnings.extend(meritwise.warnings)
 
         present_count = sum(1 for item in decisions.values() if not item.is_absent)
         absent_count = sum(1 for item in decisions.values() if item.is_absent)
@@ -856,6 +1017,100 @@ def generate_xlsx(
     return GenerationOutcome(
         report_id=report_id, set_code=set_code, report_type="xlsx", status="success",
         output_path=output_path, warnings=tuple(warnings), readiness=readiness,
+    )
+
+
+def generate_for_set(
+    database: ProjectDatabase,
+    set_id: str,
+    batch_id: str,
+    template: OmrTemplate,
+    *,
+    project_name: str,
+    output_dir: Path,
+    computed_by: str = "",
+    final: bool = True,
+    should_cancel: Callable[[], bool] | None = None,
+) -> GenerationOutcome:
+    """Generate one **defined set's** result workbook.
+
+    Args:
+        database: The open project database.
+        set_id: The set to report on - the persistent key, not its code.
+        batch_id: The batch whose scores are being reported on.
+        template: The OMR template the batch was read with.
+        project_name: Used in the output filename and the Summary sheet.
+        output_dir: Where the workbook is written.
+        computed_by: Who ran it.
+        final: Final export (blocked by readiness issues) or preview.
+        should_cancel: Polled before the work begins.
+
+    Returns:
+        The outcome. A set that cannot be generated returns a ``"blocked"``
+        outcome carrying the reason, rather than a workbook built from
+        something that does not belong to it.
+
+    This is the entry point an interface should use. It resolves the set's
+    own attendance roster and its own result template
+    (:func:`resolve_set_sources`) and refuses before writing anything if
+    either is missing - which is what makes "one Set = one attendance
+    template = one independently generated result workbook" an invariant of
+    the code rather than a rule somebody has to remember.
+    """
+    from omr_scanner.services import project_sets
+
+    try:
+        sources = resolve_set_sources(database, set_id)
+    except SetGenerationRefusedError as exc:
+        exam_set = project_sets.get_set(database, set_id)
+        return GenerationOutcome(
+            report_id=0,
+            set_code=exam_set.code if exam_set is not None else "",
+            report_type="xlsx",
+            status="blocked",
+            warnings=(exc.user_message,),
+        )
+
+    return generate_xlsx(
+        database,
+        sources.roster_id,
+        batch_id,
+        template,
+        sources.set_code,
+        project_name=project_name,
+        output_dir=output_dir,
+        computed_by=computed_by,
+        final=final,
+        should_cancel=should_cancel,
+        set_id=set_id,
+    )
+
+
+def _meritwise_order(
+    roster: TemplateRoster, decisions: Mapping[str, rx.CandidateReportRow]
+) -> tuple[rx.MeritwiseRow, ...]:
+    """Decide which Rollwise rows appear on Meritwise, and in what order.
+
+    Absentees and anyone without a decided mark are dropped (§10); everyone
+    else is ordered by **descending final score, then ascending Roll No.** -
+    the same rule the Meritwise sheet has always used, and the same tie
+    handling as the ``RANK.EQ`` formula written into the rank column, so the
+    row order and the printed merit never disagree (§12).
+
+    The tie-break decides only *which row is printed first*. Two candidates
+    on the same mark still receive the same rank from ``RANK.EQ``, which is
+    why the rank is a formula over the marks rather than the row's position.
+    """
+    eligible: list[tuple[Fraction, str, int]] = []
+    for row in roster.rows:
+        decision = decisions.get(row.roll)
+        if decision is None or decision.is_absent or decision.final_score is None:
+            continue
+        eligible.append((decision.final_score, row.roll, row.sheet_row_number))
+    eligible.sort(key=lambda item: (-item[0], item[1]))
+    return tuple(
+        rx.MeritwiseRow(source_row_number=source_row, roll=roll)
+        for _score, roll, source_row in eligible
     )
 
 

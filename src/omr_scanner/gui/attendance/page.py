@@ -6,7 +6,9 @@ belongs to somebody and everybody who sat the paper handed one in.
 Shape of the page:
 
     ┌───────────────────────────────────────────────────────────────┐
-    │ roster bar: active list · Import · Sample · Reconcile          │
+    │ Exam: <exam name>                                             │
+    │ one row per defined Set: file · candidates · template · state │
+    │ Choose/Replace Attendance File · Sample · Reconcile           │
     ├───────────────────────────────────────────────────────────────┤
     │ summary: registered / present / absent / scripts / exceptions │
     ├──────────────────────────────┬────────────────────────────────┤
@@ -14,14 +16,27 @@ Shape of the page:
     │ (filtered and paged in SQL)  │ its history, and what to do    │
     └──────────────────────────────┴────────────────────────────────┘
 
-Two rules the page is arranged around:
+Three rules the page is arranged around:
 
+* **Attendance belongs to a Set, and the pairing is unmistakable.** Each
+  defined Set has its own row, its own attendance file and its own candidate
+  list; selecting a Set is what decides whose reconciliation is below. One
+  Set's workbook is never offered to another, and a Set without one says so
+  plainly rather than quietly reconciling against a neighbour's list (§3,
+  §15).
 * **Every problem is visible.** An entry shows *all* its issues, not just the
   headline, so an absent candidate with two scripts does not have one fact hide
   the other.
 * **No destructive shortcut exists.** There is no button that drops a script,
   picks a duplicate, or edits the imported roster. Everything either records a
   decision beside the original data or does nothing.
+
+A project with no Sets defined yet still works: attendance is then *unscoped*
+(one list for the project, ``set_id`` NULL), exactly as it was before Sets
+existed, and the page points at *File > Project Configuration...* for an
+operator who wants per-Set attendance. That is the same distinction the
+database draws, not a special case invented here - see
+:func:`omr_scanner.services.reconciliation_store.active_roster`.
 
 Candidate names and IDs are shown here - reconciliation would be impossible
 otherwise - and are never written to a log line.
@@ -68,16 +83,18 @@ from omr_scanner.gui.attendance.import_dialog import RosterImportDialog
 from omr_scanner.gui.attendance.worker import ReconcileResult, ReconcileWorker
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
-from omr_scanner.services import batch_store, reconciliation_store
+from omr_scanner.services import batch_store, reconciliation_store, set_attendance
 from omr_scanner.services.candidate_import import (
     CandidateImportError,
     save_sample_template,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from omr_scanner.domain.exam_sets import ExamSet
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import ProjectDatabase, ProjectSession
     from omr_scanner.services.reconciliation_store import RosterSummary
+    from omr_scanner.services.set_attendance import SetAttendanceStatus
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -91,6 +108,37 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "Scripts",
     "Recognised ID",
     "Review",
+)
+
+SET_COLUMNS: tuple[str, ...] = (
+    "Set",
+    "Description",
+    "Attendance file",
+    "Candidates",
+    "Result template",
+    "Status",
+)
+"""The per-Set table's columns.
+
+An item-based :class:`QTableWidget` on purpose: this table holds one row per
+Set an operator typed into *Project Configuration* - tens at the very most,
+where the brief's own upper example is "50+". The lazy model-view work the
+Scan page needed is for one row per *sheet*, up to a hundred thousand of them,
+and does not apply at this size."""
+
+NO_SETS_TEXT = (
+    "No sets are defined for this project yet. Attendance below applies to the "
+    "whole project.\n"
+    "To give each post or paper its own attendance file, define the sets in "
+    "File > Project Configuration..."
+)
+
+NO_ATTENDANCE_CELL = "None assigned"
+
+UNASSIGNED_ROSTER_TEXT = (
+    "This project has a candidate list from before attendance was per-set. It "
+    "has deliberately not been attached to any set - choose which set it "
+    "belongs to, or import a fresh list for each set."
 )
 
 _STATUS_FILTERS: tuple[tuple[str, tuple[ReconciliationStatus, ...]], ...] = (
@@ -115,13 +163,42 @@ _RESOLUTION_FILTERS: tuple[tuple[str, tuple[ResolutionState, ...]], ...] = (
 
 @dataclass
 class AttendancePageState:
-    """Everything the page is currently looking at."""
+    """Everything the page is currently looking at.
+
+    Attributes:
+        session: The open project, or ``None``.
+        sets: Every defined set's attendance state, in the operator's order.
+            Empty for a project that has not defined any, which is a
+            supported way to work - see the module docstring.
+        selected_set_id: Which set the reconciliation below belongs to.
+            ``None`` means the project's unscoped list, never "whichever set
+            happened to be imported last": the two are different rosters in
+            the database and are never interchanged.
+        roster: The selected set's candidate list, or ``None`` when it has
+            none. **Never another set's**, which is the whole point of
+            resolving it through :attr:`selected_set_id`.
+    """
 
     session: ProjectSession | None = None
+    sets: tuple[SetAttendanceStatus, ...] = ()
+    selected_set_id: str | None = None
     roster: RosterSummary | None = None
     batch_id: str | None = None
     operator: str = ""
     entries: list[ReconciliationEntry] = field(default_factory=list)
+
+    @property
+    def has_sets(self) -> bool:
+        """Whether this project defines any sets at all."""
+        return bool(self.sets)
+
+    def status_for(self, set_id: str | None) -> SetAttendanceStatus | None:
+        """The status row for one set id, if it is still in the list."""
+        if set_id is None:
+            return None
+        return next(
+            (item for item in self.sets if item.exam_set.set_id == set_id), None
+        )
 
 
 class AttendancePage(WorkflowPage):
@@ -139,6 +216,12 @@ class AttendancePage(WorkflowPage):
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.state = AttendancePageState()
+        self.last_template_blocker = ""
+        """Why the last assigned file did not become the set's result template.
+
+        Empty when it did, or when nothing has been assigned. Set by
+        :meth:`commit_roster` and shown by :meth:`import_from`, which is the
+        method that owns dialogs."""
         self._worker: ReconcileWorker | None = None
         # Every worker ever started. A QThread garbage-collected - or whose
         # parent is destroyed - while still running aborts the process, so a
@@ -162,24 +245,75 @@ class AttendancePage(WorkflowPage):
     # Construction
     # ------------------------------------------------------------------
     def _build_roster_bar(self) -> QWidget:
-        """The active candidate list, and the three commands that change it."""
-        box = QGroupBox("Candidate list")
+        """The exam, one row per Set, and the commands that change them."""
+        box = QGroupBox("Attendance by set")
         box.setObjectName("candidateRosterBox")
-        layout = QHBoxLayout(box)
+        layout = QVBoxLayout(box)
+
+        self.exam_label = QLabel("")
+        self.exam_label.setObjectName("attendanceExamNameLabel")
+        self.exam_label.setWordWrap(True)
+        self.exam_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.exam_label)
+
+        self.no_sets_label = QLabel(NO_SETS_TEXT)
+        self.no_sets_label.setObjectName("attendanceNoSetsLabel")
+        self.no_sets_label.setWordWrap(True)
+        layout.addWidget(self.no_sets_label)
+
+        self.set_table = QTableWidget(0, len(SET_COLUMNS))
+        self.set_table.setObjectName("setAttendanceTable")
+        self.set_table.setHorizontalHeaderLabels(list(SET_COLUMNS))
+        self.set_table.verticalHeader().setVisible(False)
+        self.set_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.set_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.set_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.set_table.setAlternatingRowColors(True)
+        self.set_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.set_table.horizontalHeader().setStretchLastSection(True)
+        self.set_table.setMaximumHeight(180)
+        self.set_table.itemSelectionChanged.connect(self._on_set_selection_changed)
+        layout.addWidget(self.set_table)
 
         self.roster_label = QLabel("No candidate list imported")
         self.roster_label.setObjectName("activeRosterLabel")
         self.roster_label.setWordWrap(True)
-        layout.addWidget(self.roster_label, stretch=1)
+        layout.addWidget(self.roster_label)
 
-        self.import_button = QPushButton(load_icon("file-plus"), "Import Candidate List...")
+        self.unassigned_label = QLabel(UNASSIGNED_ROSTER_TEXT)
+        self.unassigned_label.setObjectName("unassignedRosterLabel")
+        self.unassigned_label.setWordWrap(True)
+        self.unassigned_label.setStyleSheet("color: #a4262c;")
+        self.unassigned_label.setVisible(False)
+        layout.addWidget(self.unassigned_label)
+
+        buttons = QHBoxLayout()
+        self.import_button = QPushButton(
+            load_icon("file-plus"), "Choose / Replace Attendance File..."
+        )
         self.import_button.setObjectName("importRosterButton")
         self.import_button.setToolTip(
-            "Import candidates and attendance from a CSV file or an Excel "
-            "workbook."
+            "Import candidates and attendance for the selected set, from a CSV "
+            "file or an Excel workbook. An Excel workbook also becomes that "
+            "set's result template."
         )
         self.import_button.clicked.connect(self.prompt_import)
-        layout.addWidget(self.import_button)
+        buttons.addWidget(self.import_button)
+
+        self.assign_existing_button = QPushButton("Assign Existing List To Set...")
+        self.assign_existing_button.setObjectName("assignExistingRosterButton")
+        self.assign_existing_button.setToolTip(
+            "Attach the project's pre-existing candidate list to the selected "
+            "set. Nothing is attached automatically, because nothing in the "
+            "old data says which set it was for."
+        )
+        self.assign_existing_button.clicked.connect(self.assign_existing_roster)
+        self.assign_existing_button.setVisible(False)
+        buttons.addWidget(self.assign_existing_button)
 
         self.sample_button = QPushButton(load_icon("save"), "Download Sample Template...")
         self.sample_button.setObjectName("downloadSampleTemplateButton")
@@ -189,15 +323,19 @@ class AttendancePage(WorkflowPage):
             "you map the columns when you import."
         )
         self.sample_button.clicked.connect(self.prompt_save_sample)
-        layout.addWidget(self.sample_button)
+        buttons.addWidget(self.sample_button)
+
+        buttons.addStretch(1)
 
         self.reconcile_button = QPushButton(load_icon("rotate-ccw"), "Reconcile")
         self.reconcile_button.setObjectName("reconcileButton")
         self.reconcile_button.setToolTip(
-            "Match the scripts in the current batch against the candidate list."
+            "Match the scripts in the current batch against the selected set's "
+            "candidate list."
         )
         self.reconcile_button.clicked.connect(self.reconcile)
-        layout.addWidget(self.reconcile_button)
+        buttons.addWidget(self.reconcile_button)
+        layout.addLayout(buttons)
         return box
 
     def _build_summary(self) -> QWidget:
@@ -375,15 +513,198 @@ class AttendancePage(WorkflowPage):
     def on_project_changed(self, session: ProjectSession | None) -> None:
         """Adopt an opened project, or clear everything when one closes."""
         self.state.session = session
+        self.state.sets = ()
+        self.state.selected_set_id = None
         self.state.roster = None
         self.state.batch_id = None
         self.state.entries = []
         if session is not None:
-            self.state.roster = reconciliation_store.active_roster(session.database)
             self.state.batch_id = self._latest_batch()
-        self._refresh_roster_label()
+        self.refresh_sets()
         self.refresh_table()
         self._update_enabled()
+
+    # ------------------------------------------------------------------
+    # Sets
+    # ------------------------------------------------------------------
+    def refresh_sets(self) -> tuple[SetAttendanceStatus, ...]:
+        """Re-read every set's attendance state and rebuild the set table.
+
+        Returns:
+            The statuses, so a test can assert against the data rather than
+            re-reading it off the widgets.
+
+        The previously selected set is kept **by id**: a set may have been
+        renamed, reordered or removed since, and a remembered row index would
+        silently move the reconciliation below onto somebody else's
+        candidates.
+        """
+        database = self.database
+        wanted = self.state.selected_set_id
+        self.state.sets = (
+            set_attendance.attendance_overview(database) if database is not None else ()
+        )
+        self._rebuild_set_table()
+
+        if self.state.has_sets:
+            chosen = wanted if self.state.status_for(wanted) is not None else None
+            if chosen is None:
+                chosen = self.state.sets[0].exam_set.set_id
+            self.select_set(chosen)
+        else:
+            # No sets defined: attendance is the project's unscoped list.
+            self.state.selected_set_id = None
+            self._adopt_selected_roster()
+
+        self._refresh_unassigned_banner()
+        return self.state.sets
+
+    def _rebuild_set_table(self) -> None:
+        """Fill the set table from :attr:`AttendancePageState.sets`."""
+        session = self.state.session
+        self.exam_label.setText(
+            f"<b>Exam:</b> {session.exam_name}" if session is not None else ""
+        )
+        self.no_sets_label.setVisible(session is not None and not self.state.has_sets)
+        self.set_table.setVisible(self.state.has_sets)
+
+        self.set_table.blockSignals(True)
+        self.set_table.setRowCount(len(self.state.sets))
+        for row, status in enumerate(self.state.sets):
+            values = (
+                status.exam_set.display_label,
+                status.exam_set.description,
+                status.attendance_file or NO_ATTENDANCE_CELL,
+                str(status.candidate_count) if status.has_attendance else "",
+                status.template_file or "",
+                status.describe(),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    # The stable identity travels with the row, so no action
+                    # ever has to infer which set it means from a position.
+                    item.setData(Qt.ItemDataRole.UserRole, status.exam_set.set_id)
+                    item.setToolTip(f"Internal id: {status.exam_set.set_id}")
+                if column == 2 and not status.has_attendance:
+                    item.setToolTip(
+                        "This set has no attendance file. Choose one for it - "
+                        "another set's file is never used in its place."
+                    )
+                if column == 5 and status.template_blocker:
+                    item.setToolTip(status.template_blocker)
+                self.set_table.setItem(row, column, item)
+        self.set_table.blockSignals(False)
+
+    def selected_set(self) -> ExamSet | None:
+        """The set whose attendance the page is showing, or ``None``.
+
+        ``None`` for a project with no sets defined, where attendance is the
+        project's own unscoped list.
+        """
+        status = self.state.status_for(self.state.selected_set_id)
+        return status.exam_set if status is not None else None
+
+    def selected_set_status(self) -> SetAttendanceStatus | None:
+        """The selected set's attendance state, or ``None``."""
+        return self.state.status_for(self.state.selected_set_id)
+
+    def select_set(self, set_id: str) -> bool:
+        """Show one set's attendance and reconciliation. No dialog.
+
+        Returns:
+            Whether that set is in the current list.
+        """
+        for row, status in enumerate(self.state.sets):
+            if status.exam_set.set_id == set_id:
+                self.state.selected_set_id = set_id
+                # Re-adopted unconditionally, not only when the *id* changes:
+                # importing a file for the set already selected changes that
+                # set's roster without changing which set is selected, and a
+                # change-guard here left `state.roster` holding the state
+                # from before the import - so reconciliation found no roster
+                # and the replace-confirmation had nothing to warn about.
+                self._adopt_selected_roster()
+                self.set_table.blockSignals(True)
+                self.set_table.selectRow(row)
+                self.set_table.blockSignals(False)
+                return True
+        return False
+
+    def _on_set_selection_changed(self) -> None:
+        """Adopt whichever set the operator clicked."""
+        row = self.set_table.currentRow()
+        if not 0 <= row < len(self.state.sets):
+            return
+        set_id = self.state.sets[row].exam_set.set_id
+        if set_id == self.state.selected_set_id:
+            return
+        self.state.selected_set_id = set_id
+        self._adopt_selected_roster()
+        self.refresh_table()
+        self._update_enabled()
+
+    def _adopt_selected_roster(self) -> None:
+        """Point the page at the selected set's candidate list.
+
+        Resolved through :func:`~omr_scanner.services.reconciliation_store.active_roster`
+        with the set's own id, which returns ``None`` rather than falling back
+        to another set's list - the refusal §15 requires, expressed where it
+        cannot be forgotten.
+        """
+        status = self.state.status_for(self.state.selected_set_id)
+        if status is not None:
+            self.state.roster = status.roster
+        else:
+            database = self.database
+            self.state.roster = (
+                reconciliation_store.active_roster(database, None)
+                if database is not None
+                else None
+            )
+        self._refresh_roster_label()
+
+    def _refresh_unassigned_banner(self) -> None:
+        """Offer a pre-Part-2 list for explicit assignment, never silently."""
+        database = self.database
+        pending = (
+            reconciliation_store.unassigned_rosters(database)
+            if database is not None and self.state.has_sets
+            else ()
+        )
+        show = bool(pending)
+        self.unassigned_label.setVisible(show)
+        self.assign_existing_button.setVisible(show)
+
+    def assign_existing_roster(self) -> bool:
+        """Attach the project's unscoped candidate list to the selected set.
+
+        The explicit resolution §29 asks for. Nothing is attached
+        automatically: an old project's single list says nothing about which
+        of several sets it was meant for, and guessing would hand one set's
+        candidates to another.
+        """
+        database = self.database
+        exam_set = self.selected_set()
+        if database is None or exam_set is None:
+            return False
+        pending = reconciliation_store.unassigned_rosters(database)
+        if not pending:
+            return False
+        try:
+            reconciliation_store.assign_roster_to_set(
+                database, pending[0].roster_id, exam_set.set_id
+            )
+        except OMRScannerError as exc:
+            QMessageBox.warning(
+                self, "Candidate list not assigned", exc.user_message or str(exc)
+            )
+            return False
+        self.refresh_sets()
+        self.refresh_table()
+        self._update_enabled()
+        self.roster_imported.emit(pending[0].roster_id)
+        return True
 
     @property
     def database(self) -> ProjectDatabase | None:
@@ -460,10 +781,16 @@ class AttendancePage(WorkflowPage):
     # Import
     # ------------------------------------------------------------------
     def prompt_import(self) -> None:
-        """Ask for a candidate list, then open the mapping dialog."""
+        """Ask for a candidate list for the selected set, then map its columns."""
+        exam_set = self.selected_set()
+        title = (
+            f"Choose Attendance File for {exam_set.display_label}"
+            if exam_set is not None
+            else "Import Candidate List"
+        )
         chosen, _ = QFileDialog.getOpenFileName(
             self,
-            "Import Candidate List",
+            title,
             "",
             "Candidate lists (*.csv *.xlsx);;CSV (*.csv);;Excel Workbook (*.xlsx)",
         )
@@ -472,7 +799,13 @@ class AttendancePage(WorkflowPage):
         self.import_from(Path(chosen))
 
     def import_from(self, path: Path) -> bool:
-        """Open the mapping dialog for ``path`` and import what it confirms."""
+        """Open the mapping dialog for ``path`` and import what it confirms.
+
+        The file is imported **for the selected set**, or for the project as a
+        whole when no sets are defined. It is never imported "generally" and
+        then attached afterwards, because a roster with no set is a different
+        record from a roster with one.
+        """
         if not self._confirm_replacement():
             return False
         dialog = RosterImportDialog(path, self)
@@ -481,43 +814,104 @@ class AttendancePage(WorkflowPage):
         validation = dialog.validation
         if validation is None:
             return False
-        return self.commit_roster(validation)
+        stored = self.commit_roster(validation, source_path=path)
+        # The modal lives here, in the dialog-owning method, rather than in
+        # `commit_roster` - which a test calls directly, and which would
+        # otherwise raise a message box on every ordinary CSV import.
+        if stored and self.last_template_blocker:
+            QMessageBox.information(
+                self, "Result template not set", self.last_template_blocker
+            )
+        return stored
 
     def _confirm_replacement(self) -> bool:
-        """Warn before a second roster supersedes the active one."""
+        """Warn before a second roster supersedes the selected set's."""
         if self.state.roster is None:
             return True
+        exam_set = self.selected_set()
+        whose = (
+            f"{exam_set.display_label} already uses"
+            if exam_set is not None
+            else "This project already uses"
+        )
+        scope = (
+            "this set's active one" if exam_set is not None else "the active one"
+        )
         answer = QMessageBox.question(
             self,
             "Replace the candidate list?",
-            f"This project already uses '{self.state.roster.source_name}' "
+            f"{whose} '{self.state.roster.source_name}' "
             f"({self.state.roster.candidate_count} candidates).\n\n"
-            "Importing another list makes it the active one and reconciliation "
+            f"Importing another list makes it {scope} and reconciliation "
             "is recomputed against it. The existing list and every decision "
-            "already recorded are kept, not merged or deleted.\n\n"
-            "Continue?",
+            "already recorded are kept, not merged or deleted."
+            + (
+                "\n\nNo other set is affected."
+                if exam_set is not None
+                else ""
+            )
+            + "\n\nContinue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         return answer is QMessageBox.StandardButton.Yes
 
-    def commit_roster(self, validation: object) -> bool:
-        """Store a validated roster and reconcile against it."""
+    def commit_roster(self, validation: object, source_path: Path | None = None) -> bool:
+        """Store a validated roster for the selected set and reconcile.
+
+        Args:
+            validation: The confirmed
+                :class:`~omr_scanner.services.candidate_import.RosterValidation`.
+            source_path: The file it was read from. Supplying it is what lets
+                an ``.xlsx`` also become the set's result template - the whole
+                point of §5 - so the import path always does; a caller that
+                only has a validation still imports the candidates.
+
+        Returns:
+            Whether it was stored.
+        """
         database = self.database
         if database is None:
             return False
+        exam_set = self.selected_set()
         try:
-            roster_id = reconciliation_store.import_roster(
-                database, validation, imported_by=self.state.operator  # type: ignore[arg-type]
-            )
+            if exam_set is not None and source_path is not None:
+                assignment = set_attendance.assign_attendance_workbook(
+                    database,
+                    exam_set.set_id,
+                    source_path,
+                    validation,  # type: ignore[arg-type]
+                    imported_by=self.state.operator,
+                )
+                roster_id = assignment.roster_id
+                blocker = assignment.template_blocker
+            else:
+                roster_id = reconciliation_store.import_roster(
+                    database,
+                    validation,  # type: ignore[arg-type]
+                    imported_by=self.state.operator,
+                    set_id=exam_set.set_id if exam_set is not None else None,
+                )
+                blocker = ""
         except OMRScannerError as exc:
             QMessageBox.warning(
                 self, "Candidate list not imported", exc.user_message or str(exc)
             )
             return False
-        self.state.roster = reconciliation_store.active_roster(database)
-        self._refresh_roster_label()
+
+        self.refresh_sets()
+        if exam_set is not None:
+            self.select_set(exam_set.set_id)
         self._update_enabled()
+        # Recorded, not shown in a modal. A CSV *always* produces a blocker
+        # (it has no layout to build a result on), so a message box here
+        # would fire on the ordinary happy path - and, being modal inside a
+        # method tests call directly, would hang a headless run. The
+        # dialog-owning `import_from` shows it; everything else reads it
+        # from here or from the set table's own Result template column.
+        self.last_template_blocker = blocker
+        if blocker:
+            self.roster_label.setText(blocker)
         self.roster_imported.emit(roster_id)
         self.reconcile()
         return True
@@ -961,11 +1355,18 @@ class AttendancePage(WorkflowPage):
     # Enablement
     # ------------------------------------------------------------------
     def _refresh_roster_label(self) -> None:
-        """Say which candidate list is in force."""
+        """Say which candidate list is in force, and whose it is."""
         roster = self.state.roster
+        exam_set = self.selected_set()
+        whose = f"{exam_set.display_label}: " if exam_set is not None else ""
         if roster is None:
+            # §15, in the one sentence an operator reads: this set has none,
+            # and no other set's file stands in for it.
             self.roster_label.setText(
-                "No candidate list imported. Import one to reconcile the "
+                f"{whose}no candidate list imported. Choose an attendance file "
+                "for this set to reconcile its scripts against."
+                if exam_set is not None
+                else "No candidate list imported. Import one to reconcile the "
                 "scripts against it."
             )
             return
@@ -976,7 +1377,7 @@ class AttendancePage(WorkflowPage):
             else " · no attendance column mapped"
         )
         self.roster_label.setText(
-            f"<b>{roster.source_name}</b>"
+            f"{whose}<b>{roster.source_name}</b>"
             + (f" ({roster.source_sheet})" if roster.source_sheet else "")
             + f" · {roster.candidate_count} candidate(s){attendance}"
         )
@@ -997,13 +1398,19 @@ class AttendancePage(WorkflowPage):
 
     def _update_enabled(self) -> None:
         """Enable only what the current state allows."""
+        session = self.state.session
         has_project = self.database is not None
+        writable = has_project and not (session is not None and session.read_only)
         has_roster = self.state.roster is not None
         entry = self._selected_entry()
         has_scripts = bool(entry and entry.scripts)
         registered = bool(entry and entry.is_registered)
 
-        self.import_button.setEnabled(has_project)
+        # A project with sets needs one selected before a file can be chosen
+        # for it - there is deliberately no "import for whichever set" path.
+        can_choose = writable and (not self.state.has_sets or self.selected_set() is not None)
+        self.import_button.setEnabled(can_choose)
+        self.assign_existing_button.setEnabled(can_choose)
         self.reconcile_button.setEnabled(has_project and has_roster)
         self.assign_button.setEnabled(has_scripts)
         self.assign_edit.setEnabled(has_scripts)

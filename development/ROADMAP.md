@@ -481,18 +481,35 @@ foreign key to `project_set`; the join is made *possible*, not made.
 `tests/gui/test_project_config_dialog.py` (40), plus one end-to-end check in
 the `qtguitesting` smoke suite.
 
-### Part 2 - Attendance per set - *not started*
+### Part 2 - Per-set attendance and set-aware reporting - *implemented, synthetic testing only*
 
-**Purpose.** Assign one attendance workbook per set and import attendance per
-set, rather than once per project.
+**Purpose.** One attendance workbook per set; that workbook becomes the set's
+result template; a rollwise result built on it; a `meritwise` sheet copied
+from the completed rollwise sheet with absentees removed and the rest ordered
+by merit.
 
-**Depends on.** Part 1's stable `set_id`, which attendance records will
-reference.
+**Delivered.**
+- `candidate_roster.set_id` (migration 9) makes attendance per-set, and with
+  it every candidate, reconciliation entry and stored mark - all of which were
+  already keyed by `roster_id` - without touching those tables.
+- `report_template_association.set_id`/`source_kind` bind a result template to
+  a set and record whether it arrived as that set's attendance workbook.
+- `services/set_attendance.py` is the single place a set, its attendance file
+  and its result template are bound together.
+- `report_store.generate_for_set` resolves a set's own roster and own template
+  and refuses - naming the set - if either is missing.
+- `reporting/excel.build_meritwise_from_rollwise` copies the completed
+  rollwise sheet, restores the attributes `copy_worksheet` drops, re-attaches
+  images, removes absentees and reorders by merit.
+- `candidate_import` gained a scored header search, so an attendance workbook
+  with an institution title above the table can be imported at all.
+- Pillow became a dependency: without it openpyxl silently destroys a
+  workbook's images on save.
 
-### Part 3 - Set-aware reporting - *not started*
+**Deliberately excluded.** Recognition, calibration, batch processing,
+conflict resolution and the scoring engine are unchanged. `set_code` remains
+the machine-readable key throughout Phases 8-9; `project_set` is the explicit
+mapping to the persistent `set_id` rather than string matching spread around.
 
-**Purpose.** Reports that inherit the attendance workbook's layout; roll-wise
-sheets generated from attendance templates; merit-wise sheets per set, with
-absent rows removed from merit-wise output.
-
-**Depends on.** Part 2.
+**Still pending.** Real-data validation: no real attendance workbook and no
+real scanned cohort has been processed end to end.
