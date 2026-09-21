@@ -83,6 +83,18 @@ additionally adds the release infrastructure itself:
 - **Release scripts** under `scripts/release/`: build, installer, checksums,
   packaged-application smoke test, installer round-trip test and release
   verification.
+- **Self-containment verification.** `packaging/audit_dependencies.py` parses
+  the PE import tables of every binary in the bundle and reports any DLL that
+  would not resolve on a fresh machine, and
+  `scripts/release/Test-SelfContained.ps1` installs the release installer and
+  launches it with no Python on the `PATH` and every `PYTHON*`/`QT*`
+  environment variable cleared. Both are substitutes for the clean-machine
+  test, not replacements for it, and say so when they pass.
+- **Windows Sandbox scaffolding** in `packaging/sandbox/`, so the
+  clean-machine test is one command on a host that has Sandbox enabled. The
+  payload it stages is the installer and its checksum only — never the source
+  tree, since an importable source tree is one of the defects that test
+  exists to catch.
 - **SHA-256 checksums** for release artifacts, which matter more than usual
   because Alpha installers are unsigned.
 - **Documentation** reorganised into `docs/wiki/`, with an installation
@@ -119,6 +131,12 @@ affect an Alpha evaluation:
 - **Clean-machine installation has not been verified.** The installer has
   been installed, launched and uninstalled successfully on the development
   machine; a machine with no Python and no build tools has not been tested.
+  A substitute was run and passed — a static import audit of every binary in
+  the bundle (0 unresolved DLL imports, Visual C++ runtime bundled) and a
+  launch of the installed application with no Python on the `PATH` and the
+  `PYTHON*`/`QT*` environment variables cleared. That rules out the two most
+  common packaging defects but is not the same test; see
+  `docs/release/CLEAN_MACHINE_TEST.md`.
 - **No lazy table models for Results, Resolve and Attendance.** The backend
   handles 100,000 rows; those three *displays* have not been optimised for
   it.

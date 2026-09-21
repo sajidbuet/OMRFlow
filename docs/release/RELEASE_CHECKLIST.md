@@ -63,8 +63,15 @@ The commands are in [Release Process](../wiki/Release-Process.md).
 - [ ] `.\scripts\release\New-Checksums.ps1` — `SHA256SUMS.txt` written
 - [ ] `.\scripts\release\Invoke-ReleaseVerification.ps1` — all checks pass
 - [ ] **Clean-machine test** — [`CLEAN_MACHINE_TEST.md`](CLEAN_MACHINE_TEST.md).
-      Required for every channel. If it genuinely cannot be run, say so
-      explicitly in the release notes rather than leaving it ambiguous
+      Required for every channel. In Windows Sandbox:
+      `.\packaging\sandbox\New-SandboxPayload.ps1 -Launch`. If it genuinely
+      cannot be run, say so explicitly in the release notes rather than
+      leaving it ambiguous
+- [ ] If the clean-machine test could not be run, the substitutes were:
+      `python packaging\audit_dependencies.py dist\OMRFlow` — 0 unresolved
+      imports, and `.\scripts\release\Test-SelfContained.ps1` — all checks
+      pass. **Passing these is not a clean-machine pass**; record the
+      clean-machine test as *not performed*
 - [ ] **[not blocking for Alpha]** Installer is code-signed
 - [ ] Accessibility checklist reviewed —
       [`ACCESSIBILITY_CHECKLIST.md`](ACCESSIBILITY_CHECKLIST.md). *Initial* is

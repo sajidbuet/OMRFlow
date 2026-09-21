@@ -133,7 +133,9 @@ try {
     Write-Host 'Still to do by hand - these need a desktop and cannot run here:' -ForegroundColor Yellow
     Write-Host '  .\scripts\release\Test-PackagedApp.ps1          launch the built bundle'
     Write-Host '  .\scripts\release\Test-InstallerRoundTrip.ps1   install, launch, uninstall'
-    Write-Host '  docs\release\CLEAN_MACHINE_TEST.md              a machine without Python'
+    Write-Host '  .\scripts\release\Test-SelfContained.ps1        launch with no Python on the PATH'
+    Write-Host '  .\packaging\sandbox\New-SandboxPayload.ps1      the clean-machine test, in Windows Sandbox'
+    Write-Host '  docs\release\CLEAN_MACHINE_TEST.md              what that test requires, and its manual steps'
     Write-Host ''
     Write-Host 'Then work through docs\release\RELEASE_CHECKLIST.md.'
     exit 0

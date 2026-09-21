@@ -96,8 +96,20 @@ for external evaluation while production qualification remains incomplete.
 
 - 🟠 **Clean-machine installation.** Every installer test so far ran on the
   machine that built it, which has a Python development environment. The
-  procedure is written (`docs/release/CLEAN_MACHINE_TEST.md`) and has not
-  been executed.
+  procedure is written (`docs/release/CLEAN_MACHINE_TEST.md`) and has **not**
+  been executed — no clean machine was available, and enabling Windows
+  Sandbox needs administrator rights and a reboot. Ready-to-run scaffolding
+  is in `packaging/sandbox/`, so the test is one command once Sandbox is
+  enabled.
+
+  A substitute was run and passed: a static PE import audit of all 162
+  binaries in the bundle (0 unresolved imports; the Visual C++ runtime is
+  bundled, not borrowed from `System32`) and a sanitised-environment launch
+  of the installed application with no Python on the `PATH` and every
+  `PYTHON*`/`QT*` variable cleared (13/13 checks). It rules out the two most
+  common packaging defects; it does **not** substitute for a fresh Windows
+  install, because a DLL that a developer tool left in `System32` is
+  indistinguishable from one Windows ships.
 - 🟠 **Windows 10.** Built and tested on Windows 11.
 - ⚪ **Code signing.** Not configured; SmartScreen warns. A Phase 11C item.
 

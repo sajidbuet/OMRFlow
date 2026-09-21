@@ -501,8 +501,14 @@ published checksums; the full automated suite passes.
 **11A not yet verified.** Clean-machine installation - every installer test
 so far ran on the machine that built it, which has a development
 environment. The procedure is written
-(`docs/release/CLEAN_MACHINE_TEST.md`) and has not been executed. Windows 10
-is untested; the installer is unsigned.
+(`docs/release/CLEAN_MACHINE_TEST.md`) and has not been executed: no clean
+machine was available, and enabling Windows Sandbox needs administrator
+rights and a reboot. Scaffolding is staged in `packaging/sandbox/` so the
+test is one command once it is. A substitute passed - a static PE import
+audit of the bundle (0 unresolved imports, VC++ runtime bundled) and a
+sanitised-environment launch with no Python on the `PATH` (13/13) - which
+rules out the commonest packaging defects without proving self-containment.
+Windows 10 is untested; the installer is unsigned.
 
 **Exit criteria.** A non-developer can install OMRFlow and complete an
 examination following the user guide alone - reached in stages, as each

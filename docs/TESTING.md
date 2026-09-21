@@ -927,3 +927,38 @@ GUI session**, not by any assertion - the geometry was correct, and it was the
 scroll area that was wrong. `test_only_the_compact_layout_can_ever_scroll` and
 `test_the_steps_are_never_vertically_clipped` exist now, but the lesson is the
 general one: a shell change needs a real, rendered look as well as a suite.
+
+## Testing the release infrastructure (Phase 11A)
+
+| Module | Covers |
+|---|---|
+| `tests/unit/test_version.py` | The version: written down once, valid under both SemVer and PEP 440 simultaneously, the release channel *derived* from it rather than configured beside it, and the package and the packaging metadata agreeing. A prerelease build says so everywhere it identifies itself. |
+| `tests/unit/test_dependency_audit.py` | The bundle's dependency audit: the PE import parser against a real executable and against malformed input, classification into bundled / satisfied-by-Windows / unresolved, and the exit code a release is gated on. |
+
+### Why the audit is tested rather than trusted
+
+`packaging/audit_dependencies.py` is the substitute for a clean machine when
+one is unavailable, so its failure mode matters more than its success. An
+audit that quietly under-reports puts a green tick beside a build that cannot
+start on a tester's computer, which is worse than having no audit at all.
+
+The tests therefore assert **detection**, not agreement: a synthetic bundle
+with an unresolved import must exit 1, and a bundle that imports the Visual
+C++ runtime without shipping it must exit 1 as well. Running the audit
+against the real bundle and seeing it pass proves nothing about either.
+
+The `msvcrt.dll` case has its own test. It matches the runtime prefixes but
+is part of Windows and must not be redistributed, so it was reported as a
+risk on every build until it was excluded. An audit that always complains is
+one nobody reads, which is how a genuine unresolved import gets missed - and
+`test_the_excluded_os_components_are_genuinely_part_of_windows` keeps the
+exclusion list from becoming a place to hide inconvenient results.
+
+### What no test here can establish
+
+That the build is self-contained. A dependency loaded at run time through
+`ctypes` or `LoadLibrary` appears in no import table, and a DLL sitting in
+`System32` because a developer tool put it there is indistinguishable, on
+this machine, from one Windows ships. Only a fresh Windows install settles
+it: `docs/release/CLEAN_MACHINE_TEST.md`, with the Windows Sandbox
+scaffolding in `packaging/sandbox/`.

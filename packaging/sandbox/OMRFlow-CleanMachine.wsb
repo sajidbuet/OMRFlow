@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows Sandbox configuration for the clean-machine installation test.
+
+  Windows Sandbox starts from a pristine Windows image every time: no Python,
+  no Qt, no Visual C++ build tools, no OMRFlow source. That is exactly the
+  environment docs/release/CLEAN_MACHINE_TEST.md requires, and it removes the
+  "was it really clean?" doubt that a reused virtual machine leaves behind.
+
+  Usage
+      1. Build the installer:   .\scripts\release\Build-Installer.ps1
+      2. Run:                   .\packaging\sandbox\New-SandboxPayload.ps1 -Launch
+
+  Do not launch this file directly. Step 2 stages the payload and writes
+  OMRFlow-CleanMachine.generated.wsb beside it with the <HostFolder> path
+  resolved to an absolute one, because whether Sandbox accepts a relative
+  <HostFolder> depends on the Windows build. The generated file is the one
+  that gets launched; this one is the version-controlled template.
+
+  The payload folder is mapped READ-ONLY, so nothing the test does can reach
+  back into the repository. Step 2 stages only the installer and the checksum
+  file into it - deliberately not the source tree, because an importable
+  source tree is one of the two defects this test exists to catch.
+
+  Networking is disabled: OMRFlow must work with no network at all (there is
+  no telemetry and no cloud upload), and a sandbox with no network cannot
+  quietly download a missing runtime and mask a packaging defect.
+-->
+<Configuration>
+  <VGpu>Enable</VGpu>
+  <Networking>Disable</Networking>
+
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>.\payload</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\OMRFlow</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\WDAGUtilityAccount\Desktop\OMRFlow\Start-CleanMachineTest.ps1</Command>
+  </LogonCommand>
+
+  <MemoryInMB>8192</MemoryInMB>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ClipboardRedirection>Enable</ClipboardRedirection>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <ProtectedClient>Disable</ProtectedClient>
+</Configuration>

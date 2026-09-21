@@ -56,15 +56,23 @@ print(json.dumps({
 }))
 '@
 
+# Via a temporary file rather than `python -c`: Windows PowerShell 5.1 and
+# PowerShell 7 quote native arguments differently, and 5.1 strips the quotes
+# from the embedded string literals, so the same -c snippet that works in one
+# host fails with a NameError in the other.
+$scriptFile = Join-Path ([System.IO.Path]::GetTempPath()) "omrflow-version-$PID.py"
+Set-Content -LiteralPath $scriptFile -Value $script -Encoding UTF8
+
 Push-Location $repositoryRoot
 try {
-    $json = & $Python -c $script
+    $json = & $Python $scriptFile
     if ($LASTEXITCODE -ne 0) {
         throw "Could not read the version using '$Python' (exit $LASTEXITCODE)."
     }
 }
 finally {
     Pop-Location
+    Remove-Item -LiteralPath $scriptFile -Force -ErrorAction SilentlyContinue
 }
 
 $json | ConvertFrom-Json

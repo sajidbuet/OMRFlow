@@ -6,6 +6,12 @@ build/
 dist/
 .eggs/
 
+# Release artefacts staged for the clean-machine test. The .wsb and the
+# scripts beside it are version-controlled; the installer copied in here is
+# a build output and must not be.
+packaging/sandbox/payload/
+packaging/sandbox/*.generated.wsb
+
 # Environments
 .venv/
 venv/

@@ -2,15 +2,23 @@
 
 > **Status for `0.1.0-alpha.1`: NOT PERFORMED.**
 >
-> Every installer test so far has run on the machine that built OMRFlow,
-> which has Python, PySide6, OpenCV and the build tooling installed. That
-> machine cannot prove the bundle is self-contained, because anything the
-> bundle forgot may still be found on the system.
+> The procedure below has **not** been executed. No clean machine was
+> available: Windows Sandbox is not installed on the build machine, and
+> enabling it needs administrator rights and a reboot.
 >
-> This procedure is written and has not been executed. It is recorded as
-> outstanding in [Known Limitations](../wiki/Known-Limitations.md) and is the
-> reason Phase 11A is *Implemented — clean-machine validation pending*
-> rather than complete.
+> A **substitute** was run instead, and passed — see
+> [What was run instead](#what-was-run-instead) below. It is a substitute,
+> not this test: it proves the build does not depend on Python, on the
+> source tree or on Qt environment variables, and it does not prove the
+> bundle is self-contained.
+>
+> This remains outstanding in
+> [Known Limitations](../wiki/Known-Limitations.md) and is the reason Phase
+> 11A is *Implemented — clean-machine validation pending* rather than
+> complete.
+>
+> **To run the real test:** enable Windows Sandbox, then
+> `.\packaging\sandbox\New-SandboxPayload.ps1 -Launch`.
 
 ## Why it cannot be skipped
 
@@ -38,6 +46,32 @@ with:
 
 Windows Sandbox is the cheapest option if the host has it: it is clean every
 time it starts, which removes the "was it really clean?" doubt.
+
+### Running it in Windows Sandbox
+
+The scaffolding is in the repository, so the test is two commands once
+Sandbox is enabled:
+
+```powershell
+.\scripts\release\Build-Installer.ps1          # if not already built
+.\scripts\release\New-Checksums.ps1
+.\packaging\sandbox\New-SandboxPayload.ps1 -Launch
+```
+
+`New-SandboxPayload.ps1` stages **only** the installer, `SHA256SUMS.txt` and
+the in-sandbox script into `packaging/sandbox/payload/` — deliberately no
+source tree, because an importable source tree is one of the two defects
+this test exists to catch. `OMRFlow-CleanMachine.wsb` maps that folder
+read-only, disables networking so a missing runtime cannot be quietly
+downloaded, and runs `Start-CleanMachineTest.ps1` on logon.
+
+That script performs the mechanical steps — confirming the sandbox really is
+clean, verifying the checksum, installing unprivileged, launching — and then
+prints the steps that need a person to look at the screen. It does not
+replace this procedure; the steps involving judgement stay manual.
+
+If Sandbox is unavailable, copy `packaging/sandbox/payload/` to a separate
+clean machine or fresh VM and run `Start-CleanMachineTest.ps1` there.
 
 ## Procedure
 
@@ -119,6 +153,80 @@ not a pass.
 36. [ ] Uninstall, and remove the leftover data by hand if the machine is
         being kept.
 
+## What was run instead
+
+On **2026-09-21**, for `0.1.0-alpha.1`, a clean machine was unavailable, so
+the strongest substitute that a development machine can offer was run and
+**passed**. Recorded here so the release's evidence is exactly what was
+executed, no more.
+
+### `packaging/audit_dependencies.py` — static import audit
+
+Parses the PE import and delay-import tables of every binary in the bundle
+and classifies each imported DLL as bundled, satisfied by Windows, or
+unresolved.
+
+| | |
+|---|---|
+| Binaries parsed | 162 |
+| Distinct imported DLLs | 127 |
+| Satisfied from the bundle | 76 |
+| Satisfied by Windows | 51 (46 of them non-API-set, all standard OS DLLs) |
+| **Unresolved** | **0** |
+| VC++ runtime | `msvcp140*`, `vcruntime140*` — **bundled**, not taken from `System32` |
+
+That last row is the classic clean-machine failure, and it is covered: the
+C/C++ runtime ships inside the bundle.
+
+### `scripts/release/Test-SelfContained.ps1` — sanitised-environment launch
+
+Installs the release installer into a scratch directory and launches what it
+installed with the environment a machine without a development toolchain
+would present: `PATH` reduced to the three Windows directories, and
+`PYTHONPATH`, `PYTHONHOME`, `VIRTUAL_ENV`, `CONDA_PREFIX`, `QT_PLUGIN_PATH`,
+`QT_QPA_PLATFORM_PLUGIN_PATH`, `QML*_IMPORT_PATH` and the rest cleared, from
+a working directory nowhere near the source tree.
+
+**All 13 checks passed:** the installer succeeded unprivileged; no Python
+interpreter is inside the installation; the application started with no
+Python on the `PATH`; the window appeared with the title `OMRFlow
+0.1.0-alpha.1`; it was responsive; it loaded its Qt platform plugin from the
+bundle; it closed with exit code 0; it wrote a log under the user profile
+during that run and wrote nothing into the installation directory; and it
+uninstalled.
+
+### What the substitute proves
+
+- ✅ No DLL named in any import table is missing.
+- ✅ The Visual C++ runtime is bundled rather than borrowed from the system.
+- ✅ The application does not need Python on the `PATH`, or a Python
+  installation at all.
+- ✅ It does not rely on `PYTHONPATH`/`PYTHONHOME`, or on the source tree
+  being importable.
+- ✅ It does not rely on Qt environment variables to find its plugins.
+- ✅ It does not rely on its working directory.
+
+### What it does not prove — why the real test is still required
+
+- ❌ **A DLL sitting in `System32` because a developer tool put it there** is
+  indistinguishable, on this machine, from one Windows ships. This is the
+  single biggest gap, and only a genuinely fresh Windows install closes it.
+- ❌ **Dependencies loaded at run time** — `ctypes`, `LoadLibrary`, a Qt
+  plugin discovered by path — appear in no import table and so in no audit.
+- ❌ **Code paths the launch did not reach.** Starting the window exercises
+  Qt, the imaging stack and the icon resources; it does not exercise
+  recognition, Excel generation or PDF rendering, any of which could need
+  something the bundle lacks.
+- ❌ **Everything a person has to look at**: SmartScreen's wording, the
+  licence page, the Alpha warning during installation, all nine stage icons
+  rendering, the About dialog, and the full end-to-end run through
+  recognition to a generated report.
+- ❌ **Data preservation across uninstall and reinstall** on a machine that
+  never had OMRFlow before.
+
+Accordingly the sign-off table below records **NOT PERFORMED**, and the
+release notes must say so rather than leaving it ambiguous.
+
 ## Recording the result
 
 Enter this in the release's sign-off table, and in the release notes'
@@ -135,6 +243,21 @@ Enter this in the release's sign-off table, and in the release notes'
 | Steps passed | of 36 |
 | Failures | |
 | Result | **PASS / FAIL / NOT PERFORMED** |
+
+### Recorded result for `0.1.0-alpha.1`
+
+| | |
+|---|---|
+| Date | 2026-09-21 |
+| Windows version | — (no clean machine available) |
+| Machine type | **none** — Windows Sandbox not installed; enabling it needs administrator rights and a reboot |
+| Administrator rights available | no |
+| Installer version tested | `OMRFlow-0.1.0-alpha.1-Setup-x64.exe` (on the build machine only) |
+| Checksum verified | yes, on the build machine |
+| Steps passed | **0 of 36** — this procedure was not executed |
+| Failures | none observed, because nothing was run |
+| Result | **NOT PERFORMED** |
+| Substitute run | `audit_dependencies.py` (0 unresolved imports) and `Test-SelfContained.ps1` (13/13) — both passed; see [What was run instead](#what-was-run-instead) |
 
 ## If it fails
 

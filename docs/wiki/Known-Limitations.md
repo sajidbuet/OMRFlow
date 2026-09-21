@@ -126,7 +126,7 @@ Closing this is the whole purpose of
 |---|---|
 | ✅ | Windows installer; install, launch and uninstall verified, with user data preserved |
 | ✅ | No Python needed on the target machine |
-| 🟠 | **Clean-machine installation has not been verified.** Every installer test so far ran on the machine that built it, which has a Python development environment. See [the procedure](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/CLEAN_MACHINE_TEST.md) |
+| 🟠 | **Clean-machine installation has not been verified.** Every installer test so far ran on the machine that built it, which has a Python development environment. A substitute passed — no unresolved DLL imports anywhere in the bundle, and the installed application launches with no Python on the `PATH` — but a genuinely fresh Windows install has not been used. See [the procedure](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/CLEAN_MACHINE_TEST.md) |
 | 🟠 | **Windows 10 has not been tested.** Built and tested on Windows 11; Windows 10 1809 is the floor the bundled runtime supports |
 | ⚪ | **The installer is unsigned**, so SmartScreen warns. Signing is a Phase 11C item |
 | ⚪ | Windows only. No macOS or Linux package |

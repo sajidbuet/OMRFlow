@@ -81,6 +81,10 @@ prerelease - a migration is applied in place and cannot be reversed.
 <!--
 State exactly what was run for THIS build. Do not claim a test that was not
 performed. "Not performed" is a valid and useful entry.
+
+The two substitute rows exist so that a build where the clean-machine test
+could not be run still shows what evidence there is. They do not upgrade
+"Clean-machine installation" to a pass - that row stays "Not performed".
 -->
 
 | Check | Status |
@@ -91,6 +95,8 @@ performed. "Not performed" is a valid and useful entry.
 | Packaged application smoke test | |
 | Installer install / launch / uninstall | |
 | Clean-machine installation | |
+| — substitute: bundle import audit | |
+| — substitute: sanitised-environment launch | |
 | Upgrade from the previous release | |
 | Real attendance workbook | |
 | Real scanned cohort | |

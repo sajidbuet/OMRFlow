@@ -117,6 +117,18 @@ Release notes start from
 
 Clean-machine validation is
 **[`docs/release/CLEAN_MACHINE_TEST.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/CLEAN_MACHINE_TEST.md)**.
+In Windows Sandbox it is one command:
+
+```powershell
+.\packaging\sandbox\New-SandboxPayload.ps1 -Launch
+```
+
+Where a clean machine is genuinely unavailable, the substitutes are
+`packaging/audit_dependencies.py` (a static PE import audit of the bundle)
+and `scripts/release/Test-SelfContained.ps1` (installs, then launches with
+no Python on the `PATH` and every `PYTHON*`/`QT*` variable cleared). Both
+must pass — but **passing them is not a clean-machine pass**, and the
+release notes must record the clean-machine test as *not performed*.
 
 ## Code signing
 
