@@ -13,13 +13,16 @@ OMR examination-processing systems:
 **ordinary image scanner + configurable template + transparent recognition +
 human verification + reproducible result processing**
 
-![The OMRFlow main window: a compact branded header, the nine-stage workflow
-navigator, and the Project dashboard with no project
-open](docs/images/omrflow-main-window.png)
+![The OMRFlow window cycling through its nine workflow stages: Project,
+Template, Calibrate, Scan, Resolve, Attendance, Answer Key, Results and
+Reports](docs/images/omrflow-workflow-stages.gif)
 
-*The nine examination stages run left to right across the top. The navigator
-reflows to two rows, then to a two-column grid, as the window narrows — see
-[The application shell and navigation](#the-application-shell-and-navigation).*
+*The nine examination stages, two seconds each. They run left to right across
+the top of the window; the navigator reflows to two rows, then to a
+two-column grid, as the window narrows — see
+[The application shell and navigation](#the-application-shell-and-navigation).
+Captured from a fresh project with the bundled example template loaded, so
+the later stages have nothing to show yet.*
 
 ---
 
@@ -136,6 +139,12 @@ phases currently in testing:
   and it is the single reason no phase after 2 is marked ✅.
 
 ### The application shell and navigation
+
+![The Project stage with no project open: the branded header, the nine-stage
+workflow navigator, the empty-state panel, and the Getting Started and Recent
+Projects cards](docs/images/omrflow-main-window.png)
+
+*The Project stage as the application opens.*
 
 *Implemented and tested; not yet validated against a real examination
 office's workflow.* The window is four bands — a compact branded header, the
