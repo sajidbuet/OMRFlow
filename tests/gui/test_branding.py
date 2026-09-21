@@ -1,10 +1,22 @@
-"""Tests for the OMR Flow logo, application icon and footer attribution.
+"""Tests for the OMRFlow logo, application icon and footer attribution.
 
 Scope:
-    Existence/wiring checks, not pixel-coordinate assertions - matching the
-    project's GUI testing policy (`docs/TESTING.md`). Visual placement
-    (bottom of the sidebar, no overlap, resize behaviour) was verified
-    manually; see the branding integration's completion reports.
+    Where the branding lives in the new application shell, that the wordmark
+    is never distorted, and that the footer states the build, the licence, the
+    credit and the status.
+
+    The shell this file used to describe had a fixed left sidebar with the
+    logo at its foot. That sidebar is gone: the wordmark is now in the compact
+    header, beside the application-menu button, and the footer is a real
+    status band rather than a centred credit line. The asset-loading tests
+    below are unchanged, because how an asset is *resolved* did not change -
+    only where it is shown.
+
+Policy:
+    Existence and relationship checks, not pixel coordinates - see
+    `docs/TESTING.md`. Where a coordinate is asserted it is a *relationship*
+    ("the navigator is directly below the header"), which is the property that
+    would actually regress.
 """
 
 from __future__ import annotations
@@ -15,12 +27,15 @@ from pathlib import Path
 import pytest
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtSvgWidgets import QSvgWidget
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication
 
+from omr_scanner import LICENSE_NAME, __version__
 from omr_scanner.config import AppConfig
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
-from omr_scanner.gui.main_window import DEVELOPER_URL, NAVIGATION_WIDTH, MainWindow
+from omr_scanner.gui.main_window import DEVELOPER_URL, MainWindow
+from omr_scanner.gui.theme import Header
+from omr_scanner.gui.widgets.status_footer import AppStatus
 
 pytestmark = pytest.mark.gui
 
@@ -70,65 +85,90 @@ class TestBrandingAssetLoading:
         assert application_icon() is application_icon()
 
 
-class TestLogoWidget:
-    def test_the_main_window_displays_the_logo_as_an_svg_widget(self, window: MainWindow):
-        assert isinstance(window.logo_widget, QSvgWidget)
+class TestLogoInTheHeader:
+    """The wordmark lives in the compact header, and is never stretched."""
 
-    def test_the_logo_widget_is_a_child_of_the_window(self, window: MainWindow):
-        assert window.isAncestorOf(window.logo_widget)
+    def test_the_logo_is_an_svg_widget(self, window: MainWindow):
+        assert isinstance(window.header.logo, QSvgWidget)
 
-    def test_the_logo_size_is_within_the_recommended_branding_range(self, window: MainWindow):
-        # "Approximately 100-160px wide" per the branding brief.
-        assert 90 <= window.logo_widget.width() <= 170
+    def test_the_logo_is_a_child_of_the_window(self, window: MainWindow):
+        assert window.isAncestorOf(window.header.logo)
 
     def test_the_logo_aspect_ratio_is_preserved_not_stretched(self, window: MainWindow):
-        size = window.logo_widget.size()
-        displayed_ratio = size.width() / size.height()
-        assert displayed_ratio == pytest.approx(LOGO_ASPECT_RATIO, rel=0.02)
+        """The one branding property that is not a matter of taste.
+
+        A wordmark stretched in either axis is wrong at any size, so the
+        displayed ratio is checked against the artwork's own measured ratio
+        rather than against a hard-coded width and height.
+        """
+        size = window.header.logo.size()
+        assert size.width() / size.height() == pytest.approx(LOGO_ASPECT_RATIO, rel=0.02)
+
+    def test_the_logo_is_rendered_as_a_vector_for_high_dpi(self, window: MainWindow):
+        """A `QSvgWidget` re-renders at the device pixel ratio.
+
+        Asserted because the alternative - a `QPixmap` scaled to the header's
+        height - looks identical at 100% scaling and visibly soft at 150%,
+        which is exactly the kind of regression nobody notices in a test that
+        only checks the size.
+        """
+        assert isinstance(window.header.logo, QSvgWidget)
+        assert logo_svg_path().suffix == ".svg"
+
+    def test_the_header_is_compact(self, window: MainWindow):
+        """It replaces the menu bar rather than adding a band above it."""
+        assert window.header.height() == Header.HEIGHT
+        assert Header.HEIGHT <= 56
 
     def test_the_window_icon_is_set(self, window: MainWindow):
         assert not window.windowIcon().isNull()
 
-    def test_the_logo_lives_in_the_sidebar_not_a_separate_header(self, window: MainWindow):
-        parent = window.logo_widget.parentWidget()
-        assert parent is not None
-        assert parent.objectName() == "workflowSidebar"
+    def test_the_old_sidebar_is_gone_entirely(self, window: MainWindow):
+        """Removed, not merely emptied or hidden.
 
-    def test_the_logo_sits_below_the_navigation_list_in_the_same_sidebar(
-        self, window: MainWindow
-    ):
-        assert window.logo_widget.parentWidget() is window.navigation.parentWidget()
-        window.show()
-        QApplication.processEvents()
-        assert window.logo_widget.y() > window.navigation.y() + window.navigation.height() - 1
+        A hidden sidebar would still occupy its place in the layout, which is
+        the "empty spacer where the sidebar used to be" the redesign brief
+        rules out.
+        """
+        from PySide6.QtWidgets import QWidget
 
-    def test_the_sidebar_width_matches_the_navigation_width(self, window: MainWindow):
-        window.show()
-        QApplication.processEvents()
-        sidebar = window.logo_widget.parentWidget()
-        assert sidebar is not None
-        assert sidebar.width() == NAVIGATION_WIDTH
-        assert window.navigation.width() == NAVIGATION_WIDTH
+        assert window.findChild(QWidget, "workflowSidebar") is None
+        assert window.findChild(QWidget, "workflowNavigation") is None
+        assert not hasattr(window, "navigation")
 
-    def test_the_logo_is_horizontally_centred_in_the_sidebar(self, window: MainWindow):
-        window.show()
-        QApplication.processEvents()
-        sidebar = window.logo_widget.parentWidget()
-        assert sidebar is not None
-        left_gap = window.logo_widget.x()
-        right_gap = sidebar.width() - (window.logo_widget.x() + window.logo_widget.width())
-        assert left_gap == pytest.approx(right_gap, abs=1)
-
-    def test_no_separate_header_widget_remains(self, window: MainWindow):
-        assert window.findChild(QWidget, "appHeader") is None
+    def test_the_logo_is_not_duplicated_across_the_shell(self, window: MainWindow):
+        """One wordmark. A second copy would be decoration with no purpose."""
+        logos = window.findChildren(QSvgWidget, "appLogo")
+        assert len(logos) == 1
 
 
 class TestFooterAttribution:
+    def test_the_footer_shows_the_real_build_version(self, window: MainWindow):
+        """Read from package metadata, never typed in.
+
+        `__version__` is the same value `pyproject.toml` declares, so a
+        release cannot leave the footer claiming the previous one.
+        """
+        assert __version__ in window.footer.version_label.text()
+        assert "OMRFlow" in window.footer.version_label.text()
+
+    def test_the_footer_states_the_repositorys_actual_licence(self, window: MainWindow):
+        text = window.footer.licence_label.text()
+        assert LICENSE_NAME in text
+        assert "Open Source" in text
+        assert LICENSE_NAME == "MIT"
+
+    def test_the_stated_licence_matches_the_license_file(self):
+        """The footer must not claim a licence the repository does not carry."""
+        licence_file = Path(__file__).resolve().parents[2] / "LICENSE"
+        assert licence_file.is_file()
+        assert "MIT License" in licence_file.read_text(encoding="utf-8")
+
     def test_the_footer_shows_the_developer_name(self, window: MainWindow):
-        assert DEVELOPER_NAME in window.footer_label.text()
+        assert DEVELOPER_NAME in window.footer.credit_label.text()
 
     def test_the_footer_link_points_at_the_developer_site(self, window: MainWindow):
-        assert f'href="{DEVELOPER_URL}"' in window.footer_label.text()
+        assert f'href="{DEVELOPER_URL}"' in window.footer.credit_label.text()
         assert DEVELOPER_URL == "https://www.sajid.bd"
 
     def test_clicking_the_link_opens_the_system_browser_not_an_internal_view(
@@ -141,38 +181,81 @@ class TestFooterAttribution:
         window._open_developer_site(DEVELOPER_URL)
         assert opened == [DEVELOPER_URL]
 
-    def test_the_footer_does_not_auto_navigate_internally(self, window: MainWindow):
-        # `setOpenExternalLinks(False)` - the link is routed through
-        # `_open_developer_site`/`QDesktopServices` instead of Qt trying to
-        # load the URL as if it were a local document.
-        assert window.footer_label.openExternalLinks() is False
+    def test_the_footer_routes_its_link_through_the_window(self, window: MainWindow):
+        """The footer emits; the window is the only place that opens a URL."""
+        assert window.footer.credit_label.openExternalLinks() is False
+        received: list[str] = []
+        window.footer.developer_link_activated.connect(received.append)
+        window.footer.developer_link_activated.emit(DEVELOPER_URL)
+        assert received == [DEVELOPER_URL]
 
     def test_the_footer_is_a_child_of_the_window(self, window: MainWindow):
-        assert window.isAncestorOf(window.footer_label)
+        assert window.isAncestorOf(window.footer)
 
-    def test_the_footer_uses_a_smaller_font_than_the_default(self, window: MainWindow):
+    def test_the_credit_is_visually_secondary(self, window: MainWindow):
         default_size = window.font().pointSizeF()
-        assert window.footer_label.font().pointSizeF() < default_size
+        assert window.footer.credit_label.font().pointSizeF() < default_size
+
+    def test_the_status_is_ready_with_no_batch_running(self, window: MainWindow):
+        assert window.footer.status is AppStatus.READY
+        assert window.footer.status_label.text() == "Ready"
+
+    def test_the_status_is_a_word_and_not_only_a_coloured_dot(self, window: MainWindow):
+        """State must never be carried by colour alone.
+
+        The dot is a redundant accent on text that already says the state, so
+        an operator who cannot distinguish the colours - or who is reading a
+        black-and-white screenshot - still knows what the application is
+        doing.
+        """
+        for status in AppStatus:
+            window.footer.set_status(status)
+            assert window.footer.status_label.text() == status.value
+            assert window.footer.status_label.text().strip() != ""
 
 
-class TestNoWastedHeaderSpace:
-    def test_the_workflow_area_starts_at_the_top_of_the_central_widget(
-        self, window: MainWindow
-    ):
-        # No header row above it any more - the sidebar/stack row is the
-        # first thing in the central widget's layout.
+class TestNoWastedChrome:
+    """The shell's bands sit directly on top of one another."""
+
+    def test_the_header_is_the_first_band_in_the_central_widget(self, window: MainWindow):
         window.show()
         QApplication.processEvents()
-        assert window.navigation.y() == 0
+        assert window.header.y() == 0
 
-    def test_the_stacked_page_starts_at_the_top_of_the_content_pane(self, window: MainWindow):
+    def test_the_navigator_sits_directly_below_the_header(self, window: MainWindow):
+        """No gap, and nothing between them.
+
+        The brief calls out a "large blank vertical gap between the header and
+        workflow navigator" as a defect, so the relationship is asserted
+        rather than the coordinate.
+        """
         window.show()
         QApplication.processEvents()
-        assert window.stack.y() == 0
+        assert window.navigator.y() == window.header.y() + window.header.height()
+
+    def test_the_pages_sit_directly_below_the_navigator(self, window: MainWindow):
+        window.show()
+        QApplication.processEvents()
+        assert window.stack.y() == window.navigator.y() + window.navigator.height()
+
+    def test_the_footer_is_the_last_band_above_the_status_bar(self, window: MainWindow):
+        window.show()
+        QApplication.processEvents()
+        assert window.footer.y() == window.stack.y() + window.stack.height()
+
+    def test_the_pages_get_the_full_window_width(self, window: MainWindow):
+        """The width the sidebar used to take now belongs to the content."""
+        window.resize(1280, 800)
+        window.show()
+        QApplication.processEvents()
+        central = window.centralWidget()
+        assert central is not None
+        assert window.stack.width() == central.width()
+        assert window.stack.x() == 0
 
 
 class TestExistingChromeUnaffected:
-    """The branding additions must not disturb the pre-existing status bar."""
+    """The redesign must not disturb the pre-existing status bar."""
 
     def test_the_status_bar_still_shows_the_no_project_message(self, window: MainWindow):
         from omr_scanner.gui.main_window import NO_PROJECT_STATUS

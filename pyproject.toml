@@ -156,6 +156,10 @@ extend-ignore-names = [
     "dragEnterEvent", "dragMoveEvent", "dragLeaveEvent", "dropEvent",
     "contextMenuEvent", "itemChange", "boundingRect", "sceneEvent", "eventFilter",
     "rowCount", "columnCount", "headerData",
+    # The custom-painted shell widgets (workflow navigator, chevron steps,
+    # cards) override Qt's own measurement and hit-testing entry points.
+    "changeEvent", "enterEvent", "leaveEvent",
+    "sizeHint", "minimumSizeHint", "heightForWidth", "hitButton",
 ]
 
 [tool.ruff.lint.per-file-ignores]

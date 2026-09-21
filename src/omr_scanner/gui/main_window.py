@@ -1,26 +1,42 @@
 """The application main window.
 
 Purpose:
-    Host the workflow navigation, own the project lifecycle from the user
+    Assemble the application shell, own the project lifecycle from the user
     interface side, and route menu commands to services.
 
 Responsibilities:
-    * Build the navigation list, the stacked pages, the menus and the status bar.
+    * Assemble the shell: the branded header, the workflow navigator, the
+      stacked pages, the status footer and the status bar.
+    * Own the File/Tools/Help action hierarchy, and hand it to the header's
+      menu button.
     * Hold the single open :class:`~omr_scanner.services.ProjectSession` and
       broadcast changes to every page.
-    * Keep the recent-project list in the application configuration up to date.
+    * Keep the recent-project list in the application configuration up to
+      date, and keep the Project dashboard's copy of it in step.
 
 What does NOT belong here:
     * Any project/database/imaging logic. Every action delegates to
       :mod:`omr_scanner.services`.
-    * Long-running work. Batch processing (Phase 5) runs in a worker thread and
-      reports progress through signals; the main window must never block.
+    * Long-running work. Batch processing runs in a worker thread and reports
+      progress through signals; the main window must never block.
+    * Styling, painting and responsive arithmetic. Each shell part is a widget
+      in :mod:`omr_scanner.gui.widgets` that decides its own layout from its
+      own width, so this module contains no geometry and no colours.
 
 Testability:
-    Commands are split in two: ``_prompt_*`` methods own the modal dialogs, and
-    :meth:`create_project_at` / :meth:`open_project_at` / :meth:`close_project`
-    contain the behaviour. GUI tests drive the second group, so no test has to
-    interact with a native file dialog.
+    Commands are split in two: ``_prompt_*`` methods own the modal dialogs,
+    and :meth:`create_project_at` / :meth:`open_project_at` /
+    :meth:`close_project` contain the behaviour. GUI tests drive the second
+    group, so no test has to interact with a native file dialog.
+
+Why the menu bar is hidden rather than removed:
+    The reference design replaces the permanent File / Tools / Help row with
+    one menu button, but the *actions* must keep working exactly as they did,
+    shortcuts included. The three menus are therefore still built on
+    ``menuBar()`` - which keeps the hierarchy, the nesting and Qt's own
+    shortcut context intact - the bar itself is hidden, and the header's menu
+    button pops up those same `QMenu` objects as submenus. There is one File
+    menu in the application, and nothing is duplicated or reimplemented.
 """
 
 from __future__ import annotations
@@ -30,19 +46,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from PySide6.QtCore import Qt, QUrl, qVersion
-from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
-from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtCore import QPoint, Qt, QUrl, qVersion
+from PySide6.QtGui import QAction, QCloseEvent, QCursor, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
-    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -54,7 +66,7 @@ from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
 from omr_scanner.gui.answer_key.page import AnswerKeyPage
 from omr_scanner.gui.attendance.page import AttendancePage
-from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
+from omr_scanner.gui.branding import application_icon
 from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.health_dialog import ProjectHealthDialog
@@ -67,6 +79,12 @@ from omr_scanner.gui.review.page import ResolvePage
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
+from omr_scanner.gui.widgets import (
+    AppHeader,
+    AppStatus,
+    StatusFooter,
+    WorkflowNavigator,
+)
 from omr_scanner.services import (
     ProjectSession,
     create_project,
@@ -83,24 +101,33 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
-WINDOW_MIN_WIDTH = 960
-WINDOW_MIN_HEIGHT = 640
-NAVIGATION_WIDTH = 190
+WINDOW_MIN_WIDTH = 720
+WINDOW_MIN_HEIGHT = 600
+"""The window's floor, in logical pixels.
+
+Narrower than it was, and deliberately: the fixed 190-pixel navigation
+sidebar this shell replaced was most of the old 960-pixel minimum, and the
+workflow navigator has layouts for widths far below that. A floor wider than
+the shell needs would make those layouts unreachable, which is the opposite of
+why they exist.
+"""
 
 NO_PROJECT_STATUS = "No project open"
 STATUS_MESSAGE_MS = 5000
 """How long transient status bar messages stay visible."""
 
-LOGO_DISPLAY_WIDTH = 130
-"""Logo width in the sidebar, in logical (DPI-independent) pixels - within the
-110-150px range a small application-branding mark should occupy without
-crowding the fixed-width sidebar. Height follows from `LOGO_ASPECT_RATIO` so
-the original artwork is never stretched."""
-
-SIDEBAR_LOGO_BOTTOM_MARGIN = 20
-"""Gap between the logo and the bottom of the sidebar, in logical pixels."""
-
 DEVELOPER_URL = "https://www.sajid.bd"
+
+STAGE_NOT_IMPLEMENTED = "Planned for phase {phase}; not available in this build."
+"""Why a workflow stage cannot be opened, shown in its tooltip.
+
+This is the *only* rule that disables a stage, and it is the rule the
+navigation sidebar already used - it showed the same sentence as a tooltip.
+Notably there is no "needs an open project" rule: every stage has always been
+reachable without one, each page showing its own empty state, and inventing a
+lock here would both change long-standing behaviour and put a disabled control
+in front of an operator who is simply looking ahead at the workflow.
+"""
 
 GENERATION_SHUTDOWN_TIMEOUT_MS = 30_000
 """How long the window waits for a cancelled dataset generation to finish.
@@ -149,39 +176,53 @@ class MainWindow(QMainWindow):
     # Construction
     # ------------------------------------------------------------------
     def _build_central_widget(self) -> None:
-        """Assemble the navigation/workflow area and the footer.
+        """Assemble the shell, top to bottom.
 
-        No separate header row: the logo lives inside the sidebar (see
-        `_build_sidebar`), so the workflow area starts directly below the
-        menu bar and the main page content starts near the top of the
-        window, not below a dedicated branding strip.
+        Four bands and nothing else: the branded header, the workflow
+        navigator, the stacked pages, and the status footer. The native status
+        bar sits below all of it, unchanged.
+
+        There is no left column. The width the navigation sidebar used to
+        occupy now belongs to the pages, which is the point of the horizontal
+        navigator above - and no spacer is left in its place.
         """
         central = QWidget(self)
         outer_layout = QVBoxLayout(central)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        outer_layout.addLayout(self._build_workflow_area(), stretch=1)
-        outer_layout.addWidget(self._build_footer())
+        self.header = AppHeader(parent=central)
+        outer_layout.addWidget(self.header)
+
+        self.navigator = WorkflowNavigator(WORKFLOW_PAGES, parent=central)
+        self.navigator.step_activated.connect(self._on_step_activated)
+        outer_layout.addWidget(self.navigator)
+
+        outer_layout.addWidget(self._build_pages(), stretch=1)
+
+        self.footer = StatusFooter(DEVELOPER_NAME, DEVELOPER_URL, parent=central)
+        self.footer.developer_link_activated.connect(self._open_developer_site)
+        outer_layout.addWidget(self.footer)
 
         self.setCentralWidget(central)
 
-    def _build_workflow_area(self) -> QHBoxLayout:
-        """Create the navigation sidebar and the stacked workflow pages."""
-        layout = QHBoxLayout()
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        layout.addWidget(self._build_sidebar())
-
+    def _build_pages(self) -> QStackedWidget:
+        """Create the stacked workflow pages and wire their signals."""
         self.stack = QStackedWidget()
 
-        for index, spec in enumerate(WORKFLOW_PAGES):
+        for spec in WORKFLOW_PAGES:
             page: WorkflowPage
             if spec.key == "project":
                 project_page = ProjectPage(spec)
                 project_page.create_requested.connect(self._prompt_create_project)
                 project_page.open_requested.connect(self._prompt_open_project)
+                project_page.project_info_requested.connect(
+                    self._prompt_project_configuration
+                )
+                project_page.recent_project_requested.connect(self.open_project_at)
+                project_page.view_all_recent_requested.connect(
+                    self.show_recent_projects_menu
+                )
                 page = project_page
             elif spec.key == "template":
                 page = TemplateDesignerPage(spec)
@@ -193,6 +234,7 @@ class MainWindow(QMainWindow):
                 scan_page = ScanPage(spec)
                 scan_page.review_requested.connect(self.review_batch)
                 scan_page.batch_finished.connect(self._on_batch_finished)
+                scan_page.processing_changed.connect(self._on_processing_changed)
                 page = scan_page
             elif spec.key == "resolve":
                 page = ResolvePage(spec)
@@ -222,86 +264,29 @@ class MainWindow(QMainWindow):
             self._pages[spec.key] = page
             self.stack.addWidget(page)
 
-            item = QListWidgetItem(f"{index + 1}. {spec.title}")
-            item.setData(Qt.ItemDataRole.UserRole, spec.key)
             if not spec.is_implemented:
-                item.setToolTip(f"Planned for phase {spec.phase}")
-            self.navigation.addItem(item)
+                self.navigator.set_step_enabled(
+                    spec.key,
+                    enabled=False,
+                    reason=STAGE_NOT_IMPLEMENTED.format(phase=spec.phase),
+                )
 
-        self.navigation.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.navigation.setCurrentRow(0)
+        self.stack.setCurrentIndex(0)
+        self.navigator.set_current_key(WORKFLOW_PAGES[0].key)
+        return self.stack
 
-        layout.addWidget(self.stack, stretch=1)
-        return layout
+    def _on_step_activated(self, key: str) -> None:
+        """A workflow step was clicked or activated from the keyboard."""
+        self.show_page(key)
 
-    def _build_sidebar(self) -> QWidget:
-        """Build the fixed-width sidebar: the navigation list, then the logo.
+    def _on_processing_changed(self, running: bool) -> None:
+        """Reflect the Scan stage's batch in the footer's status.
 
-        ``navigation`` (unchanged - same widget, same object name, same row
-        content/behaviour, still `NAVIGATION_WIDTH` wide via the sidebar
-        container) is given the layout's whole stretch factor, so it claims
-        every bit of vertical space the fixed-size logo below it does not
-        need - equivalent to "navigation, then an expanding spacer, then the
-        logo" without an extra invisible widget. A `QSvgWidget` renders the
-        vector logo directly rather than a pre-rasterised bitmap, so it stays
-        crisp at any Windows display scaling (100/125/150/200%).
+        The only two states the application genuinely has. Nothing else sets
+        this, which is why there is no third word in
+        :class:`~omr_scanner.gui.widgets.status_footer.AppStatus`.
         """
-        sidebar = QWidget()
-        sidebar.setObjectName("workflowSidebar")
-        sidebar.setFixedWidth(NAVIGATION_WIDTH)
-        layout = QVBoxLayout(sidebar)
-        layout.setContentsMargins(0, 0, 0, SIDEBAR_LOGO_BOTTOM_MARGIN)
-        layout.setSpacing(0)
-
-        self.navigation = QListWidget()
-        self.navigation.setObjectName("workflowNavigation")
-        self.navigation.setAlternatingRowColors(True)
-        layout.addWidget(self.navigation, stretch=1)
-
-        logo_height = round(LOGO_DISPLAY_WIDTH / LOGO_ASPECT_RATIO)
-        self.logo_widget = QSvgWidget(str(logo_svg_path()))
-        self.logo_widget.setObjectName("appLogo")
-        self.logo_widget.setFixedSize(LOGO_DISPLAY_WIDTH, logo_height)
-        # A transparent background lets the logo sit directly on the
-        # sidebar's own background rather than inside a coloured box.
-        self.logo_widget.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        layout.addWidget(self.logo_widget, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        return sidebar
-
-    def _build_footer(self) -> QWidget:
-        """Build the small, centred developer-credit footer.
-
-        A separate widget from `statusBar()` (which keeps showing transient
-        workflow messages and the permanent project indicator, untouched) -
-        this row sits just above it, inside the central widget, so it is
-        always the last thing before the native status bar rather than a
-        second competing status bar.
-        """
-        footer = QWidget()
-        footer.setObjectName("appFooter")
-        footer.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        layout = QHBoxLayout(footer)
-        layout.setContentsMargins(8, 4, 8, 4)
-        layout.addStretch(1)
-
-        self.footer_label = QLabel(
-            f'Developed by <a href="{DEVELOPER_URL}">{DEVELOPER_NAME}</a>'
-        )
-        self.footer_label.setObjectName("appFooterLabel")
-        self.footer_label.setTextFormat(Qt.TextFormat.RichText)
-        self.footer_label.setOpenExternalLinks(False)  # routed through the opener below instead
-        self.footer_label.linkActivated.connect(self._open_developer_site)
-        # `QLabel` already shows a pointing-hand cursor over an embedded `<a>`
-        # link by default (its `textInteractionFlags()` include
-        # `LinksAccessibleByMouse` out of the box) - nothing extra needed here.
-        small_font = self.footer_label.font()
-        small_font.setPointSizeF(max(small_font.pointSizeF() - 1.0, 7.0))
-        self.footer_label.setFont(small_font)
-        layout.addWidget(self.footer_label, alignment=Qt.AlignmentFlag.AlignHCenter)
-
-        layout.addStretch(1)
-        return footer
+        self.footer.set_status(AppStatus.PROCESSING if running else AppStatus.READY)
 
     def _open_developer_site(self, url: str) -> None:
         """Open the developer's site in the system's default browser.
@@ -313,7 +298,12 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(url))
 
     def _build_menus(self) -> None:
-        """Create the File, Tools and Help menus."""
+        """Create the File, Tools and Help menus, and hand them to the header.
+
+        The menus are built on ``menuBar()`` exactly as before - same actions,
+        same order, same nesting, same shortcuts - and the bar is then hidden.
+        Nothing about the hierarchy changes; only where it is opened from.
+        """
         file_menu = self.menuBar().addMenu("&File")
 
         self.new_project_action = QAction("&New Project...", self)
@@ -418,6 +408,93 @@ class MainWindow(QMainWindow):
         self.about_action = QAction(f"&About {APPLICATION_NAME}", self)
         self.about_action.triggered.connect(self._show_about)
         help_menu.addAction(self.about_action)
+
+        self._install_application_menu(file_menu, tools_menu, help_menu)
+
+    def _install_application_menu(self, *menus: QMenu) -> None:
+        """Move the menu bar behind the header's menu button.
+
+        Args:
+            menus: The top-level menus, in the order they should appear.
+
+        The same `QMenu` objects are added as submenus of one application
+        menu, so there is still exactly one File menu and its actions,
+        callbacks and enabled state are untouched. The bar itself is hidden
+        rather than left in place, because the reference design replaces that
+        row and showing both would be the duplicate the brief rules out.
+
+        Each shortcut-bearing action is *also* added to the window. Qt
+        deactivates the shortcuts of actions that live only in a hidden
+        widget, and a shortcut that silently stopped working would be the
+        worst kind of regression here - invisible until someone reached for
+        Ctrl+O. Adding the same `QAction` to the window gives it window
+        shortcut context without creating a second action or a second
+        handler.
+        """
+        self.application_menu = QMenu(self)
+        self.application_menu.setObjectName("applicationMenu")
+        for menu in menus:
+            self.application_menu.addMenu(menu)
+        self.header.set_menu(self.application_menu)
+
+        menu_bar = self.menuBar()
+        menu_bar.setVisible(False)
+
+        for action in self._shortcut_actions():
+            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            self.addAction(action)
+
+    def _shortcut_actions(self) -> tuple[QAction, ...]:
+        """Every action that carries a keyboard shortcut."""
+        return tuple(
+            action
+            for action in (
+                self.new_project_action,
+                self.open_project_action,
+                self.settings_action,
+                self.exit_action,
+            )
+            if not action.shortcut().isEmpty()
+        )
+
+    def open_application_menu(self) -> None:
+        """Pop up the application menu, as clicking the header button does.
+
+        Exposed so a test can open it without synthesising a mouse press on
+        the button, and so the menu can be reached from code paths that are
+        not the button itself.
+
+        Uses ``popup()`` rather than `QToolButton.showMenu`, which is
+        documented not to return until the menu has been closed *by the
+        user* - the same blocking-modal trap as ``QMenu.exec()``, and it hung
+        the shell's own validation run before this was changed. The button's
+        own click still goes through Qt's `InstantPopup` handling; only this
+        programmatic entry point needed to be non-blocking.
+        """
+        button = self.header.menu_button
+        self.application_menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def show_recent_projects_menu(self, at: QPoint | None = None) -> None:
+        """Show the whole recent-projects list, at the cursor.
+
+        Args:
+            at: Where to place the menu. Defaults to the cursor position.
+
+        The *same* "Open Recent" submenu that lives under File, popped up
+        where the operator is looking. The Project dashboard lists the first
+        few entries and defers the rest to this, rather than owning a second
+        copy of the list or a dialog that would have to be kept in step with
+        it.
+
+        ``popup()`` and deliberately not ``exec()``. ``exec()`` spins a nested
+        modal event loop that only returns when the menu is dismissed, so
+        nothing offscreen ever dismisses it - the first version of this method
+        used ``exec()`` and hung the test suite outright. That is the
+        modal-in-a-testable-method defect this project has now met four times
+        (Phases 8, 9, the project-lock dialog, and here); ``popup()`` shows the
+        menu and returns, which is both correct for a menu and testable.
+        """
+        self.recent_menu.popup(at if at is not None else QCursor.pos())
 
     def _build_status_bar(self) -> None:
         """Create the status bar and its permanent project indicator."""
@@ -877,15 +954,36 @@ class MainWindow(QMainWindow):
     def show_page(self, key: str) -> bool:
         """Bring one workflow stage to the front by its key.
 
-        Returns whether that stage exists. Driven through the navigation list
-        rather than the stack so the sidebar's highlight stays in step with
-        what is on screen.
+        Args:
+            key: The stage to show.
+
+        Returns:
+            ``True`` when that stage exists and is available. A stage that is
+            disabled - no project open, or not implemented in this build -
+            is not shown, because the navigator has already told the operator
+            why and silently switching to it anyway would contradict that.
+
+        The single entry point for cross-page navigation. It moves the stack
+        *and* the navigator's highlight together, so what is on screen and
+        what the navigator says are the same thing however the navigation was
+        started - a click, the keyboard, or another page asking.
         """
-        for row in range(self.navigation.count()):
-            if self.navigation.item(row).data(Qt.ItemDataRole.UserRole) == key:
-                self.navigation.setCurrentRow(row)
-                return True
-        return False
+        page = self._pages.get(key)
+        if page is None:
+            return False
+        step = self.navigator.step(key)
+        if step is not None and not step.isEnabled():
+            return False
+        self.stack.setCurrentWidget(page)
+        self.navigator.set_current_key(key)
+        return True
+
+    def current_page_key(self) -> str | None:
+        """The key of the stage currently on screen."""
+        current = self.stack.currentWidget()
+        return next(
+            (key for key, page in self._pages.items() if page is current), None
+        )
 
     def edit_template(self, path: Path) -> bool:
         """Open ``path`` in the Template Designer stage.
@@ -1217,20 +1315,28 @@ class MainWindow(QMainWindow):
         self._rebuild_recent_menu()
 
     def _rebuild_recent_menu(self) -> None:
-        """Rebuild the "Open Recent" submenu from the configuration."""
+        """Rebuild the "Open Recent" submenu, and the dashboard's copy of it.
+
+        Both read the same tuple from the application configuration, and both
+        are rebuilt here, so the menu and the Project page can never disagree
+        about what was opened recently.
+        """
         self.recent_menu.clear()
         if not self._config.recent_projects:
             empty = QAction("(none)", self)
             empty.setEnabled(False)
             self.recent_menu.addAction(empty)
-            return
+        else:
+            for directory in self._config.recent_projects:
+                action = QAction(str(directory), self)
+                action.triggered.connect(
+                    lambda _checked=False, path=directory: self.open_project_at(path)
+                )
+                self.recent_menu.addAction(action)
 
-        for directory in self._config.recent_projects:
-            action = QAction(str(directory), self)
-            action.triggered.connect(
-                lambda _checked=False, path=directory: self.open_project_at(path)
-            )
-            self.recent_menu.addAction(action)
+        project_page = self._pages.get("project")
+        if isinstance(project_page, ProjectPage):
+            project_page.set_recent_projects(self._config.recent_projects)
 
     def _persist_config(self) -> None:
         """Save the configuration, treating failure as non-fatal."""

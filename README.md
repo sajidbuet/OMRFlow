@@ -13,6 +13,14 @@ OMR examination-processing systems:
 **ordinary image scanner + configurable template + transparent recognition +
 human verification + reproducible result processing**
 
+![The OMRFlow main window: a compact branded header, the nine-stage workflow
+navigator, and the Project dashboard with no project
+open](docs/images/omrflow-main-window.png)
+
+*The nine examination stages run left to right across the top. The navigator
+reflows to two rows, then to a two-column grid, as the window narrows — see
+[The application shell and navigation](#the-application-shell-and-navigation).*
+
 ---
 
 ## Development Status
@@ -126,6 +134,62 @@ phases currently in testing:
 - **Real-sheet validation complete** — exercised against a broad corpus of
   genuinely filled, independently scanned sheets. **No phase claims this yet**,
   and it is the single reason no phase after 2 is marked ✅.
+
+### The application shell and navigation
+
+*Implemented and tested; not yet validated against a real examination
+office's workflow.* The window is four bands — a compact branded header, the
+workflow navigator, the current stage's page, and a status footer — with no
+left sidebar. The horizontal navigator replaced a fixed 190-pixel navigation
+column, and that width now belongs to the pages, which matters most on the
+Template, Calibrate, Scan and Resolve stages where sheet images are inspected
+at zoom.
+
+**The application menu.** *File*, *Tools* and *Help* are behind the header's
+menu button rather than on a permanent menu row. The menus, their nesting
+(*File > Open Recent*, *Tools > Developer / Testing*), their actions and
+their keyboard shortcuts are unchanged — `Ctrl+N` and `Ctrl+O` still work, and
+the developer and stress-test commands are still where they were, one level
+deeper.
+
+**The workflow navigator** shows all nine stages as connected chevrons, and
+chooses one of four layouts from the width actually available, measured
+against the labels in the font in use — not from screen-resolution
+breakpoints:
+
+| Layout | When | What it shows |
+|---|---|---|
+| One row | The nine chevrons fit | `1. Project → … → 9. Reports` |
+| Two rows | They do not | `1`–`5`, then `6`–`9` |
+| Two columns | Two rows do not fit | A row-major grid of tiles, `1 2 / 3 4 / …` |
+| Scrolling strip | Even that does not fit | All nine at full size, scrolled |
+
+The font is never reduced and no label is ever clipped to make a layout fit;
+a larger Windows text size changes the *layout* instead. No stage is ever
+hidden. On a 1080p display at 100% scaling the one-row layout is used down to
+about a 1180-pixel window; the two-column layout appears at the window's
+720-pixel minimum once Windows text scaling reaches 150%.
+
+**The Project page** is a dashboard: the project (or a "no project is open"
+panel with Create and Open) beside a narrower column holding *Getting
+Started* and *Recent Projects*. It stacks into one column when the two
+columns can no longer both be read — decided from its own width, independently
+of the navigator, so the two never share a breakpoint. Recent Projects is
+backed by the same list as *File > Open Recent*; a project that has been
+moved or deleted is listed, disabled, and says so.
+
+**Accessibility.** Every control in the shell is keyboard reachable with a
+visible focus indicator; the navigator additionally supports the arrow keys,
+Home and End. No state is carried by colour alone — the active stage is also
+bold, a locked stage is also dashed and explains itself in its tooltip, and
+the footer's status dot is a redundant accent on a word. Text contrast is
+verified against WCAG AA by `tests/unit/test_theme_tokens.py` rather than
+asserted by eye.
+
+**The visual system** is one accent (`#AC1F24`) on a white and neutral-grey
+ground, with every colour, spacing step, radius and type size named once in
+`omr_scanner.gui.theme.tokens` — a test fails if a hex literal is typed into a
+stylesheet.
 
 ### What works today
 
@@ -1866,6 +1930,14 @@ OMRflow/
 │   ├── resources/            packaged non-GUI assets: the candidate list
 │   │                         sample workbook (Phase 7)
 │   ├── gui/                  PySide6 window and workflow pages
+│   │   ├── theme/               the design system: tokens (colours, spacing,
+│   │   │                        type, shell metrics - no Qt import) and the
+│   │   │                        stylesheets composed from them
+│   │   ├── widgets/             the application shell's parts and the shared
+│   │   │                        presentation primitives: branded header,
+│   │   │                        responsive chevron workflow navigator,
+│   │   │                        status footer, page header, card, empty
+│   │   │                        state, action row, button roles
 │   │   ├── template_designer/  interactive .omrt editor (Phase 2)
 │   │   ├── calibration/         calibrate a saved template against real
 │   │   │                        scans before a batch (Phase 4, testing in

@@ -192,20 +192,19 @@ class TestALaunch:
         return main_window
 
     def test_the_application_starts_with_every_workflow_stage(self, window: MainWindow):
-        assert window.navigation.count() == len(WORKFLOW_PAGES)
+        assert len(window.navigator.steps) == len(WORKFLOW_PAGES)
 
     def test_step_one_and_step_two_are_both_visible_in_the_navigator(
         self, window: MainWindow
     ):
-        labels = [window.navigation.item(row).text() for row in range(window.navigation.count())]
+        labels = [step.display_text for step in window.navigator.steps]
         assert any("Template" in text for text in labels), labels
         assert any("Scan" in text for text in labels), labels
 
     def test_navigating_to_scan_shows_the_real_page_not_a_placeholder(
         self, window: MainWindow
     ):
-        row = next(i for i, spec in enumerate(WORKFLOW_PAGES) if spec.key == "scan")
-        window.navigation.setCurrentRow(row)
+        assert window.show_page("scan")
 
         current = window.stack.currentWidget()
         assert isinstance(current, ScanPage)
@@ -214,8 +213,7 @@ class TestALaunch:
         assert current.objectName() == "scanPage"
 
     def test_the_scan_page_exposes_the_documented_object_names(self, window: MainWindow):
-        row = next(i for i, spec in enumerate(WORKFLOW_PAGES) if spec.key == "scan")
-        window.navigation.setCurrentRow(row)
+        assert window.show_page("scan")
         scan_page = window.stack.currentWidget()
 
         # The stable selectors the qtguitesting skill's scenario table lists.

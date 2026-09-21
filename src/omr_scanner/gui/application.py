@@ -23,6 +23,7 @@ from omr_scanner.config import AppConfig
 from omr_scanner.gui.branding import application_icon
 from omr_scanner.gui.error_reporting import install_global_exception_handler
 from omr_scanner.gui.main_window import MainWindow
+from omr_scanner.gui.theme import application_stylesheet
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,12 @@ def run_gui(config: AppConfig, *, initial_project: Path | None = None) -> int:
     # platform (taskbar, dock, alt-tab switcher) reads, in addition to each
     # window's own `setWindowIcon()` for its title bar.
     app.setWindowIcon(application_icon())
+    # On the application rather than on each window: `QMessageBox`,
+    # `QFileDialog` and `QInputDialog` are constructed by Qt itself or by its
+    # static convenience methods, so there is no constructor of theirs to
+    # style. This is the only place from which their buttons and labels can be
+    # made to match the rest of the interface.
+    app.setStyleSheet(application_stylesheet())
 
     window = MainWindow(config=config)
     # Installed with the window as parent, and before `show()`, so that any

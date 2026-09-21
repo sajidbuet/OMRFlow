@@ -25,6 +25,10 @@ class WorkflowPageSpec:
         key: Stable identifier, used by the main window to look up a page.
         title: Navigation label.
         summary: One line describing what the stage is for.
+        icon: Name of the bundled Lucide icon representing this stage, shown
+            on its workflow-navigator step and in its page header. Named here,
+            beside the stage it belongs to, rather than in a lookup table that
+            would have to be edited in step with this one.
         phase: Roadmap phase that introduced this stage's functionality - shown
             to the user on a placeholder page. Distinct from
             :attr:`implemented`: Phase 2's Template stage keeps ``phase=2`` as a
@@ -41,6 +45,7 @@ class WorkflowPageSpec:
     title: str
     summary: str
     phase: int
+    icon: str = "file-text"
     details: tuple[str, ...] = ()
     implemented: bool | None = None
 
@@ -56,12 +61,14 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Project",
         summary="Create or open an examination project and review its details.",
         phase=0,
+        icon="folder",
     ),
     WorkflowPageSpec(
         key="template",
         title="Template",
         summary="Design and calibrate the OMR sheet template.",
         phase=2,
+        icon="file-text",
         implemented=True,
         details=(
             "Load a reference sheet image and draw recognition zones.",
@@ -78,6 +85,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
             "recognition thresholds before running a batch."
         ),
         phase=4,
+        icon="settings-2",
         implemented=True,
         details=(
             "Load one or more representative scans and run the existing "
@@ -97,6 +105,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Scan",
         summary="Import scanned sheets, normalise them and run recognition.",
         phase=3,
+        icon="printer",
         implemented=True,
         details=(
             "Import individual scans or a whole folder, in natural order.",
@@ -111,6 +120,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Resolve",
         summary="Review and correct sheets that recognition could not decide.",
         phase=6,
+        icon="triangle-alert",
         implemented=True,
         details=(
             "Queue of missing marks, multiple marks and low-confidence values.",
@@ -124,6 +134,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Attendance",
         summary="Import the candidate list and reconcile it against the scripts.",
         phase=7,
+        icon="users",
         implemented=True,
         details=(
             "Import candidates and absentees from CSV or Excel.",
@@ -138,6 +149,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Answer Key",
         summary="Enter or scan the answer key for each question paper set.",
         phase=8,
+        icon="key-round",
         implemented=True,
         details=(
             "Manual entry and recognition from solution sheets.",
@@ -149,6 +161,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Results",
         summary="Configure marking and calculate candidate results.",
         phase=8,
+        icon="chart-column",
         implemented=True,
         details=(
             "Configure marks for correct, incorrect and blank answers.",
@@ -161,6 +174,7 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
         title="Reports",
         summary="Export roll-wise and merit-wise reports.",
         phase=9,
+        icon="file-chart-column",
         implemented=True,
         details=(
             "Associate an independent result template with each set.",

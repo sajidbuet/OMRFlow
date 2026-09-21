@@ -8,6 +8,73 @@ Versions below 1.0 make no compatibility promises.
 
 ## [Unreleased]
 
+### Changed — application shell and navigation
+
+The main window was reorganised into four bands — a compact branded header,
+a horizontal workflow navigator, the current stage's page, and a status
+footer. No recognition, scoring, attendance or reporting behaviour changed,
+no project or template format changed, and existing projects open exactly as
+before. Full detail: `docs/ARCHITECTURE.md` ("The application shell").
+
+- **The permanent left navigation sidebar is gone.** Its fixed 190 pixels of
+  width now belong to the pages, which matters most on Template, Calibrate,
+  Scan and Resolve, where sheet images are inspected at zoom. The window's
+  minimum width dropped from 960 to 720 with it.
+- **The permanent File / Tools / Help row is replaced by one menu button** in
+  the header. The menus themselves are unchanged and are not reimplemented:
+  the same `QMenu` objects, the same actions, the same nesting (*File > Open
+  Recent*, *Tools > Developer / Testing*) and the same shortcuts, now opened
+  from the button instead of from a bar.
+- **A responsive chevron workflow navigator** across the top, showing all
+  nine stages as a connected process. It chooses one of four layouts — one
+  row, two rows, a two-column grid of tiles, or a scrolling strip — by
+  measuring the nine labels in the font actually in use. The font is never
+  reduced, no label is ever clipped, and no stage is ever hidden; a larger
+  Windows text size changes the layout instead. There is no
+  screen-resolution constant anywhere in the shell.
+- **The Project page is a dashboard**: the open project (or a "no project is
+  open" panel offering Create and Open) beside a narrower column holding
+  *Getting Started* and *Recent Projects*. It stacks into one column
+  according to its own width, independently of the navigator — the two have
+  genuinely different thresholds and never share a breakpoint.
+- **Recent Projects** is a real list, backed by the same configuration entry
+  as *File > Open Recent*, so the two cannot disagree. A project that has
+  been moved or deleted is still listed, disabled, and says why.
+- **A status footer** showing the real build version and the repository's
+  actual MIT licence (both read from package metadata, neither typed in), the
+  developer credit, and the application's status. The status has exactly two
+  values, *Ready* and *Processing*, because those are the two states OMRFlow
+  genuinely distinguishes; it is always a word, never only a coloured dot.
+- **A design system** (`omr_scanner.gui.theme`): one accent (`#AC1F24`) on a
+  white and neutral-grey ground, with every colour, spacing step, radius,
+  icon size and type size named once. The tokens import no Qt, so the scale
+  and the WCAG contrast ratios are verified in the fast unit suite; a test
+  fails if a hex literal is typed into a stylesheet. A global stylesheet now
+  also reaches the dialogs Qt constructs itself (`QMessageBox`,
+  `QFileDialog`), which no per-widget styling could.
+- **`ScanPage.processing_changed`**: emitted when a batch starts or stops, so
+  the footer can show *Processing* without polling. Emitted only on a change,
+  from the method that already runs at exactly those moments.
+- Twelve further Lucide icons, downloaded unmodified from the same pinned
+  upstream commit as the existing ones and listed in their README.
+
+### Fixed — found while building the shell
+
+- A horizontal scrollbar could appear in the navigator's one-row layout after
+  a resize that passed through a narrower width, inside a band whose height
+  was computed without one — clipping the bottom of every chevron. Only the
+  scrolling layout may show a scrollbar now. Found by looking at a screenshot
+  from a real GUI session; every geometry assertion had passed.
+- `Color.TEXT_TERTIARY` was set to a grey that fails WCAG AA (4.45:1 on white,
+  4.27:1 on the sunken surface) while its own docstring claimed it passed.
+  Darkened to `#6E6E73` (5.07:1 and 4.86:1). Caught by the contrast test,
+  which computes the ratios rather than trusting the comment.
+- `QMenu.exec()` and `QToolButton.showMenu()` both spin a nested modal event
+  loop that only a user can end, so the first versions of "View All" and the
+  application-menu opener hung the test suite. Both use `popup()` now — the
+  fourth time this project has met the modal-in-a-testable-method defect, and
+  the first time outside a dialog.
+
 ### Added — Phase 10
 
 Integration, Recovery & Production Hardening: the pipeline survives abrupt

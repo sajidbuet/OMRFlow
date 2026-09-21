@@ -1,11 +1,12 @@
 # Lucide icons
 
-Toolbar icons for the Template Designer, bundled here so they resolve
-correctly through `omr_scanner.gui.icons.load_icon` regardless of how OMRFlow
-is run (source checkout, `python -m`, an installed package, or a future
-frozen build) - see that module's docstring for why this location and
-`importlib.resources` were chosen over a top-level `resources/` folder or a
-Qt `.qrc` file.
+Icons for the Template Designer's toolbars and for the application shell
+(the workflow navigator, the page headers, the Project dashboard), bundled
+here so they resolve correctly through `omr_scanner.gui.icons.load_icon`
+regardless of how OMRFlow is run (source checkout, `python -m`, an installed
+package, or a future frozen build) - see that module's docstring for why this
+location and `importlib.resources` were chosen over a top-level `resources/`
+folder or a Qt `.qrc` file.
 
 ## Source
 
@@ -57,6 +58,35 @@ normal and disabled toolbar states without a second copy.
 | `grid-3x3.svg` | Grid toggle |
 | `copy.svg` | Duplicate region (region list) |
 | `trash.svg` | Delete region (region list) |
+
+## Icons in use - the application shell
+
+One icon per workflow stage, named beside the stage it belongs to in
+`gui/pages/catalog.py` (`WorkflowPageSpec.icon`), plus the shell's own.
+
+| File | Used for |
+|---|---|
+| `menu.svg` | The application-menu button in the header |
+| `folder.svg` | Stage 1, Project - and the no-project empty state |
+| `file-text.svg` | Stage 2, Template (also a toolbar icon above) |
+| `settings-2.svg` | Stage 3, Calibrate |
+| `printer.svg` | Stage 4, Scan |
+| `triangle-alert.svg` | Stage 5, Resolve |
+| `users.svg` | Stage 6, Attendance |
+| `key-round.svg` | Stage 7, Answer Key |
+| `chart-column.svg` | Stage 8, Results |
+| `file-chart-column.svg` | Stage 9, Reports |
+| `plus.svg` | The Create Project button |
+| `folder-open.svg` | The Open Project button (also a toolbar icon above) |
+| `file-plus.svg` | Getting Started: create (also a toolbar icon above) |
+| `info.svg` | Getting Started: project information |
+| `chevron-right.svg` | The click affordance on a Getting Started entry, and View All |
+
+The shell renders these through a tint mask rather than relying on the
+widget's palette, so one asset serves a white glyph on the active accent and
+a charcoal one on an inactive step - see
+`gui/widgets/workflow_step.py::WorkflowStep._paint_icon`. The files
+themselves are still unmodified; the tint is applied to the rendered pixmap.
 
 No icon exists yet for a dedicated "orientation" toolbar action: the current
 Template Designer has no such action (the orientation mark is adjusted

@@ -54,7 +54,7 @@ above it.
 | `omr_scanner.database` | Schema, migrations, engine and session lifetime. | Workflow logic, Qt, OpenCV. |
 | `omr_scanner.services` | Multi-step operations: create/open project, process a batch, calculate results, judge a calibration run (`calibration_service`, Phase 4). Owns all side effects. Phase 10 adds `scan_provenance` (content-hash provenance and duplicate detection), `project_lock` (plain-file project locking, deliberately not `QLockFile`, to stay Qt-free), `project_backup` (SQLite-online-API snapshots), `project_health` (integrity/health checking, no repair path), and `telemetry` (sampling for a long batch run). | Widgets, dialogs, Qt imports of any kind. |
 | `omr_scanner.reporting` | XLSX/PDF generation mechanics *(Phase 9)*: `excel.py` populates a copied result template and builds the supporting sheets; `pdf.py` is the LibreOffice-backed exporter abstraction. CSV export is `services.scan_export`. | Result calculation, Qt, the database. |
-| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.calibration` (Phase 4) verifies and tunes a template against representative scans before a batch; `gui.scan` (Phase 3) is the batch scanning workspace, including benchmark mode; `gui.devtools` (Phase 3) is the Tools > Developer / Testing front end to `evaluation`; `gui.health_dialog` (Phase 10) is Project Health & Recovery. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
+| `omr_scanner.gui` | Windows, pages, dialogs; presenting state and collecting intent. `gui.theme` is the design system (tokens, then the stylesheets composed from them) and `gui.widgets` the application shell's parts and shared presentation primitives - see [The application shell](#the-application-shell) below; `gui.template_designer` (Phase 2) is the interactive `.omrt` editor; `gui.calibration` (Phase 4) verifies and tunes a template against representative scans before a batch; `gui.scan` (Phase 3) is the batch scanning workspace, including benchmark mode; `gui.devtools` (Phase 3) is the Tools > Developer / Testing front end to `evaluation`; `gui.health_dialog` (Phase 10) is Project Health & Recovery. | OpenCV, NumPy, SQLAlchemy, direct database access, any OMR algorithm. |
 | `omr_scanner.evaluation` | Judging the engine: the ground-truth schema, the named test cases and dataset planner, the renderer, the benchmark and its error categories, and the benchmark session *(Phase 3)*. Sits *above* services, beside the GUI. Phase 10 adds `stress_dataset` (a deterministic, index-addressable synthetic-sheet generator reusing these same rendering primitives, for the 100,000-sheet production-hardening stress test) and `stress_runner` (orchestration that reuses `services.batch_processor` unchanged), plus `qualification` (the 100,000-sheet release-qualification campaign: it supervises `tools.benchmark_stress` as child processes from outside, kills one deliberately, and judges what survived). | Qt - which is why `qualification.describe_environment()` records NumPy and SQLAlchemy versions and deliberately not a Qt version; also any recognition of its own, since a benchmark that re-implements the engine measures itself. |
 | `omr_scanner.tools` | Developer command line utilities that drive one stage against one file. Beside the GUI, not below it. Phase 10 adds `benchmark_stress` (the headless stress-test/kill-resume CLI) and `phase10_qualification` (the unattended 100,000-sheet qualification campaign, which drives `benchmark_stress` as child processes - see [`phase10_qualification.md`](phase10_qualification.md)). | Qt, and any algorithm of its own - a tool parses arguments, calls a service, and prints. |
 | `omr_scanner.config` | Per-user application settings and platform directory resolution. | Project or template settings. |
@@ -84,6 +84,76 @@ In the main window this shows up as a deliberate split: `_prompt_*` methods own
 the modal dialogs and contain no logic, while `create_project_at`,
 `open_project_at` and `close_project` contain the behaviour and are what the GUI
 tests drive.
+
+## The application shell
+
+The window is four bands - header, workflow navigator, stacked pages, status
+footer - and `MainWindow` assembles them and owns nothing about how any of
+them looks. There is no left sidebar; the horizontal navigator replaced one,
+and the width it used to hold now belongs to the pages.
+
+```text
+gui/theme/      tokens.py       colours, spacing, radii, type, shell metrics
+                                (no Qt import at all)
+                stylesheet.py   the Qt stylesheets, composed from tokens
+gui/widgets/    app_header      branded header + the application-menu button
+                workflow_navigator / workflow_step
+                                the responsive chevron navigator
+                status_footer   build, licence, credit, application status
+                page_header     the heading every stage shares
+                card            card, empty state, clickable action row
+                buttons         primary / secondary / destructive roles
+```
+
+Three rules hold this together.
+
+**Every visual constant is named once.** A colour, a gap or a radius lives in
+`theme.tokens` and nowhere else; `tests/unit/test_theme_tokens.py` fails if a
+hex literal appears in a stylesheet, and computes the WCAG contrast ratios
+rather than trusting a comment about them. `theme.tokens` imports no Qt, which
+is what lets those checks run without a display.
+
+**Each part decides its own layout from its own width.** The navigator picks
+one of four layouts by measuring nine labels in the font currently in use; the
+Project dashboard picks one or two columns by asking whether both columns'
+minimum readable widths still fit. Neither consults the window, and neither
+consults the other - the brief requires those two transitions to be
+independent, and they genuinely need different thresholds. There is no
+resolution constant anywhere in the shell.
+
+**Layout changes move widgets; they never rebuild them.** A responsive
+transition repositions the same nine step widgets and re-parents the same two
+dashboard columns. Rebuilding would discard page state and, on the editor
+stages, reload sheet images for no reason.
+
+### Why the menu bar is hidden rather than removed
+
+The header's menu button replaces the permanent *File / Tools / Help* row, but
+the menus are still built on `menuBar()` and are then added to one application
+menu as submenus. That keeps the hierarchy, the nesting, the actions and Qt's
+own shortcut context exactly as they were, with nothing duplicated or
+reimplemented. Each shortcut-bearing action is additionally added to the
+window, because Qt deactivates the shortcuts of actions that live only in a
+hidden widget -
+`tests/gui/test_app_shell.py::TestDShortcutsStillFire` presses the keys to
+prove it.
+
+### Why the chevron is painted rather than composed
+
+A chevron is a `QPainterPath` computed from the widget's own size each repaint,
+so it is exact at any width and any device pixel ratio. Two consequences follow
+and are easy to get wrong:
+
+* Consecutive steps **overlap** by the arrow depth, so `hitButton` tests the
+  path, not the rectangle. A rejected press is *ignored* and goes to the
+  parent, never to the sibling underneath, so without this a click on step 4's
+  visible arrowhead would do nothing at all. For the same reason the steps are
+  stacked with step 1 on top.
+* The scrolled strip's horizontal scrollbar is switched **off** in every layout
+  except the compact one. The other three are chosen because everything fits,
+  so a scrollbar there can only be spurious - and it is not harmless: it
+  appears inside a band whose height was computed without it and clips the
+  bottom of every chevron.
 
 ## Error handling
 

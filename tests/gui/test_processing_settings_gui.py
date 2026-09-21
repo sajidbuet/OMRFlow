@@ -44,7 +44,6 @@ from omr_scanner.config.processing import (
     ProcessingSettings,
 )
 from omr_scanner.gui.main_window import MainWindow
-from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.services import save_template
@@ -123,9 +122,8 @@ def dialog(qtbot, window: MainWindow) -> SettingsDialog:
 
 
 def scan_page_of(window: MainWindow) -> ScanPage:
-    """The window's Scan page, found the way the navigator finds it."""
-    row = next(i for i, spec in enumerate(WORKFLOW_PAGES) if spec.key == "scan")
-    window.navigation.setCurrentRow(row)
+    """The window's Scan page, reached the way a user reaches it."""
+    assert window.show_page("scan")
     page = window.stack.currentWidget()
     assert isinstance(page, ScanPage)
     return page

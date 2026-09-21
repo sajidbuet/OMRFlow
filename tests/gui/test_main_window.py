@@ -47,17 +47,38 @@ def window(qtbot, tmp_path: Path) -> MainWindow:
 def test_window_starts_without_a_project(window: MainWindow):
     assert window.windowTitle() == APPLICATION_NAME
     assert window.session is None
-    assert window.navigation.count() == len(WORKFLOW_PAGES)
+    assert len(window.navigator.steps) == len(WORKFLOW_PAGES)
     assert window.close_project_action.isEnabled() is False
     status_texts = [label.text() for label in window.statusBar().findChildren(QLabel)]
     assert NO_PROJECT_STATUS in status_texts
 
 
 def test_navigation_switches_the_visible_page(window: MainWindow):
-    window.navigation.setCurrentRow(2)
+    """Clicking a workflow step brings its page to the front.
+
+    Driven through the navigator's own signal rather than by calling
+    `show_page` directly, so this covers the wiring between the two - which
+    is the part that would break.
+    """
+    target = WORKFLOW_PAGES[2].key
+    window.navigator.step_activated.emit(target)
 
     assert window.stack.currentIndex() == 2
-    assert window.stack.currentWidget().spec.key == WORKFLOW_PAGES[2].key
+    assert window.stack.currentWidget().spec.key == target
+    assert window.navigator.current_key() == target
+
+
+def test_show_page_moves_the_navigator_highlight_too(window: MainWindow):
+    """However navigation starts, the two must agree afterwards."""
+    assert window.show_page("reports") is True
+    assert window.current_page_key() == "reports"
+    assert window.navigator.current_key() == "reports"
+    step = window.navigator.step("reports")
+    assert step is not None
+    assert step.isChecked()
+    assert [other.key for other in window.navigator.steps if other.isChecked()] == [
+        "reports"
+    ]
 
 
 def test_a_placeholder_page_says_so(qtbot):

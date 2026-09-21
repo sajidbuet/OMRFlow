@@ -256,6 +256,16 @@ class ScanPage(WorkflowPage):
     benchmark_finished = Signal(object)
     review_requested = Signal(str)
 
+    processing_changed = Signal(bool)
+    """Emitted when a batch starts or stops running.
+
+    Carries :attr:`is_processing`. Emitted only on a *change*, from
+    ``_refresh_controls`` - which already runs at exactly the four moments
+    that matter (a run starting, finishing, failing, and being cancelled) -
+    so the application's status footer can say "Processing" without polling a
+    boolean on a timer, and without this page knowing the footer exists.
+    """
+
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setObjectName("scanPage")
@@ -264,6 +274,9 @@ class ScanPage(WorkflowPage):
         self.state = ScanPageState()
         self._session: ProjectSession | None = None
         self._worker: BatchWorker | None = None
+        self._announced_processing = False
+        """Last value :attr:`processing_changed` reported - see
+        ``_announce_processing``."""
         self._preview_worker: PreviewWorker | None = None
         self._preview_cache: OrderedDict[Path, ScanResult] = OrderedDict()
         self._allocator = FilenameAllocator(None)
@@ -2348,6 +2361,7 @@ class ScanPage(WorkflowPage):
         has_template = self.state.template is not None
         has_scans = bool(self.state.entries)
         running = self._worker is not None and self._worker.isRunning()
+        self._announce_processing(running)
         has_results = any(entry.processed is not None for entry in self.state.entries)
 
         self.add_scans_button.setEnabled(has_template and not running)
@@ -2388,6 +2402,18 @@ class ScanPage(WorkflowPage):
         rather than having a run stopped out from under them.
         """
         return self._worker is not None and self._worker.isRunning()
+
+    def _announce_processing(self, running: bool) -> None:
+        """Emit :attr:`processing_changed` when, and only when, it changed.
+
+        Guarded because ``_refresh_controls`` runs on every progress tick of a
+        running batch - several times a second - and re-emitting ``True`` each
+        time would make every connected slot run for no reason.
+        """
+        if running == self._announced_processing:
+            return
+        self._announced_processing = running
+        self.processing_changed.emit(running)
 
     def shutdown_batch(self) -> None:
         """Stop a running batch and wait for it, leaving the state consistent.

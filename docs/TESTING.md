@@ -92,6 +92,48 @@ The workflow, the coordinate-system reference and the diagnostic scripts for thi
 live in the repository-local `qtguitesting` skill
 (`.claude/skills/qtguitesting/`); see `docs/DEVELOPMENT_GUIDE.md`.
 
+### Three ways an offscreen GUI test hangs or lies
+
+Each of these was hit for real, and each cost a debugging session. They fail
+in ways that do not look like the cause.
+
+**Anything that spins a nested modal loop hangs the run outright.** Not just
+`QDialog.exec()` - also `QMenu.exec()` and `QToolButton.showMenu()`, which is
+documented not to return until the user closes the menu. There is nobody
+offscreen to close it, so the suite stops with no error. Use `QMenu.popup()`,
+which shows the menu and returns. This is the same defect class as the
+modal-in-a-testable-method rule above, reached from a different direction, and
+the shell's `show_recent_projects_menu` and `open_application_menu` both carry
+a comment saying so.
+
+**A signal wired to a `_prompt_*` method is a modal in disguise.** Clicking
+"Create Project" on the *window's* Project page reaches
+`_prompt_create_project` and opens a native file dialog. Component tests
+therefore drive an *unwired* page - `tests/gui/test_project_dashboard.py`
+builds its own `ProjectPage` for everything that clicks - and assert the
+window's wiring separately, without firing it.
+
+**`resize()` on a hidden top-level widget does nothing observable.** Qt defers
+the resize event until the widget is shown, so a responsive test that resizes
+without `show()` first finds the layout unchanged and concludes, wrongly, that
+the code did not react. The sibling of the better-known problem that
+`.isVisible()` is false for every descendant of a window that was never shown
+- use `isVisibleTo(parent)` for that one. And note that `resize()` on a widget
+*inside a layout* is overwritten at the next layout pass: resize the window,
+or test the component as a top-level widget.
+
+### Testing a responsive layout without writing pixel widths down
+
+The shell's layouts are chosen by measuring text in the font actually in use,
+and that font differs between a developer's Windows desktop (Segoe UI) and a
+headless runner (a wider fallback). A test asserting "1366 pixels is wide"
+would pass on one and fail on the other while the code was correct in both.
+
+`tests/gui/test_workflow_navigator.py::width_for_mode` therefore asks the
+component where each layout begins, and every width in that module is derived
+from it. The same tests then keep working when a label is reworded, which a
+hard-coded threshold would not.
+
 ## Fixture policy
 
 `tests/fixtures/` is reserved and currently almost empty. Three categories, kept
@@ -855,3 +897,33 @@ compares two runs of the same sheet covers status, `outcome`, `registration`,
 `warnings`, `fields` and `answers` - and deliberately not `timings` or
 `elapsed_seconds`, which differ between runs for reasons that have nothing
 to do with correctness.
+
+## Testing the application shell and its navigation
+
+The shell overhaul added four modules of tests, three of them GUI and one
+that needs no display.
+
+| Module | Covers |
+|---|---|
+| `tests/unit/test_theme_tokens.py` | The design system: WCAG contrast ratios computed rather than assumed, ordered scales, the shell's metric relationships, and that no hex literal escaped into a stylesheet. No Qt widget - `gui.theme.tokens` imports no Qt. |
+| `tests/gui/test_workflow_navigator.py` | The navigator as a component: nine stages in order, the four responsive layouts and every transition between them, active and disabled state surviving each one, the interlocking geometry and its hit test, keyboard access, and that a larger font changes the layout instead of clipping. |
+| `tests/gui/test_app_shell.py` | The header, the application menu (every menu, submenu, shortcut and developer command still present and working), the footer's content and its three responsive tiers, tab order and focus, and the shell at the four representative window sizes plus maximise/restore. |
+| `tests/gui/test_project_dashboard.py` | The Project page: empty state, project details, Getting Started, Recent Projects (including a moved or deleted entry), the dashboard's own two-column/stacked behaviour, and that it is decided independently of the navigator's. |
+
+### What these tests are deliberately *not*
+
+They assert **relationships**, not coordinates: "the navigator sits directly
+below the header", "each row fills the available width", "no step extends past
+the viewport". No test compares a screenshot, and none contains a pixel
+position that a font change would invalidate. The one place a number appears
+is in the token module's own scale assertions, where the number *is* the
+subject.
+
+### The defect these tests did not catch
+
+The horizontal scrollbar that appeared in the wide layout and clipped the
+bottom of every chevron was found by **looking at a screenshot from a real
+GUI session**, not by any assertion - the geometry was correct, and it was the
+scroll area that was wrong. `test_only_the_compact_layout_can_ever_scroll` and
+`test_the_steps_are_never_vertically_clipped` exist now, but the lesson is the
+general one: a shell change needs a real, rendered look as well as a suite.
