@@ -401,6 +401,19 @@ class MainWindow(QMainWindow):
         self.run_benchmark_action.triggered.connect(self._prompt_run_benchmark)
         developer_menu.addAction(self.run_benchmark_action)
 
+        self.run_stress_qualification_action = QAction(
+            "Run &100,000-Sheet Stress Test...", self
+        )
+        self.run_stress_qualification_action.setObjectName("runStressQualificationAction")
+        self.run_stress_qualification_action.setStatusTip(
+            "Launch the unattended Phase 10 qualification - runs for many hours "
+            "and deliberately force-kills processing runs to test recovery"
+        )
+        self.run_stress_qualification_action.triggered.connect(
+            self._prompt_run_stress_qualification
+        )
+        developer_menu.addAction(self.run_stress_qualification_action)
+
         help_menu = self.menuBar().addMenu("&Help")
         self.about_action = QAction(f"&About {APPLICATION_NAME}", self)
         self.about_action.triggered.connect(self._show_about)
@@ -977,6 +990,83 @@ class MainWindow(QMainWindow):
         if wants_benchmark[0] or request.run_benchmark:
             self.start_benchmark(request.output_dir, template_path=request.template_path)
         return True
+
+    def _prompt_run_stress_qualification(self) -> None:
+        """Open the 100,000-sheet qualification launcher, or reconnect to a run.
+
+        Owns every dialog, as the ``_prompt_*`` convention on this window
+        requires - :meth:`open_stress_qualification_monitor` is the part a
+        headless test drives, and it shows nothing modal.
+
+        Reopening this while a campaign is already running goes straight to
+        that campaign's monitor rather than offering to start a second one in
+        the same directory, which would have two orchestrators overwriting
+        each other's evidence.
+        """
+        from omr_scanner.gui.stress_qualification_dialog import (
+            CampaignSituation,
+            StressQualificationDialog,
+            campaign_situation,
+            default_output_dir,
+        )
+
+        default_dir = default_output_dir()
+        situation = campaign_situation(default_dir)
+        if situation is CampaignSituation.RUNNING:
+            self.open_stress_qualification_monitor(default_dir)
+            return
+        if situation is CampaignSituation.RESUMABLE:
+            # `run` refuses to start over an existing campaign without
+            # --restart, so offering the launch form here would produce a
+            # child process that exits 2 into a log file nobody reads. The
+            # monitor is where Resume Campaign lives.
+            answer = QMessageBox.question(
+                self,
+                "Continue the campaign already here?",
+                f"{default_dir} holds a campaign that stopped before "
+                "finishing.\n\nOpen its monitor, where you can resume it? "
+                "Runs already verified are not repeated.\n\n"
+                "Choose No to set up a campaign somewhere else instead.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if answer is QMessageBox.StandardButton.Yes:
+                self.open_stress_qualification_monitor(default_dir)
+                return
+
+        dialog = StressQualificationDialog(self, output_dir=default_dir)
+        if dialog.exec() != StressQualificationDialog.DialogCode.Accepted:
+            return
+        request = dialog.launched_request
+        if request is None:
+            return
+        self.statusBar().showMessage(
+            "Qualification campaign started as its own process - closing "
+            "OMRFlow will not stop it",
+            STATUS_MESSAGE_MS,
+        )
+        self.open_stress_qualification_monitor(request.output_dir)
+
+    def open_stress_qualification_monitor(self, output_dir: Path) -> object:
+        """Show the read-only monitor for the campaign in ``output_dir``.
+
+        Args:
+            output_dir: The campaign directory to watch.
+
+        Returns:
+            The monitor window, so a test can assert on what it rendered.
+
+        Kept separate from :meth:`_prompt_run_stress_qualification` and free of
+        modals so that a headless test can call it directly. The monitor is
+        non-modal and owns nothing: closing it never stops the campaign.
+        """
+        from omr_scanner.gui.stress_qualification_monitor import (
+            StressQualificationMonitor,
+        )
+
+        monitor = StressQualificationMonitor(output_dir, self)
+        monitor.show()
+        return monitor
 
     def _prompt_run_benchmark(self) -> None:
         """Ask which labelled dataset to benchmark, then start."""

@@ -813,3 +813,45 @@ reference (`.claude/skills/qtguitesting/references/omrflow_gui_test_scenarios.md
 "Calibration page") for two gotchas specific to this page: `.isVisible()` is
 unreliable on a page that was never `.show()`n, and `CalibrationPage.run_finished`
 carries no payload, unlike `ScanPage.batch_finished`.
+
+## Testing the 100,000-sheet qualification (Phase 10)
+
+The qualification campaign itself is a multi-hour operator action, so
+everything about it that *can* be tested quickly is tested quickly, and the
+long run is not simulated.
+
+`tests/unit/test_qualification.py` (170 tests, no scale, no processes)
+covers the parts that decide things: the assertion evaluator, the semantic
+digest, the durable stage machine, the estimates, preflight, the telemetry
+writer, the report renderers and the operator-stop sentinel.
+
+`tests/gui/test_stress_qualification_gui.py` (37 tests) covers the launcher
+and monitor: the menu item, the argv each mode produces, the preflight gate,
+the monitor's rendering of a synthetic state file and telemetry tail, and
+the three finished verdicts. **Every launcher is injected and every test
+that could reach a process asserts nothing was launched** - a unit test that
+accidentally started a campaign would run for most of a day.
+
+`tests/integration/test_stress_kill_resume.py` remains the real
+forced-kill/resume test at 100 and 1,000 sheets (10,000 under `-m stress`).
+
+### Three rules this feature's own testing produced
+
+**Every "no X happened" assertion needs a companion assertion that there was
+an opportunity for X to happen.** A defect made a kill fire before anything
+was committed, so "no already-committed sheet was re-read" was true of an
+empty set and the whole run reported PASS. A vacuous pass is worse than a
+failure, because it looks like evidence. See
+`development/PHASE_10_HANDOFF.md` §14.4.
+
+**Measure the property, do not infer it.** A resumed run that re-read 20,000
+already-committed sheets still ends with 100,000 correct rows, so final
+counts cannot detect it. The run writes a submission log
+(`benchmark_stress --submission-log`) and the assertion is an intersection
+against the committed set captured before the kill.
+
+**Exclude what legitimately varies, and nothing else.** The digest that
+compares two runs of the same sheet covers status, `outcome`, `registration`,
+`warnings`, `fields` and `answers` - and deliberately not `timings` or
+`elapsed_seconds`, which differ between runs for reasons that have nothing
+to do with correctness.

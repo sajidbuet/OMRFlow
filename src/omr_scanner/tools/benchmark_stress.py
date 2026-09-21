@@ -125,6 +125,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--quiet", action="store_true", help="Do not print progress lines.")
     parser.add_argument(
+        "--submission-log",
+        type=Path,
+        default=None,
+        help=(
+            "Append the batch_index of every sheet this run submits for "
+            "recognition to this file, one per line. Used by the Phase 10 "
+            "qualification to measure directly - rather than infer - that a "
+            "resumed run never re-reads an already-committed sheet."
+        ),
+    )
+    parser.add_argument(
         "--force-lock",
         action="store_true",
         help=(
@@ -269,6 +280,20 @@ def _run(
             file=sys.stdout,
         )
 
+    submission_log = None
+    on_submit = None
+    if arguments.submission_log is not None:
+        arguments.submission_log.parent.mkdir(parents=True, exist_ok=True)
+        # Line-buffered and appended: a run that is about to be killed
+        # abruptly must leave behind what it had already submitted, so this
+        # is flushed per chunk rather than held until the end.
+        submission_log = arguments.submission_log.open("a", encoding="utf-8")
+
+        def on_submit(indexes: tuple[int, ...]) -> None:
+            assert submission_log is not None
+            submission_log.write("".join(f"{index}\n" for index in indexes))
+            submission_log.flush()
+
     started = time.monotonic()
     recorder_tel.start()
     try:
@@ -283,12 +308,15 @@ def _run(
             should_cancel=_should_cancel,
             on_result=recorder_db.record,
             on_progress=_on_progress,
+            on_submit=on_submit,
         )
     except KeyboardInterrupt:
         cancelled["flag"] = True
     finally:
         recorder_db.flush()
         recorder_tel.stop()
+        if submission_log is not None:
+            submission_log.close()
         if not arguments.quiet:
             print()
 

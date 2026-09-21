@@ -814,12 +814,294 @@ choice): 154 source files, no issues.
   examination scans, which is a separate calibration exercise this phase
   (both passes of it) was never scoped to perform.
 
+## 14. The qualification harness (2026-09-21)
+
+**Status: built, validated at reduced scale, and NOT YET RUN at 100,000
+sheets.** The campaign itself is an operator action; see §14.6.
+
+§9/§10 above describe the 100,000-sheet acceptance matrix as a manual
+procedure: start a run, watch a counter, kill the process by hand at each
+of five checkpoints, restart it, and check afterwards. That procedure was
+never performed, and on inspection it could not have produced the evidence
+the acceptance criteria actually ask for. This section replaces it.
+
+Full operator documentation is in
+[`docs/phase10_qualification.md`](../docs/phase10_qualification.md). This
+section records only what was built, why it is shaped the way it is, what
+the validation actually measured, and what remains.
+
+### 14.1 Why the manual procedure could not work
+
+Three problems, none of them about effort:
+
+1. **The decisive measurement cannot be taken by hand.** The acceptance
+   criterion "no previously-completed job was rescheduled for recognition"
+   is about which sheets the *restarted* run submitted. Final row counts
+   cannot distinguish a correct resume from one that silently re-read
+   20,000 already-committed sheets: both end with 100,000 correct rows.
+   §10's procedure has no way to tell them apart, and the old integration
+   test (`test_stress_kill_resume.py`) *infers* the property from
+   before/after results rather than measuring it.
+
+2. **The pre-kill evidence dies with the process.** "Which sheets were
+   durably committed at the instant of the kill" has to be captured by
+   something that is not the process being killed.
+
+3. **Five kills against one project prove the wrong thing.** §10 offers
+   "either the same run ... or five fresh runs". Those are not equivalent:
+   killing one project at 1%, then 25%, then 50% tests recovery from a
+   database a previous recovery produced. Only independent projects test
+   whether recovery depends on the failure point.
+
+### 14.2 What was built
+
+| File | What it is |
+|---|---|
+| `evaluation/qualification.py` | The whole campaign: config, a durable stage state machine, preflight, evidence capture, the semantic digest, the assertions, the forced kill and orphan check, external telemetry, and both reports. The single source of truth for every verdict. |
+| `tools/phase10_qualification.py` | The headless CLI: `preflight` / `run` / `resume` / `status` / `report`. The only supported way to run the campaign. |
+| `run_phase10_100k_qualification.ps1` | A thin argument wrapper. No behaviour of its own. |
+| `evaluation/stress_runner.py` | **Modified**: new `on_submit` callback, invoked with each chunk's `batch_index` values immediately before that chunk is handed to recognition. |
+| `tools/benchmark_stress.py` | **Modified**: new `--submission-log PATH`, appending and flushing one `batch_index` per line per chunk. |
+| `gui/stress_qualification_dialog.py` | The launch/preflight dialog, plus the pure argv builders and the launch/preflight seams. |
+| `gui/stress_qualification_monitor.py` | The read-only monitor, plus the state and telemetry readers and the verdict/summary text. |
+| `gui/main_window.py` | **Modified**: one action in the existing `Developer / Testing` submenu, its `_prompt_` method, and `open_stress_qualification_monitor`. |
+| `docs/phase10_qualification.md` | Operator documentation. |
+| `tests/unit/test_qualification.py` | 170 tests: assertion logic, digest, state machine, anti-vacuity guards and the stop sentinel, at no scale. |
+| `tests/gui/test_stress_qualification_gui.py` | 37 tests: the menu item, the argv per mode, the preflight gate, the monitor's rendering and verdicts, and that nothing is ever launched. |
+
+Nothing else was touched. In particular: no recognition, scoring,
+reconciliation or reporting semantics were changed, and no second stress
+framework was built - every run is the existing `benchmark_stress` CLI
+driving the existing `stress_runner` over the existing `stress_dataset`.
+
+### 14.2a The GUI is a launcher, and only that
+
+It starts the CLI above as a **detached** child process (a new process
+group, `DETACHED_PROCESS`, output redirected into the campaign directory)
+and then reads the files the campaign writes. It holds no stress-test,
+assertion or reporting logic, so it cannot reach a different verdict from
+the command line - it does not compute one.
+
+It also does not import `evaluation.qualification`, which reaches into
+SQLAlchemy and the database layer that `tests/unit/test_architecture.py`
+forbids the `gui` layer to depend on. Six short file-name constants are
+restated in `stress_qualification_dialog.py` beside a comment naming the
+source of truth, and
+`test_stress_qualification_gui.py::test_j_the_harness_and_the_gui_agree_on_the_sentinel_name`
+compares the duplicated `stop_requested` name against the real one so the
+duplicate cannot drift.
+
+The one thing the monitor writes is that `stop_requested` sentinel, honoured
+**between** runs (`consume_stop_request`): the run in progress finishes and
+is judged, the sentinel is removed as it is taken - leaving it would make
+the next `resume` stop again before doing any work - the campaign's status
+becomes `stopped`, the report headlines
+`STOPPED AT THE OPERATOR'S REQUEST - NOT A FAILURE`, and the CLI exits 130.
+Never a failure, and never confused with the campaign's own deliberate
+kills, which Force Kill is separately and loudly labelled as *not* being.
+
+`Cancel` is the launch dialog's default button, deliberately: Enter gets
+pressed by accident, and a multi-hour campaign that force-kills processes is
+not something Enter should be able to start.
+
+### 14.3 Design decisions worth not undoing
+
+* **The supervisor is a separate process from the run it supervises, and
+  does not contain it in a job object.** Containing it would mean the
+  supervisor's death killed the run - and a run that dies with its
+  supervisor cannot test what survives a supervisor's death. The accepted
+  consequence is that a killed orchestrator leaves its child run alive, so
+  `terminate_leftover_runs()` cleans that up on `resume`, matched strictly
+  on the campaign's own output directory appearing in the process command
+  line. This was not theoretical: the resume validation in §14.5 killed the
+  orchestrator and the log shows `Killed 1 leftover stress run process(es)`.
+
+* **Only the coordinator is killed, never the tree.** The property under
+  test is that `services/process_containment.py`'s Job Object takes the
+  pool down unasked. Killing the tree ourselves would make that assertion
+  meaningless.
+
+* **Everything is keyed by `batch_index`, never `scan_id`.** `scan_id` is
+  an autoincrement surrogate with no meaning across two independently
+  created projects; `batch_index` is the sheet's identity in the
+  deterministic dataset.
+
+* **The digest excludes `timings` and `elapsed_seconds`** and covers only
+  status plus `outcome`, `registration`, `warnings`, `fields`, `answers` -
+  every part that is a decision rather than a duration.
+
+* **Telemetry is sampled from outside the run.** An in-process sampler
+  loses its history at the kill and can only see the coordinator, where
+  almost none of the CPU time is spent.
+
+* **Every run starts from a clean project.** A run interrupted by the
+  orchestrator's own death is discarded and restarted rather than resumed:
+  a project that has already survived one unplanned interruption is not the
+  clean starting point the campaign's premise requires. This costs up to a
+  whole run on a `resume`, deliberately.
+
+* **`evaluation` still may not import PySide6.** `describe_environment()`
+  therefore records `numpy` and `sqlalchemy` versions and deliberately not
+  a Qt version - the campaign is headless and has nothing to do with the
+  GUI. The architecture test caught an earlier draft that did import Qt.
+
+### 14.4 The vacuous-pass defect found during validation
+
+**Worth reading even if nothing else here is.**
+
+The first end-to-end validation run reported K50 as PASS with every
+recovery assertion green. It was wrong. `TelemetryWriter.latest` was not
+cleared between runs, so K50's kill condition was satisfied by R0's final
+committed count the instant K50 started. K50 was killed before committing a
+single sheet; the pre-kill committed set was empty; "0 already-committed
+sheets were re-submitted" was therefore trivially true of an empty set. The
+evidence file recorded `committed_count: 0` next to an assertion claiming
+success.
+
+A vacuous pass is worse than a failure, because it looks like evidence.
+Three changes close it, and all three should stay:
+
+1. `TelemetryWriter.start()` clears `latest`.
+2. A new release-blocking assertion, `kill_reached_requested_checkpoint`,
+   fails unless the kill landed within 80% of the requested percentage with
+   a non-empty committed set.
+3. `previously_completed_jobs_rescheduled_for_recognition` now requires
+   both sets to be non-empty, not merely disjoint.
+
+The general rule: **every "no X happened" assertion needs a companion
+assertion that there was an opportunity for X to happen.**
+
+The GUI tests found the same *class* of problem once more, in a much smaller
+place: `failed_assertion_names` iterated only the run list derived from the
+state file's recorded config, so a campaign whose config was missing or
+malformed reported "see the report for the details" while holding the
+details. It now walks every stage after the ordered ones.
+
+A second, smaller defect from the same pass: `application_invariants`
+originally required `HealthReport.is_ok`, which is False for a mere
+*warning*. A stress project legitimately carries two warnings for its whole
+life (`SETS_WITHOUT_A_VERIFIED_KEY`, `NO_BACKUPS`) because it has no answer
+key and no backup. The assertion now fails only on error/critical issues,
+and reports every warning rather than swallowing it. A third: preflight's
+stale-lock check refused to start any campaign at all, because
+`execute_campaign` takes the campaign lock *before* running preflight; it
+now asks "is another, live orchestrator using this directory?". A fourth:
+the CLI disagreed with itself about exit codes - `report` and one branch of
+`resume` returned 1 (a release-blocking failure) for a campaign that had
+passed at reduced scale and for one stopped deliberately between runs, while
+`run` reported both correctly. One `_exit_code_for` now answers for all
+three commands.
+
+### 14.5 What the validation actually measured
+
+Executed on this machine (Windows 11, 16 logical CPUs, 31.4 GB RAM), real
+commands with real output, not simulations:
+
+* **Reference path**, 200 sheets, `--mode reference`: passed. (Run before
+  the §14.4 fixes added the fifteenth assertion, so its own report shows
+  fourteen; the runs below are the current shape.)
+
+* **Full kill path**, 2,000 sheets, checkpoint 50%, 6 workers, after the
+  §14.4 fixes: R0 and K50 both passed every assertion. K50's evidence:
+  killed with **1,001 of 2,000 sheets durably committed** (target 1,000),
+  **7 worker processes live at the moment of the kill, 0 orphans
+  surviving**, project lock left behind (proof the death was ungraceful),
+  attempt 1 submitted 2,000 and the resumed run submitted **874** - the
+  exact remainder - with **0 intersection** against the captured committed
+  set. `semantic_reference_match`: 0 differing, 0 missing, 0 unexpected
+  across all 2,000 sheets. `quick_check` and `integrity_check` both `ok`,
+  0 foreign-key violations. Worker recycling observed (the supervised tree
+  shrank once across 29 samples, between 2 and 8 processes).
+
+* **Outer resume**, 1,200 sheets, checkpoints 40% and 70%: the orchestrator
+  was force-killed from another window immediately after R0 was recorded as
+  passed. `status` then correctly showed `R0 passed / K40 running` with no
+  live orchestrator; `resume` killed the leftover child run, skipped R0,
+  discarded K40's partial project, and completed both K40 (killed at
+  526/1,200) and K70 (killed at 851/1,200) with every assertion passing and
+  0 orphans each.
+
+* **Operator stop**, 600 sheets, checkpoints 40% and 70%: the sentinel was
+  written from another window once R0 had passed. The campaign finished K40,
+  judged it, then stopped **before** K70 with exit code **130**,
+  `overall_status: stopped`, the sentinel removed, a note naming what
+  happened, and a report headlining
+  `STOPPED AT THE OPERATOR'S REQUEST - NOT A FAILURE`. `resume` then skipped
+  R0 and K40, ran K70, and exited 0.
+
+* **Reduced-scale honesty**: each of those campaigns printed, and its report
+  headlined, `ALL RUNS PASSED - NOT THE RELEASE QUALIFICATION`, naming the
+  specific deficiency (sheet count, mode, missing checkpoints).
+  `is_release_qualification()` requires all three, and the report's
+  `qualified` field is False without them.
+
+* **Final re-verification** against the code as committed, 250 sheets,
+  `--mode reference`, warm-up on: warm-up `50/50 committed, 50 submitted,
+  exit 0`; R0 `15 assertion(s), 0 failed`; `status` reporting
+  `passed_not_qualification`; `report` exiting **0** rather than 1, which is
+  the third defect §14.4 records.
+
+* **Preflight** against the real template: PASS, with `22 h 30 min`
+  estimated runtime and `53.5 GB` estimated peak disk for the full
+  100,000-sheet campaign on this machine. Both are labelled estimates
+  derived from this project's own previously measured 11.24 sheets/s; the
+  campaign never depends on them.
+
+### 14.6 What remains, and it is one thing
+
+**The 100,000-sheet campaign has not been run.** It is an operator action
+of roughly a day; the harness that performs it is complete and validated as
+above. Phase 10's status is therefore unchanged in substance:
+
+> **VALIDATED WITH NON-BLOCKING LIMITATIONS - FULL 100,000-SHEET
+> QUALIFICATION READY TO RUN**
+
+Do not mark Phase 10 fully qualified until a `full`-mode, 100,000-sheet,
+five-checkpoint campaign has completed and its `qualification_summary.md`
+headlines **QUALIFIED**. A smaller campaign that passes is not that, by
+construction, and both the CLI and the report say so.
+
+To run it:
+
+```powershell
+# Check first - changes nothing, takes seconds.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification preflight `
+    --output-dir D:\OMRflow-qualification `
+    --template examples\templates\100_question_4_choice_example.omrt
+
+# Start it and leave the machine alone.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
+    --output-dir D:\OMRflow-qualification `
+    --template examples\templates\100_question_4_choice_example.omrt
+
+# From any other window, as often or as rarely as you like (read-only).
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification status `
+    --output-dir D:\OMRflow-qualification
+
+# If it was interrupted.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification resume `
+    --output-dir D:\OMRflow-qualification
+```
+
+Also still outstanding from §13, unchanged by this section: lazy Qt models
+for the Results/Resolve/Attendance pages; the §27 conflict-queue throughput
+re-measurement against the stress dataset specifically; a
+packaged-application smoke test; and real-scan recognition **accuracy**
+calibration, which nothing in Phase 10 has ever addressed.
+
 ## For whoever picks this up
 
 Read `evaluation/stress_dataset.py` and `evaluation/stress_runner.py`'s
 module docstrings first - both explain a layering decision (why stress
 orchestration lives in `evaluation`, not `services`) that is easy to
-"fix" by moving it the wrong way. Before running the full 100,000-sheet
-matrix, read `tools/benchmark_stress.py`'s own docstring for the exact
-kill procedure - a graceful `Ctrl+C` is caught and shut down cleanly on
-purpose, and does not exercise what the acceptance test requires.
+"fix" by moving it the wrong way. Then read
+`evaluation/qualification.py`'s module docstring and §14.4 above: the
+harness's own validation found a defect that made a kill run pass against
+an empty evidence set, and the guards that now prevent it are easy to
+mistake for redundancy.
+
+§9/§10's manual kill procedure is superseded by §14. It is kept for the
+historical record; do not follow it. A graceful `Ctrl+C` is still caught
+and shut down cleanly on purpose, and still does not exercise what the
+acceptance criteria require - which is why the campaign kills the
+coordinator with `Process.kill()` instead.

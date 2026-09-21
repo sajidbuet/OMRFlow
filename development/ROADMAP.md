@@ -418,17 +418,37 @@ previously-committed sheet's result unchanged and to reach the exact
 correct final count on resume. Registering a full 100,000-sheet batch was
 executed and measured directly. **Not yet met:** the mandatory full-scale
 100,000-sheet *processing* run and its 1%/25%/50%/75%/99% kill-and-resume
-acceptance matrix were not executed in this environment - a scoped,
-agreed deferral (a multi-hour-to-multi-day undertaking), not a technical
-limitation; the harness that runs it is complete and exercised at smaller
-scale. Performance limits are documented only as far as the executed runs
-measured them.
+acceptance matrix have not been executed in this environment - a scoped,
+agreed deferral (roughly a day of machine time on this hardware), not a
+technical limitation. Performance limits are documented only as far as the
+executed runs measured them.
 
-**Not done.** Lazy Qt models for the Scan/Results/Resolve/Attendance
-tables (a real, disclosed gap against a 100,000-row *display*, distinct
-from the backend, which was verified against that scale) - a diagnostic
-bundle, a global GUI exception handler, automatic backup-before-migration
-wiring, stress-scale roster/reconciliation/reporting load testing, and
+**Since 2026-09-21** that matrix is a single unattended command rather than
+a manual procedure: `evaluation.qualification` plus
+`tools.phase10_qualification` (`preflight`/`run`/`resume`/`status`/`report`)
+run an uninterrupted reference run and **five independent forced-kill runs**,
+each in its own project, capturing the pre-kill committed set from outside
+the process it then kills, measuring - not inferring - that the restarted
+run never re-reads an already-committed sheet (via a new
+`benchmark_stress --submission-log`), and comparing every sheet's decision
+against the reference run by semantic digest. Fifteen release-blocking
+assertions, none downgradeable to a warning; resumable at stage granularity;
+self-contained telemetry; JSON and Markdown reports that refuse to say
+"QUALIFIED" for a reduced-scale or reference-only campaign. Validated end to
+end at 200/1,200/2,000 sheets including real forced kills and a real
+orchestrator crash - see `development/PHASE_10_HANDOFF.md` §14, and
+`docs/phase10_qualification.md` for how to run it. **The full-scale campaign
+itself remains unrun**, and Phase 10 must not be marked fully qualified
+until a report headlines `QUALIFIED`.
+
+**Not done.** Lazy Qt models for the Results/Resolve/Attendance tables (the
+Scan page's is done) - a real, disclosed gap against a 100,000-row
+*display*, distinct from the backend, which was verified against that scale.
+Stress-scale roster/reconciliation/reporting load testing: the qualification
+campaign times the stored queries Review/Results/Reports depend on against
+the real 100,000-row batch, but cannot generate a result workbook at that
+scale, because the stress dataset has no attendance roster, answer key or
+result template and inventing them would measure a fabricated scenario.
 Windows path/packaging-specific testing (no packaging build exists yet).
 
 ---

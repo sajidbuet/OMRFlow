@@ -1527,10 +1527,11 @@ Still open, and why Phase 10 is not marked complete:
 
 - [ ] **The mandatory full-scale 100,000-sheet processing run, and its
   1%/25%/50%/75%/99% kill-and-resume acceptance matrix, have not been
-  executed** — a scoped, agreed deferral (a multi-hour-to-multi-day
-  undertaking), not a technical limitation. The harness that runs it is
-  complete and has been exercised end to end at 100/1,000/10,000 sheets;
-  see the Phase 10 handoff for the exact commands to run it
+  executed** — a scoped, agreed deferral (roughly a day of machine time on
+  this hardware), not a technical limitation. It is now a single unattended
+  command rather than a manual procedure; see
+  [Running the 100,000-sheet qualification](#running-the-100000-sheet-qualification)
+  below and [`docs/phase10_qualification.md`](docs/phase10_qualification.md)
 - [ ] **Lazy Qt models were built only for the Scan page's table.** The
   Results/Resolve/Attendance pages' equivalent tables remain item-based
   widgets — bounded by candidate/question/report counts rather than raw
@@ -1541,6 +1542,61 @@ Still open, and why Phase 10 is not marked complete:
   everything above validates software correctness, recoverability and
   reproducibility under a synthetic workload, never recognition accuracy
   against real, physical examination scans
+
+### Running the 100,000-sheet qualification
+
+Phase 10's final acceptance test is one headless, unattended, resumable
+command. It runs for many hours, force-kills processes on purpose, and needs
+nobody watching it. Full detail — including what it does and does not
+establish — is in
+[`docs/phase10_qualification.md`](docs/phase10_qualification.md).
+
+```powershell
+# Check whether it can finish. Changes nothing, takes seconds, and prints
+# the estimated runtime and peak disk for your machine.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification preflight `
+    --output-dir D:\OMRflow-qualification `
+    --template examples\templates\100_question_4_choice_example.omrt
+
+# Start it, then leave the machine alone.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
+    --output-dir D:\OMRflow-qualification `
+    --template examples\templates\100_question_4_choice_example.omrt
+
+# Watch it from any other window, as often or as rarely as you like.
+# Read-only; it cannot disturb the campaign.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification status `
+    --output-dir D:\OMRflow-qualification
+
+# Continue an interrupted campaign. Verified runs are skipped.
+.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification resume `
+    --output-dir D:\OMRflow-qualification
+```
+
+`.\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRflow-qualification`
+is a thin wrapper over the same command, and **Tools → Developer / Testing
+→ Run 100,000-Sheet Stress Test...** is a launcher and monitor for it —
+neither adds behaviour, and closing the GUI does not stop a running
+campaign.
+
+A campaign is one uninterrupted reference run plus **five independent
+forced-kill runs**, each in its own project, killed once at 1%, 25%, 50%,
+75% and 99% of durably-committed sheets and then restarted. Each must
+satisfy fifteen release-blocking assertions — no committed result lost,
+duplicated, re-read or re-decided; no worker process outliving the
+coordinator it belonged to; SQLite's own integrity and foreign-key checks
+clean; and every sheet's recorded decision identical to the reference run's.
+No assertion is ever downgraded to a warning.
+
+The report headlines **QUALIFIED** only for a full-scale, full-mode
+campaign with all five checkpoints. A smaller campaign that passes
+headlines `ALL RUNS PASSED — NOT THE RELEASE QUALIFICATION` and names the
+specific deficiency, so a convenient shorter run cannot later be cited as
+the qualification.
+
+> The campaign performs real, abrupt process terminations. That is the test.
+> OMRFlow never changes a Windows power setting — disable sleep yourself
+> before starting a multi-hour run.
 
 ### Production hardening (Phase 10)
 
@@ -1636,9 +1692,12 @@ report generation under load; both were verified end to end at a real
 10,000-sheet scale. Real, deliberate, forced process terminations
 (not simulated) were run against 100, 1,000 and 10,000-sheet batches, each
 verified to lose nothing and duplicate nothing on resume; a separate
-10,000-sheet run was also completed uninterrupted end to end. See the
-Phase 10 handoff for the exact scale validated in this environment and what remains
-for the full 100,000-sheet acceptance run.
+10,000-sheet run was also completed uninterrupted end to end. The
+100,000-sheet acceptance campaign itself is now a single unattended command
+(see [above](#running-the-100000-sheet-qualification)), validated end to end
+at reduced scale — including a real forced kill and a real orchestrator
+crash — but **not yet run at full scale**. See the Phase 10 handoff §14 for
+exactly what that validation measured.
 
 **Data protection.** Telemetry and benchmark reports contain sheet counts,
 timings and resource usage only — never candidate names, roll numbers,

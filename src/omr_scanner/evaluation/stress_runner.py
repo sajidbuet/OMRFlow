@@ -196,6 +196,7 @@ def run_stress_batch(
     should_cancel: Callable[[], bool] | None = None,
     on_result: Callable[[ProcessedScan], None] | None = None,
     on_progress: Callable[[BatchProgress], None] | None = None,
+    on_submit: Callable[[tuple[int, ...]], None] | None = None,
 ) -> list[BatchReport]:
     """Process every sheet of a stress batch not already durably completed.
 
@@ -228,6 +229,14 @@ def run_stress_batch(
             reconciled to the permanent identity for every completion event
             by ``on_result``, which is what any consumer keeping durable or
             authoritative state should read from.
+        on_submit: Called with each chunk's ``batch_index`` values immediately
+            before that chunk is handed to recognition. This is the *only*
+            way to know which sheets a run actually submitted, as opposed to
+            which ones it finished: the Phase 10 qualification's
+            ``previously_completed_jobs_rescheduled_for_recognition``
+            assertion has to be measured, not inferred from final row counts,
+            and a resumed run that wrongly re-read an already-committed sheet
+            would still produce a correct-looking final database.
 
     Returns:
         One :class:`~omr_scanner.services.batch_processor.BatchReport` per
@@ -265,6 +274,8 @@ def run_stress_batch(
             break
         cursor = window[-1][0]
         chunk_virtual = [path for _index, path in window]
+        if on_submit is not None:
+            on_submit(tuple(index for index, _path in window))
 
         materialized = _materialize_chunk(spec, template, chunk_virtual, root)
         try:

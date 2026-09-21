@@ -52,6 +52,33 @@ No recognition, scoring or reporting rule changed. Full detail:
   **`omr_scanner.tools.benchmark_stress`**: bounded-disk-usage orchestration
   reusing the unmodified batch pipeline, and a headless CLI to run or resume
   a stress batch of any size, with telemetry and a JSON report.
+- **`omr_scanner.evaluation.qualification`** and
+  **`omr_scanner.tools.phase10_qualification`**: the 100,000-sheet release
+  qualification as one headless, unattended, resumable command
+  (`preflight`/`run`/`resume`/`status`/`report`) in place of a manual
+  kill-by-hand procedure. It runs an uninterrupted reference run plus five
+  **independent** forced-kill runs — one fresh project each, killed at 1%,
+  25%, 50%, 75% and 99% of durably-committed sheets — captures the
+  pre-kill committed set *from outside the process it then kills*, and
+  judges each run against fifteen release-blocking assertions that are
+  never downgradeable to warnings. Resumable at stage granularity, with
+  self-contained telemetry and JSON/Markdown reports that refuse to say
+  QUALIFIED for a reduced-scale or reference-only campaign. See
+  `docs/phase10_qualification.md`. **The full-scale campaign itself has not
+  been run**; the harness is validated end to end at reduced scale.
+- **`benchmark_stress --submission-log`** and an `on_submit` hook on
+  `stress_runner.run_stress_batch`: the `batch_index` of every sheet a run
+  hands to recognition, flushed per chunk. This is what makes "no
+  already-committed sheet was re-read after the restart" a *measurement*
+  rather than an inference — final row counts cannot tell a correct resume
+  from one that silently reprocessed 20,000 sheets.
+- **Tools → Developer / Testing → Run 100,000-Sheet Stress Test…**
+  (`gui.stress_qualification_dialog`, `gui.stress_qualification_monitor`):
+  a launcher and read-only monitor for the command above, holding no
+  stress-test, assertion or reporting logic of its own. The campaign runs
+  detached, so closing OMRFlow does not stop it; *Stop Safely* asks it to
+  stop between runs, which is recorded as its own outcome and never as a
+  failure.
 - **`gui.health_dialog.ProjectHealthDialog`**: one dialog, *Tools → Project
   Health / Recovery…*, for both the health check and backup/restore.
 
@@ -71,11 +98,40 @@ No recognition, scoring or reporting rule changed. Full detail:
 - The benchmark CLI's first version closed only a `ProjectDatabase`, never
   the `ProjectSession` that holds the project lock — every run after the
   first refused to open, even after a clean exit.
-- Killing the batch coordinator process leaves its worker processes
-  running, orphaned (observed directly during forced kill/resume testing).
-  Does not affect data integrity (workers never had database write access);
-  automatic cleanup is not yet implemented — see
-  `development/PHASE_10_HANDOFF.md` §8/§12.
+- Killing the batch coordinator process left its worker processes running,
+  orphaned — observed directly during forced kill/resume testing, with real
+  two-hour-old orphans found on the developer machine. Never a data-integrity
+  problem (workers have no database write access), but each one holds a CPU.
+  **Fixed** by `omr_scanner.services.process_containment`: on Windows the
+  pool is placed in a Job Object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the workers die with the
+  coordinator whether or not anything asks them to. Verified against real
+  orphans and against a negative control, and asserted on every forced kill
+  the qualification campaign performs.
+
+### Fixed — Phase 10 qualification harness (found by its own validation)
+
+- **A kill run passed every recovery assertion against an empty evidence
+  set.** The telemetry sampler's live counts were not cleared between runs,
+  so the next run's kill condition was satisfied by the previous run's final
+  count the instant it started: the run was killed before committing a
+  single sheet, and "no already-committed sheet was re-read" was trivially
+  true of nothing. Fixed three ways — the counts are cleared per run, a new
+  `kill_reached_requested_checkpoint` assertion requires the kill to have
+  landed near where it was asked to with real committed work to protect, and
+  the no-reprocessing assertion now requires both sets to be non-empty
+  rather than merely disjoint. A vacuous pass is worse than a failure,
+  because it looks like evidence.
+- `application_invariants` required `HealthReport.is_ok`, which is False for
+  a mere *warning* — and a stress project legitimately has no answer key and
+  no backup for its whole life. It now fails only on error-level or critical
+  issues, and reports every warning rather than swallowing it.
+- Preflight's stale-lock check refused to start any campaign at all, because
+  the campaign takes its own lock before running preflight. It now asks
+  whether another *live* orchestrator holds the directory.
+- The monitor reported "see the report for the details" about a failure
+  whose details it was holding, when a state file's recorded config was
+  missing or malformed.
 
 ### Added — Phase 9
 
