@@ -50,7 +50,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from omr_scanner import __version__
+from omr_scanner import RELEASE_CHANNEL, __version__, build_identifier
+from omr_scanner.database import SCHEMA_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping
@@ -95,6 +96,14 @@ def _environment_info(extra_environment: Mapping[str, str] | None) -> dict[str, 
 
     info = {
         "application_version": __version__,
+        # The three compatibility facts a prerelease bug report turns on:
+        # which maturity of build it was, which exact source it was built
+        # from, and which database schema the code expects. Without them an
+        # "it does not open my project" report cannot be triaged - a project
+        # written by a newer schema and a genuine defect look identical.
+        "release_channel": RELEASE_CHANNEL.value,
+        "build": build_identifier(),
+        "expected_schema_version": str(SCHEMA_VERSION),
         "python_version": sys.version.split()[0],
         "opencv_version": opencv_version,
         "os_platform": platform.platform(),

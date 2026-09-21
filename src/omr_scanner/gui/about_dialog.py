@@ -38,7 +38,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from omr_scanner import APPLICATION_NAME, COPYRIGHT_YEAR, LICENSE_NAME, REPOSITORY_URL, __version__
+from omr_scanner import (
+    ALPHA_NOTICE,
+    APPLICATION_NAME,
+    COPYRIGHT_YEAR,
+    IS_PRERELEASE,
+    LICENSE_NAME,
+    RELEASE_CHANNEL,
+    REPOSITORY_URL,
+    __version__,
+    build_identifier,
+)
+from omr_scanner.gui.theme import Color
 
 DEVELOPER_NAME = "Dr. Sajid Muhaimin Choudhury"
 """The project's author. ChatGPT and Claude Code assisted with development;
@@ -76,9 +87,14 @@ class AboutDialog(QDialog):
         name_label.setFont(name_font)
         layout.addWidget(name_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        version_label = QLabel(f"Version {__version__}")
+        version_label = QLabel(f"Version {__version__}  ·  {RELEASE_CHANNEL.value}")
         version_label.setObjectName("aboutVersion")
+        version_label.setToolTip(f"Build {build_identifier()}")
         layout.addWidget(version_label, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        if IS_PRERELEASE:
+            layout.addSpacing(8)
+            layout.addWidget(self._build_prerelease_notice())
 
         layout.addSpacing(10)
 
@@ -118,6 +134,31 @@ class AboutDialog(QDialog):
         layout.addWidget(self._build_button_box())
 
         self.setMinimumWidth(360)
+
+    def _build_prerelease_notice(self) -> QLabel:
+        """The release-maturity warning, shown only on a prerelease build.
+
+        Here and in the documentation, and deliberately nowhere else. A modal
+        on every launch would teach an operator to dismiss warnings without
+        reading them, which is worse than not warning at all; the About
+        dialog is where someone looks to find out what they are running.
+
+        Driven by :data:`omr_scanner.IS_PRERELEASE`, which is derived from the
+        version string - so a stable build cannot accidentally keep showing
+        an Alpha warning, and an Alpha build cannot accidentally hide one.
+        """
+        notice = QLabel(ALPHA_NOTICE)
+        notice.setObjectName("aboutPrereleaseNotice")
+        notice.setWordWrap(True)
+        notice.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        notice.setStyleSheet(
+            f"color: {Color.TEXT_PRIMARY};"
+            f"background: {Color.PRIMARY_SOFT};"
+            f"border: 1px solid {Color.PRIMARY};"
+            "border-radius: 6px;"
+            "padding: 8px;"
+        )
+        return notice
 
     def _build_link_row(self) -> QHBoxLayout:
         """Build the GitHub Repository / View License button row."""

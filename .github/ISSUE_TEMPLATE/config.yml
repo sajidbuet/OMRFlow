@@ -1,0 +1,16 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or privacy vulnerability
+    url: https://github.com/sajidbuet/OMRflow/security/advisories/new
+    about: >-
+      Report privately, never as a public issue. A public report tells
+      everyone - including people running the affected build on live
+      examination material - before a fix exists. See SECURITY.md.
+  - name: Documentation
+    url: https://github.com/sajidbuet/OMRflow/tree/main/docs/wiki/Home.md
+    about: Installation, Quick Start, the User Guide and Known Limitations.
+  - name: Known Limitations
+    url: https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Known-Limitations.md
+    about: >-
+      Check here first. OMRFlow is an Alpha release and some behaviour is a
+      documented gap rather than a defect.

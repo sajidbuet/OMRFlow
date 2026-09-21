@@ -12,11 +12,15 @@ import pytest
 from PySide6.QtWidgets import QDialog, QLabel, QPushButton
 
 from omr_scanner import (
+    ALPHA_NOTICE,
     APPLICATION_NAME,
     COPYRIGHT_YEAR,
+    IS_PRERELEASE,
     LICENSE_NAME,
+    RELEASE_CHANNEL,
     REPOSITORY_URL,
     __version__,
+    build_identifier,
 )
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
 
@@ -64,6 +68,59 @@ class TestIdentityContent:
     def test_the_tagline_is_shown(self, dialog: AboutDialog):
         texts = " ".join(_label_texts(dialog))
         assert "OMR Template Design and Scanning Application" in texts
+
+
+class TestReleaseMaturityIsStated:
+    """A prerelease build must say what it is, where a user looks for it.
+
+    The About dialog is the one place an operator goes to find out what they
+    are running, so it carries the release channel and the warning. The
+    warning is deliberately *not* a start-up modal: one that appears on every
+    launch teaches people to dismiss warnings unread.
+    """
+
+    def test_the_release_channel_is_shown_beside_the_version(
+        self, dialog: AboutDialog
+    ):
+        texts = " ".join(_label_texts(dialog))
+        assert RELEASE_CHANNEL.value in texts
+        assert __version__ in texts
+
+    def test_the_prerelease_notice_is_shown(self, dialog: AboutDialog):
+        notice = dialog.findChild(QLabel, "aboutPrereleaseNotice")
+        assert notice is not None
+        assert notice.text() == ALPHA_NOTICE
+
+    def test_the_notice_says_qualification_is_incomplete_and_to_verify(
+        self, dialog: AboutDialog
+    ):
+        """The two things a tester has to take away from an Alpha build."""
+        notice = dialog.findChild(QLabel, "aboutPrereleaseNotice")
+        assert notice is not None
+        assert "qualification" in notice.text()
+        assert "verify" in notice.text().lower()
+
+    def test_the_build_identifier_is_available_for_bug_reports(
+        self, dialog: AboutDialog
+    ):
+        """Version plus source commit, without cluttering the dialog."""
+        version_label = dialog.findChild(QLabel, "aboutVersion")
+        assert version_label is not None
+        assert build_identifier() in version_label.toolTip()
+
+    def test_the_notice_is_tied_to_the_version_not_configured_separately(self):
+        """So a stable build cannot keep showing an Alpha warning."""
+        assert IS_PRERELEASE is RELEASE_CHANNEL.is_prerelease
+
+    def test_no_modal_warning_is_raised_on_construction(self, qtbot):
+        """Constructing the dialog must not itself pop anything up.
+
+        Guards the decision above *and* the offscreen test suite: a modal
+        here would block the run with nothing to dismiss it.
+        """
+        about = AboutDialog()
+        qtbot.addWidget(about)
+        assert about.findChild(QLabel, "aboutPrereleaseNotice") is not None
 
 
 class TestAttributionContent:

@@ -1,0 +1,61 @@
+name: Documentation issue
+description: Documentation is wrong, unclear, out of date or missing
+labels: ["documentation", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation that is wrong is worse than documentation that is
+        missing, so a correction is genuinely useful — particularly where a
+        page describes an interface that has since changed.
+
+  - type: input
+    id: page
+    attributes:
+      label: Which page?
+      description: A path or a link. Say "missing" if the page should exist and does not.
+      placeholder: "docs/wiki/Quick-Start.md, step 6"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is wrong with it?
+      options:
+        - Factually incorrect - it describes behaviour OMRFlow does not have
+        - Out of date - the interface has changed
+        - Unclear or ambiguous
+        - Missing - something is not documented at all
+        - A screenshot is from an older version
+        - A link is broken
+        - Typo or wording
+    validations:
+      required: true
+
+  - type: textarea
+    id: says
+    attributes:
+      label: What it currently says
+      description: Quote it, so the exact wording can be found.
+    validations:
+      required: false
+
+  - type: textarea
+    id: correction
+    attributes:
+      label: What it should say
+      description: >-
+        If you know the correct behaviour, say how you established it - tried
+        it, read the code, or asked. Documentation is only fixed with
+        something verified, not with a plausible guess.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OMRFlow version you were using
+      placeholder: "0.1.0-alpha.1"
+    validations:
+      required: false

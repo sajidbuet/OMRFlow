@@ -28,6 +28,41 @@ from omr_scanner.gui.theme import application_stylesheet
 logger = logging.getLogger(__name__)
 
 
+def configure_application(app: QApplication) -> None:
+    """Apply OMRFlow's identity, icon and stylesheet to ``app``.
+
+    Args:
+        app: The application object to configure.
+
+    Separated from :func:`run_gui` so it can be tested: `run_gui` ends in
+    ``app.exec()``, which does not return until the user closes the window,
+    so nothing about the configuration it performs could otherwise be
+    asserted.
+
+    Note what is *not* set here: ``applicationDisplayName``. Qt appends that
+    to every window title automatically, which produced
+    "OMRFlow <version> - OMRFlow" on the packaged build - the application
+    name twice, once from the title the window composed and once from Qt.
+    The window builds its own title
+    (:func:`omr_scanner.gui.main_window.window_title`), and Qt's standard
+    dialogs fall back to ``applicationName``, so nothing is lost by leaving
+    it unset.
+    """
+    app.setApplicationName(APPLICATION_NAME)
+    app.setOrganizationName(ORGANIZATION_NAME)
+    app.setApplicationVersion(__version__)
+    # Sets the default icon for every top-level window and is what the
+    # platform (taskbar, dock, alt-tab switcher) reads, in addition to each
+    # window's own `setWindowIcon()` for its title bar.
+    app.setWindowIcon(application_icon())
+    # On the application rather than on each window: `QMessageBox`,
+    # `QFileDialog` and `QInputDialog` are constructed by Qt itself or by its
+    # static convenience methods, so there is no constructor of theirs to
+    # style. This is the only place from which their buttons and labels can be
+    # made to match the rest of the interface.
+    app.setStyleSheet(application_stylesheet())
+
+
 def run_gui(config: AppConfig, *, initial_project: Path | None = None) -> int:
     """Run the desktop application until the user closes it.
 
@@ -42,20 +77,7 @@ def run_gui(config: AppConfig, *, initial_project: Path | None = None) -> int:
     # A QApplication may already exist when the GUI is started from a test.
     existing = QApplication.instance()
     app = existing if isinstance(existing, QApplication) else QApplication([])
-    app.setApplicationName(APPLICATION_NAME)
-    app.setApplicationDisplayName(APPLICATION_NAME)
-    app.setOrganizationName(ORGANIZATION_NAME)
-    app.setApplicationVersion(__version__)
-    # Sets the default icon for every top-level window and is what the
-    # platform (taskbar, dock, alt-tab switcher) reads, in addition to each
-    # window's own `setWindowIcon()` for its title bar.
-    app.setWindowIcon(application_icon())
-    # On the application rather than on each window: `QMessageBox`,
-    # `QFileDialog` and `QInputDialog` are constructed by Qt itself or by its
-    # static convenience methods, so there is no constructor of theirs to
-    # style. This is the only place from which their buttons and labels can be
-    # made to match the rest of the interface.
-    app.setStyleSheet(application_stylesheet())
+    configure_application(app)
 
     window = MainWindow(config=config)
     # Installed with the window as parent, and before `show()`, so that any

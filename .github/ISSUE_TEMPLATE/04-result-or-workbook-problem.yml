@@ -1,0 +1,135 @@
+name: Result or Excel problem
+description: A score, rank, attendance state or generated workbook is wrong
+labels: ["results", "reporting", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ Attendance workbooks and result workbooks contain candidate data
+
+        **This issue will be public and permanent.** An attendance workbook is
+        a list of real names and roll numbers.
+
+        Before attaching anything: **replace every name and roll number with
+        fabricated ones**, and cut the sheet down to the few rows that still
+        reproduce the problem. Keep the structure — the header rows, the
+        column order, the merged cells, the logo — because that is usually
+        what matters.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before reporting
+      options:
+        - label: I am on the latest release
+          required: true
+        - label: Any workbook I am attaching has had real names and roll numbers replaced
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OMRFlow version
+      placeholder: "0.1.0-alpha.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: What is wrong?
+      multiple: true
+      options:
+        - Score for a candidate
+        - Negative marking
+        - Rank / merit order
+        - Attendance state (absent, present, absent-with-script…)
+        - Absentees appearing in the meritwise sheet
+        - Rollwise sheet contents or layout
+        - Meritwise sheet contents or layout
+        - Summary / Answer Key / Processing Log sheet
+        - Workbook formatting lost (fonts, merged cells, column widths)
+        - Logo or image missing from the generated workbook
+        - Report generation fails with an error
+        - Attendance workbook will not import
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: Expected and actual values
+      description: >-
+        Give the numbers. Use fabricated roll numbers. If it is a scoring
+        problem, include the scoring configuration - marks for correct,
+        incorrect and blank, and whether negative marking is on.
+      placeholder: |
+        Scoring: +1 correct, -0.25 incorrect, 0 blank
+        Candidate 100001: 40 correct, 10 wrong, 50 blank
+          expected 40 - 2.5 = 37.5
+          OMRFlow shows 40
+    validations:
+      required: true
+
+  - type: input
+    id: sets
+    attributes:
+      label: Examination sets
+      description: >-
+        How many sets the project defines, and which one this concerns.
+        Per-set attendance and set-aware reporting are implemented but have
+        only been tested with synthetic data, so set information is
+        especially useful.
+      placeholder: "3 sets (A, B, C); problem is in set B"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: workbook-features
+    attributes:
+      label: Does the source workbook contain any of these?
+      multiple: true
+      options:
+        - A logo or other image
+        - A title or heading rows above the candidate table
+        - Merged cells
+        - Multiple worksheets
+        - Existing absentee markings
+        - Formulas
+        - None of these
+    validations:
+      required: true
+
+  - type: dropdown
+    id: recomputed
+    attributes:
+      label: Has anything been recomputed?
+      description: >-
+        Changing an answer key or the scoring configuration and recalculating
+        is a distinct path from scoring once, and worth knowing about.
+      options:
+        - No - scored once
+        - Yes - the answer key changed and results were recalculated
+        - Yes - the scoring configuration changed and results were recalculated
+        - Yes - conflicts were resolved and results were recalculated
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Sanitised source workbook and generated output
+      description: >-
+        Both, if you can - the problem is often in the relationship between
+        them. Fabricated names and roll numbers only.
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic bundle
+      description: "*Application menu → Tools → Create Diagnostic Bundle…*"
+    validations:
+      required: false

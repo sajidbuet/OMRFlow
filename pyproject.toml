@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omrflow"
-version = "0.1.0.dev0"
+# Read from `src/omr_scanner/_version.py`, which is the single place the
+# version is written down - see `[tool.setuptools.dynamic]` below. Declaring
+# it statically here as well is how the package metadata and the running
+# application come to disagree.
+dynamic = ["version"]
 description = "Template-driven OMR examination processing and result management system"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,7 +16,10 @@ license = { text = "MIT" }
 authors = [{ name = "Sajid Muhaimin Choudhury" }]
 keywords = ["omr", "optical-mark-recognition", "examination", "assessment", "pyside6"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    # Matches the release channel `_version.py` derives from the version
+    # string. Moved from "2 - Pre-Alpha" when 0.1.0-alpha.1 made the first
+    # externally installable build.
+    "Development Status :: 3 - Alpha",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: Education",
     "License :: OSI Approved :: MIT License",
@@ -56,6 +63,13 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.11",
 ]
+# Needed only to produce a distributable Windows build, not to develop or
+# test OMRFlow - see `docs/wiki/Release-Process.md`. The Windows installer
+# additionally needs Inno Setup 6, which is not a Python package and is
+# installed separately (`winget install --id JRSoftware.InnoSetup`).
+packaging = [
+    "pyinstaller>=6.6",
+]
 
 [project.scripts]
 omrflow = "omr_scanner.main:main"
@@ -66,6 +80,14 @@ omrflow-gui = "omr_scanner.main:main"
 [project.urls]
 Homepage = "https://github.com/sajidbuet/OMRflow"
 Documentation = "https://github.com/sajidbuet/OMRflow/tree/main/docs"
+
+[tool.setuptools.dynamic]
+# The single source of truth for the application version. `0.1.0-alpha.1` is
+# both a Semantic Versioning prerelease and a valid PEP 440 one, which
+# packaging normalises to `0.1.0a1` for wheel and sdist filenames - so the
+# Git tag, the installer name and the About dialog can all use the SemVer
+# spelling while pip sees something it accepts, from one constant.
+version = { attr = "omr_scanner._version.__version__" }
 
 [tool.setuptools]
 package-dir = { "" = "src" }

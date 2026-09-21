@@ -1,0 +1,149 @@
+name: Recognition problem
+description: OMRFlow read a sheet incorrectly - wrong answer, wrong ID, wrong set, or flagged something that was clear
+labels: ["recognition", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## ⚠️ Read this before attaching an image
+
+        **This issue will be public and permanent.** A scanned answer sheet
+        carries a candidate's roll number and often their handwriting.
+
+        - Prefer a **synthetic** sheet: *Application menu → Tools → Developer
+          / Testing → Generate Synthetic Test Dataset…* renders labelled
+          sheets from your own template with no real data in them. If the
+          problem reproduces on one, that is the ideal attachment.
+        - If you must attach a real scan, **black out the candidate ID region
+          and any handwritten name first**, and check the whole page
+          including the margins and any invigilator annotation.
+        - Never attach the answer key.
+
+        Recognition problems need different information from other bugs,
+        which is why this is a separate form.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before reporting
+      options:
+        - label: I am on the latest release
+          required: true
+        - label: I ran the Calibrate stage against this template and these scans
+          required: false
+        - label: Any image I am attaching is synthetic, or has been redacted
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OMRFlow version
+      placeholder: "0.1.0-alpha.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: field
+    attributes:
+      label: Which field was read incorrectly?
+      multiple: true
+      options:
+        - Candidate / roll number
+        - Set code
+        - Answers
+        - Registration (the sheet could not be aligned at all)
+        - Orientation (the page was taken as upside down, or not)
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-vs-actual
+    attributes:
+      label: Expected and actual reading
+      description: >-
+        Be specific and use OMRFlow's own notation. For answers, give the
+        question numbers.
+      placeholder: |
+        Question 14: expected B, OMRFlow read B-D (multiple marks)
+        Question 15: expected blank, OMRFlow read C
+        Roll number: expected 120317, OMRFlow read 12031?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: consistency
+    attributes:
+      label: Does it reproduce consistently?
+      description: Reprocess the same sheet and see whether you get the same reading.
+      options:
+        - Same wrong reading every time
+        - Varies between runs
+        - Only happened once
+        - Not tested
+    validations:
+      required: true
+
+  - type: input
+    id: scanner
+    attributes:
+      label: Scanner make and model
+      description: If known. Leave blank for a synthetic or downloaded image.
+      placeholder: "Canon DR-M160II"
+    validations:
+      required: false
+
+  - type: input
+    id: resolution
+    attributes:
+      label: Image resolution and format
+      description: >-
+        Right-click the file → Properties → Details, or read it from the Scan
+        stage's preview.
+      placeholder: "1240 x 1754, 150 dpi, JPEG"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: image-quality
+    attributes:
+      label: Anything unusual about the image?
+      multiple: true
+      options:
+        - Skewed or rotated
+        - Faint or light marks
+        - Heavy or overfilled marks
+        - Erased or corrected marks
+        - Smudges, folds or tears
+        - Shadow or uneven lighting
+        - Photographed rather than scanned
+        - Nothing unusual
+    validations:
+      required: true
+
+  - type: textarea
+    id: template
+    attributes:
+      label: Template
+      description: >-
+        Attach the `.omrt` file if you can share it - a template is geometry
+        and thresholds, and normally carries no candidate data. Otherwise
+        describe the field: how many choices, bubble size, and the recognition
+        thresholds from the Calibrate stage.
+    validations:
+      required: false
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample sheet
+      description: Synthetic or redacted, per the warning above.
+    validations:
+      required: false
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic bundle
+      description: "*Application menu → Tools → Create Diagnostic Bundle…*"
+    validations:
+      required: false

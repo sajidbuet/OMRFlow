@@ -1,0 +1,121 @@
+name: Bug report
+description: Something in OMRFlow behaves incorrectly
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **This issue will be public and permanent.** Do not attach real
+        candidate names, roll numbers, rosters, answer keys, scans, or a real
+        project folder. Reproduce with synthetic data where you can -
+        *Application menu → Tools → Developer / Testing → Generate Synthetic
+        Test Dataset…* makes a labelled dataset from any template.
+
+        See [SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md)
+        for how to sanitise a reproduction.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before reporting
+      options:
+        - label: I am on the latest release
+          required: true
+        - label: I searched existing issues
+          required: true
+        - label: I checked Known Limitations, and this is not a documented gap
+          required: true
+        - label: Nothing I am attaching contains real candidate or examination data
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OMRFlow version
+      description: >-
+        From the title bar, or Application menu → Help → About OMRFlow. Hover
+        the version line there for the exact build identifier, which is more
+        precise still.
+      placeholder: "0.1.0-alpha.1 (build 0.1.0-alpha.1+a1b2c3d)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-kind
+    attributes:
+      label: How is it installed?
+      options:
+        - Windows installer (OMRFlow-…-Setup-x64.exe)
+        - From source (pip install -e .)
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "Run `winver`, or Settings → System → About."
+      placeholder: "Windows 11 24H2 (build 26100)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered, starting from launching OMRFlow.
+      placeholder: |
+        1. Open the project …
+        2. Go to the Scan stage
+        3. Press Process All
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: Include the exact error text if there was one.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Does it happen every time?
+      options:
+        - Every time
+        - Most times
+        - Occasionally
+        - Happened once
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic bundle or logs
+      description: >-
+        Please attach a diagnostic bundle - *Application menu → Tools →
+        Create Diagnostic Bundle…*. It collects the version, platform,
+        settings, a project health check and the log tail, and is designed to
+        contain no candidate data. Drag the zip file into this box.
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: If the problem is visible. Redact anything identifying.
+    validations:
+      required: false

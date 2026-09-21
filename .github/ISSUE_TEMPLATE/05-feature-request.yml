@@ -1,0 +1,66 @@
+name: Feature request
+description: Suggest something OMRFlow should be able to do
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please check the
+        [Development Roadmap](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Development-Roadmap.md)
+        first. OMRFlow is developed in phases, and something may already be
+        planned for a later one — in which case your use case is still
+        valuable on the existing issue.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >-
+        Describe the examination-processing task, not the feature. The
+        underlying problem often has a better solution than the one that
+        first comes to mind, and cannot be found if only the solution is
+        described.
+      placeholder: >-
+        Our examination has two papers sat on the same day and candidates are
+        numbered continuously across both, so …
+    validations:
+      required: true
+
+  - type: textarea
+    id: current
+    attributes:
+      label: How do you handle it today?
+      description: >-
+        With OMRFlow, by hand, or in another tool. This is the strongest
+        signal of how much a change is worth.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like OMRFlow to do?
+    validations:
+      required: true
+
+  - type: input
+    id: scale
+    attributes:
+      label: Roughly what scale?
+      description: >-
+        Candidates, sheets, sets and examinations per year. Something
+        reasonable for 200 candidates can be unusable at 20,000.
+      placeholder: "~5,000 candidates, 3 sets, twice a year"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: blocking
+    attributes:
+      label: How much does this matter to you?
+      options:
+        - Blocking - we cannot use OMRFlow without it
+        - Significant - we work around it, at a cost
+        - Convenience - it would be nice
+    validations:
+      required: true

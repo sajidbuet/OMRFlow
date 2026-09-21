@@ -6,7 +6,148 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Versions below 1.0 make no compatibility promises.
 
+Entries below the first release are grouped by the development phase that
+produced them, because that is how the work was sequenced and how
+[the roadmap](docs/wiki/Development-Roadmap.md) refers to it.
+
 ## [Unreleased]
+
+Nothing yet.
+
+### Added
+### Changed
+### Fixed
+### Security
+
+---
+
+## [0.1.0-alpha.1] - 2026-09-21
+
+**The first installable release. Alpha: for evaluation and testing.**
+
+OMRFlow's core workflow is implemented end to end — design a template,
+process scanned sheets, resolve what recognition could not decide, reconcile
+attendance, score against an answer key and generate result workbooks — and
+is covered by an automated suite of just over four thousand tests against
+synthetic data.
+
+**Real examination-data qualification is not complete.** No real attendance
+workbook and no real scanned cohort has been processed end to end. Treat
+every generated result as requiring independent verification. See
+[Known Limitations](docs/wiki/Known-Limitations.md).
+
+### Highlights
+
+- A Windows installer, so OMRFlow can be evaluated without a Python
+  development environment.
+- Template designer for `.omrt` documents: registration markers, bubble
+  grids, per-bubble adjustment, validation.
+- Geometric normalisation of a scan to the template's canonical page —
+  rotation, translation, scale, skew and perspective.
+- Configurable multicore batch recognition, with identical results and
+  output ordering on any number of cores.
+- Durable batches: processing survives being interrupted and resumes.
+- Conflict review, with every manual correction recorded append-only beside
+  the machine's original reading.
+- Candidate and attendance reconciliation, including absent-with-script and
+  present-without-script.
+- Answer keys verified per examination set; scoring with optional negative
+  marking; standard competition ranking.
+- Result workbooks built from the examination office's own attendance
+  workbook, preserving its formatting and logo, plus a merit-ordered sheet
+  with absentees removed.
+- Project health checking, backup and restore, and recovery after an
+  interrupted run.
+
+### Added
+
+Everything in this release is new; the per-phase detail is recorded in the
+sections below, which were written as each phase completed. This release
+additionally adds the release infrastructure itself:
+
+- **Centralised versioning.** `src/omr_scanner/_version.py` is the single
+  place the version is written down; `pyproject.toml` reads it from there,
+  and a test fails if a second copy appears. The release channel (*Alpha*,
+  *Beta*, *Release Candidate*, *Stable*) is derived from the version string
+  rather than configured beside it, so a build cannot claim a maturity its
+  version does not support.
+- **Alpha identification.** The About dialog states the version, the release
+  channel and the qualification warning, and its version line carries the
+  exact build identifier including the source commit. The window title shows
+  the version so a screenshot identifies the build.
+- **Windows packaging.** A PyInstaller bundle and an Inno Setup installer,
+  `OMRFlow-<version>-Setup-x64.exe`, needing no Python on the target
+  machine. Per-user install by default; projects, configuration and logs
+  live in the user profile and are untouched by installing, upgrading or
+  removing OMRFlow.
+- **Release scripts** under `scripts/release/`: build, installer, checksums,
+  packaged-application smoke test, installer round-trip test and release
+  verification.
+- **SHA-256 checksums** for release artifacts, which matter more than usual
+  because Alpha installers are unsigned.
+- **Documentation** reorganised into `docs/wiki/`, with an installation
+  guide, a quick start, a user guide, known limitations, upgrade and
+  data-retention guidance, and the development roadmap.
+- **Repository governance**: contribution guide, security policy, support
+  guide, structured issue forms and a pull-request template.
+- **Continuous integration** running lint, types and tests on Windows and
+  Linux, plus a packaging smoke test; and a release workflow that produces a
+  *draft* release and never publishes on its own.
+- **Compatibility metadata** in the diagnostic bundle: release channel,
+  build identifier and the expected database schema version, so an Alpha bug
+  report can be triaged.
+
+### Known Limitations
+
+The full list, with the distinction between *implemented and tested*,
+*implemented but synthetically tested*, and *not yet qualified*, is in
+[Known Limitations](docs/wiki/Known-Limitations.md). The ones that most
+affect an Alpha evaluation:
+
+- **Real examination-data qualification is incomplete.** Every workflow has
+  been validated against synthetic data only. No real attendance workbook
+  and no real scanned cohort has been processed end to end.
+- **Per-set attendance and set-aware reporting are synthetically tested
+  only.** The examination-sets enhancement's Part 1 (project configuration)
+  is implemented and tested; Part 2 (per-set attendance, set-aware
+  reporting) is implemented but awaits real-data validation.
+- **The 100,000-sheet qualification campaign has not been run.** The harness
+  is complete and validated at reduced scale, including real forced kills
+  and recovery, but the full-scale run has not been executed.
+- **The installer is unsigned.** Windows SmartScreen will warn. Code signing
+  is a Phase 11C hardening item.
+- **Clean-machine installation has not been verified.** The installer has
+  been installed, launched and uninstalled successfully on the development
+  machine; a machine with no Python and no build tools has not been tested.
+- **No lazy table models for Results, Resolve and Attendance.** The backend
+  handles 100,000 rows; those three *displays* have not been optimised for
+  it.
+- **Result-workbook generation is untested at stress scale.** The stress
+  dataset has no roster, answer key or result template, and inventing them
+  would measure a fabricated scenario.
+- **Windows only.** The engine and its tests are platform-neutral, but the
+  packaging, the installer and the GUI validation are Windows-specific.
+- **PDF export needs LibreOffice** installed separately; without it the
+  XLSX output is still produced.
+
+### Compatibility
+
+- Project format version: **2**
+- Database schema version: **9**
+- Supported Windows versions: **Windows 10 1809 (build 17763) or newer,
+  64-bit**. Verified on Windows 11; older versions are the floor the bundled
+  Qt 6 runtime supports rather than versions that have been tested.
+- No upgrade path is promised between prerelease versions. Back up any
+  project you care about before installing a new Alpha — see
+  [Upgrading OMRFlow](docs/wiki/Upgrading-OMRFlow.md).
+
+---
+
+# Development history
+
+The sections below were written as each development phase completed, and are
+kept because they record *why* decisions were made, not only what changed.
+All of it is part of `0.1.0-alpha.1`.
 
 ### Changed — application shell and navigation
 

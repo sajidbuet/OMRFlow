@@ -118,6 +118,28 @@ STATUS_MESSAGE_MS = 5000
 
 DEVELOPER_URL = "https://www.sajid.bd"
 
+def window_title(project_name: str = "") -> str:
+    """The window's title, always carrying the running version.
+
+    Args:
+        project_name: The open project's name, or ``""`` when none is open.
+
+    Returns:
+        ``"OMRFlow <version>"``, or ``"<project> - OMRFlow <version>"`` with a
+        project open. The version is spelled out rather than shown here, so
+        this module holds no copy of it -
+        ``tests/unit/test_version.py`` fails if one appears.
+
+    The version is in the title on purpose: during a prerelease the first
+    question asked of any bug report is which build produced it, and a
+    screenshot of the window answers that without the reporter having to
+    find the About dialog. It costs one short suffix in a bar that is
+    otherwise mostly empty.
+    """
+    application = f"{APPLICATION_NAME} {__version__}"
+    return f"{project_name} - {application}" if project_name else application
+
+
 STAGE_NOT_IMPLEMENTED = "Planned for phase {phase}; not available in this build."
 """Why a workflow stage cannot be opened, shown in its tooltip.
 
@@ -160,7 +182,7 @@ class MainWindow(QMainWindow):
         self._session: ProjectSession | None = None
         self._pages: dict[str, WorkflowPage] = {}
 
-        self.setWindowTitle(APPLICATION_NAME)
+        self.setWindowTitle(window_title())
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         # In addition to `QApplication.setWindowIcon()` (the taskbar/dock
         # default), this window's own title bar reads its icon from here.
@@ -1291,10 +1313,10 @@ class MainWindow(QMainWindow):
         self.project_config_action.setEnabled(has_project)
 
         if self._session is None:
-            self.setWindowTitle(APPLICATION_NAME)
+            self.setWindowTitle(window_title())
             self._project_status.setText(NO_PROJECT_STATUS)
         else:
-            self.setWindowTitle(f"{self._session.name} - {APPLICATION_NAME}")
+            self.setWindowTitle(window_title(self._session.name))
             self._project_status.setText(f"{self._session.name}  ({self._session.root})")
 
     # ------------------------------------------------------------------

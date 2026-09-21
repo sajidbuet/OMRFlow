@@ -27,7 +27,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from types import TracebackType
 
-from omr_scanner import APPLICATION_NAME, __version__
+from omr_scanner import (
+    APPLICATION_NAME,
+    RELEASE_CHANNEL,
+    __version__,
+    build_identifier,
+)
 from omr_scanner.config import app_log_file, load_app_config
 from omr_scanner.utils.logging_setup import configure_logging
 
@@ -85,7 +90,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     configure_logging(level=level, log_file=app_log_file())
     _install_exception_hook()
 
-    logger.info("%s %s starting (Python %s)", APPLICATION_NAME, __version__, sys.version.split()[0])
+    # The build identifier rather than the bare version: it carries the
+    # source commit, so a log attached to a prerelease bug report identifies
+    # the exact revision that produced it rather than merely the release.
+    logger.info(
+        "%s %s (%s) starting (Python %s)",
+        APPLICATION_NAME,
+        build_identifier(),
+        RELEASE_CHANNEL.value,
+        sys.version.split()[0],
+    )
 
     try:
         from omr_scanner.gui.application import run_gui

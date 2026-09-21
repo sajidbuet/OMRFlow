@@ -18,20 +18,32 @@ What does NOT belong here:
       pulling in Qt.
 
 Invariants:
-    * ``__version__`` mirrors ``project.version`` in ``pyproject.toml``.
     * ``REPOSITORY_URL`` mirrors ``project.urls.Homepage`` in ``pyproject.toml``.
     * ``LICENSE_NAME`` mirrors ``project.license`` in ``pyproject.toml``.
+    * ``__version__`` is re-exported from :mod:`omr_scanner._version`, which
+      ``pyproject.toml`` also reads - so the version is written down once and
+      the package metadata cannot drift from the running application.
 """
 
 from __future__ import annotations
+
+from omr_scanner._version import (
+    ALPHA_NOTICE,
+    IS_PRERELEASE,
+    RELEASE_CHANNEL,
+    RELEASE_VERSION,
+    ReleaseChannel,
+    __version__,
+    build_identifier,
+    release_tag,
+    version_info,
+)
 
 APPLICATION_NAME = "OMRFlow"
 """Human readable application name (window titles, logs, exported metadata)."""
 
 ORGANIZATION_NAME = "OMRFlow"
 """Used for per-user configuration and log directory resolution."""
-
-__version__ = "0.1.0.dev0"
 
 REPOSITORY_URL = "https://github.com/sajidbuet/OMRflow"
 """Public source repository, shown as a clickable link in the About dialog."""
@@ -46,10 +58,18 @@ value, not the current calendar year, so the two never disagree with each
 other."""
 
 __all__ = [
+    "ALPHA_NOTICE",
     "APPLICATION_NAME",
     "COPYRIGHT_YEAR",
+    "IS_PRERELEASE",
     "LICENSE_NAME",
     "ORGANIZATION_NAME",
+    "RELEASE_CHANNEL",
+    "RELEASE_VERSION",
     "REPOSITORY_URL",
+    "ReleaseChannel",
     "__version__",
+    "build_identifier",
+    "release_tag",
+    "version_info",
 ]

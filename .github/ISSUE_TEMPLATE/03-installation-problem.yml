@@ -1,0 +1,107 @@
+name: Installation problem
+description: The installer fails, or OMRFlow will not start after installing
+labels: ["installation", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If Windows SmartScreen warned you that the publisher is unknown, that
+        is expected: Alpha installers are **unsigned**. See
+        [Installation](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Installation.md#windows-smartscreen)
+        for what to do — it is not a defect and does not need an issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: Installer filename
+      description: The full name, which carries the version.
+      placeholder: "OMRFlow-0.1.0-alpha.1-Setup-x64.exe"
+    validations:
+      required: true
+
+  - type: input
+    id: checksum
+    attributes:
+      label: SHA-256 of the file you downloaded
+      description: >-
+        `certutil -hashfile <file> SHA256`. Compare it with SHA256SUMS.txt on
+        the release page - a mismatch means an incomplete or altered
+        download, which is worth ruling out first.
+      placeholder: "a457c523…"
+    validations:
+      required: false
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: "`winver`. OMRFlow needs Windows 10 1809 (build 17763) or newer, 64-bit."
+      placeholder: "Windows 11 24H2 (build 26100)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where does it fail?
+      options:
+        - Downloading
+        - Running the installer
+        - During installation
+        - Launching after installation - nothing happens
+        - Launching after installation - an error appears
+        - Uninstalling
+        - Upgrading over a previous version
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Install scope
+      options:
+        - Just me (per-user, the default)
+        - All users (requires administrator)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: error
+    attributes:
+      label: Exact error message
+      description: Text if you can copy it, otherwise a screenshot.
+    validations:
+      required: true
+
+  - type: textarea
+    id: installer-log
+    attributes:
+      label: Installer log
+      description: >-
+        Re-run the installer with logging and attach the file:
+        `OMRFlow-0.1.0-alpha.1-Setup-x64.exe /LOG=%TEMP%\omrflow-install.log`
+    validations:
+      required: false
+
+  - type: textarea
+    id: application-log
+    attributes:
+      label: Application log
+      description: >-
+        If it installed but will not start, attach the newest file from
+        `%LOCALAPPDATA%\OMRFlow\logs\` - paste that path into Explorer's
+        address bar.
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Anything else about the machine
+      description: >-
+        Antivirus or endpoint protection, a managed/locked-down corporate
+        build, a non-standard user profile location, low disk space. Any of
+        these can stop an install.
+    validations:
+      required: false

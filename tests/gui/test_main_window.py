@@ -8,14 +8,17 @@ Scope:
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QApplication, QLabel
 
-from omr_scanner import APPLICATION_NAME
+from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, load_app_config
-from omr_scanner.gui.main_window import NO_PROJECT_STATUS, MainWindow
+from omr_scanner.gui.application import configure_application
+from omr_scanner.gui.main_window import NO_PROJECT_STATUS, MainWindow, window_title
 from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.gui.pages.placeholder_page import PlaceholderPage
 
@@ -45,8 +48,55 @@ def window(qtbot, tmp_path: Path) -> MainWindow:
 
 
 def test_window_starts_without_a_project(window: MainWindow):
-    assert window.windowTitle() == APPLICATION_NAME
+    assert window.windowTitle() == window_title()
+    assert __version__ in window.windowTitle()
     assert window.session is None
+
+
+def test_the_title_names_the_application_exactly_once(window: MainWindow):
+    assert window.windowTitle().count(APPLICATION_NAME) == 1
+
+
+def test_configure_application_sets_the_identity_the_shell_reads(qtbot):
+    application = QApplication.instance()
+    assert isinstance(application, QApplication)
+    configure_application(application)
+    assert application.applicationName() == APPLICATION_NAME
+    assert application.applicationVersion() == __version__
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("QT_QPA_PLATFORM") == "offscreen",
+    reason="reads the real title from the window manager, which needs a Windows desktop",
+)
+def test_the_window_manager_shows_the_name_once(qtbot, tmp_path: Path):
+    """Regression test for a title reading "OMRFlow <version> - OMRFlow".
+
+    Qt appends ``applicationDisplayName`` to every window title when that
+    name has been *set*, so setting it put the application name in twice -
+    once from the title the window composed and once from Qt.
+
+    This asks the operating system what the title bar actually says, because
+    that is the only place the defect was visible: `windowTitle()` returns
+    what was set, not what is displayed, so it read correctly throughout.
+    Found by launching the packaged build and reading its `MainWindowTitle`,
+    which is exactly what this reproduces.
+    """
+    import ctypes
+
+    configure_application(QApplication.instance())
+    window = MainWindow(config=AppConfig(), config_path=tmp_path / "config.json")
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+
+    buffer = ctypes.create_unicode_buffer(512)
+    ctypes.windll.user32.GetWindowTextW(int(window.winId()), buffer, 512)
+    native_title = buffer.value
+
+    assert native_title == window.windowTitle()
+    assert native_title.count(APPLICATION_NAME) == 1, native_title
+    assert __version__ in native_title
     assert len(window.navigator.steps) == len(WORKFLOW_PAGES)
     assert window.close_project_action.isEnabled() is False
     status_texts = [label.text() for label in window.statusBar().findChildren(QLabel)]
@@ -201,7 +251,8 @@ def test_creating_a_project_updates_the_window(window: MainWindow, workspace: Pa
 
     assert created
     assert window.session is not None
-    assert window.windowTitle() == f"GUI Exam - {APPLICATION_NAME}"
+    assert window.windowTitle() == window_title("GUI Exam")
+    assert window.windowTitle().startswith("GUI Exam - ")
     assert window.close_project_action.isEnabled()
     assert (workspace / "GUI Exam" / "project.json").is_file()
 
@@ -223,7 +274,7 @@ def test_closing_a_project_resets_the_window(window: MainWindow, workspace: Path
     window.close_project()
 
     assert window.session is None
-    assert window.windowTitle() == APPLICATION_NAME
+    assert window.windowTitle() == window_title()
     assert window.close_project_action.isEnabled() is False
 
 

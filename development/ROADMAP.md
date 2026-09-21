@@ -1,5 +1,14 @@
 # Development roadmap
 
+> **The canonical, user-facing roadmap is now
+> [`docs/wiki/Development-Roadmap.md`](../docs/wiki/Development-Roadmap.md).**
+>
+> That page carries the current phase statuses, the full definition of
+> Phases 11A, 11B and 11C, and the release qualification matrix. This
+> document remains the working record for Phases 0–10: their deliverables,
+> tests and exit criteria as each was written. Update both when a phase's
+> status changes.
+
 Development proceeds in phases. A phase ends only when its exit criteria are met,
 `pytest`, `ruff check .` and `mypy` all pass, `development/CURRENT_STATE.md` is
 updated and a `PHASE_NN_HANDOFF.md` is written.
@@ -22,7 +31,9 @@ that cannot be tested.
 | 8 | Answer-Key & Scoring Engine | Implemented; testing in progress - see `development/PHASE_08_HANDOFF.md` |
 | 9 | Result Management & Reporting | Implemented; testing in progress - see `development/PHASE_09_HANDOFF.md` |
 | 10 | Integration, Recovery & Production Hardening | Implemented; 100,000-sheet acceptance run pending - see `development/PHASE_10_HANDOFF.md` |
-| 11 | Release, User Documentation & Packaging | Not started |
+| 11A | Alpha Release Infrastructure | **Implemented - clean-machine validation pending**; released as `v0.1.0-alpha.1` |
+| 11B | Real-Data Qualification & Beta Release | Pending |
+| 11C | Release Candidate & Stable Release | Pending |
 
 ---
 
@@ -457,16 +468,45 @@ Windows path/packaging-specific testing (no packaging build exists yet).
 
 **Purpose.** Ship something an institution can install and trust.
 
-**Deliverables.** Complete user documentation with screenshots; Windows
-installer/packaged build; release checklist; licence selection; upgrade and data
-retention guidance; contribution guide for outside contributors.
+Phase 11 proved too large to validate as one unit and is **staged into 11A,
+11B and 11C**, each with its own exit criterion - the same reasoning that
+sequences the earlier phases. The full definition of all three, and the
+release qualification matrix that says what each release channel requires,
+is in
+[`docs/wiki/Development-Roadmap.md`](../docs/wiki/Development-Roadmap.md).
 
-**Major tests.** Installer produces a working application on a clean Windows
-machine; documented procedures reproduce documented results; upgrade from the
-previous version opens existing projects.
+In summary:
+
+| | Purpose | Target | Status |
+|---|---|---|---|
+| **11A** | Safe, installable, clearly identified Alpha for external evaluation while qualification is incomplete | `v0.1.0-alpha.1` | **Implemented - clean-machine validation pending** |
+| **11B** | Validate against representative *real* examination material, verified against independently known expected results | `v0.1.0-beta.1` | Pending |
+| **11C** | Feature freeze, qualify the *packaged* application, validate upgrades and documentation | `v1.0.0-rc.1` then `v1.0.0` | Pending |
+
+**11A delivered.** Centralised versioning with the release channel derived
+from the version string; Alpha-labelled About information carrying the build
+identifier; a PyInstaller bundle and Inno Setup installer requiring no
+Python on the target machine; a concise public README; the `docs/wiki/`
+documentation set; release scripts, checklist, notes template and SHA-256
+checksums; repository governance (contribution guide, security policy,
+support guide, issue forms, pull-request template); CI on Windows and Linux
+plus a packaging smoke test; and a release workflow that produces a *draft*
+and never publishes on its own.
+
+**11A verified.** The packaged application launches, reports the right
+version and closes cleanly (16 checks); the installer installs, launches,
+uninstalls and **preserves user data** (15 checks); artifacts match their
+published checksums; the full automated suite passes.
+
+**11A not yet verified.** Clean-machine installation - every installer test
+so far ran on the machine that built it, which has a development
+environment. The procedure is written
+(`docs/release/CLEAN_MACHINE_TEST.md`) and has not been executed. Windows 10
+is untested; the installer is unsigned.
 
 **Exit criteria.** A non-developer can install OMRFlow and complete an
-examination following the user guide alone.
+examination following the user guide alone - reached in stages, as each
+sub-phase's own exit criterion is met.
 
 ---
 
