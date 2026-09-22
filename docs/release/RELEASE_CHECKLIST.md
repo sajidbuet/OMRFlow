@@ -64,14 +64,28 @@ The commands are in [Release Process](../wiki/Release-Process.md).
 - [ ] `.\scripts\release\Invoke-ReleaseVerification.ps1` — all checks pass
 - [ ] **Clean-machine test** — [`CLEAN_MACHINE_TEST.md`](CLEAN_MACHINE_TEST.md).
       Required for every channel. In Windows Sandbox:
-      `.\packaging\sandbox\New-SandboxPayload.ps1 -Launch`. If it genuinely
-      cannot be run, say so explicitly in the release notes rather than
-      leaving it ambiguous
-- [ ] If the clean-machine test could not be run, the substitutes were:
-      `python packaging\audit_dependencies.py dist\OMRFlow` — 0 unresolved
-      imports, and `.\scripts\release\Test-SelfContained.ps1` — all checks
-      pass. **Passing these is not a clean-machine pass**; record the
-      clean-machine test as *not performed*
+      `.\packaging\sandbox\New-SandboxPayload.ps1 -Launch -Wait`, which
+      stages the installer, starts a pristine image, runs the mechanical
+      checks and waits for the verdict. If it genuinely cannot be run, say so
+      explicitly in the release notes rather than leaving it ambiguous
+- [ ] **The clean-machine steps that need a person** — in the sandbox window
+      the previous step left open, work through the interface and then record
+      what you saw with
+      `C:\Users\WDAGUtilityAccount\Desktop\OMRFlow\Complete-ManualChecks.ps1`.
+      This is where the *installed* build is driven through a recognition run
+      and a generated result; the automated portion never touches it. Answer
+      `s` for anything you did not actually do
+- [ ] `python packaging\audit_dependencies.py dist\OMRFlow` — 0 unresolved
+      imports; `python packaging\verify_frozen_imports.py dist\OMRFlow` —
+      every imported dependency survived the freeze; and
+      `.\scripts\release\Test-SelfContained.ps1` — all checks pass. Run these
+      first: they are quick, and they catch most of what the clean-machine
+      test catches slowly. **Passing them is not a clean-machine pass.** If
+      the clean-machine test genuinely could not be run, record it as *not
+      performed*
+- [ ] `.\scripts\release\New-ValidationReport.ps1` — the clean-machine result
+      is written to `docs/release/validation/`, and the SHA-256 it records is
+      the SHA-256 of the installer that will actually be published
 - [ ] **[not blocking for Alpha]** Installer is code-signed
 - [ ] Accessibility checklist reviewed —
       [`ACCESSIBILITY_CHECKLIST.md`](ACCESSIBILITY_CHECKLIST.md). *Initial* is
@@ -144,7 +158,8 @@ The commands are in [Release Process](../wiki/Release-Process.md).
 | Release commit | |
 | Date | |
 | Full suite | passed / failed / skipped |
-| Clean-machine test | performed / **not performed** |
+| Clean-machine test — automated portion | performed / **not performed** |
+| Clean-machine test — steps needing a person | performed / **not performed** |
 | Real-data qualification | performed / **not performed** |
 | Known release-blocking defects | |
 | Released by | |

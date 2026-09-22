@@ -152,7 +152,7 @@ synthetically tested" to a qualified stable release.
 | 0–2 — Foundation, geometry, template designer | **Complete** |
 | 3–9 — Recognition, calibration, batch, conflicts, attendance, scoring, reporting | Implemented; testing in progress |
 | 10 — Integration, recovery, production hardening | Implemented; 100,000-sheet acceptance run pending |
-| **11A — Alpha release infrastructure** | **Implemented — clean-machine validation pending** |
+| **11A — Alpha release infrastructure** | **Implemented — validation pending**; clean-machine test run and passed, its manual steps outstanding |
 | 11B — Real-data qualification & Beta | Pending |
 | 11C — Release candidate & stable | Pending |
 

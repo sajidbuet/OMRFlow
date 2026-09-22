@@ -66,7 +66,11 @@ if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
 New-Item -ItemType Directory -Force $payload | Out-Null
 
 Copy-Item $Installer $payload
+# Both scripts: the first decides what a machine can decide, the second
+# collects what only a person can. Staging only the first is how the manual
+# steps end up recorded nowhere.
 Copy-Item (Join-Path $PSScriptRoot 'Start-CleanMachineTest.ps1') $payload
+Copy-Item (Join-Path $PSScriptRoot 'Complete-ManualChecks.ps1') $payload
 
 $sums = Join-Path (Split-Path $Installer -Parent) 'SHA256SUMS.txt'
 if (Test-Path $sums) {

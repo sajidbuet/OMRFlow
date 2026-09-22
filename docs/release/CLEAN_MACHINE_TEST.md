@@ -1,24 +1,42 @@
 # Clean-Machine Installation Test
 
-> **Status for `0.1.0-alpha.1`: NOT PERFORMED.**
+> **Status for `0.1.0-alpha.1`: PERFORMED — automated portion passed; the
+> steps needing a person are outstanding.**
 >
-> The procedure below has **not** been executed. No clean machine was
-> available: Windows Sandbox is not installed on the build machine, and
-> enabling it needs administrator rights and a reboot.
+> On **2026-09-22** this procedure was executed for the first time, in
+> Windows Sandbox, against
+> `OMRFlow-0.1.0-alpha.1-Setup-x64.exe`
+> (`3f2cfc62…`, commit `92fe4b2`). **56 checks passed and none failed** —
+> including the two failures this test exists to catch, and the ones the
+> substitutes could never reach: installation as an unprivileged user,
+> first launch, uninstall with user data preserved, and reinstall.
 >
-> A **substitute** was run instead, and passed — see
-> [What was run instead](#what-was-run-instead) below. It is a substitute,
-> not this test: it proves the build does not depend on Python, on the
-> source tree or on Qt environment variables, and it does not prove the
-> bundle is self-contained.
+> The full result is recorded in
+> [`validation/0.1.0-alpha.1-clean-machine.md`](validation/0.1.0-alpha.1-clean-machine.md)
+> and in the JSON beside it.
 >
-> This remains outstanding in
-> [Known Limitations](../wiki/Known-Limitations.md) and is the reason Phase
-> 11A is *Implemented — clean-machine validation pending* rather than
-> complete.
+> **What is still outstanding** is everything that needs a person to look at
+> the screen: steps 5–7, 13–24, 27, 32 and 35 — the Alpha warning during
+> installation, the About dialog, the nine stage icons, and the end-to-end
+> run from *Create Project* through recognition to a generated result. Those
+> are **not performed**, and Phase 11A is *Implemented — validation pending*
+> until they are.
 >
-> **To run the real test:** enable Windows Sandbox, then
-> `.\packaging\sandbox\New-SandboxPayload.ps1 -Launch`.
+> **To finish it:**
+>
+> ```powershell
+> .\packaging\sandbox\New-SandboxPayload.ps1 -Launch -Wait
+> # then, in the sandbox window, after working through the interface:
+> C:\Users\WDAGUtilityAccount\Desktop\OMRFlow\Complete-ManualChecks.ps1
+> # back on the host:
+> .\scripts\release\New-ValidationReport.ps1
+> ```
+>
+> The first defect this test found was real: a packaged build did not record
+> its own source commit, so the build identifier documented in
+> [Installation](../wiki/Installation.md) did not exist in any installed
+> build. Fixed in `92fe4b2` and confirmed here — the first-launch log now
+> reads `0.1.0-alpha.1+92fe4b2`.
 
 ## Why it cannot be skipped
 
@@ -153,12 +171,16 @@ not a pass.
 36. [ ] Uninstall, and remove the leftover data by hand if the machine is
         being kept.
 
-## What was run instead
+## The substitutes, and what they add
 
-On **2026-09-21**, for `0.1.0-alpha.1`, a clean machine was unavailable, so
-the strongest substitute that a development machine can offer was run and
-**passed**. Recorded here so the release's evidence is exactly what was
-executed, no more.
+These run on the build machine and were **also** executed for
+`0.1.0-alpha.1`. Before the clean-machine test could be run they stood in
+for it, which is why they are described below in those terms; now that it has
+been run, they are a faster pre-flight rather than a stand-in. Both passed
+again against the rebuilt candidate, and `Test-SelfContained.ps1` additionally
+passed with the application installed under
+`…\Parikşa Dosyası ২০২৬\OMRFlow Alpha Test` — a path with spaces and
+characters outside ASCII.
 
 ### `packaging/audit_dependencies.py` — static import audit
 
@@ -206,26 +228,25 @@ uninstalled.
 - ✅ It does not rely on Qt environment variables to find its plugins.
 - ✅ It does not rely on its working directory.
 
-### What it does not prove — why the real test is still required
+### What it does not prove — and which of those the real test closed
 
-- ❌ **A DLL sitting in `System32` because a developer tool put it there** is
-  indistinguishable, on this machine, from one Windows ships. This is the
-  single biggest gap, and only a genuinely fresh Windows install closes it.
-- ❌ **Dependencies loaded at run time** — `ctypes`, `LoadLibrary`, a Qt
-  plugin discovered by path — appear in no import table and so in no audit.
-- ❌ **Code paths the launch did not reach.** Starting the window exercises
-  Qt, the imaging stack and the icon resources; it does not exercise
-  recognition, Excel generation or PDF rendering, any of which could need
-  something the bundle lacks.
-- ❌ **Everything a person has to look at**: SmartScreen's wording, the
-  licence page, the Alpha warning during installation, all nine stage icons
-  rendering, the About dialog, and the full end-to-end run through
-  recognition to a generated report.
-- ❌ **Data preservation across uninstall and reinstall** on a machine that
-  never had OMRFlow before.
+| | Closed by the 2026-09-22 clean-machine run? |
+|---|---|
+| **A DLL sitting in `System32` because a developer tool put it there** is indistinguishable, on the build machine, from one Windows ships | ✅ **Closed.** A pristine Sandbox image has no developer tooling, and the application launched there |
+| **Data preservation across uninstall and reinstall** on a machine that never had OMRFlow before | ✅ **Closed.** Uninstalled, user data intact, reinstalled, data still reachable |
+| **Dependencies loaded at run time** — `ctypes`, `LoadLibrary`, a Qt plugin found by path — appear in no import table | 🟠 **Partly.** Starting the window on a clean machine proves the Qt platform plugin loads; anything reached only by recognition or reporting is still untested |
+| **Code paths the launch did not reach** — recognition, Excel generation, PDF rendering | ❌ **Open.** Steps 17–24 need a person |
+| **Everything a person has to look at** — SmartScreen's wording, the licence page, the Alpha warning, the nine stage icons, the About dialog, the end-to-end run | ❌ **Open.** Steps 5–7, 13–24 |
 
-Accordingly the sign-off table below records **NOT PERFORMED**, and the
-release notes must say so rather than leaving it ambiguous.
+A separate gap the substitutes never claimed to cover, now also closed:
+`Test-SelfContained.ps1` was run with the application installed under a path
+containing spaces and non-ASCII characters, and passed all 14 checks.
+
+Accordingly the sign-off table below records the automated portion as a pass
+and the remaining steps as **not performed**. The release notes must say so
+rather than leaving it ambiguous — an installed build that has never been
+driven through a recognition run has not been shown to be usable for the
+evaluation the Alpha exists to invite.
 
 ## Recording the result
 
@@ -248,16 +269,25 @@ Enter this in the release's sign-off table, and in the release notes'
 
 | | |
 |---|---|
-| Date | 2026-09-21 |
-| Windows version | — (no clean machine available) |
-| Machine type | **none** — Windows Sandbox not installed; enabling it needs administrator rights and a reboot |
-| Administrator rights available | no |
-| Installer version tested | `OMRFlow-0.1.0-alpha.1-Setup-x64.exe` (on the build machine only) |
-| Checksum verified | yes, on the build machine |
-| Steps passed | **0 of 36** — this procedure was not executed |
-| Failures | none observed, because nothing was run |
-| Result | **NOT PERFORMED** |
-| Substitute run | `audit_dependencies.py` (0 unresolved imports) and `Test-SelfContained.ps1` (13/13) — both passed; see [What was run instead](#what-was-run-instead) |
+| Date | 2026-09-22 |
+| Windows version | Microsoft Windows 11 Enterprise, build 26100 |
+| Machine type | **Windows Sandbox** — a pristine image, discarded afterwards |
+| Administrator rights available | the sandbox account is an administrator; the install was nevertheless per-user and requested no elevation, and the installer's manifest was read back as `asInvoker` |
+| Installer version tested | `OMRFlow-0.1.0-alpha.1-Setup-x64.exe`, commit `92fe4b2` |
+| Checksum verified | yes, **on the machine under test**, against `SHA256SUMS.txt`: `3f2cfc62fef612549c2dccd855ad309a11e4bba0879538cdc41b835565e3ac20` |
+| Automated checks | **56 passed, 0 failed, 1 recorded-not-judged** |
+| Steps passed | preparation and installation (1–4, 8–9), first launch (10–12), shutdown and restart (25–26, 28), uninstall (29–31, 33) and reinstall (34) |
+| Steps not performed | **5–7, 13–24, 27, 32, 35** — every step that needs a person to look at the screen |
+| Failures | none |
+| Result | **PASS (automated portion). The procedure as a whole is incomplete** until the steps above are performed |
+| Defect found and fixed | a packaged build did not record its source commit; fixed in `92fe4b2`, re-validated here |
+| Full record | [`validation/0.1.0-alpha.1-clean-machine.md`](validation/0.1.0-alpha.1-clean-machine.md) |
+
+The one check recorded rather than judged is the Visual C++ runtime in
+`System32`: current Windows images ship it themselves, so its presence no
+longer means a developer tool put it there. What matters — that OMRFlow
+carries its own copy rather than borrowing that one — is checked separately
+and passed.
 
 ## If it fails
 

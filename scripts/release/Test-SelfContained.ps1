@@ -104,9 +104,14 @@ try {
 
     # -------------------------------------------------- 2. install it fresh
     Write-Host '  installing into a scratch directory...'
+    # The quotes around the path are load-bearing: Start-Process joins the
+    # argument list with spaces and quotes nothing, so an unquoted
+    # `/DIR=C:\Exam Data\OMRFlow` reaches the installer as two arguments and
+    # it silently installs to `C:\Exam`. Inno Setup's own documented
+    # spelling is /DIR="…", and it is what makes a path with spaces work.
     $process = Start-Process -FilePath $Installer -Wait -PassThru -ArgumentList @(
         '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER',
-        "/DIR=$installDirectory"
+        "/DIR=`"$installDirectory`""
     )
     Add-Check 'installer succeeded' ($process.ExitCode -eq 0) "exit $($process.ExitCode)"
     $exe = Join-Path $installDirectory 'OMRFlow.exe'

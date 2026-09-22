@@ -35,7 +35,7 @@ criteria are met, `pytest`, `ruff` and `mypy` all pass,
 | 8 | Answer-Key & Scoring Engine | Implemented; testing in progress |
 | 9 | Result Management & Reporting | Implemented; testing in progress |
 | 10 | Integration, Recovery & Production Hardening | Implemented; 100,000-sheet acceptance run pending |
-| **11A** | **Alpha Release Infrastructure** | **Implemented — clean-machine validation pending** |
+| **11A** | **Alpha Release Infrastructure** | **Implemented — validation pending** (clean-machine test run; its manual steps outstanding) |
 | 11B | Real-Data Qualification & Beta Release | **Pending** |
 | 11C | Release Candidate & Stable Release | **Pending** |
 
@@ -46,8 +46,14 @@ Per-phase detail for 0–10: `development/ROADMAP.md` and the
 
 ## Phase 11A — Alpha Release Infrastructure
 
-**Status: Implemented — clean-machine validation pending.**
-Released as [`v0.1.0-alpha.1`](Release-History).
+**Status: Implemented — validation pending.**
+The `0.1.0-alpha.1` candidate is built, and the clean-machine test has now
+been run: its automated portion passed on a pristine Windows image, 56 checks
+to none. What remains are the steps of that procedure that need a person to
+look at the screen — above all an end-to-end run through recognition on the
+*installed* build. It is **not yet published**: the tag and the GitHub
+release are a deliberate, separate step — see
+[Release History](Release-History).
 
 ### Purpose
 
@@ -90,28 +96,36 @@ for external evaluation while production qualification remains incomplete.
   checks.
 - Release artifacts are named for their version, agree with each other, and
   match their published checksums.
-- The full automated suite passes.
+- The full automated suite passes — 4162 tests, plus `ruff` and `mypy`.
+- **On a pristine Windows image** (Windows Sandbox, no Python, no Qt, no
+  build tools): checksum verified on the machine under test, per-user
+  install with no elevation, first launch with no missing DLL or Qt plugin,
+  a log written under the user profile and **nothing written into the
+  installation directory**, clean exit, relaunch, uninstall with user data
+  intact, and reinstall — 56 checks, none failed. Recorded in
+  [`docs/release/validation/`](https://github.com/sajidbuet/OMRflow/tree/main/docs/release/validation).
+- The installed application works from a path containing spaces and
+  characters outside ASCII.
+- Every dependency the application imports survives the freeze, including the
+  pure-Python ones that live inside the archive rather than on disk.
 
 ### Not yet verified
 
-- 🟠 **Clean-machine installation.** Every installer test so far ran on the
-  machine that built it, which has a Python development environment. The
-  procedure is written (`docs/release/CLEAN_MACHINE_TEST.md`) and has **not**
-  been executed — no clean machine was available, and enabling Windows
-  Sandbox needs administrator rights and a reboot. Ready-to-run scaffolding
-  is in `packaging/sandbox/`, so the test is one command once Sandbox is
-  enabled.
-
-  A substitute was run and passed: a static PE import audit of all 162
-  binaries in the bundle (0 unresolved imports; the Visual C++ runtime is
-  bundled, not borrowed from `System32`) and a sanitised-environment launch
-  of the installed application with no Python on the `PATH` and every
-  `PYTHON*`/`QT*` variable cleared (13/13 checks). It rules out the two most
-  common packaging defects; it does **not** substitute for a fresh Windows
-  install, because a DLL that a developer tool left in `System32` is
-  indistinguishable from one Windows ships.
-- 🟠 **Windows 10.** Built and tested on Windows 11.
+- 🟠 **The clean-machine steps that need a person.** The mechanical portion
+  passed (above). Not performed: the SmartScreen warning and its wording, the
+  licence page, the Alpha warning shown during installation, the nine stage
+  icons actually rendering, the About dialog, and — the substantial one —
+  **the end-to-end run on the installed build**: create a project, validate
+  the example template, generate synthetic sheets, *Process All*, and reach a
+  result. Until that is done, recognition, Excel reporting and the
+  multiprocessing worker path have been exercised only from source, never
+  from the installer. `packaging/sandbox/Complete-ManualChecks.ps1` walks
+  through these and records the answers into the same report.
+- 🟠 **Windows 10.** Built and tested on Windows 11; the clean-machine run
+  was on a Windows 11 image.
 - ⚪ **Code signing.** Not configured; SmartScreen warns. A Phase 11C item.
+  Note that the sandbox has networking disabled, so SmartScreen could not
+  appear there at all and its wording remains unverified.
 
 ### Exit criterion
 
@@ -119,8 +133,13 @@ for external evaluation while production qualification remains incomplete.
 > using sample/synthetic data, with the software clearly identified as an
 > Alpha release.
 
-Met *except* that "a non-developer's machine" has not been used — which is
-precisely the clean-machine validation above.
+A non-developer's machine **has** now been used: a pristine Windows image
+installed OMRFlow without administrator rights, launched it, and removed it
+again without touching user data. What has not been shown there is the middle
+of that sentence — *evaluate the documented workflow*. Nobody has yet driven
+the installed build through a recognition run, so the criterion is met for
+"can install" and "clearly identified as an Alpha release", and outstanding
+for "evaluate the documented workflow".
 
 ---
 
@@ -287,9 +306,10 @@ What each release channel requires. Used by
 | 100k-sheet qualification | ⚪ Optional at Alpha; harness ready, not run |
 | Known release-blocking defects | ✅ None known, and documented as such |
 
-The clean-PC smoke test is the one Alpha requirement outstanding, which is
-why Phase 11A is *Implemented — clean-machine validation pending* rather than
-complete.
+The clean-machine test has been run and its automated portion passed. What
+keeps Phase 11A at *Implemented — validation pending* rather than complete is
+the remainder of that same procedure: the steps a person has to perform,
+chiefly an end-to-end workflow run on the installed build.
 
 ---
 
