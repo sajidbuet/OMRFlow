@@ -21,7 +21,7 @@ Nothing yet.
 
 ---
 
-## [0.1.0-alpha.1] - 2026-09-21
+## [0.1.0-alpha.1] - 2026-09-22
 
 **The first installable release. Alpha: for evaluation and testing.**
 

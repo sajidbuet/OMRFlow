@@ -7,12 +7,7 @@ Downloads are on the
 
 | Version | Date | Channel | Notes |
 |---|---|---|---|
-| `0.1.0-alpha.1` | *not yet published* | **Alpha** | First installable release. Built, and clean-machine validated; the Git tag and the GitHub release have not been created yet, so there is nothing to link to and nothing to download |
-
-> Until `v0.1.0-alpha.1` is tagged and published, the
-> [Releases page](https://github.com/sajidbuet/OMRflow/releases) is empty.
-> This row becomes a link, and gains its date, when it is. Nothing else on
-> this page assumes the release exists.
+| [`0.1.0-alpha.1`](https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.1) | 2026-09-22 | **Alpha** | First installable release. Core workflow implemented and clean-machine validated; real examination-data qualification incomplete |
 
 ## What the channels mean
 

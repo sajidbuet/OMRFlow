@@ -51,9 +51,9 @@ The `0.1.0-alpha.1` candidate is built, and the clean-machine test has now
 been run: its automated portion passed on a pristine Windows image, 56 checks
 to none. What remains are the steps of that procedure that need a person to
 look at the screen — above all an end-to-end run through recognition on the
-*installed* build. It is **not yet published**: the tag and the GitHub
-release are a deliberate, separate step — see
-[Release History](Release-History).
+*installed* build. Published as
+[`v0.1.0-alpha.1`](https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.1)
+on 2026-09-22 with that limitation stated in the release notes.
 
 ### Purpose
 
