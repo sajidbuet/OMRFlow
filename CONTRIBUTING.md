@@ -49,7 +49,7 @@ is wrong" exemption; if a rule is genuinely wrong, change the rule in
 pytest                                  # everything (~30 min)
 pytest tests/unit                       # fast, no Qt
 pytest -m gui                           # GUI only
-ruff check src tests
+ruff check src tests tools
 mypy src/omr_scanner
 ```
 

@@ -11,6 +11,11 @@ dist/
 # a build output and must not be.
 packaging/sandbox/payload/
 packaging/sandbox/results/
+
+# Output of the local release-qualification framework: a timestamped directory
+# per run, holding reports, screenshots and logs. Evidence about a build, not
+# part of it - the one report a release keeps lives in docs/release/validation/.
+validation-results/
 packaging/sandbox/*.generated.wsb
 
 # Environments

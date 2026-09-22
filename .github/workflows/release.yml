@@ -74,7 +74,7 @@ jobs:
 
       - name: Lint and type check
         run: |
-          ruff check src tests
+          ruff check src tests tools
           mypy src/omr_scanner
 
       - name: Tests

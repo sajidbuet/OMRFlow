@@ -50,6 +50,36 @@ GUI tests require a Qt platform plugin; on a headless runner the offscreen
 plugin is selected automatically (`tests/gui/conftest.py`), and can be forced
 with `QT_QPA_PLATFORM=offscreen`.
 
+`pytest` with no arguments is the canonical invocation: `pyproject.toml` sets
+`testpaths`, `addopts` (including `-m "not stress"`) and `pythonpath = ["."]`.
+That last one is what lets a suite do `from tests.report_fixtures import ...` -
+`tests/` is deliberately not a package, so the repository root has to be on
+`sys.path` for those shared fixtures to resolve.
+
+## Release qualification
+
+The suites above test the **source**. A release also has to be qualified as the
+thing a user installs, which is a separate, local, unattended framework:
+
+```powershell
+python tools\release_validation\validate_release.py --safe   # no install/uninstall
+python tools\release_validation\validate_release.py --all    # including the installer
+```
+
+It runs the source suite, drives the Qt interface, checks accessibility,
+compares screenshots with committed baselines, inspects the built bundle,
+launches the **packaged executable** through Windows UI Automation, and
+installs/uninstalls/reinstalls the installer while proving user data survives.
+It writes `validation-results/<timestamp>/` with a Markdown and a JSON report,
+and returns 0 only when every release-blocking stage passed.
+
+Full documentation, including every option, the safety rules and what it does
+*not* cover: **[`tools/release_validation/README.md`](../tools/release_validation/README.md)**.
+
+It is not a substitute for the clean-machine test
+(`docs/release/CLEAN_MACHINE_TEST.md`), which runs on a pristine Windows image
+and is the only thing that catches a dependency this machine happens to have.
+
 ## What is covered today (Phases 0-1)
 
 583 tests, all passing. The Phase 1 additions are listed under "Testing the

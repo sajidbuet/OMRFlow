@@ -70,6 +70,25 @@ dev = [
 packaging = [
     "pyinstaller>=6.6",
 ]
+# Needed only to run the local release-qualification framework under
+# `tools/release_validation`, not to develop, test or package OMRFlow - see
+# `tools/release_validation/README.md`. Kept apart from `dev` because these are
+# Windows-desktop automation libraries: they are of no use on a CI runner with
+# no desktop, and a contributor who is not qualifying a release should not have
+# to install them.
+#
+#   pywinauto  drives the *packaged* application through Windows UI Automation,
+#              which is the only way to check the thing a user downloads rather
+#              than the source it was built from.
+#   pillow     compares screenshots against the committed visual baselines.
+#              Already a runtime dependency; named here so the group is honest
+#              about what it needs rather than relying on that.
+validation = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+    "pywinauto>=0.6.8",
+    "pillow>=10",
+]
 
 [project.scripts]
 omrflow = "omr_scanner.main:main"
@@ -124,6 +143,17 @@ omr_scanner = [
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+# The repository root, so that `from tests.report_fixtures import ...` resolves.
+# `tests/` is deliberately not a package - no `__init__.py`, so test module
+# names stay short - but several suites share fixtures through `tests.*`, and
+# that import needs the root on `sys.path`.
+#
+# Without this it works under `python -m pytest`, which prepends the working
+# directory, and fails under plain `pytest`, which does not. That is the
+# command CONTRIBUTING.md, docs/TESTING.md and the CI workflow all use, so the
+# suite collected 30+ ImportErrors everywhere except the one wrapper script
+# that happened to invoke it the other way.
+pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config -m \"not stress\""
 markers = [
     "gui: tests that instantiate Qt widgets (require a usable Qt platform plugin)",
@@ -137,7 +167,7 @@ filterwarnings = ["error::DeprecationWarning:omr_scanner.*"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "tests", "tools"]
 
 [tool.ruff.lint]
 select = [
@@ -192,6 +222,16 @@ extend-ignore-names = [
 # distinguish from a dead parameter. ARG002 is the same situation for a test
 # written as a method of a Test* class, which is most of them.
 "tests/*" = ["D103", "D101", "D102", "ANN201", "ANN001", "ARG001", "ARG002"]
+# The release-qualification suites are pytest files and get the same
+# allowances as `tests/` for the same reasons.
+"tools/release_validation/suites/*" = [
+    "D103", "D101", "D102", "ANN201", "ANN001", "ARG001", "ARG002",
+]
+# The framework's own modules are held to the project's standard, except that
+# `BLE001` is not enabled here and several places deliberately catch
+# `Exception`: a qualification stage that let an exception escape would
+# destroy the run and its report, which is the one thing it must never do.
+"tools/release_validation/*" = ["ANN401"]
 
 [tool.ruff.lint.flake8-bugbear]
 # Qt slots frequently take default arguments supplied by the signal.

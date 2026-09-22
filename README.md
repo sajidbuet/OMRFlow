@@ -150,18 +150,46 @@ synthetically tested" to a qualified stable release.
 | Phase | Status |
 |---|---|
 | 0–2 — Foundation, geometry, template designer | **Complete** |
-| 3–9 — Recognition, calibration, batch, conflicts, attendance, scoring, reporting | Implemented; testing in progress |
+| 3–9 — Recognition, calibration, batch, conflicts, attendance, scoring, reporting | Implemented; synthetic testing complete, real-data testing in progress |
 | 10 — Integration, recovery, production hardening | Implemented; 100,000-sheet acceptance run pending |
 | **11A — Alpha release infrastructure** | **Implemented — validation pending**; clean-machine test run and passed, its manual steps outstanding |
 | 11B — Real-data qualification & Beta | Pending |
 | 11C — Release candidate & stable | Pending |
+
+### Testing status
+
+| | |
+|---|---|
+| Automated suite | 4,162 tests passing, plus `ruff` and `mypy` |
+| Synthetic end-to-end | ✅ Passing, from source |
+| Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
+| Installer | ✅ Install → launch → uninstall → **user data preserved** → reinstall |
+| Clean machine | ✅ 56/56 automated checks on a pristine Windows image; its manual steps outstanding |
+| Accessibility | 🟠 Automated checks pass; 8 controls have no accessible name (recorded, non-blocking at Alpha) |
+| Real examination data | ❌ **Not started** — this is Phase 11B |
+| 100,000-sheet qualification | ⚪ Harness ready, not run |
+
+### Release qualification infrastructure
+
+Release qualification is a local, unattended framework — one command, a
+machine-readable report, a meaningful exit code, and no supervision:
+
+```powershell
+python tools\release_validation\validate_release.py --safe   # no install/uninstall
+python tools\release_validation\validate_release.py --all    # including the installer
+```
+
+It covers source tests, Qt GUI behaviour, accessibility, an end-to-end workflow
+smoke test, the built bundle, the **packaged executable**, and the installer
+round trip. See
+**[`tools/release_validation/README.md`](tools/release_validation/README.md)**.
 
 Current qualification focus:
 
 - real examination datasets and real scanner output;
 - real attendance workbooks;
 - set-specific end-to-end validation;
-- packaging and clean-system testing.
+- the clean-machine steps that need a person.
 
 **Implemented, automated tests passing, synthetic dataset validated, real
 scanned dataset validated and production validated are five different
