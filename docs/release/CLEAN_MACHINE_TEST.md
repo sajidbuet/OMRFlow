@@ -6,7 +6,7 @@
 > On **2026-09-22** this procedure was executed for the first time, in
 > Windows Sandbox, against
 > `OMRFlow-0.1.0-alpha.1-Setup-x64.exe`
-> (`3f2cfc62…`, commit `92fe4b2`). **56 checks passed and none failed** —
+> (`54efb360…`, commit `67bcb53`). **56 checks passed and none failed** —
 > including the two failures this test exists to catch, and the ones the
 > substitutes could never reach: installation as an unprivileged user,
 > first launch, uninstall with user data preserved, and reinstall.
@@ -36,7 +36,7 @@
 > its own source commit, so the build identifier documented in
 > [Installation](../wiki/Installation.md) did not exist in any installed
 > build. Fixed in `92fe4b2` and confirmed here — the first-launch log now
-> reads `0.1.0-alpha.1+92fe4b2`.
+> reads `0.1.0-alpha.1+67bcb53`.
 
 ## Why it cannot be skipped
 
@@ -67,29 +67,54 @@ time it starts, which removes the "was it really clean?" doubt.
 
 ### Running it in Windows Sandbox
 
-The scaffolding is in the repository, so the test is two commands once
-Sandbox is enabled:
+The scaffolding is in the repository, so the mechanical portion is one
+command:
 
 ```powershell
 .\scripts\release\Build-Installer.ps1          # if not already built
 .\scripts\release\New-Checksums.ps1
-.\packaging\sandbox\New-SandboxPayload.ps1 -Launch
+.\packaging\sandbox\New-SandboxPayload.ps1 -Launch -Wait
 ```
 
 `New-SandboxPayload.ps1` stages **only** the installer, `SHA256SUMS.txt` and
-the in-sandbox script into `packaging/sandbox/payload/` — deliberately no
-source tree, because an importable source tree is one of the two defects
+the two in-sandbox scripts into `packaging/sandbox/payload/` — deliberately
+no source tree, because an importable source tree is one of the two defects
 this test exists to catch. `OMRFlow-CleanMachine.wsb` maps that folder
-read-only, disables networking so a missing runtime cannot be quietly
-downloaded, and runs `Start-CleanMachineTest.ps1` on logon.
+read-only and disables networking, so a missing runtime cannot be quietly
+downloaded. A second folder, `packaging/sandbox/results/`, is mapped
+**writable**: a sandbox discards everything when it closes, and without
+somewhere to write, the evidence for a release would be a screenshot.
 
-That script performs the mechanical steps — confirming the sandbox really is
-clean, verifying the checksum, installing unprivileged, launching — and then
-prints the steps that need a person to look at the screen. It does not
-replace this procedure; the steps involving judgement stay manual.
+`-Wait` blocks until the in-sandbox run finishes and prints the verdict on
+the host. The report lands in `packaging/sandbox/results/`; turn it into the
+release record with `.\scripts\release\New-ValidationReport.ps1`.
+
+> **Two launchers.** Machines whose Sandbox app has updated itself have a
+> `wsb` CLI, and on those the older `System32\WindowsSandbox.exe` silently
+> ignores both the `.wsb` file and its `<LogonCommand>` — the sandbox starts
+> with no mapped folders and the test never runs. `New-SandboxPayload.ps1`
+> prefers `wsb` wherever it exists and starts the test with `wsb exec`. Only
+> one sandbox may run at a time; the script refuses rather than losing the
+> dialog that says so.
+
+That run performs the mechanical steps — confirming the machine really is
+clean, verifying the checksum, installing unprivileged, launching,
+uninstalling and reinstalling. It does **not** replace this procedure. When
+it finishes it leaves the sandbox open and lists what it could not judge;
+work through those in the interface, then record what you saw:
+
+```powershell
+# in the sandbox
+C:\Users\WDAGUtilityAccount\Desktop\OMRFlow\Complete-ManualChecks.ps1
+```
+
+which merges the answers into the same report, so a skipped step is recorded
+as *not performed* rather than quietly omitted.
 
 If Sandbox is unavailable, copy `packaging/sandbox/payload/` to a separate
-clean machine or fresh VM and run `Start-CleanMachineTest.ps1` there.
+clean machine or fresh VM and run `Start-CleanMachineTest.ps1` there. It
+falls back to writing its report to the Desktop, which must then be copied
+off by hand before the machine is discarded.
 
 ## Procedure
 
@@ -273,14 +298,14 @@ Enter this in the release's sign-off table, and in the release notes'
 | Windows version | Microsoft Windows 11 Enterprise, build 26100 |
 | Machine type | **Windows Sandbox** — a pristine image, discarded afterwards |
 | Administrator rights available | the sandbox account is an administrator; the install was nevertheless per-user and requested no elevation, and the installer's manifest was read back as `asInvoker` |
-| Installer version tested | `OMRFlow-0.1.0-alpha.1-Setup-x64.exe`, commit `92fe4b2` |
-| Checksum verified | yes, **on the machine under test**, against `SHA256SUMS.txt`: `3f2cfc62fef612549c2dccd855ad309a11e4bba0879538cdc41b835565e3ac20` |
+| Installer version tested | `OMRFlow-0.1.0-alpha.1-Setup-x64.exe`, commit `67bcb53` |
+| Checksum verified | yes, **on the machine under test**, against `SHA256SUMS.txt`: `54efb360603d28934e2880d9e408c153237199ddef08f5a8e8d800a32bb8b502` |
 | Automated checks | **56 passed, 0 failed, 1 recorded-not-judged** |
 | Steps passed | preparation and installation (1–4, 8–9), first launch (10–12), shutdown and restart (25–26, 28), uninstall (29–31, 33) and reinstall (34) |
 | Steps not performed | **5–7, 13–24, 27, 32, 35** — every step that needs a person to look at the screen |
 | Failures | none |
 | Result | **PASS (automated portion). The procedure as a whole is incomplete** until the steps above are performed |
-| Defect found and fixed | a packaged build did not record its source commit; fixed in `92fe4b2`, re-validated here |
+| Defect found and fixed | a packaged build did not record its source commit; fixed in `92fe4b2` and re-validated on this build, whose first-launch log reads `0.1.0-alpha.1+67bcb53` |
 | Full record | [`validation/0.1.0-alpha.1-clean-machine.md`](validation/0.1.0-alpha.1-clean-machine.md) |
 
 The one check recorded rather than judged is the Visual C++ runtime in

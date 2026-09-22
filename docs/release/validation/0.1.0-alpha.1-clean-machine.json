@@ -1,0 +1,476 @@
+{
+  "schema": "omrflow.release-validation/1",
+  "generated": "2026-09-22T05:08:31.4864600Z",
+  "release_candidate": {
+    "version": "0.1.0-alpha.1",
+    "release": "0.1.0",
+    "channel": "Alpha",
+    "is_prerelease": true,
+    "tag_to_be_created": "v0.1.0-alpha.1",
+    "source_commit": "67bcb536329378be9d20dc24e053349607356c2c",
+    "working_tree_clean": true,
+    "installer": "OMRFlow-0.1.0-alpha.1-Setup-x64.exe",
+    "installer_sha256": "54efb360603d28934e2880d9e408c153237199ddef08f5a8e8d800a32bb8b502",
+    "published_sha256": "54efb360603d28934e2880d9e408c153237199ddef08f5a8e8d800a32bb8b502",
+    "artifact_under_test_matches_build": true
+  },
+  "test_environment": {
+    "windows_caption": "Microsoft Windows 11 Enterprise",
+    "windows_version": "10.0.26100.0",
+    "windows_build": "26100",
+    "machine_type": "Windows Sandbox",
+    "username": "WDAGUtilityAccount",
+    "user_is_administrator": true,
+    "started_utc": "2026-09-22T05:07:09.5036183Z"
+  },
+  "summary": {
+    "passed": 56,
+    "failed": 0,
+    "skipped": 1,
+    "automated_verdict": "PASS (automated portion)"
+  },
+  "checks": [
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "no Python on the PATH",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "no Python installation",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "VC++ runtime in System32",
+      "Result": "SKIPPED",
+      "Detail": "present (2 file(s)) - shipped by Windows; phase 4 checks OMRFlow bundles its own",
+      "Step": ""
+    },
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "no Qt installation",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "no OMRFlow source in the payload",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "no OMRFlow already installed",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "1. Confirming the machine is clean",
+      "Check": "no OMRFlow user data from an earlier run",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "2. The artifact",
+      "Check": "SHA-256 matches SHA256SUMS.txt",
+      "Result": "PASS",
+      "Detail": "54efb360603d28934e2880d9e408c153237199ddef08f5a8e8d800a32bb8b502",
+      "Step": "3"
+    },
+    {
+      "Phase": "2. The artifact",
+      "Check": "installer carries a version",
+      "Result": "PASS",
+      "Detail": "0.1.0-alpha.1",
+      "Step": ""
+    },
+    {
+      "Phase": "2. The artifact",
+      "Check": "installer requests no elevation (asInvoker)",
+      "Result": "PASS",
+      "Detail": "asInvoker",
+      "Step": "4"
+    },
+    {
+      "Phase": "3. Installing, unprivileged, into the per-user location",
+      "Check": "installer exited successfully",
+      "Result": "PASS",
+      "Detail": "exit 0",
+      "Step": "8"
+    },
+    {
+      "Phase": "3. Installing, unprivileged, into the per-user location",
+      "Check": "installed under the user profile",
+      "Result": "PASS",
+      "Detail": "C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\Programs\\OMRFlow",
+      "Step": "8"
+    },
+    {
+      "Phase": "3. Installing, unprivileged, into the per-user location",
+      "Check": "Start menu entry created",
+      "Result": "PASS",
+      "Detail": "OMRFlow.lnk",
+      "Step": "9"
+    },
+    {
+      "Phase": "3. Installing, unprivileged, into the per-user location",
+      "Check": "listed in Apps & features",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "installed executable reports the version",
+      "Result": "PASS",
+      "Detail": "0.1.0-alpha.1",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "licence installed beside the application",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": "6"
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "no Python interpreter inside the installation",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: Qt core runtime",
+      "Result": "PASS",
+      "Detail": "_internal\\PySide6\\Qt6Core.dll",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: Qt GUI runtime",
+      "Result": "PASS",
+      "Detail": "_internal\\PySide6\\Qt6Gui.dll",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: Qt Windows platform plugin",
+      "Result": "PASS",
+      "Detail": "_internal\\PySide6\\plugins\\platforms\\qwindows.dll",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: Qt image format plugins",
+      "Result": "PASS",
+      "Detail": "_internal\\PySide6\\plugins\\imageformats",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: Visual C++ runtime (bundled)",
+      "Result": "PASS",
+      "Detail": "_internal\\VCRUNTIME140.dll",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: Pillow imaging backend",
+      "Result": "PASS",
+      "Detail": "_internal\\PIL",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: OpenCV",
+      "Result": "PASS",
+      "Detail": "_internal\\cv2",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: NumPy",
+      "Result": "PASS",
+      "Detail": "_internal\\numpy",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: application branding assets",
+      "Result": "PASS",
+      "Detail": "_internal\\omr_scanner\\gui\\resources\\branding\\icon.ico",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: workflow stage icons",
+      "Result": "PASS",
+      "Detail": "_internal\\omr_scanner\\gui\\resources\\icons\\lucide",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "bundled: bundled sample workbook",
+      "Result": "PASS",
+      "Detail": "_internal\\omr_scanner\\resources\\templates",
+      "Step": ""
+    },
+    {
+      "Phase": "4. What the installer laid down",
+      "Check": "stage icon set is present",
+      "Result": "PASS",
+      "Detail": "37 SVG icons",
+      "Step": "13"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "launches with no missing DLL, Python, Qt or VC++ runtime",
+      "Result": "PASS",
+      "Detail": "running",
+      "Step": "11"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "a window appeared",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": "10"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "window title reads OMRFlow <version>",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": "12"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "window title matches the installed version",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": "12"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "responsive",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "wrote a log under the user profile",
+      "Result": "PASS",
+      "Detail": "C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\OMRFlow\\logs",
+      "Step": ""
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "log records the build identifier with its commit",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1+67bcb53 (Alpha) starting (Python 3.12.2)",
+      "Step": ""
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "no traceback in the first-launch log",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "closed cleanly on request",
+      "Result": "PASS",
+      "Detail": "exit code 0",
+      "Step": "25"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "exit code is zero",
+      "Result": "PASS",
+      "Detail": "0",
+      "Step": "25"
+    },
+    {
+      "Phase": "5. First launch - the single most important observation",
+      "Check": "no OMRFlow process left behind",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": "25"
+    },
+    {
+      "Phase": "6. The installation directory must not be written to",
+      "Check": "wrote nothing into the installation directory",
+      "Result": "PASS",
+      "Detail": "unchanged",
+      "Step": ""
+    },
+    {
+      "Phase": "7. Second launch - the application survives a restart",
+      "Check": "relaunches after a previous session",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": "26"
+    },
+    {
+      "Phase": "7. Second launch - the application survives a restart",
+      "Check": "second launch shows a window",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": "26"
+    },
+    {
+      "Phase": "7. Second launch - the application survives a restart",
+      "Check": "second session closes cleanly",
+      "Result": "PASS",
+      "Detail": "exit 0",
+      "Step": "28"
+    },
+    {
+      "Phase": "7. Second launch - the application survives a restart",
+      "Check": "user data directory populated",
+      "Result": "PASS",
+      "Detail": "1 files under C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\OMRFlow",
+      "Step": ""
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "uninstaller exited successfully",
+      "Result": "PASS",
+      "Detail": "exit 0",
+      "Step": "29"
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "application binary removed",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": "30"
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "bundled runtime removed",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": "30"
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "Start menu entry removed",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": "31"
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "removed from Apps & features",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": ""
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "user data directory survived the uninstall",
+      "Result": "PASS",
+      "Detail": "C:\\Users\\WDAGUtilityAccount\\AppData\\Local\\OMRFlow",
+      "Step": "33"
+    },
+    {
+      "Phase": "8. Uninstall - and user data must survive it",
+      "Check": "no user file was deleted by the uninstall",
+      "Result": "PASS",
+      "Detail": "1 files intact",
+      "Step": "33"
+    },
+    {
+      "Phase": "9. Reinstall - and the retained data is still reachable",
+      "Check": "reinstaller exited successfully",
+      "Result": "PASS",
+      "Detail": "exit 0",
+      "Step": "34"
+    },
+    {
+      "Phase": "9. Reinstall - and the retained data is still reachable",
+      "Check": "application reinstalled",
+      "Result": "PASS",
+      "Detail": "",
+      "Step": "34"
+    },
+    {
+      "Phase": "9. Reinstall - and the retained data is still reachable",
+      "Check": "reinstalled application launches",
+      "Result": "PASS",
+      "Detail": "OMRFlow 0.1.0-alpha.1",
+      "Step": "35"
+    },
+    {
+      "Phase": "9. Reinstall - and the retained data is still reachable",
+      "Check": "retained user data still present after reinstall",
+      "Result": "PASS",
+      "Detail": "intact",
+      "Step": "35"
+    },
+    {
+      "Phase": "9. Reinstall - and the retained data is still reachable",
+      "Check": "reinstalled application closes cleanly",
+      "Result": "PASS",
+      "Detail": "exit 0",
+      "Step": ""
+    }
+  ],
+  "not_performed": [
+    {
+      "step": "5",
+      "what": "SmartScreen warning and its exact wording (this sandbox has no network, so SmartScreen cannot appear here at all)"
+    },
+    {
+      "step": "6",
+      "what": "the licence page shows the MIT licence"
+    },
+    {
+      "step": "7",
+      "what": "the Alpha warning is shown during installation"
+    },
+    {
+      "step": "13",
+      "what": "all nine stage icons actually render in the navigator"
+    },
+    {
+      "step": "14",
+      "what": "Help > About: version, Alpha, MIT, build identifier on hover"
+    },
+    {
+      "step": "15-16",
+      "what": "every stage renders; the footer reads Ready"
+    },
+    {
+      "step": "17-24",
+      "what": "create a project, validate the example template, generate synthetic sheets, Process All, diagnostic bundle, project health"
+    },
+    {
+      "step": "27",
+      "what": "a previously created project reopens with its results"
+    },
+    {
+      "step": "32",
+      "what": "a project folder outside the user data directory survives the uninstall"
+    },
+    {
+      "step": "35",
+      "what": "the previously created project opens after the reinstall"
+    }
+  ],
+  "notes": "Automated portion only. The steps of CLEAN_MACHINE_TEST.md that need a person - 5-7, 13-24, 27, 32 and 35 - were NOT performed and are listed under \"Not performed\" below. Chief among them is an end-to-end run on the installed build: recognition, Excel reporting and the parallel worker path are covered by 4162 automated tests, but every one of those runs from source, not from the installer.\n\nTo complete them: run packaging\\sandbox\\New-SandboxPayload.ps1 -Launch -Wait, work through the interface in the sandbox window it leaves open, then run Complete-ManualChecks.ps1 from the payload folder and regenerate this report.\n\nAlso run against this same artifact, on the build machine: the full suite (4162 passed, 2 skipped), Test-PackagedApp.ps1 (16/16), Test-InstallerRoundTrip.ps1 (15/15), Test-SelfContained.ps1 (14/14, including an installation under a path with spaces and non-ASCII characters), audit_dependencies.py (0 unresolved imports) and Invoke-ReleaseVerification.ps1 (14/14)."
+}
