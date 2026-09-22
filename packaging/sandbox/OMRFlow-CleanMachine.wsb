@@ -18,13 +18,22 @@
   that gets launched; this one is the version-controlled template.
 
   The payload folder is mapped READ-ONLY, so nothing the test does can reach
-  back into the repository. Step 2 stages only the installer and the checksum
-  file into it - deliberately not the source tree, because an importable
-  source tree is one of the two defects this test exists to catch.
+  back into it. Step 2 stages only the installer and the checksum file there
+  - deliberately not the source tree, because an importable source tree is
+  one of the two defects this test exists to catch.
+
+  A second folder is mapped WRITABLE, for results only. A sandbox discards
+  everything when it closes, so without it the evidence for the release would
+  be a screenshot of a transcript. It is a separate folder, outside the
+  repository, precisely so that "the payload is read-only" stays true: the
+  test can report, but it cannot reach the installer it is testing or any
+  source. Step 2 resolves both paths.
 
   Networking is disabled: OMRFlow must work with no network at all (there is
   no telemetry and no cloud upload), and a sandbox with no network cannot
-  quietly download a missing runtime and mask a packaging defect.
+  quietly download a missing runtime and mask a packaging defect. Note that
+  this also means SmartScreen cannot appear, so step 5 of
+  CLEAN_MACHINE_TEST.md is not observable here.
 -->
 <Configuration>
   <VGpu>Enable</VGpu>
@@ -35,6 +44,11 @@
       <HostFolder>.\payload</HostFolder>
       <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\OMRFlow</SandboxFolder>
       <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>.\results</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\OMRFlow-results</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
     </MappedFolder>
   </MappedFolders>
 

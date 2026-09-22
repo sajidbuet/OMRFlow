@@ -28,12 +28,24 @@
 .PARAMETER Installer
     Installer to test. Defaults to the newest in dist/installer.
 
+.PARAMETER InstallDirectory
+    Where to install for the test. Defaults to a scratch directory under
+    TEMP. Give a path containing spaces, or characters outside ASCII, to
+    check that the packaged application survives one: a build that quotes a
+    path badly, or that passes one through a byte-oriented API, works
+    perfectly under `C:\Program Files` and fails for the operator whose
+    account is named for a person rather than a login.
+
 .EXAMPLE
     .\scripts\release\Test-SelfContained.ps1
+
+.EXAMPLE
+    .\scripts\release\Test-SelfContained.ps1 -InstallDirectory "$env:TEMP\Parikşa Dosyası 2026\OMRFlow"
 #>
 [CmdletBinding()]
 param(
-    [string] $Installer
+    [string] $Installer,
+    [string] $InstallDirectory
 )
 
 Set-StrictMode -Version Latest
@@ -49,7 +61,8 @@ function Add-Check([string] $Name, [bool] $Passed, [string] $Detail = '') {
     Write-Host ("  {0,-4} {1,-50} {2}" -f $mark, $Name, $Detail) -ForegroundColor $colour
 }
 
-$installDirectory = Join-Path $env:TEMP "omrflow-selfcontained-$(Get-Random)"
+$installDirectory = if ($InstallDirectory) { $InstallDirectory }
+else { Join-Path $env:TEMP "omrflow-selfcontained-$(Get-Random)" }
 $scratch = Join-Path $env:TEMP "omrflow-scratch-$(Get-Random)"
 $startedAt = Get-Date
 
@@ -77,6 +90,17 @@ try {
     $unresolved = ($auditOutput | Select-String '^\s+UNRESOLVED\s+:\s+(\d+)').Matches.Groups[1].Value
     Add-Check 'no unresolved DLL imports in the bundle' $auditPassed "UNRESOLVED: $unresolved"
     if (-not $auditPassed) { $auditOutput | Select-Object -Last 25 | ForEach-Object { Write-Host "      $_" } }
+
+    # The import audit reads PE tables, so it sees only compiled code. A pure
+    # Python dependency dropped from the freeze - openpyxl, say - leaves the
+    # DLL audit perfectly clean and breaks Excel reporting. Reading the PYZ
+    # archive is the only way to notice.
+    Write-Host '  verifying the frozen Python imports...'
+    $frozenOutput = & $python (Join-Path $repositoryRoot 'packaging\verify_frozen_imports.py') `
+        (Join-Path $repositoryRoot 'dist\OMRFlow') 2>&1
+    $frozenPassed = $LASTEXITCODE -eq 0
+    Add-Check 'every imported dependency survived the freeze' $frozenPassed
+    if (-not $frozenPassed) { $frozenOutput | ForEach-Object { Write-Host "      $_" } }
 
     # -------------------------------------------------- 2. install it fresh
     Write-Host '  installing into a scratch directory...'

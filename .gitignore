@@ -10,6 +10,7 @@ dist/
 # scripts beside it are version-controlled; the installer copied in here is
 # a build output and must not be.
 packaging/sandbox/payload/
+packaging/sandbox/results/
 packaging/sandbox/*.generated.wsb
 
 # Environments
