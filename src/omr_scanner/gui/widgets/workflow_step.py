@@ -1,23 +1,23 @@
-"""One step of the workflow navigator, painted as a chevron or a tile.
+"""One step of the workflow ribbon, painted as a chevron or a tile.
 
 Purpose:
     Render a single workflow stage as a real, scalable, clickable shape with a
     distinct appearance for each of its states, and report the width it needs
-    in any candidate geometry so that the navigator can decide which layout
-    fits before committing to one.
+    at any candidate density so that the ribbon can decide which layout fits
+    before committing to one.
 
 Responsibilities:
     * :class:`StepGeometry` - the dimensional rules of a step, as a value
-      object. Separated from the widget so the navigator can ask "how wide
-      would this step be as a tile?" without mutating anything.
+      object. Separated from the widget so the ribbon can ask "how wide would
+      this step be one density level tighter?" without mutating anything.
     * :class:`WorkflowStep` - the widget: paints the geometry, confines the
       click target to the painted shape, and carries the accessible name,
       the tooltip and the disabled explanation.
 
 What does NOT belong here:
-    * Which step is active, which are enabled, and how many rows the row of
-      them occupies. A step knows nothing about its siblings; the navigator
-      owns all of that.
+    * Which step is active, which are enabled, and where in the row each one
+      sits. A step knows nothing about its siblings; the ribbon owns all of
+      that.
     * Any project or workflow logic. A step is a button.
 
 Why `QPainterPath` rather than an SVG or a text glyph:
@@ -58,13 +58,38 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
 from omr_scanner.gui.icons import load_icon
-from omr_scanner.gui.theme import Color, FontWeight, IconSize, Navigator, Radius, Stroke
+from omr_scanner.gui.theme import Color, Density, FontWeight, Navigator, Radius, Stroke
 
-ICON_TEXT_GAP = 8
-"""Between a chevron's icon and its label, in logical pixels."""
+TILE_EXTRA_H_PADDING = 2
+"""A tile has no arrow to clear, so it can afford a touch more breathing room
+at the same density without the row growing."""
 
-TILE_H_PADDING = 10
-TILE_ICON_TEXT_GAP = 7
+ELISION_SLACK = 1
+"""One logical pixel of headroom added to every measured label width.
+
+Not a fudge factor. `QFontMetrics.horizontalAdvance` sums glyph advances,
+while `QFontMetrics.elidedText` asks the text engine to lay the string out and
+compares against *that* - and the two disagree by up to a pixel on the last
+glyph's right bearing. A step given exactly its measured advance therefore
+elides: the ribbon picks the layout in which every label fits, and then the
+first label is drawn one character short with an ellipsis after it.
+
+Found by looking at a 1366-pixel screenshot, where "1. Project" rendered as
+"1. Proje..." in the layout chosen precisely because all nine fitted. One
+pixel per step is nine pixels across the whole ribbon, which is a price worth
+paying for a row that says what it means.
+"""
+
+MENU_INDICATOR_WIDTH = 15
+"""Room reserved at a step's right end for the "there is more here" caret.
+
+Only the narrow layout's single current-step control shows one, and it is the
+difference between a lone step that looks like a dead label and one that
+looks like it opens something. Reserved in the width rather than painted over
+the label, or the caret would sit on top of "7. Answer Key"."""
+
+_MENU_CARET_HALF_WIDTH = 4.0
+_MENU_CARET_HEIGHT = 3.0
 
 _REMEASURE_EVENTS = frozenset(
     {
@@ -95,28 +120,17 @@ class StepShape(Enum):
     """How a step draws itself.
 
     Attributes:
-        CHEVRON: Interlocking arrow, for the one-row and two-row layouts where
-            steps are adjacent and should read as a connected process.
-        TILE: Rounded rectangle, for the two-column layout. A chevron only
-            means anything when the next chevron continues it; in a
-            two-column grid the arrow would point at a column break, so the
-            geometry changes rather than being squeezed.
+        CHEVRON: Interlocking arrow. The ribbon's own shape, in every one of
+            its layouts, because the steps are adjacent there and should read
+            as one connected process.
+        TILE: Rounded rectangle, for a step drawn on its own - the narrow
+            layout's single current-step control. A chevron only means
+            anything when the next chevron continues it, and there is no next
+            chevron there.
     """
 
     CHEVRON = auto()
     TILE = auto()
-
-
-class StepSize(Enum):
-    """The two metric sets a step can be drawn at.
-
-    The *font* is never reduced between them - only the padding, the icon and
-    the arrow depth. Shrinking text to fit is what the brief forbids, so this
-    enum deliberately has no effect on type size.
-    """
-
-    REGULAR = auto()
-    COMPACT = auto()
 
 
 @dataclass(frozen=True)
@@ -124,25 +138,31 @@ class StepGeometry:
     """The dimensional rules for drawing a step, as plain data.
 
     Frozen and Qt-free apart from the font metrics it is asked to measure
-    against, which is what lets the navigator evaluate every candidate layout
-    - "how wide is the whole row as chevrons? as two rows? as tiles?" -
+    against, which is what lets the ribbon evaluate every candidate layout -
+    "how wide is the whole row at this density? at the next one down?" -
     before it moves a single widget. Measuring by temporarily reconfiguring
     the real widgets would emit a layout request per probe and make the
     decision depend on the order the probes ran in.
 
     Attributes:
         shape: :class:`StepShape`.
-        size: :class:`StepSize`.
+        density: A :class:`~omr_scanner.gui.theme.Density` level, 0 (tightest)
+            to :data:`~omr_scanner.gui.theme.Density.MAXIMUM`. Clamped on
+            read, so an out-of-range level is a tight or roomy step rather
+            than an `IndexError` in a paint event.
         has_left_notch: Whether the left edge is notched to receive the
             previous step's point. False for the first step of a row, which
             has nothing to interlock with.
         has_right_point: Whether the right edge comes to a point.
+        has_menu_indicator: Whether to reserve room for, and paint, the caret
+            that says this control opens the workflow selector.
     """
 
     shape: StepShape
-    size: StepSize
+    density: int
     has_left_notch: bool
     has_right_point: bool
+    has_menu_indicator: bool = False
 
     @property
     def arrow_depth(self) -> int:
@@ -152,37 +172,33 @@ class StepGeometry:
         """
         if self.shape is StepShape.TILE:
             return 0
-        return (
-            Navigator.ARROW_DEPTH
-            if self.size is StepSize.REGULAR
-            else Navigator.ARROW_DEPTH_COMPACT
-        )
+        return Density.level(self.density).arrow_depth
 
     @property
     def height(self) -> int:
-        """The step's height."""
-        return (
-            Navigator.STEP_HEIGHT
-            if self.size is StepSize.REGULAR
-            else Navigator.STEP_HEIGHT_COMPACT
-        )
+        """The step's height - the same at every density; see `Density`."""
+        return Navigator.STEP_HEIGHT
 
     @property
     def icon_extent(self) -> int:
         """Edge length of the step's icon."""
-        if self.shape is StepShape.TILE or self.size is StepSize.COMPACT:
-            return IconSize.NAV_STEP_COMPACT
-        return IconSize.NAV_STEP
+        return Density.level(self.density).icon_extent
 
     @property
     def h_padding(self) -> int:
         """Padding inside each end of the step, clear of the arrow geometry."""
-        return TILE_H_PADDING if self.shape is StepShape.TILE else Navigator.STEP_H_PADDING
+        padding = Density.level(self.density).h_padding
+        return padding + TILE_EXTRA_H_PADDING if self.shape is StepShape.TILE else padding
 
     @property
     def icon_text_gap(self) -> int:
         """Gap between the icon and the label."""
-        return TILE_ICON_TEXT_GAP if self.shape is StepShape.TILE else ICON_TEXT_GAP
+        return Density.level(self.density).icon_text_gap
+
+    @property
+    def min_label_width(self) -> int:
+        """The narrowest the label itself may be drawn at this density."""
+        return Density.level(self.density).min_label_width
 
     @property
     def left_inset(self) -> int:
@@ -191,8 +207,12 @@ class StepGeometry:
 
     @property
     def right_inset(self) -> int:
-        """How much room the point needs to the right of the content."""
-        return self.h_padding + (self.arrow_depth if self.has_right_point else 0)
+        """How much room the point and the caret need to the content's right."""
+        return (
+            self.h_padding
+            + (self.arrow_depth if self.has_right_point else 0)
+            + (MENU_INDICATOR_WIDTH if self.has_menu_indicator else 0)
+        )
 
     @property
     def chrome_width(self) -> int:
@@ -200,18 +220,25 @@ class StepGeometry:
         return self.left_inset + self.icon_extent + self.icon_text_gap + self.right_inset
 
     def width_for(self, text: str, font: QFont) -> int:
-        """The width needed to show ``text`` in full at ``font``."""
-        return self.chrome_width + QFontMetrics(font).horizontalAdvance(text)
+        """The width needed to show ``text`` in full at ``font``.
+
+        Includes :data:`ELISION_SLACK`, without which "in full" is off by one
+        pixel and therefore not in full at all.
+        """
+        return (
+            self.chrome_width
+            + QFontMetrics(font).horizontalAdvance(text)
+            + ELISION_SLACK
+        )
 
     def minimum_width(self) -> int:
         """The narrowest this step can be drawn and still say something.
 
-        Its label is elided to :data:`Navigator.MIN_LABEL_WIDTH`. The
-        navigator treats needing this as the signal to change layout, so in
-        practice only the last-resort scrolling layout draws a step this
-        narrow.
+        Its label is elided to this density's ``min_label_width``. The ribbon
+        treats needing this as the signal to change layout rather than as a
+        size to draw, so in practice no layout renders a step this narrow.
         """
-        return self.chrome_width + Navigator.MIN_LABEL_WIDTH
+        return self.chrome_width + self.min_label_width
 
     def advance_for(self, width: int) -> int:
         """How far the *next* step starts to the right of this one's left edge.
@@ -225,11 +252,14 @@ class StepGeometry:
         return width - self.arrow_depth + Navigator.STEP_GAP
 
 
-CHEVRON_REGULAR = StepGeometry(
-    shape=StepShape.CHEVRON, size=StepSize.REGULAR, has_left_notch=True, has_right_point=True
+CHEVRON_DEFAULT = StepGeometry(
+    shape=StepShape.CHEVRON,
+    density=Density.DEFAULT,
+    has_left_notch=True,
+    has_right_point=True,
 )
-"""A middle chevron at full size - the shape most steps have in the wide
-layout, and the one the navigator measures the wide layout against."""
+"""A middle chevron at the default density - the shape most steps have, and
+what a step is constructed with before the ribbon places it."""
 
 
 class WorkflowStep(QAbstractButton):
@@ -263,8 +293,9 @@ class WorkflowStep(QAbstractButton):
         self._number = number
         self._label = label
         self._summary = summary
+        self._icon_name = icon_name
         self._icon = load_icon(icon_name)
-        self._geometry = CHEVRON_REGULAR
+        self._geometry = CHEVRON_DEFAULT
         self._disabled_reason = ""
         self._elided = False
 
@@ -303,6 +334,21 @@ class WorkflowStep(QAbstractButton):
     def summary(self) -> str:
         """The one-line description of what this stage is for."""
         return self._summary
+
+    @property
+    def icon_name(self) -> str:
+        """The bundled Lucide icon name this step was built with.
+
+        Exposed so the narrow layout's stage selector can show the same glyph
+        beside the same label, from the same asset, rather than keeping a
+        second mapping of stage to icon that could drift from this one.
+        """
+        return self._icon_name
+
+    @property
+    def stage_icon(self) -> QIcon:
+        """The loaded icon, for a control that shows this stage elsewhere."""
+        return self._icon
 
     @property
     def is_label_elided(self) -> bool:
@@ -531,9 +577,36 @@ class WorkflowStep(QAbstractButton):
             shown,
         )
 
+        if self._geometry.has_menu_indicator:
+            self._paint_menu_caret(painter, foreground)
         if self.hasFocus():
             self._paint_focus_ring(painter, path)
         painter.end()
+
+    def _paint_menu_caret(self, painter: QPainter, colour: QColor) -> None:
+        """A small downward caret at the right end, in the reserved width.
+
+        Painted rather than loaded as an icon so it inherits the step's own
+        foreground - white on the active accent, charcoal otherwise - without
+        a second tinted pixmap for a shape that is three lines long.
+        """
+        centre_x = (
+            self.width()
+            - self._geometry.h_padding
+            - (self._geometry.arrow_depth if self._geometry.has_right_point else 0)
+            - MENU_INDICATOR_WIDTH / 2.0
+        )
+        centre_y = self.height() / 2.0
+        pen = QPen(colour, float(Stroke.FOCUS_RING))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        caret = QPainterPath()
+        caret.moveTo(centre_x - _MENU_CARET_HALF_WIDTH, centre_y - _MENU_CARET_HEIGHT / 2.0)
+        caret.lineTo(centre_x, centre_y + _MENU_CARET_HEIGHT / 2.0)
+        caret.lineTo(centre_x + _MENU_CARET_HALF_WIDTH, centre_y - _MENU_CARET_HEIGHT / 2.0)
+        painter.drawPath(caret)
 
     def _paint_icon(self, painter: QPainter, rect: QRect, colour: QColor) -> None:
         """Render the Lucide glyph in ``colour``.
@@ -600,11 +673,13 @@ class WorkflowStep(QAbstractButton):
 
 
 __all__ = [
-    "CHEVRON_REGULAR",
-    "ICON_TEXT_GAP",
-    "TILE_H_PADDING",
+    "CHEVRON_DEFAULT",
+    "ELISION_SLACK",
+    "MENU_INDICATOR_WIDTH",
+    "TILE_EXTRA_H_PADDING",
     "StepGeometry",
     "StepShape",
-    "StepSize",
     "WorkflowStep",
 ]
+
+

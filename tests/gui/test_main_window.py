@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, load_app_config
 from omr_scanner.gui.application import configure_application
-from omr_scanner.gui.main_window import NO_PROJECT_STATUS, MainWindow, window_title
+from omr_scanner.gui.main_window import MainWindow, window_title
 from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.gui.pages.placeholder_page import PlaceholderPage
 
@@ -97,36 +97,35 @@ def test_the_window_manager_shows_the_name_once(qtbot, tmp_path: Path):
     assert native_title == window.windowTitle()
     assert native_title.count(APPLICATION_NAME) == 1, native_title
     assert __version__ in native_title
-    assert len(window.navigator.steps) == len(WORKFLOW_PAGES)
+    assert len(window.ribbon.steps) == len(WORKFLOW_PAGES)
     assert window.close_project_action.isEnabled() is False
-    status_texts = [label.text() for label in window.statusBar().findChildren(QLabel)]
-    assert NO_PROJECT_STATUS in status_texts
+    assert window.footer.project_title is None
 
 
 def test_navigation_switches_the_visible_page(window: MainWindow):
     """Clicking a workflow step brings its page to the front.
 
-    Driven through the navigator's own signal rather than by calling
+    Driven through the ribbon's own signal rather than by calling
     `show_page` directly, so this covers the wiring between the two - which
     is the part that would break.
     """
     target = WORKFLOW_PAGES[2].key
-    window.navigator.step_activated.emit(target)
+    window.ribbon.step_activated.emit(target)
 
     assert window.stack.currentIndex() == 2
     assert window.stack.currentWidget().spec.key == target
-    assert window.navigator.current_key() == target
+    assert window.ribbon.current_key() == target
 
 
-def test_show_page_moves_the_navigator_highlight_too(window: MainWindow):
+def test_show_page_moves_the_ribbon_highlight_too(window: MainWindow):
     """However navigation starts, the two must agree afterwards."""
     assert window.show_page("reports") is True
     assert window.current_page_key() == "reports"
-    assert window.navigator.current_key() == "reports"
-    step = window.navigator.step("reports")
+    assert window.ribbon.current_key() == "reports"
+    step = window.ribbon.step("reports")
     assert step is not None
     assert step.isChecked()
-    assert [other.key for other in window.navigator.steps if other.isChecked()] == [
+    assert [other.key for other in window.ribbon.steps if other.isChecked()] == [
         "reports"
     ]
 
@@ -360,3 +359,4 @@ def test_closing_the_window_releases_the_project(window: MainWindow, workspace: 
     window.close()
 
     assert session.is_closed
+

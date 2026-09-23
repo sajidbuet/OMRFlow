@@ -27,6 +27,13 @@ class PlaceholderPage(WorkflowPage):
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent)
 
+        # The stage's own sentence, in the body rather than in a heading. No
+        # page carries a heading naming its stage any more - the workflow
+        # ribbon does that - but a stage that does not exist yet still has to
+        # say what it will be for, and that sentence used to live in the
+        # heading's summary row.
+        self.summary_widget = self.add_note(spec.summary)
+
         notice = QLabel(f"Not implemented yet - planned for development phase {spec.phase}.")
         notice.setObjectName("phaseNotice")
         notice_font = notice.font()

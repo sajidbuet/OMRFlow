@@ -27,16 +27,44 @@ from functools import cache
 from importlib import resources
 from pathlib import Path
 
+from PySide6.QtCore import QRectF
 from PySide6.QtGui import QIcon
 
 _BRANDING_ANCHOR_PACKAGE = "omr_scanner.gui"
 _BRANDING_SUBPATH = ("resources", "branding")
 
-LOGO_ASPECT_RATIO = 948 / 613
+LOGO_CONTENT_BOX = (150.0, 324.0, 948.0, 613.0)
+"""Where the wordmark's ink actually is inside ``logo.svg``, as
+``(x, y, width, height)`` in the file's own 1254x1254 user units.
+
+Measured once from the artwork's path bounds (`QSvgRenderer.boundsOnElement`),
+and load-bearing rather than informational. The file's `viewBox` is the full
+square canvas, and `QSvgWidget` renders *that* into whatever rectangle the
+widget occupies, stretching it to fit - so a widget sized to the ink's own
+1.55:1 ratio squashed the square canvas into it and distorted the wordmark by
+a factor of 1.55, while surrounding it with transparent padding that wasted
+about a third of the width it was given. :func:`logo_view_box` is what a
+caller uses to render the ink and nothing else.
+"""
+
+LOGO_ASPECT_RATIO = LOGO_CONTENT_BOX[2] / LOGO_CONTENT_BOX[3]
 """Width divided by height of ``logo.svg``'s visible content (not its square
-1254x1254 canvas), measured once from the artwork's own path bounds. Used to
-size the header's logo widget without distorting it - `QSvgWidget` does not
-infer a "natural" size for a non-square `viewBox` the way an `<img>` would."""
+1254x1254 canvas). Used to size the chrome row's logo widget without
+distorting it - `QSvgWidget` does not infer a "natural" size for artwork that
+does not fill its own `viewBox` the way an `<img>` would."""
+
+
+def logo_view_box() -> QRectF:
+    """The rectangle a renderer should treat as the whole logo.
+
+    Returns:
+        :data:`LOGO_CONTENT_BOX` as a `QRectF`, to hand to
+        `QSvgRenderer.setViewBox`. After that the renderer maps the ink - not
+        the empty canvas around it - onto the widget's rectangle, so a widget
+        at :data:`LOGO_ASPECT_RATIO` shows the wordmark at its true
+        proportions and at the full size it was given.
+    """
+    return QRectF(*LOGO_CONTENT_BOX)
 
 _extracted_files = ExitStack()
 """Keeps any temporary extraction alive for the process lifetime - see the
@@ -76,4 +104,10 @@ def application_icon() -> QIcon:
     return icon
 
 
-__all__ = ["LOGO_ASPECT_RATIO", "application_icon", "logo_svg_path"]
+__all__ = [
+    "LOGO_ASPECT_RATIO",
+    "LOGO_CONTENT_BOX",
+    "application_icon",
+    "logo_svg_path",
+    "logo_view_box",
+]

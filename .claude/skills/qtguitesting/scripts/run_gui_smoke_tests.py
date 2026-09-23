@@ -1406,10 +1406,12 @@ def _check_reports_page_lists_the_associated_set() -> CheckResult:
 
 
 def _check_generating_xlsx_produces_every_row_and_rank_formulas() -> CheckResult:
-    """Phase 9: Rollwise keeps every candidate, including the absentee, with
-    Excel rank formulas over scored candidates."""
-    import openpyxl
+    """Phase 9: Rollwise keeps every candidate, with Excel rank formulas.
 
+    Including the absentee, and with the rank formulas covering the scored
+    candidates.
+    """
+    import openpyxl
     from _harness import build_reports_page
 
     harness = build_reports_page()

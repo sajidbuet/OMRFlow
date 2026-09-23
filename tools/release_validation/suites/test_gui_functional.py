@@ -64,18 +64,18 @@ class TestStartup:
     def test_no_project_is_open_at_startup(self, main_window: MainWindow):
         assert main_window.session is None
 
-    def test_the_navigator_offers_every_workflow_stage(self, main_window: MainWindow):
-        assert main_window.navigator.keys == STAGE_KEYS
+    def test_the_ribbon_offers_every_workflow_stage(self, main_window: MainWindow):
+        assert main_window.ribbon.keys == STAGE_KEYS
 
     def test_there_are_nine_stages(self, main_window: MainWindow):
         # Guards the claim made in the README and the clean-machine procedure.
         assert len(STAGE_KEYS) == 9
 
-    def test_the_header_and_footer_are_present(self, shown_window: MainWindow):
-        assert find_by_object_name(shown_window, "appHeader") is not None
+    def test_the_chrome_row_and_footer_are_present(self, shown_window: MainWindow):
+        assert find_by_object_name(shown_window, "appChrome") is not None
         assert find_by_object_name(shown_window, "appFooter") is not None
 
-    def test_the_header_shows_the_logo(self, shown_window: MainWindow):
+    def test_the_chrome_row_shows_the_logo(self, shown_window: MainWindow):
         logo = find_by_object_name(shown_window, "appLogo")
         assert logo is not None
         assert logo.accessibleName() == "OMRFlow"
@@ -116,15 +116,15 @@ class TestWindowGeometry:
         shown_window.showNormal()
         qtbot.wait(150)
         assert not shown_window.isMaximized()
-        # The navigator must still hold every stage after the round trip.
-        assert shown_window.navigator.keys == STAGE_KEYS
+        # The ribbon must still hold every stage after the round trip.
+        assert shown_window.ribbon.keys == STAGE_KEYS
 
 
 # ---------------------------------------------------------------- navigation
 
 
 class TestWorkflowNavigation:
-    """The navigator, the stack and the highlight stay in step."""
+    """The ribbon, the stack and the highlight stay in step."""
 
     def test_every_stage_can_be_shown_once_a_project_is_open(
         self, shown_window: MainWindow, workspace: Path, qtbot
@@ -134,7 +134,7 @@ class TestWorkflowNavigation:
         unreachable = [key for key in STAGE_KEYS if not shown_window.show_page(key)]
         assert not unreachable, f"stages that would not open: {unreachable}"
 
-    def test_showing_a_stage_moves_the_navigator_highlight(
+    def test_showing_a_stage_moves_the_ribbon_highlight(
         self, shown_window: MainWindow, workspace: Path, qtbot
     ):
         assert shown_window.create_project_at(workspace, "Highlight Project")
@@ -142,7 +142,7 @@ class TestWorkflowNavigation:
             assert shown_window.show_page(key)
             qtbot.wait(20)
             assert shown_window.current_page_key() == key
-            assert shown_window.navigator.current_key() == key
+            assert shown_window.ribbon.current_key() == key
 
     def test_an_unknown_stage_is_refused(self, shown_window: MainWindow):
         assert shown_window.show_page("no-such-stage") is False
@@ -152,81 +152,107 @@ class TestWorkflowNavigation:
     ):
         """Right/Left/Home/End move focus; they do not activate.
 
-        This build has no separate Next and Previous buttons - the navigator is
-        the control. Moving focus and activating are deliberately two actions,
-        so that keyboard exploration does not change the page under the
-        operator; the activation half is the next test.
+        Moving focus and activating are deliberately two actions, so that
+        keyboard exploration does not change the page under the operator; the
+        activation half is the next test. The chrome row's `<` and `>` buttons
+        are the separate previous/next controls, and they *do* navigate -
+        covered in ``tests/gui/test_window_chrome.py``.
         """
         assert shown_window.create_project_at(workspace, "Keyboard Project")
-        navigator = shown_window.navigator
-        steps = {step.key: step for step in navigator.steps}
+        shown_window.resize(1600, 900)
+        qtbot.wait(120)
+        ribbon = shown_window.ribbon
+        steps = {step.key: step for step in ribbon.steps}
         steps[STAGE_KEYS[0]].setFocus()
         qtbot.wait(30)
 
         def focused_key() -> str | None:
-            return next((step.key for step in navigator.steps if step.hasFocus()), None)
+            return next((step.key for step in ribbon.steps if step.hasFocus()), None)
 
         assert focused_key() == STAGE_KEYS[0]
 
-        qtbot.keyClick(navigator, Qt.Key.Key_Right)
+        qtbot.keyClick(ribbon, Qt.Key.Key_Right)
         qtbot.wait(30)
         second = focused_key()
         assert second is not None and second != STAGE_KEYS[0]
 
-        qtbot.keyClick(navigator, Qt.Key.Key_Left)
+        qtbot.keyClick(ribbon, Qt.Key.Key_Left)
         qtbot.wait(30)
         assert focused_key() == STAGE_KEYS[0]
 
-        qtbot.keyClick(navigator, Qt.Key.Key_End)
+        qtbot.keyClick(ribbon, Qt.Key.Key_End)
         qtbot.wait(30)
         assert focused_key() != STAGE_KEYS[0]
 
-        qtbot.keyClick(navigator, Qt.Key.Key_Home)
+        qtbot.keyClick(ribbon, Qt.Key.Key_Home)
         qtbot.wait(30)
         assert focused_key() == STAGE_KEYS[0]
 
     def test_the_keyboard_can_activate_the_focused_stage(
         self, shown_window: MainWindow, workspace: Path, qtbot
     ):
-        """Space on a focused step changes the page - the other half."""
+        """Space on a focused step changes the page - the other half.
+
+        At a width where every stage is on screen. In the narrow layout the
+        only visible step *is* the current page, so Space there opens the
+        stage selector instead of navigating nowhere - deliberate, and covered
+        by ``tests/gui/test_workflow_ribbon.py``.
+        """
         assert shown_window.create_project_at(workspace, "Activate Project")
-        navigator = shown_window.navigator
+        shown_window.resize(1600, 900)
+        qtbot.wait(120)
+        ribbon = shown_window.ribbon
         assert shown_window.show_page(STAGE_KEYS[0])
 
-        target = next(step for step in navigator.steps if step.key == STAGE_KEYS[1])
+        target = next(step for step in ribbon.steps if step.key == STAGE_KEYS[1])
         target.setFocus()
         qtbot.wait(30)
         qtbot.keyClick(target, Qt.Key.Key_Space)
         qtbot.wait(80)
 
-        assert navigator.current_key() == STAGE_KEYS[1]
+        assert ribbon.current_key() == STAGE_KEYS[1]
         assert shown_window.current_page_key() == STAGE_KEYS[1]
 
     @pytest.mark.parametrize("width", [1600, 1200, 900, 640, 420])
-    def test_the_navigator_lays_out_at_every_width(
+    def test_the_ribbon_lays_out_on_one_line_at_every_width(
         self, shown_window: MainWindow, width: int
     ):
-        """Every stage stays present and placed, however narrow the window.
+        """The workflow never wraps, and every stage stays reachable.
 
-        The layout *mode* may change - that is the point of having four - but
-        a plan that dropped a stage would make it unreachable.
+        The layout *mode* may change - that is the point of having three - and
+        the narrow one shows a single step in the strip. What may never change
+        is that the ribbon occupies one line and that all nine stages still
+        exist behind it, which is why both are asserted rather than just the
+        placement count.
         """
-        plan = shown_window.navigator.plan_for_width(width)
-        assert len(plan.placements) == len(STAGE_KEYS)
-        assert plan.mode is not None
+        ribbon = shown_window.ribbon
+        plan = ribbon.plan_for_width(width)
+        assert plan.rows == 1, f"the workflow wrapped at {width}px"
+        assert plan.placements
+        assert len(ribbon.steps) == len(STAGE_KEYS)
+        assert ribbon.keys == STAGE_KEYS
 
     def test_narrow_windows_choose_a_different_layout_than_wide_ones(
         self, shown_window: MainWindow
     ):
-        wide = shown_window.navigator.plan_for_width(1600)
-        narrow = shown_window.navigator.plan_for_width(420)
+        wide = shown_window.ribbon.plan_for_width(1600)
+        narrow = shown_window.ribbon.plan_for_width(200)
         assert wide.mode is not narrow.mode
 
-    def test_compact_navigation_remains_complete(self, shown_window: MainWindow, qtbot):
+    def test_narrow_navigation_remains_complete(self, shown_window: MainWindow, qtbot):
+        """Hidden from the strip is not hidden from the workflow.
+
+        At a width that collapses the ribbon to one stage, the other eight are
+        still present, still enabled, and still listed in the selector that
+        replaces them.
+        """
         shown_window.resize(720, 620)
         qtbot.wait(150)
-        assert len(shown_window.navigator.steps) == len(STAGE_KEYS)
-        assert shown_window.navigator.isVisible()
+        ribbon = shown_window.ribbon
+        assert len(ribbon.steps) == len(STAGE_KEYS)
+        assert ribbon.isVisible()
+        ribbon.refresh_flyout()
+        assert len(ribbon.flyout.actions()) == len(STAGE_KEYS)
 
 
 # --------------------------------------------------------------------- menus

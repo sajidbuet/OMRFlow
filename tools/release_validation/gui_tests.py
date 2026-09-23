@@ -6,7 +6,7 @@ substance is in ``suites/test_gui_functional.py`` and
 ``suites/test_workflow_smoke.py``.
 
 Why the GUI stage insists on a real desktop:
-    The checks that matter most here - the navigator's layout at five widths,
+    The checks that matter most here - the ribbon's layout at five widths,
     focus moving on Tab, a window that maximises and restores - are the ones
     Qt's ``offscreen`` platform answers differently or not at all. A run on a
     machine with no desktop is recorded as SKIPPED with that said, never as a

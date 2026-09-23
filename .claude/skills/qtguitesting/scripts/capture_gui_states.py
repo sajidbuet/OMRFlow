@@ -38,6 +38,7 @@ from _harness import (
     build_calibration_page,
     build_designer,
     build_empty_designer,
+    build_main_window,
     build_scan_page,
     ensure_application,
     orientation_search_rect,
@@ -854,7 +855,100 @@ def _capture_scoring(_image: Path) -> list[Path]:
     return written
 
 
+LONG_EXAM_TITLE = (
+    "Recruitment Exam, Bangladesh Submarine Cable Regulatory Authority"
+)
+"""A realistic examination title, and a long one on purpose.
+
+The footer has to show a title of this shape without pushing the version off
+the row, so the capture that is meant to prove it uses one.
+"""
+
+
+def _capture_shell(_image: Path) -> list[Path]:
+    """The application shell: all three ribbon layouts, and both footer states.
+
+    Eight images, and the set is chosen so that each answers a question the
+    others cannot:
+
+    * the whole window at 1920 and the chrome row alone, so the row can be
+      read at something like its real size rather than as a sliver of a
+      full-window capture;
+    * the chrome at 1366, the width the brief singles out, which is where
+      "do all nine stages still fit?" is actually decided;
+    * the scrolling layout, and the same layout after navigating to the last
+      stage - which is the evidence that the active stage is scrolled into
+      view rather than left off to the right;
+    * the narrow current-stage-only layout, closed and with its selector open;
+    * the footer with a project open and with none.
+
+    The ribbon layout each capture landed in is printed beside it, because a
+    layout chosen by measurement can differ between machines and fonts, and a
+    reader comparing these against the reference concept needs to know which
+    of the three they are looking at.
+    """
+    written: list[Path] = []
+    harness = build_main_window(project_name="bscra-2026", exam_name=LONG_EXAM_TITLE)
+    window = harness.window
+
+    print(f"  1920: ribbon layout is {harness.at_width(1920, 1080)}")
+    written.append(_save(window, "shell_1920_full_workflow"))
+    written.append(_save(window.chrome, "shell_chrome_1920"))
+    written.append(_save(window.footer, "shell_footer_project_open"))
+
+    print(f"  1366: ribbon layout is {harness.at_width(1366, 768)}")
+    written.append(_save(window.chrome, "shell_chrome_1366"))
+
+    # A content-heavy stage at the size that matters most, so the reclaimed
+    # vertical space is visible rather than merely asserted.
+    window.show_page("reports")
+    harness.process_events()
+    written.append(_save(window, "shell_1366_reports"))
+    window.show_page("scan")
+    harness.process_events()
+    written.append(_save(window, "shell_1366_scan"))
+
+    for width in (1100, 900):
+        layout = harness.at_width(width, 760)
+        print(f"  {width}: ribbon layout is {layout}")
+        if layout == "scroll":
+            window.show_page("project")
+            harness.process_events()
+            written.append(_save(window.chrome, "shell_chrome_scrolled_start"))
+            # Navigating to the last stage has to bring it into view; this is
+            # the picture of that happening.
+            window.show_page("reports")
+            harness.process_events()
+            written.append(_save(window.chrome, "shell_chrome_scrolled_to_active"))
+            break
+
+    layout = harness.at_width(720, 700)
+    print(f"  720: ribbon layout is {layout}")
+    window.show_page("results")
+    harness.process_events()
+    written.append(_save(window.chrome, "shell_chrome_narrow"))
+    written.append(_save(window, "shell_720_narrow"))
+
+    if layout == "current_only":
+        window.ribbon.open_flyout()
+        harness.process_events()
+        flyout = window.ribbon.flyout
+        print(f"  narrow selector lists {len(flyout.actions())} stage(s)")
+        written.append(_save(flyout, "shell_narrow_flyout_open"))
+        flyout.close()
+        harness.process_events()
+
+    window.close_project()
+    harness.at_width(1366, 768)
+    print(f"  footer with no project: {window.footer.project_label.full_text!r}")
+    written.append(_save(window.footer, "shell_footer_no_project"))
+
+    harness.shutdown()
+    return written
+
+
 SCENARIOS: dict[str, Callable[[Path], list[Path]]] = {
+    "shell": _capture_shell,
     "empty": _capture_empty,
     "review": _capture_review,
     "reconciliation": _capture_reconciliation,

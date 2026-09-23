@@ -118,85 +118,99 @@ def ensure_worker_processes_die_with_this_one() -> bool:
     global _JOB_HANDLE
     if _JOB_HANDLE is not None:
         return True
-    if sys.platform != "win32":
-        return False
 
-    try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # A guarding `if sys.platform == "win32": ... else: ...` rather than the
+    # early `if sys.platform != "win32": return False` this used to be, and the
+    # difference is load-bearing for `mypy --strict --warn-unreachable`. mypy
+    # analyses one platform at a time and deliberately does *not* warn about a
+    # block it skipped because of a `sys.platform` check - but that exemption
+    # covers the branch bodies, not code that merely follows an early return.
+    # Analysed for Linux, the old shape made every statement below it
+    # unreachable and the CI type-check job failed on it. Keeping both arms as
+    # branches also keeps the Windows-only `ctypes.WinDLL` access inside a
+    # block mypy skips off-Windows, so no `type: ignore` is needed on either
+    # platform. There must be no statement *after* this if/else: on Windows the
+    # `if` arm always returns, which would make a trailing line unreachable and
+    # simply move the same error to the other platform.
+    if sys.platform == "win32":
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-        # Explicit argtypes/restype are not optional here: `GetCurrentProcess`
-        # returns the pseudo-handle `(HANDLE)-1`, and ctypes' default 32-bit
-        # `c_int` guess for an undeclared return type sign-extends or
-        # truncates that value incorrectly on 64-bit Python, producing a
-        # handle `AssignProcessToJobObject` then rejects as invalid. Found by
-        # this module's own isolated test, which failed with
-        # `ERROR_INVALID_HANDLE` before these declarations were added.
-        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
-        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
-        kernel32.SetInformationJobObject.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.c_void_p,
-            ctypes.c_uint32,
-        ]
-        kernel32.SetInformationJobObject.restype = ctypes.c_int
-        kernel32.GetCurrentProcess.argtypes = []
-        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
-        kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        kernel32.AssignProcessToJobObject.restype = ctypes.c_int
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-        kernel32.CloseHandle.restype = ctypes.c_int
+            # Explicit argtypes/restype are not optional here: `GetCurrentProcess`
+            # returns the pseudo-handle `(HANDLE)-1`, and ctypes' default 32-bit
+            # `c_int` guess for an undeclared return type sign-extends or
+            # truncates that value incorrectly on 64-bit Python, producing a
+            # handle `AssignProcessToJobObject` then rejects as invalid. Found by
+            # this module's own isolated test, which failed with
+            # `ERROR_INVALID_HANDLE` before these declarations were added.
+            kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+            kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+            kernel32.SetInformationJobObject.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+            ]
+            kernel32.SetInformationJobObject.restype = ctypes.c_int
+            kernel32.GetCurrentProcess.argtypes = []
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+            kernel32.AssignProcessToJobObject.restype = ctypes.c_int
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = ctypes.c_int
 
-        handle = kernel32.CreateJobObjectW(None, None)
-        if not handle:
-            _LOGGER.warning(
-                "Could not create a job object for worker-process containment "
-                "(error %d); a forced kill may leave orphaned worker processes.",
-                ctypes.get_last_error(),
+            handle = kernel32.CreateJobObjectW(None, None)
+            if not handle:
+                _LOGGER.warning(
+                    "Could not create a job object for worker-process containment "
+                    "(error %d); a forced kill may leave orphaned worker processes.",
+                    ctypes.get_last_error(),
+                )
+                return False
+
+            info = _JobObjectExtendedLimitInformation()
+            info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            configured = kernel32.SetInformationJobObject(
+                handle,
+                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+            if not configured:
+                _LOGGER.warning(
+                    "Could not configure the worker-containment job object (error %d)",
+                    ctypes.get_last_error(),
+                )
+                kernel32.CloseHandle(handle)
+                return False
+
+            current_process = kernel32.GetCurrentProcess()
+            assigned = kernel32.AssignProcessToJobObject(handle, current_process)
+            if not assigned:
+                # The most common real cause: this process is already inside a
+                # job object that forbids being placed into another one. Not
+                # every Windows environment supports nested jobs (or a sandbox
+                # may deliberately prevent it) - reported and skipped, never
+                # fatal.
+                _LOGGER.warning(
+                    "Could not assign this process to the worker-containment job "
+                    "object (error %d); a forced kill may leave orphaned worker "
+                    "processes.",
+                    ctypes.get_last_error(),
+                )
+                kernel32.CloseHandle(handle)
+                return False
+
+            _JOB_HANDLE = handle
+            _LOGGER.info("Worker-process containment established (Windows job object)")
+            return True
+        except OSError:
+            _LOGGER.exception(
+                "Worker-process containment setup failed; a forced kill may leave "
+                "orphaned worker processes"
             )
             return False
-
-        info = _JobObjectExtendedLimitInformation()
-        info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        configured = kernel32.SetInformationJobObject(
-            handle,
-            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-            ctypes.byref(info),
-            ctypes.sizeof(info),
-        )
-        if not configured:
-            _LOGGER.warning(
-                "Could not configure the worker-containment job object (error %d)",
-                ctypes.get_last_error(),
-            )
-            kernel32.CloseHandle(handle)
-            return False
-
-        current_process = kernel32.GetCurrentProcess()
-        assigned = kernel32.AssignProcessToJobObject(handle, current_process)
-        if not assigned:
-            # The most common real cause: this process is already inside a
-            # job object that forbids being placed into another one. Not
-            # every Windows environment supports nested jobs (or a sandbox
-            # may deliberately prevent it) - reported and skipped, never
-            # fatal.
-            _LOGGER.warning(
-                "Could not assign this process to the worker-containment job "
-                "object (error %d); a forced kill may leave orphaned worker "
-                "processes.",
-                ctypes.get_last_error(),
-            )
-            kernel32.CloseHandle(handle)
-            return False
-
-        _JOB_HANDLE = handle
-        _LOGGER.info("Worker-process containment established (Windows job object)")
-        return True
-    except OSError:
-        _LOGGER.exception(
-            "Worker-process containment setup failed; a forced kill may leave "
-            "orphaned worker processes"
-        )
+    else:
         return False
 
 

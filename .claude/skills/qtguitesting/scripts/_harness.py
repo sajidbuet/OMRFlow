@@ -1119,9 +1119,11 @@ def build_scoring_pages(
 
 @dataclass(frozen=True, slots=True)
 class ReportsHarness:
-    """A Reports page over a scored, verified batch, with Set A's template
-    already associated - the state "open Result Management and generate"
-    starts from."""
+    """A Reports page over a scored, verified batch.
+
+    Set A's template is already associated - the state "open Result Management
+    and generate" starts from.
+    """
 
     page: object
     session: object
@@ -1392,3 +1394,96 @@ def orientation_search_rect() -> tuple[float, float, float, float]:
     must not need a tight or centred box. Diagnostic only.
     """
     return (110.0, 255.0, 250.0, 175.0)
+
+
+@dataclass(frozen=True, slots=True)
+class ShellHarness:
+    """The whole application window, ready to capture the chrome row from.
+
+    Attributes:
+        window: The real `MainWindow`, built with its ordinary frameless
+            chrome so that what is captured is what ships.
+        project_root: The throwaway project's directory, or ``None`` when the
+            window was built with no project open.
+    """
+
+    window: object
+    project_root: object = None
+
+    def process_events(self, *, rounds: int = 3) -> None:
+        """Let Qt finish laying out and painting before anything is measured."""
+        from PySide6.QtWidgets import QApplication
+
+        for _ in range(rounds):
+            QApplication.processEvents()
+
+    def at_width(self, width: int, height: int = WINDOW_HEIGHT) -> str:
+        """Resize the window and return the ribbon layout it adopted.
+
+        Returns the mode's own name, so a capture run prints which of the
+        three layouts each screenshot actually shows rather than leaving the
+        reader to infer it from the picture.
+        """
+        self.window.resize(width, height)
+        self.process_events()
+        return self.window.ribbon.mode.value
+
+    def shutdown(self) -> None:
+        """Close the window, releasing any project it holds."""
+        self.window.close()
+        self.process_events()
+
+
+def build_main_window(
+    *, project_name: str | None = None, exam_name: str | None = None
+) -> ShellHarness:
+    """Build the real application window, optionally with a project open.
+
+    Args:
+        project_name: Folder name for a throwaway project to create and open.
+            ``None`` leaves the window with no project, which is the state the
+            footer's "No project open" text has to be captured in.
+        exam_name: The examination's display title - what the footer shows.
+            Defaults to ``project_name``.
+
+    The window is constructed exactly as `run_gui` constructs it, application
+    stylesheet included, because the chrome row's appearance *is* what these
+    captures are evidence of. Nothing here exists only for the capture.
+    """
+    from omr_scanner.config import AppConfig
+    from omr_scanner.gui.main_window import MainWindow
+    from omr_scanner.gui.theme import application_stylesheet
+
+    app = ensure_application()
+    app.setStyleSheet(application_stylesheet())
+
+    window = MainWindow(config=AppConfig(), config_path=_throwaway_config_path())
+    window.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+    window.show()
+
+    harness = ShellHarness(window=window)
+    harness.process_events()
+
+    if project_name is None:
+        return harness
+
+    root = OUTPUT_ROOT / f"shell_projects_{uuid_hex()}"
+    root.mkdir(parents=True, exist_ok=True)
+    if not window.create_project_at(root, project_name, exam_name=exam_name):
+        raise RuntimeError(f"Could not create the capture project '{project_name}'")
+    harness = ShellHarness(window=window, project_root=root / project_name)
+    harness.process_events()
+    return harness
+
+
+def _throwaway_config_path() -> Path:
+    """A configuration file under ``test-output/``, never the developer's own.
+
+    A capture run changes application preferences - opening a project writes
+    the recent-projects list - and writing those into the real per-user
+    configuration would let a diagnostic script quietly edit the settings of
+    the person running it.
+    """
+    path = OUTPUT_ROOT / "shell_config" / f"{uuid_hex()}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path

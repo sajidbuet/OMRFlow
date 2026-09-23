@@ -155,7 +155,7 @@ def run(config: cfg.ValidationConfig) -> StageResult:
         "the stage icon set is complete",
         icon_count >= 9,
         detail=f"{icon_count} SVG icons",
-        reason=f"only {icon_count} icons; the navigator needs at least nine",
+        reason=f"only {icon_count} icons; the workflow ribbon needs at least nine",
     )
 
     # ---------------------------------------------------- unexpected files

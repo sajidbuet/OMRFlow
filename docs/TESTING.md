@@ -159,7 +159,7 @@ and that font differs between a developer's Windows desktop (Segoe UI) and a
 headless runner (a wider fallback). A test asserting "1366 pixels is wide"
 would pass on one and fail on the other while the code was correct in both.
 
-`tests/gui/test_workflow_navigator.py::width_for_mode` therefore asks the
+`tests/gui/test_workflow_ribbon.py::width_for_mode` therefore asks the
 component where each layout begins, and every width in that module is derived
 from it. The same tests then keep working when a label is reworded, which a
 hard-coded threshold would not.
@@ -936,15 +936,16 @@ that needs no display.
 | Module | Covers |
 |---|---|
 | `tests/unit/test_theme_tokens.py` | The design system: WCAG contrast ratios computed rather than assumed, ordered scales, the shell's metric relationships, and that no hex literal escaped into a stylesheet. No Qt widget - `gui.theme.tokens` imports no Qt. |
-| `tests/gui/test_workflow_navigator.py` | The navigator as a component: nine stages in order, the four responsive layouts and every transition between them, active and disabled state surviving each one, the interlocking geometry and its hit test, keyboard access, and that a larger font changes the layout instead of clipping. |
-| `tests/gui/test_app_shell.py` | The header, the application menu (every menu, submenu, shortcut and developer command still present and working), the footer's content and its three responsive tiers, tab order and focus, and the shell at the four representative window sizes plus maximise/restore. |
-| `tests/gui/test_project_dashboard.py` | The Project page: empty state, project details, Getting Started, Recent Projects (including a moved or deleted entry), the dashboard's own two-column/stacked behaviour, and that it is decided independently of the navigator's. |
+| `tests/gui/test_workflow_ribbon.py` | The ribbon as a component: nine stages in order, the three responsive layouts and every transition between them, that the workflow is *never* drawn on two rows, the narrow layout's stage selector by hover *and* click *and* keyboard, the density levels and what they must not change, active and disabled state surviving each transition, the interlocking geometry and its hit test, keyboard access, and that a larger font changes the layout instead of clipping. |
+| `tests/gui/test_window_chrome.py` | The custom title bar: what drags the window and what must not, minimise/maximise/restore/close and Alt+F4, the resize border and its cursors, the previous/next stage buttons, the density controls and their persistence, and the logo's aspect ratio and view box. |
+| `tests/gui/test_app_shell.py` | The chrome row, the application menu (every menu, submenu, shortcut and developer command still present and working), the footer's content - including the project title appearing, updating and clearing - and its four responsive tiers, that no page carries a heading repeating its stage, tab order and focus, and the shell at the four representative window sizes plus maximise/restore. |
+| `tests/gui/test_project_dashboard.py` | The Project page: empty state, project details, Getting Started, Recent Projects (including a moved or deleted entry), the dashboard's own two-column/stacked behaviour, and that it is decided independently of the ribbon's. |
 
 ### What these tests are deliberately *not*
 
-They assert **relationships**, not coordinates: "the navigator sits directly
-below the header", "each row fills the available width", "no step extends past
-the viewport". No test compares a screenshot, and none contains a pixel
+They assert **relationships**, not coordinates: "the pages start directly
+below the chrome row", "the row fills the available width", "no step extends
+past the viewport". No test compares a screenshot, and none contains a pixel
 position that a font change would invalidate. The one place a number appears
 is in the token module's own scale assertions, where the number *is* the
 subject.
@@ -992,3 +993,4 @@ That the build is self-contained. A dependency loaded at run time through
 this machine, from one Windows ships. Only a fresh Windows install settles
 it: `docs/release/CLEAN_MACHINE_TEST.md`, with the Windows Sandbox
 scaffolding in `packaging/sandbox/`.
+

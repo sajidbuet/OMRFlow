@@ -46,11 +46,20 @@ the behaviour are what the tests drive.
 
 ## The application shell
 
-The window is four bands — a branded header, the responsive workflow
-navigator, the stacked pages, and a status footer. Every visual constant
-lives in `gui/theme/tokens.py`, which imports no Qt; each shell component
-decides its own layout from its own width. See the *application shell*
-section of `docs/ARCHITECTURE.md`.
+The window is three bands — one compact chrome row, the stacked pages, and a
+status footer. The chrome row is also the title bar: the window is frameless,
+so the application menu, the wordmark, the workflow ribbon and the
+minimise/maximise/close buttons all share a single 46-pixel line, and moving
+and resizing go through `QWindow.startSystemMove()` and
+`startSystemResize()` rather than being re-implemented by hand.
+
+The workflow ribbon is always **one line** — all nine stages when they fit,
+a horizontally scrolled strip when they do not, and the current stage alone
+plus a selector listing all nine when even scrolling would show barely one at
+a time. Every visual constant lives in `gui/theme/tokens.py`, which imports
+no Qt; each shell component decides its own layout from its own width. See the
+*application shell* section of `docs/ARCHITECTURE.md`, which also records the
+one thing framelessness costs.
 
 ## Key decisions, recorded
 

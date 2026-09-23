@@ -3,7 +3,7 @@
 Scope:
     The landing page: its empty state, its project details, Getting Started,
     Recent Projects, and its own responsive behaviour - which must be decided
-    independently of the workflow navigator's.
+    independently of the workflow ribbon's.
 
     ===== ==========================================================
     Test  Behaviour
@@ -18,7 +18,7 @@ Scope:
     G     A moved or deleted recent project degrades gracefully.
     H     Duplicate paths are not listed twice.
     I     Side-by-side at width, stacked when narrow.
-    J     The dashboard and the navigator respond independently.
+    J     The dashboard and the ribbon respond independently.
     K     Button hierarchy: exactly one primary action.
     ===== ==========================================================
 
@@ -60,7 +60,7 @@ from omr_scanner.gui.pages.project_page import (
     ProjectPage,
 )
 from omr_scanner.gui.theme import VARIANT_PRIMARY, VARIANT_PROPERTY, Dashboard
-from omr_scanner.gui.widgets.workflow_navigator import NavigatorMode
+from omr_scanner.gui.widgets.workflow_ribbon import RibbonMode
 
 pytestmark = pytest.mark.gui
 
@@ -564,36 +564,31 @@ class TestIDashboardResponsive:
             standalone_page.recent_card.y()
         )
 
-    def test_the_heading_is_above_the_content_in_both_layouts(
+    def test_the_dashboard_carries_no_heading_naming_its_own_stage(
         self, standalone_page: ProjectPage
     ):
+        """The workflow ribbon already says "1. Project" in accent colour.
+
+        The heading - and with it the decorative "Organize. Process. Get
+        Results." tagline that sat beside it - was removed for the same reason
+        the other eight stages lost theirs: it repeated the ribbon and cost a
+        row of the workspace. The empty state is now the card's first content,
+        which is what an operator with no project open needs to read.
+        """
+        assert standalone_page.header is None
+        assert standalone_page.title_widget is None
+
+    def test_the_empty_state_is_the_first_thing_in_the_main_card(
+        self, standalone_page: ProjectPage
+    ):
+        """No margin left behind where the heading used to be."""
         for width in (self.WIDE, self.NARROW):
             standalone_page.resize(width, 900)
             standalone_page.show()
             QApplication.processEvents()
-            assert standalone_page.header is not None
-            assert standalone_page.header.y() < standalone_page.empty_state.y()
-
-    def test_the_decorative_hero_is_dropped_before_the_content(
-        self, standalone_page: ProjectPage
-    ):
-        """Decoration goes first; the summary it sits beside does not."""
-        standalone_page.resize(self.NARROW, 800)
-        QApplication.processEvents()
-        assert standalone_page.header is not None
-        assert standalone_page.header.hero is not None
-        assert standalone_page.header.hero.isVisibleTo(standalone_page.header) is False
-        assert standalone_page.summary_widget is not None
-        assert standalone_page.summary_widget.text()
-
-    def test_the_hero_comes_back_at_width(self, standalone_page: ProjectPage):
-        standalone_page.resize(self.NARROW, 800)
-        QApplication.processEvents()
-        standalone_page.resize(self.WIDE, 800)
-        QApplication.processEvents()
-        assert standalone_page.header is not None
-        assert standalone_page.header.hero is not None
-        assert standalone_page.header.hero.isVisibleTo(standalone_page.header) is True
+            assert standalone_page.empty_state.y() < (
+                standalone_page._main_column.height() / 2
+            )
 
     def test_the_threshold_is_a_content_measurement_not_a_screen_size(
         self, page: ProjectPage
@@ -646,55 +641,52 @@ class TestIDashboardResponsive:
 # J - the two responsive systems are independent
 # ----------------------------------------------------------------------
 class TestJIndependentResponsiveness:
-    def test_the_navigator_and_the_dashboard_do_not_share_a_breakpoint(
+    def test_the_ribbon_and_the_dashboard_do_not_share_a_breakpoint(
         self, window: MainWindow, page: ProjectPage
     ):
         """The brief's explicit requirement.
 
-        The navigator's threshold comes from nine labels' total width; the
+        The ribbon's threshold comes from nine labels' total width; the
         dashboard's from whether a 268-pixel information column still leaves
         the main content 420. One global breakpoint would make one of the two
         wrong at every width.
         """
         window.show()
-        navigator_threshold = next(
+        ribbon_threshold = next(
             width
             for width in range(200, 4000)
-            if window.navigator.plan_for_width(width).mode is NavigatorMode.WIDE
+            if window.ribbon.plan_for_width(width).mode is RibbonMode.FULL
         )
         dashboard_threshold = (
             Dashboard.MAIN_MIN_WIDTH + Dashboard.SIDE_MIN_WIDTH + Dashboard.COLUMN_GAP
         )
-        assert navigator_threshold != dashboard_threshold
+        assert ribbon_threshold != dashboard_threshold
 
-    def test_the_dashboard_can_be_two_columns_while_the_navigator_is_two_rows(
+    def test_the_dashboard_can_be_two_columns_while_the_ribbon_scrolls(
         self, window: MainWindow, page: ProjectPage
     ):
         """The concrete case the brief describes.
 
-        At some widths the navigator has already had to split into two rows
-        while the dashboard still comfortably shows its information column.
+        At some widths the ribbon has already had to start scrolling while the
+        dashboard still comfortably shows its information column.
         """
         window.show()
         QApplication.processEvents()
         for width in range(700, 2600, 20):
             window.resize(width, 900)
             QApplication.processEvents()
-            if (
-                window.navigator.mode is NavigatorMode.MEDIUM
-                and page.is_side_by_side
-            ):
+            if window.ribbon.mode is RibbonMode.SCROLL and page.is_side_by_side:
                 return
         pytest.fail(
-            "No width found where the navigator is in two rows and the "
-            "dashboard is still side by side"
+            "No width found where the ribbon scrolls and the dashboard is "
+            "still side by side"
         )
 
     def test_each_component_decides_from_its_own_width(
         self, window: MainWindow, page: ProjectPage
     ):
         """Neither consults the window, and neither consults the other."""
-        assert hasattr(window.navigator, "plan_for_width")
+        assert hasattr(window.ribbon, "plan_for_width")
         assert hasattr(page, "fits_side_by_side")
 
 

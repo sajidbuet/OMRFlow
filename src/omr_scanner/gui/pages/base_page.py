@@ -1,15 +1,28 @@
 """Common behaviour for workflow pages.
 
 Purpose:
-    Give every page the same heading, the same margins and one hook for
-    reacting to a project being opened or closed.
+    Give every page the same margins and one hook for reacting to a project
+    being opened or closed.
 
 What does NOT belong here:
     * Service calls. A page receives the open session; it does not open one.
-    * The heading's own construction. That is
-      :class:`~omr_scanner.gui.widgets.page_header.PageHeader`, which the
-      Project page's dashboard also uses - the two have to match, and they do
-      because there is one of them.
+    * A heading naming the stage. See below.
+
+Why no page has a stage heading any more:
+    The workflow ribbon at the top of the window already says, in accent
+    colour, which of the nine stages is open. A large "Reports" underneath it
+    repeated that in a full row of vertical space - on every stage, on every
+    screen, forever - and on a 1366x768 display those rows are the ones the
+    Scan preview and the Template canvas most need back. ``show_header`` is
+    therefore ``False`` by default. It is not removed, because a page may
+    still have a genuine reason to head *itself* (the Project dashboard puts
+    a heading inside a card, beside its hero artwork), and because the
+    distinction worth keeping is between a heading that repeats the ribbon and
+    one that says something the ribbon does not.
+
+    Functional section headings inside a page - "Result Management",
+    "Scoring configuration", "Conflict queue" - are untouched by this. They
+    describe parts of a page rather than the page itself.
 
 Why the default margin is smaller than it was:
     Removing the fixed left sidebar returned roughly 190 logical pixels of
@@ -56,27 +69,21 @@ class WorkflowPage(QWidget):
             the top"; a page whose body *is* a full-size editor (the template
             designer's canvas) needs the opposite, or the canvas renders as a
             sliver with empty space beneath it.
-        show_summary: When ``True`` (the default),
-            :attr:`WorkflowPageSpec.summary` gets its own word-wrapped row
-            under the title. That row is the *content* of a placeholder page
-            and belongs there; on a page whose body is a full-size editor it
-            is a permanent band of text the operator reads once and then works
-            around forever. ``False`` keeps the sentence as the title's
-            tooltip and status tip, so it stays discoverable without costing a
-            row.
+        show_summary: Only consulted when ``show_header`` is ``True``. When
+            ``True``, :attr:`WorkflowPageSpec.summary` gets its own
+            word-wrapped row under the title; when ``False`` the sentence
+            survives as the title's tooltip and status tip.
         compact: Use :data:`COMPACT_MARGIN_PX`/:data:`COMPACT_SPACING_PX`
-            instead of the defaults, for the same reason.
-        hero: Show the decorative tagline beside the heading. The Project
-            page's dashboard uses it; nothing else should.
-        show_header: When ``False``, no heading is built here and
-            :attr:`header` is ``None``. For a page that puts the heading
-            *inside* its own layout rather than above it - the Project page's
-            dashboard has the heading in its left-hand column, beside the
-            right-hand column rather than spanning over it.
+            instead of the defaults, for a page whose body is a full-size
+            editor rather than a short column of explanatory text.
+        show_header: Whether to build a heading naming the stage. ``False``
+            by default - see the module docstring. A page that passes ``True``
+            is asserting that its heading says something the workflow ribbon
+            does not.
 
     Attributes:
         header: The :class:`~omr_scanner.gui.widgets.page_header.PageHeader`,
-            or ``None`` when ``show_header`` was false.
+            or ``None`` - which it is on every stage unless the page opted in.
         title_widget: The heading label, or ``None``.
         summary_widget: The summary label, or ``None``.
         body: Where subclasses add their content.
@@ -90,8 +97,7 @@ class WorkflowPage(QWidget):
         expand: bool = False,
         show_summary: bool = True,
         compact: bool = False,
-        hero: bool = False,
-        show_header: bool = True,
+        show_header: bool = False,
     ) -> None:
         super().__init__(parent)
         self.spec = spec
@@ -112,7 +118,6 @@ class WorkflowPage(QWidget):
                 spec.icon,
                 self,
                 show_summary=show_summary,
-                hero=hero,
             )
             layout.addWidget(self.header)
 

@@ -44,6 +44,20 @@ CONFIG_VERSION = 1
 
 DEFAULT_MAX_RECENT_PROJECTS = 10
 
+MIN_RIBBON_DENSITY = 0
+MAX_RIBBON_DENSITY = 4
+DEFAULT_RIBBON_DENSITY = 1
+"""The stored range of the workflow ribbon's density preference.
+
+Written here rather than imported from
+:class:`omr_scanner.gui.theme.Density`, because this package must not depend
+on the user interface - a stored preference has to validate in a process with
+no Qt in it at all. The two therefore have to agree, and
+``tests/unit/test_theme_tokens.py`` asserts that they do rather than leaving
+it to a comment: a design system that added a sixth density level without
+widening this range would silently refuse to save it.
+"""
+
 LogLevelName = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
@@ -71,6 +85,13 @@ class AppConfig(BaseModel):
             nobody has said who they are yet, and
             :func:`~omr_scanner.services.review_store.validate_reviewer`
             refuses corrections until somebody does.
+        ribbon_density: How much room the workflow ribbon's steps take, 0
+            (tightest) to 4 (roomiest). A display preference and nothing more:
+            it changes padding, not which stages exist or what they do, so it
+            belongs to the person sitting at this machine rather than to any
+            examination. Stored here rather than in a project for exactly that
+            reason - no project file gains a field, and every project opened
+            in a previous build still loads unchanged.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -82,6 +103,9 @@ class AppConfig(BaseModel):
     max_recent_projects: int = Field(default=DEFAULT_MAX_RECENT_PROJECTS, ge=1, le=50)
     processing: ProcessingSettings = ProcessingSettings()
     reviewer_name: str = ""
+    ribbon_density: int = Field(
+        default=DEFAULT_RIBBON_DENSITY, ge=MIN_RIBBON_DENSITY, le=MAX_RIBBON_DENSITY
+    )
 
     def log_level_value(self) -> int:
         """Return :attr:`log_level` as a :mod:`logging` numeric level."""
@@ -118,6 +142,18 @@ class AppConfig(BaseModel):
     def with_processing(self, processing: ProcessingSettings) -> AppConfig:
         """Return a copy carrying ``processing``; the receiver is unchanged."""
         return self.model_copy(update={"processing": processing})
+
+    def with_ribbon_density(self, level: int) -> AppConfig:
+        """Return a copy remembering the ribbon density; the receiver is unchanged.
+
+        Args:
+            level: The requested level. Clamped rather than rejected - this is
+                a display preference arriving from a button press, and a
+                preference that raised on the last click of the ``+`` button
+                would be a crash in place of a no-op.
+        """
+        clamped = max(MIN_RIBBON_DENSITY, min(MAX_RIBBON_DENSITY, level))
+        return self.model_copy(update={"ribbon_density": clamped})
 
     def with_reviewer_name(self, name: str) -> AppConfig:
         """Return a copy remembering who is reviewing; the receiver is unchanged.

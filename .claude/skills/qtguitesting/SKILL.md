@@ -136,6 +136,10 @@ python .claude/skills/qtguitesting/scripts/run_gui_smoke_tests.py
 # Deterministic screenshots into test-output/gui/.
 python .claude/skills/qtguitesting/scripts/capture_gui_states.py
 
+# The application shell: all three ribbon layouts, the narrow-mode stage
+# selector, and the footer with and without a project open.
+python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only shell
+
 # Only the Scan page's states (template loaded, processed, duplicates, export).
 python .claude/skills/qtguitesting/scripts/capture_gui_states.py --only scan-processed
 

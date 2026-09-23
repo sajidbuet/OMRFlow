@@ -10,6 +10,15 @@ the mandatory acceptance properties: no completed sheet is lost, none is
 duplicated, none is silently reprocessed, and a second run reaches the
 correct final total.
 
+Two contracts, and only one of them is cross-platform. The kill/resume and
+durability properties above hold everywhere and are asserted everywhere. That
+an abrupt kill of the coordinator *also* kills its workers is a Windows-only
+guarantee, provided by
+:mod:`omr_scanner.services.process_containment`'s job object and deliberately
+not implemented on POSIX (see that module's docstring); it is therefore
+asserted only on Windows. Either way the test reaps any surviving worker
+before it finishes, so no run leaves processes behind.
+
 Runs at 100 and 1,000 sheets - real, deliberate, forced terminations, not a
 simulation - as the practical, fast-running validation of the *same*
 architecture the mandatory 100,000-sheet kill/resume acceptance matrix
@@ -68,6 +77,37 @@ def _read_committed(db_path: Path) -> dict[int, tuple[str, str]]:
 
 def _terminal_count(committed: dict[int, tuple[str, str]]) -> int:
     return sum(1 for status, _ in committed.values() if status != "pending")
+
+
+WORKER_TEARDOWN_GRACE_SECONDS = 1.0
+"""How long the OS is given to finish tearing down the workers after the
+coordinator dies, before survivors are counted."""
+
+
+def _survivors(pids: list[int]) -> list[int]:
+    """Which of ``pids`` are still running."""
+    return [pid for pid in pids if psutil.pid_exists(pid)]
+
+
+def _reap(pids: list[int]) -> None:
+    """Kill any of ``pids`` still running, and wait for them to actually go.
+
+    Without automatic containment (every platform except Windows - see
+    :mod:`omr_scanner.services.process_containment`), killing the coordinator
+    leaves its workers running. They are this *test's* own child processes, so
+    the test is what has to clean them up: left behind they would keep a CPU
+    core busy on the CI runner for the rest of the job, and - more to the point
+    here - they would still be writing to the project database while the resume
+    run below opens it.
+    """
+    doomed = []
+    for pid in pids:
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            process = psutil.Process(pid)
+            process.kill()
+            doomed.append(process)
+    if doomed:
+        psutil.wait_procs(doomed, timeout=15)
 
 
 def _run_cli(project: Path, *, sheets: int, seed: int, create: bool) -> subprocess.Popen:
@@ -142,16 +182,48 @@ def test_a_forced_kill_mid_run_resumes_without_loss_or_duplication(
     # `project_lock`'s stale-lock handling exists for.
     assert (project / LOCK_FILE_NAME).is_file()
 
-    # No orphaned worker process must survive the coordinator's abrupt
-    # death (Phase 10 audit finding: `services.process_containment` exists
-    # specifically to make this true on Windows). Give the OS a moment to
-    # finish tearing down the job object before checking.
-    time.sleep(1.0)
+    # Give the OS a moment to finish tearing the workers down before counting
+    # survivors, then check the *platform's* containment contract. These are
+    # two different contracts and only one of them is cross-platform:
+    #
+    #   Windows - `services.process_containment` puts the coordinator in a job
+    #     object with KILL_ON_JOB_CLOSE, so its abrupt death must take every
+    #     worker with it. That is the Phase 10 audit finding the module exists
+    #     to close, so it is asserted here rather than merely observed.
+    #
+    #   POSIX - OMRFlow implements no equivalent, deliberately: a `SIGKILL` of
+    #     the parent alone does not reach its children, and process groups do
+    #     not change that (they need the *killer* to signal the group). The
+    #     module's own docstring records this as a design decision, so
+    #     asserting the Windows guarantee here would be asserting a promise the
+    #     product does not make. Nothing else in this test is weakened by that:
+    #     the durability, no-loss, no-duplication and resume properties below
+    #     are checked identically on both platforms, which is what the
+    #     single-writer architecture makes safe even when a worker outlives its
+    #     coordinator.
+    time.sleep(WORKER_TEARDOWN_GRACE_SECONDS)
     assert worker_pids, "Never captured any worker child PIDs to check - test setup issue"
-    still_alive = [pid for pid in worker_pids if psutil.pid_exists(pid)]
-    assert not still_alive, (
-        f"Worker process(es) {still_alive} survived the coordinator's forced kill - "
-        "orphaned workers were left running"
+    try:
+        if sys.platform == "win32":
+            still_alive = _survivors(worker_pids)
+            assert not still_alive, (
+                f"Worker process(es) {still_alive} survived the coordinator's forced "
+                "kill - Windows job-object containment did not hold, and orphaned "
+                "workers were left running"
+            )
+    finally:
+        # Unconditional, and after the assertion rather than instead of it: on
+        # Windows there is normally nothing left to reap, but if containment
+        # ever regresses this stops a failing test from also leaking processes.
+        _reap(worker_pids)
+
+    # Cross-platform, and the reason the POSIX branch above is not simply
+    # silent: however the workers died, none may still be running once this
+    # test has dealt with them. A leak here would pollute the machine and would
+    # mean the resume below is racing live writers.
+    assert not _survivors(worker_pids), (
+        f"Worker process(es) {_survivors(worker_pids)} are still running after "
+        "cleanup - the test has leaked processes onto this machine"
     )
 
     # Resume: the same command, without --create, plus --force-lock - the

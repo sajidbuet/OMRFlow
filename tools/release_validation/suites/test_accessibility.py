@@ -231,22 +231,22 @@ class TestAccessibleNames:
                 )
 
     def test_the_workflow_steps_are_named(self, shown_window: MainWindow):
-        """Each navigator step must announce which stage it is."""
-        for step in shown_window.navigator.steps:
+        """Each ribbon step must announce which stage it is."""
+        for step in shown_window.ribbon.steps:
             assert announced_name(step) or step.title, (
                 f"workflow step {step.key!r} announces nothing"
             )
 
-    def test_accessible_names_within_the_navigator_are_distinct(
+    def test_accessible_names_within_the_ribbon_are_distinct(
         self, shown_window: MainWindow, workspace: Path, qtbot, record
     ):
         """Two steps announcing the same thing cannot be told apart."""
         shown_window.create_project_at(workspace, "Distinct Names Project")
         qtbot.wait(60)
-        labels = [announced_name(step) or step.title for step in shown_window.navigator.steps]
+        labels = [announced_name(step) or step.title for step in shown_window.ribbon.steps]
         duplicates = sorted({label for label in labels if labels.count(label) > 1})
         for label in duplicates:
-            record("WARNING", "duplicate-accessible-name", label, where="navigator")
+            record("WARNING", "duplicate-accessible-name", label, where="ribbon")
         assert not duplicates, f"workflow steps sharing a name: {duplicates}"
 
 
@@ -271,20 +271,20 @@ class TestKeyboardAccess:
     def test_the_workflow_steps_are_keyboard_reachable(self, shown_window: MainWindow):
         """The steps carry the focus, not the band that holds them.
 
-        The navigator container is deliberately ``NoFocus``: Tab should land on
+        The ribbon container is deliberately ``NoFocus``: Tab should land on
         a stage, not on the strip around it. What matters is that each step
         itself accepts focus.
         """
         unreachable = [
             step.key
-            for step in shown_window.navigator.steps
+            for step in shown_window.ribbon.steps
             if step.focusPolicy() == Qt.FocusPolicy.NoFocus
         ]
         assert not unreachable, f"workflow steps the keyboard cannot reach: {unreachable}"
 
     def test_tab_moves_focus_through_the_window(self, shown_window: MainWindow, qtbot):
         """Tab must actually move somewhere - trapped focus is unusable."""
-        shown_window.navigator.steps[0].setFocus()
+        shown_window.ribbon.steps[0].setFocus()
         qtbot.wait(40)
         seen: list[str] = []
         for _ in range(12):
@@ -298,14 +298,14 @@ class TestKeyboardAccess:
         self, shown_window: MainWindow, workspace: Path, qtbot
     ):
         shown_window.create_project_at(workspace, "Keyboard Access Project")
-        navigator = shown_window.navigator
-        target = next(step for step in navigator.steps if step.key == STAGE_KEYS[1])
+        ribbon = shown_window.ribbon
+        target = next(step for step in ribbon.steps if step.key == STAGE_KEYS[1])
         target.setFocus()
         qtbot.wait(30)
         assert target.hasFocus()
         qtbot.keyClick(target, Qt.Key.Key_Space)
         qtbot.wait(80)
-        assert navigator.current_key() == STAGE_KEYS[1]
+        assert ribbon.current_key() == STAGE_KEYS[1]
 
 
 # --------------------------------------------------------------- focus, state
@@ -315,7 +315,7 @@ class TestFocusAndState:
     """Focus is visible, and disabled controls say why."""
 
     def test_the_focused_step_reports_focus(self, shown_window: MainWindow, qtbot):
-        step = shown_window.navigator.steps[0]
+        step = shown_window.ribbon.steps[0]
         step.setFocus()
         qtbot.wait(40)
         assert step.hasFocus(), "the step did not take focus, so no ring can be drawn"
@@ -325,11 +325,11 @@ class TestFocusAndState:
         shown_window.close_project()
         silent = [
             step.key
-            for step in shown_window.navigator.steps
+            for step in shown_window.ribbon.steps
             if not step.isEnabled() and not (step.toolTip() or "").strip()
         ]
         for key in silent:
-            record("WARNING", "unexplained-disabled-control", key, where="navigator")
+            record("WARNING", "unexplained-disabled-control", key, where="ribbon")
         assert not silent, f"disabled stages with no stated reason: {silent}"
 
     def test_enabled_state_follows_whether_a_project_is_open(
@@ -337,11 +337,11 @@ class TestFocusAndState:
     ):
         shown_window.close_project()
         qtbot.wait(40)
-        without = set(shown_window.navigator.enabled_keys())
+        without = set(shown_window.ribbon.enabled_keys())
 
         shown_window.create_project_at(workspace, "Enablement Project")
         qtbot.wait(80)
-        with_project = set(shown_window.navigator.enabled_keys())
+        with_project = set(shown_window.ribbon.enabled_keys())
 
         assert with_project >= without, "opening a project disabled a stage"
 

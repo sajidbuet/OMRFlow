@@ -20,7 +20,10 @@ generate auditable results — entirely on your own machine.**
 Template, Calibrate, Scan, Resolve, Attendance, Answer Key, Results and
 Reports](docs/images/omrflow-workflow-stages.gif)
 
-<div align="center"><sub>The nine examination stages, two seconds each.</sub></div>
+<div align="center"><sub>The nine examination stages, two seconds each.
+Recorded before the application shell was rebuilt — the stages and their
+order are current, the chrome around them is not: see
+<a href="#the-application-window">The application window</a>.</sub></div>
 
 ---
 
@@ -83,6 +86,47 @@ Nothing is uploaded anywhere. A project is a folder on your disk.
   several question papers, carried through attendance, keys and reporting.
 - **Project health, backup and recovery** — integrity checking that reports
   and never silently repairs.
+
+## The application window
+
+OMRFlow puts everything above your work into **one compact row**, which is
+also the window's title bar:
+
+```text
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ☰  OMRFlow │ − +  ‹  1 Project › 2 Template › … › 9 Reports  ›   _  ☐  ✕ │
+├──────────────────────────────────────────────────────────────────────────┤
+│  the stage you are on                                                    │
+├──────────────────────────────────────────────────────────────────────────┤
+│ OMRFlow v… │ Project: …      Developed by … │ Open Source (MIT) │ ● Ready│
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+- **One chrome row.** The application menu, the wordmark, the workflow and the
+  window buttons share a single line. There is no separate header band and no
+  stage heading repeating what the ribbon already says, which leaves the
+  Template, Calibrate, Scan, Resolve and Reports stages close to the whole
+  window to work in — including on a 1366×768 display.
+- **The workflow is always one line.** All nine stages when they fit; a
+  horizontally scrolling strip when they do not; and at very narrow widths the
+  current stage alone, with the other eight one hover, click or keypress away
+  in a selector. It never wraps onto a second row, and no stage is ever
+  hidden from navigation.
+- **The active stage is always visible.** However you move — a click, the
+  `‹`/`›` arrows, a menu command, a keyboard shortcut — the ribbon scrolls it
+  into view or becomes it.
+- **`−` and `+` set how much room the workflow takes**, not how big the page
+  is. They change the ribbon's padding only, within readable limits, and your
+  choice is remembered in your own settings — no project file is involved.
+- **The footer says which project is open**, by its examination title rather
+  than its folder path, and updates the moment you create, open, rename or
+  close one.
+- **It still behaves like a Windows window.** Drag it by the logo or the empty
+  space in the row, double-click there to maximise, resize from any edge or
+  corner, and use Aero Snap, Alt+F4, Win+Up and Win+Down as usual — the window
+  manager does all of that, not a hand-rolled substitute. The one thing
+  framelessness costs is the system drop shadow; a hairline border stands in
+  for it.
 
 ## Current release status
 
@@ -160,7 +204,8 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 4,162 tests passing, plus `ruff` and `mypy` |
+| Automated suite | 4,294 tests passing, plus `ruff` and `mypy` |
+| Cross-platform CI | 🟠 Three Ubuntu-only failures fixed and verified locally; **the Ubuntu runner itself has not re-run yet** |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
 | Installer | ✅ Install → launch → uninstall → **user data preserved** → reinstall |
@@ -168,6 +213,22 @@ synthetically tested" to a qualified stable release.
 | Accessibility | 🟠 Automated checks pass; 8 controls have no accessible name (recorded, non-blocking at Alpha) |
 | Real examination data | ❌ **Not started** — this is Phase 11B |
 | 100,000-sheet qualification | ⚪ Harness ready, not run |
+
+#### Cross-platform CI defects fixed
+
+Three Ubuntu-only failures, all of them the suite correctly reporting a genuine
+platform difference rather than flakiness:
+
+| Defect | Cause | Fix |
+|---|---|---|
+| `mypy` reported an unreachable statement in `services/process_containment.py` | The Windows path sat behind an early `return` rather than a `sys.platform` *block*; mypy exempts platform-guarded branch bodies from `--warn-unreachable`, but not code following an early return | Restructured into `if sys.platform == "win32": … else: …`. No `type: ignore`, no change to the mypy configuration |
+| Workflow labels elided in layouts chosen *because* the labels fit | `QFontMetrics.horizontalAdvance` sums glyph advances, `elidedText` lays the text out; they disagree by up to a pixel of right bearing, so a step drawn at exactly its measured width elides | One pixel of measured headroom per step (`ELISION_SLACK`), plus a test that pins the invariant at the exact boundary |
+| The kill/resume test asserted that workers die with the coordinator | That is a Windows Job Object guarantee; `process_containment` documents that no POSIX equivalent is implemented | The Windows guarantee is still asserted on Windows; every other property is still asserted everywhere; surviving workers are reaped so no run leaks processes |
+
+Verified locally with `mypy --platform linux` (which reproduces the CI type
+error exactly) and with the GUI suite under `QT_QPA_PLATFORM=offscreen` (what
+CI sets on both runners). **Confirmation on the Ubuntu runner itself is still
+pending** — see the limitation note below.
 
 ### Release qualification infrastructure
 
@@ -189,7 +250,10 @@ Current qualification focus:
 - real examination datasets and real scanner output;
 - real attendance workbooks;
 - set-specific end-to-end validation;
-- the clean-machine steps that need a person.
+- the clean-machine steps that need a person;
+- a green Ubuntu CI run: the three cross-platform defects above were diagnosed
+  and fixed on Windows, using `mypy --platform linux` and headless Qt to
+  reproduce each one, but no Linux machine has run the suite since.
 
 **Implemented, automated tests passing, synthetic dataset validated, real
 scanned dataset validated and production validated are five different

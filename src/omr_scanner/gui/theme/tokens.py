@@ -11,8 +11,10 @@ Responsibilities:
     * :class:`Spacing`, :class:`Radius`, :class:`IconSize`, :class:`Stroke` -
       the dimensional scale.
     * :class:`FontSize`, :class:`FontWeight` - type.
-    * :class:`Navigator`, :class:`Header`, :class:`Footer` - metrics for the
+    * :class:`Navigator`, :class:`Chrome`, :class:`Footer` - metrics for the
       three shell components that need fixed relationships between parts.
+    * :class:`Density` - the workflow ribbon's five density levels, which the
+      chrome's ``-``/``+`` buttons step between.
 
 What does NOT belong here:
     * Widget construction, and any Qt import at all. This module is plain
@@ -29,7 +31,7 @@ Why a class-per-group rather than an enum or a dict:
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, NamedTuple
 
 
 class Color:
@@ -139,6 +141,18 @@ class Color:
     """Footer status dots. Always accompanied by the status *word*, never the
     only carrier of the state - see :mod:`omr_scanner.gui.widgets.status_footer`."""
 
+    WINDOW_BUTTON_HOVER: Final = "#E4E4E6"
+    """The hover fill of the minimise and maximise buttons, matching the
+    neutral hover the rest of the chrome row uses."""
+
+    WINDOW_CLOSE_HOVER: Final = "#C42B1C"
+    """Windows' own close-button hover red. Deliberately *not*
+    :data:`PRIMARY`: the brand accent means "the active step" everywhere else
+    in this row, and reusing it on Close would make the one irreversible
+    control look like a selection."""
+
+    WINDOW_CLOSE_HOVER_GLYPH: Final = "#FFFFFF"
+
     DESTRUCTIVE: Final = "#B3261E"
     """For a genuinely destructive confirmation, distinguished from
     :data:`PRIMARY` so that "delete" and "proceed" are not the same colour."""
@@ -204,13 +218,13 @@ class IconSize:
     MD: Final = 16
     LG: Final = 20
     XL: Final = 24
-    HEADER: Final = 20
-    """The hamburger button's glyph."""
+    CHROME_MENU: Final = 18
+    """The hamburger button's glyph, in the chrome row."""
 
-    NAV_STEP: Final = 20
-    """A workflow step's icon, in the wide and medium layouts."""
+    CHROME_CONTROL: Final = 14
+    """The density and previous/next glyphs, which sit beside the ribbon and
+    must read as secondary to both it and the menu button."""
 
-    NAV_STEP_COMPACT: Final = 16
     PAGE_HEADER: Final = 32
     EMPTY_STATE: Final = 64
     GETTING_STARTED: Final = 20
@@ -233,7 +247,6 @@ class FontSize:
     BODY: Final = 0
     SECONDARY: Final = -1
     SMALL: Final = -1
-    TAGLINE: Final = -1
     NAV_STEP: Final = 0
     FOOTER: Final = -1
 
@@ -253,71 +266,171 @@ class FontWeight:
     BOLD: Final = 700
 
 
-class Navigator:
-    """Metrics for the horizontal workflow navigator.
+class DensityLevel(NamedTuple):
+    """The horizontal metrics of one workflow-ribbon density level.
 
-    The one relationship that matters here is between :data:`ARROW_DEPTH` and
-    :data:`STEP_H_PADDING`: the arrow eats into the step's box at both ends,
-    so the padding has to clear it or the label collides with the chevron's
-    point.
+    Attributes:
+        h_padding: Inside each end of a step, clear of the arrow geometry.
+        icon_text_gap: Between a step's icon and its label.
+        arrow_depth: How far the chevron's point projects, and equally how
+            deep the notch on its left is.
+        icon_extent: Edge length of a step's icon.
+        min_label_width: The narrowest a label may be drawn before the step
+            is considered unrenderable at this density.
     """
 
-    STEP_HEIGHT: Final = 44
-    STEP_HEIGHT_COMPACT: Final = 38
+    h_padding: int
+    icon_text_gap: int
+    arrow_depth: int
+    icon_extent: int
+    min_label_width: int
 
-    ARROW_DEPTH: Final = 14
-    """How far the chevron's point projects beyond its step's own box, and
-    equally how deep the notch on its left is. Successive steps overlap by
-    exactly this much, which is what makes the row read as one connected
-    process rather than as nine separate tiles."""
 
-    ARROW_DEPTH_COMPACT: Final = 9
+class Density:
+    """The workflow ribbon's density levels, tightest to roomiest.
 
-    STEP_H_PADDING: Final = 14
-    """Inside the step, clear of the arrow geometry at both ends."""
+    Every level changes *horizontal* measurements only - padding, the icon/
+    label gap, the arrow depth, the icon and the label allowance. Nothing here
+    touches the step's height or its font, for two separate reasons. The
+    height is shared with the window controls and the logo in one chrome row,
+    so varying it would make the whole application shell jump between two
+    sizes when someone pressed ``-``. And the font is what a user reads: the
+    brief's own line is that density must stay "within reasonable accessible
+    limits", which a control that shrank the type would not be.
+
+    :data:`DEFAULT` is what a fresh installation uses;
+    :data:`MINIMUM`/:data:`MAXIMUM` are the bounds the ``-``/``+`` buttons
+    clamp to.
+    """
+
+    LEVELS: Final = (
+        DensityLevel(h_padding=5, icon_text_gap=4, arrow_depth=8, icon_extent=14,
+                     min_label_width=24),
+        DensityLevel(h_padding=7, icon_text_gap=5, arrow_depth=9, icon_extent=16,
+                     min_label_width=26),
+        DensityLevel(h_padding=10, icon_text_gap=6, arrow_depth=11, icon_extent=18,
+                     min_label_width=28),
+        DensityLevel(h_padding=13, icon_text_gap=8, arrow_depth=12, icon_extent=18,
+                     min_label_width=30),
+        DensityLevel(h_padding=17, icon_text_gap=10, arrow_depth=13, icon_extent=20,
+                     min_label_width=32),
+    )
+
+    MINIMUM: Final = 0
+    MAXIMUM: Final = len(LEVELS) - 1
+
+    DEFAULT: Final = 1
+    """Level 1, not the middle of the range.
+
+    Chosen by measurement against the display the brief singles out: at 1366
+    pixels and 100% scaling, the chrome row leaves the ribbon roughly 950
+    logical pixels, and the nine stages want about 940 at this level and about
+    1040 at the next one up. Defaulting to the roomier level would put the
+    most constrained target display into the scrolling layout out of the box,
+    for the sake of three pixels of padding per step. The two roomier levels
+    are still there for anyone with the width to spend on them.
+    """
+
+    @classmethod
+    def clamp(cls, level: int) -> int:
+        """Return ``level`` brought inside :data:`MINIMUM`..:data:`MAXIMUM`."""
+        return max(cls.MINIMUM, min(cls.MAXIMUM, level))
+
+    @classmethod
+    def level(cls, level: int) -> DensityLevel:
+        """The metrics for ``level``, clamped to the supported range."""
+        return cls.LEVELS[cls.clamp(level)]
+
+
+class Navigator:
+    """Metrics shared by every workflow-ribbon density level.
+
+    The one relationship that matters in the chevron's geometry is between
+    the arrow depth and the horizontal padding: the arrow eats into the step's
+    box at both ends, so the padding has to clear it or the label collides
+    with the chevron's point. Both vary per density level, so that invariant
+    is asserted across all of them in ``tests/unit/test_theme_tokens.py``.
+    """
+
+    STEP_HEIGHT: Final = 34
+    """A step's height, at every density.
+
+    Constant on purpose - see :class:`Density`. Comfortably past the 32px
+    a pointer target wants, and short enough that the whole application
+    chrome - logo, menu, ribbon and window controls - fits in one
+    :data:`Chrome.HEIGHT` row.
+    """
 
     STEP_GAP: Final = 3
     """The visible seam between two chevrons. Small, and deliberately not
     zero: two accent-adjacent steps with no seam read as one wide shape."""
 
-    ROW_GAP: Final = 4
-    """Between the two rows of the medium layout."""
+    STRIP_V_PADDING: Final = 0
+    STRIP_H_PADDING: Final = 2
+    """Around the scrolled strip, inside the chrome row."""
 
-    MIN_LABEL_WIDTH: Final = 34
-    """Below this much room for the label itself, a step is not worth
-    rendering in the current mode and the navigator drops to the next one
-    down. Not a font size floor - the font never shrinks; the *layout*
-    changes."""
+    SCROLL_MARGIN: Final = 24
+    """How much of the neighbouring step to keep visible when the ribbon
+    scrolls the active one into view, so the strip reads as continuing rather
+    than as ending at the viewport edge."""
 
-    BAND_V_PADDING: Final = 6
-    BAND_H_PADDING: Final = 8
-
-    SCROLL_STEP_MIN_WIDTH: Final = 108
-    """A step's width in the scrollable last-resort layout, where steps no
-    longer share out the available width but keep a readable size and the
-    strip scrolls instead."""
+    WHEEL_STEP: Final = 60
+    """Logical pixels scrolled per wheel notch in the scrolling layout."""
 
 
-class Header:
-    """Metrics for the compact application header."""
+class Chrome:
+    """Metrics for the single application chrome row.
 
-    HEIGHT: Final = 48
-    """Total band height. Deliberately close to a conventional menu bar's:
-    the header replaces that row rather than adding to it, so the workflow
-    navigator sits where the old menu bar's underside was."""
+    One row carries everything the shell used to spread over two bands and a
+    native title bar: the application menu, the wordmark, the density and
+    previous/next controls, the workflow ribbon, and the window buttons.
+    """
 
-    H_PADDING: Final = 10
-    V_PADDING: Final = 4
-    MENU_BUTTON_SIZE: Final = 34
-    LOGO_HEIGHT: Final = 26
+    HEIGHT: Final = 46
+    """Total row height. It has to clear :data:`Navigator.STEP_HEIGHT` plus
+    the row's vertical padding, and it is the whole vertical cost of the
+    application's chrome - there is no second band beneath it."""
+
+    H_PADDING: Final = 8
+    V_PADDING: Final = 6
+    GROUP_GAP: Final = 5
+    """Between the logical groups in the row: branding, controls, ribbon,
+    window buttons.
+
+    Tight, because there are eight of these gaps and the ribbon is what they
+    are competing with. Every pixel here is a pixel the workflow does not get,
+    and at 1366 - the display the brief singles out - the nine stages fit with
+    only a few to spare."""
+
+    MENU_BUTTON_SIZE: Final = 32
+    SMALL_BUTTON_SIZE: Final = 26
+    """The density and previous/next buttons. Smaller than the menu button
+    and still a comfortable target at 100% scaling."""
+
+    LOGO_HEIGHT: Final = 24
     """The wordmark's height; its width follows from the artwork's own aspect
     ratio, so it is never stretched."""
 
-    SEPARATOR_HEIGHT: Final = 22
-    SEPARATOR_MARGIN: Final = 12
-    TAGLINE_DOT_SIZE: Final = 4
-    TAGLINE_LETTER_SPACING: Final = 1.4
-    TAGLINE_GAP: Final = 7
+    LOGO_MARGIN: Final = 6
+
+    DRAG_HANDLE_WIDTH: Final = 24
+    """Empty row between the workflow's next-stage arrow and the window
+    buttons. Not decoration and not an accident of the layout: once the ribbon
+    fills its viewport this is the one part of the row that is guaranteed to
+    be empty, and therefore the one part guaranteed to be a drag handle."""
+
+    WINDOW_BUTTON_WIDTH: Final = 44
+    """Windows' own title-bar buttons are 45 logical pixels wide; matching
+    them is what makes the custom row feel like a title bar rather than a
+    toolbar pretending to be one."""
+
+    WINDOW_BUTTON_GLYPH: Final = 10
+    """Edge length of the painted minimise/maximise/close glyph."""
+
+    RESIZE_BORDER: Final = 5
+    """The frame around the central widget that belongs to the window itself,
+    so a press there can start a native resize. Zeroed when maximised, where
+    there is no edge to drag."""
 
 
 class Footer:
@@ -367,17 +480,18 @@ class Dashboard:
     point - a measurement, not a screen-resolution breakpoint."""
 
     COLUMN_GAP: Final = 16
-    HERO_MAX_WIDTH: Final = 300
 
 
 __all__ = [
     "Card",
+    "Chrome",
     "Color",
     "Dashboard",
+    "Density",
+    "DensityLevel",
     "FontSize",
     "FontWeight",
     "Footer",
-    "Header",
     "IconSize",
     "Navigator",
     "Radius",

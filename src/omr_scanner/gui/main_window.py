@@ -5,12 +5,16 @@ Purpose:
     interface side, and route menu commands to services.
 
 Responsibilities:
-    * Assemble the shell: the branded header, the workflow navigator, the
-      stacked pages, the status footer and the status bar.
-    * Own the File/Tools/Help action hierarchy, and hand it to the header's
-      menu button.
+    * Assemble the shell: one chrome row, the stacked pages, the status
+      footer and the status bar. Three bands, and the first of them is also
+      the title bar.
+    * Own the File/Tools/Help action hierarchy, and hand it to the chrome
+      row's menu button.
+    * Own the *window*: it is frameless, so minimising, maximising, restoring,
+      closing, moving and resizing are this class's responsibility rather than
+      the platform's - see "Why the window is frameless" below.
     * Hold the single open :class:`~omr_scanner.services.ProjectSession` and
-      broadcast changes to every page.
+      broadcast changes to every page and to the footer.
     * Keep the recent-project list in the application configuration up to
       date, and keep the Project dashboard's copy of it in step.
 
@@ -34,9 +38,35 @@ Why the menu bar is hidden rather than removed:
     one menu button, but the *actions* must keep working exactly as they did,
     shortcuts included. The three menus are therefore still built on
     ``menuBar()`` - which keeps the hierarchy, the nesting and Qt's own
-    shortcut context intact - the bar itself is hidden, and the header's menu
-    button pops up those same `QMenu` objects as submenus. There is one File
-    menu in the application, and nothing is duplicated or reimplemented.
+    shortcut context intact - the bar itself is hidden, and the chrome row's
+    menu button pops up those same `QMenu` objects as submenus. There is one
+    File menu in the application, and nothing is duplicated or reimplemented.
+
+Why the window is frameless:
+    The shell now draws its own title bar, because merging it with the
+    workflow ribbon is what removed a whole 48-pixel band from the top of
+    every stage. That is only worth doing if the window still behaves like a
+    Windows window afterwards, so nothing here re-implements what the platform
+    already does:
+
+    * Moving is ``QWindow.startSystemMove()``, from the chrome row. The window
+      manager performs the drag, which is what keeps Aero Snap, snap-to-edge,
+      drag-to-top-to-maximise and cross-monitor DPI handling working.
+    * Resizing is ``QWindow.startSystemResize()`` from
+      :data:`WINDOW_RESIZE_BORDER` pixels of frame around the central widget -
+      again the window manager's own resize, with its own snapping and its own
+      cursors, rather than a hand-rolled ``setGeometry`` loop.
+    * Minimise, maximise, restore and close call ``showMinimized()``,
+      ``showMaximized()``, ``showNormal()`` and ``close()``. Maximised
+      geometry, multi-monitor placement, the taskbar entry, Alt+F4, Win+Up,
+      Win+Down and system activation are all untouched, because none of them
+      was ever the frame's doing.
+
+    One thing is genuinely lost and is not worked around: Windows draws no
+    drop shadow around a frameless window. Restoring it means either a DWM
+    call or a translucent parent widget, both of which are the brittle
+    platform hack the brief rules out; a hairline border stands in for it
+    instead. See ``docs/wiki/Developer-Architecture.md``.
 """
 
 from __future__ import annotations
@@ -46,12 +76,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from PySide6.QtCore import QPoint, Qt, QUrl, qVersion
-from PySide6.QtGui import QAction, QCloseEvent, QCursor, QDesktopServices, QKeySequence
+from PySide6.QtCore import QEvent, QPoint, Qt, QUrl, qVersion
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QCursor,
+    QDesktopServices,
+    QKeySequence,
+    QMouseEvent,
+)
 from PySide6.QtWidgets import (
     QFileDialog,
     QInputDialog,
-    QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -79,11 +115,12 @@ from omr_scanner.gui.review.page import ResolvePage
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
+from omr_scanner.gui.theme import Chrome
 from omr_scanner.gui.widgets import (
-    AppHeader,
+    AppChrome,
     AppStatus,
     StatusFooter,
-    WorkflowNavigator,
+    WorkflowRibbon,
 )
 from omr_scanner.services import (
     ProjectSession,
@@ -102,17 +139,30 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 logger = logging.getLogger(__name__)
 
 WINDOW_MIN_WIDTH = 720
-WINDOW_MIN_HEIGHT = 600
+WINDOW_MIN_HEIGHT = 560
 """The window's floor, in logical pixels.
 
 Narrower than it was, and deliberately: the fixed 190-pixel navigation
 sidebar this shell replaced was most of the old 960-pixel minimum, and the
-workflow navigator has layouts for widths far below that. A floor wider than
-the shell needs would make those layouts unreachable, which is the opposite of
-why they exist.
+workflow ribbon has layouts for widths far below that. A floor wider than the
+shell needs would make those layouts unreachable, which is the opposite of why
+they exist. The height floor came down with the chrome: one 46-pixel row
+replaced a 48-pixel header plus a navigator band, and the stages no longer
+spend a further row on a heading naming themselves.
 """
 
-NO_PROJECT_STATUS = "No project open"
+WINDOW_RESIZE_BORDER = Chrome.RESIZE_BORDER
+"""The frame, in logical pixels, that belongs to the window rather than to the
+central widget.
+
+A frameless window has no non-client area, so there is nothing for the
+platform's resize cursors to appear over. Reserving a few pixels as the
+central widget's margin leaves a strip that no child widget occupies, which
+means a press there arrives at this window and can start a native resize. It
+is zeroed while maximised: there is no edge to drag, and the margin would show
+as a hairline gap against the screen edge.
+"""
+
 STATUS_MESSAGE_MS = 5000
 """How long transient status bar messages stay visible."""
 
@@ -166,6 +216,12 @@ class MainWindow(QMainWindow):
         config: Application configuration. Loaded from disk when omitted.
         config_path: Where configuration changes are written. Defaults to the
             per-user location; tests pass a temporary path.
+        frameless: Whether to draw the title bar inside the chrome row. The
+            application always does. ``False`` keeps the platform's own frame
+            and is here for one reason: a test that needs to isolate a shell
+            behaviour from the window-management behaviour should be able to,
+            and a diagnostic run on a platform whose compositor cannot start a
+            system move should still produce a movable window.
         parent: Optional Qt parent.
     """
 
@@ -174,6 +230,8 @@ class MainWindow(QMainWindow):
         config: AppConfig | None = None,
         config_path: Path | None = None,
         parent: QWidget | None = None,
+        *,
+        frameless: bool = True,
     ) -> None:
         super().__init__(parent)
 
@@ -181,12 +239,19 @@ class MainWindow(QMainWindow):
         self._config_path = config_path
         self._session: ProjectSession | None = None
         self._pages: dict[str, WorkflowPage] = {}
+        self._frameless = frameless
+        self._resize_edges = Qt.Edge(0)
 
         self.setWindowTitle(window_title())
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
-        # In addition to `QApplication.setWindowIcon()` (the taskbar/dock
-        # default), this window's own title bar reads its icon from here.
+        # Still set, and still meaningful without a native title bar to draw
+        # it: this is what the taskbar button, the alt-tab switcher and every
+        # dialog parented to this window read, alongside
+        # `QApplication.setWindowIcon()`.
         self.setWindowIcon(application_icon())
+
+        if self._frameless:
+            self._make_frameless()
 
         self._build_central_widget()
         self._build_menus()
@@ -194,31 +259,51 @@ class MainWindow(QMainWindow):
         self._broadcast_project_change()
         self._broadcast_config_change()
 
+    def _make_frameless(self) -> None:
+        """Drop the platform frame and take over what it used to provide.
+
+        ``FramelessWindowHint`` alone would leave a window that cannot be
+        moved or resized, so it is never alone: the chrome row starts a system
+        move, and :meth:`mousePressEvent` starts a system resize from the
+        border this reserves. ``WA_Hover`` is what lets
+        :meth:`mouseMoveEvent` see the pointer crossing that border while no
+        button is held, which is how the resize cursors appear.
+        """
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setMouseTracking(True)
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
     def _build_central_widget(self) -> None:
         """Assemble the shell, top to bottom.
 
-        Four bands and nothing else: the branded header, the workflow
-        navigator, the stacked pages, and the status footer. The native status
-        bar sits below all of it, unchanged.
+        Three bands and nothing else: the chrome row - which is also the title
+        bar - the stacked pages, and the status footer. The native status bar
+        sits below all of it, unchanged.
 
-        There is no left column. The width the navigation sidebar used to
-        occupy now belongs to the pages, which is the point of the horizontal
-        navigator above - and no spacer is left in its place.
+        There is no left column and no second chrome band. The width the
+        navigation sidebar used to occupy, and the height the header band and
+        the per-page heading used to, now belong to the pages.
         """
         central = QWidget(self)
+        central.setObjectName("appCentralWidget")
         outer_layout = QVBoxLayout(central)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
 
-        self.header = AppHeader(parent=central)
-        outer_layout.addWidget(self.header)
-
-        self.navigator = WorkflowNavigator(WORKFLOW_PAGES, parent=central)
-        self.navigator.step_activated.connect(self._on_step_activated)
-        outer_layout.addWidget(self.navigator)
+        self.chrome = AppChrome(
+            WORKFLOW_PAGES, density=self._config.ribbon_density, parent=central
+        )
+        self.chrome.step_activated.connect(self._on_step_activated)
+        self.chrome.previous_requested.connect(self.go_to_previous_stage)
+        self.chrome.next_requested.connect(self.go_to_next_stage)
+        self.chrome.density_changed.connect(self._on_ribbon_density_changed)
+        self.chrome.minimise_requested.connect(self.showMinimized)
+        self.chrome.maximise_toggled.connect(self.toggle_maximised)
+        self.chrome.close_requested.connect(self.close)
+        outer_layout.addWidget(self.chrome)
 
         outer_layout.addWidget(self._build_pages(), stretch=1)
 
@@ -227,6 +312,17 @@ class MainWindow(QMainWindow):
         outer_layout.addWidget(self.footer)
 
         self.setCentralWidget(central)
+        self._apply_resize_margin()
+
+    @property
+    def ribbon(self) -> WorkflowRibbon:
+        """The workflow ribbon inside the chrome row.
+
+        A shortcut, because "which stage is showing" is a main-window question
+        that the chrome row merely hosts the answer to. Everything that
+        navigates goes through :meth:`show_page`, never through here.
+        """
+        return self.chrome.ribbon
 
     def _build_pages(self) -> QStackedWidget:
         """Create the stacked workflow pages and wire their signals."""
@@ -287,19 +383,49 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(page)
 
             if not spec.is_implemented:
-                self.navigator.set_step_enabled(
+                self.ribbon.set_step_enabled(
                     spec.key,
                     enabled=False,
                     reason=STAGE_NOT_IMPLEMENTED.format(phase=spec.phase),
                 )
 
         self.stack.setCurrentIndex(0)
-        self.navigator.set_current_key(WORKFLOW_PAGES[0].key)
+        self.ribbon.set_current_key(WORKFLOW_PAGES[0].key)
+        self.chrome.sync_navigation_buttons()
         return self.stack
 
     def _on_step_activated(self, key: str) -> None:
-        """A workflow step was clicked or activated from the keyboard."""
+        """A workflow step was clicked, or chosen from the narrow flyout."""
         self.show_page(key)
+
+    def go_to_previous_stage(self) -> bool:
+        """Open the stage immediately before the current one, if permitted."""
+        return self._go_to_adjacent_stage(-1)
+
+    def go_to_next_stage(self) -> bool:
+        """Open the stage immediately after the current one, if permitted."""
+        return self._go_to_adjacent_stage(1)
+
+    def _go_to_adjacent_stage(self, delta: int) -> bool:
+        """Step one stage along the workflow.
+
+        Routed through :meth:`show_page` like every other navigation, so the
+        arrows cannot reach a stage a click could not: the same disabled check
+        applies, the ribbon's highlight moves with the stack, and the active
+        step is scrolled back into view by the same code.
+        """
+        key = self.ribbon.adjacent_key(delta)
+        return self.show_page(key) if key is not None else False
+
+    def _on_ribbon_density_changed(self, level: int) -> None:
+        """Remember how compact the operator wants the workflow ribbon.
+
+        A display preference, persisted through the ordinary application
+        configuration - no project file is touched, so a project saved by an
+        older build opens unchanged and one saved now opens in an older build
+        unchanged.
+        """
+        self.apply_config(self._config.with_ribbon_density(level))
 
     def _on_processing_changed(self, running: bool) -> None:
         """Reflect the Scan stage's batch in the footer's status.
@@ -457,7 +583,7 @@ class MainWindow(QMainWindow):
         self.application_menu.setObjectName("applicationMenu")
         for menu in menus:
             self.application_menu.addMenu(menu)
-        self.header.set_menu(self.application_menu)
+        self.chrome.set_menu(self.application_menu)
 
         menu_bar = self.menuBar()
         menu_bar.setVisible(False)
@@ -480,7 +606,7 @@ class MainWindow(QMainWindow):
         )
 
     def open_application_menu(self) -> None:
-        """Pop up the application menu, as clicking the header button does.
+        """Pop up the application menu, as clicking the chrome button does.
 
         Exposed so a test can open it without synthesising a mouse press on
         the button, and so the menu can be reached from code paths that are
@@ -493,7 +619,7 @@ class MainWindow(QMainWindow):
         own click still goes through Qt's `InstantPopup` handling; only this
         programmatic entry point needed to be non-blocking.
         """
-        button = self.header.menu_button
+        button = self.chrome.menu_button
         self.application_menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
 
     def show_recent_projects_menu(self, at: QPoint | None = None) -> None:
@@ -519,9 +645,20 @@ class MainWindow(QMainWindow):
         self.recent_menu.popup(at if at is not None else QCursor.pos())
 
     def _build_status_bar(self) -> None:
-        """Create the status bar and its permanent project indicator."""
-        self._project_status = QLabel(NO_PROJECT_STATUS)
-        self.statusBar().addPermanentWidget(self._project_status)
+        """Create the status bar, for transient messages only.
+
+        It no longer carries a permanent project indicator. That indicator
+        read ``"<name>  (<full path>)"``, which the footer now states better
+        in two respects: it shows the examination's *title* rather than its
+        folder name, and it does not put an absolute filesystem path
+        permanently on screen - something the brief for the footer explicitly
+        asks against, and which the status bar was doing two rows below it.
+
+        The bar itself stays. It is where every ``showMessage`` in this window
+        goes - "Project opened read-only", "Recovered 3 scan(s)", "Diagnostic
+        bundle saved to ..." - and those are transient notifications with
+        nowhere else to appear.
+        """
         self.statusBar().showMessage(f"{APPLICATION_NAME} {__version__} ready")
 
     # ------------------------------------------------------------------
@@ -982,22 +1119,26 @@ class MainWindow(QMainWindow):
         Returns:
             ``True`` when that stage exists and is available. A stage that is
             disabled - no project open, or not implemented in this build -
-            is not shown, because the navigator has already told the operator
+            is not shown, because the ribbon has already told the operator
             why and silently switching to it anyway would contradict that.
 
-        The single entry point for cross-page navigation. It moves the stack
-        *and* the navigator's highlight together, so what is on screen and
-        what the navigator says are the same thing however the navigation was
-        started - a click, the keyboard, or another page asking.
+        The single entry point for cross-page navigation, and the reason the
+        brief's "the active stage must always be visible" requirement needs no
+        special case anywhere else. It moves the stack, the ribbon's highlight
+        (which scrolls itself into view, or becomes the narrow layout's sole
+        step) and the previous/next buttons' enabled state together, however
+        the navigation was started: a click, an arrow button, the narrow
+        flyout, a keyboard shortcut, a menu command or another page asking.
         """
         page = self._pages.get(key)
         if page is None:
             return False
-        step = self.navigator.step(key)
+        step = self.ribbon.step(key)
         if step is not None and not step.isEnabled():
             return False
         self.stack.setCurrentWidget(page)
-        self.navigator.set_current_key(key)
+        self.ribbon.set_current_key(key)
+        self.chrome.sync_navigation_buttons()
         return True
 
     def current_page_key(self) -> str | None:
@@ -1303,7 +1444,15 @@ class MainWindow(QMainWindow):
             )
 
     def _broadcast_project_change(self) -> None:
-        """Push the current session to every page and update chrome."""
+        """Push the current session to every page, the footer and the chrome.
+
+        The single place that reacts to a project being created, opened,
+        reconfigured or closed, which is what makes the footer's project name
+        correct by construction rather than by remembering to update it in
+        four places. Reconfiguration matters as much as opening does: renaming
+        the examination in *Project Configuration* calls back here, so the
+        footer never shows the title the project used to have.
+        """
         for page in self._pages.values():
             page.on_project_changed(self._session)
 
@@ -1314,10 +1463,14 @@ class MainWindow(QMainWindow):
 
         if self._session is None:
             self.setWindowTitle(window_title())
-            self._project_status.setText(NO_PROJECT_STATUS)
+            self.footer.set_project_title(None)
         else:
             self.setWindowTitle(window_title(self._session.name))
-            self._project_status.setText(f"{self._session.name}  ({self._session.root})")
+            # The examination's own title, not the folder name and never the
+            # path: `exam_name` is what an operator typed in Project
+            # Configuration, falls back to the project name when they have not
+            # yet, and is the thing they are checking they have open.
+            self.footer.set_project_title(self._session.exam_name)
 
     # ------------------------------------------------------------------
     # Recent projects
@@ -1366,6 +1519,120 @@ class MainWindow(QMainWindow):
             save_app_config(self._config, self._config_path)
         except ConfigurationError as exc:
             logger.warning("Could not save application configuration: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Window state and the frame the platform no longer draws
+    # ------------------------------------------------------------------
+    def toggle_maximised(self) -> None:
+        """Maximise the window, or restore it if it already is.
+
+        ``showNormal()``/``showMaximized()`` and nothing else. Qt and the
+        platform between them own what "maximised" means - which monitor's
+        work area to fill, where the taskbar is, what the restored geometry
+        was - and reimplementing any of that from a saved rectangle is how a
+        window ends up restoring onto a monitor that is no longer attached.
+        """
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def _apply_resize_margin(self) -> None:
+        """Reserve (or release) the border the window resizes from.
+
+        Zero while maximised: there is no edge to drag there, and a margin
+        would show as a hairline strip of window background between the
+        content and the screen edge.
+        """
+        margin = 0 if (not self._frameless or self.isMaximized()) else WINDOW_RESIZE_BORDER
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def _edges_at(self, position: QPoint) -> Qt.Edge:
+        """Which window edges ``position`` is close enough to grab.
+
+        Args:
+            position: A point in this window's own coordinates.
+
+        Returns:
+            The edges, OR-ed together - so a corner returns two of them and
+            resizes in both axes, as every other Windows window does. Empty
+            away from the border, and empty while maximised.
+        """
+        if not self._frameless or self.isMaximized():
+            return Qt.Edge(0)
+        border = WINDOW_RESIZE_BORDER
+        edges = Qt.Edge(0)
+        if position.x() <= border:
+            edges |= Qt.Edge.LeftEdge
+        elif position.x() >= self.width() - border - 1:
+            edges |= Qt.Edge.RightEdge
+        if position.y() <= border:
+            edges |= Qt.Edge.TopEdge
+        elif position.y() >= self.height() - border - 1:
+            edges |= Qt.Edge.BottomEdge
+        return edges
+
+    @staticmethod
+    def _cursor_for(edges: Qt.Edge) -> Qt.CursorShape:
+        """The resize cursor that belongs to ``edges``."""
+        horizontal = bool(edges & (Qt.Edge.LeftEdge | Qt.Edge.RightEdge))
+        vertical = bool(edges & (Qt.Edge.TopEdge | Qt.Edge.BottomEdge))
+        if horizontal and vertical:
+            falling = bool(edges & Qt.Edge.LeftEdge) == bool(edges & Qt.Edge.TopEdge)
+            return (
+                Qt.CursorShape.SizeFDiagCursor if falling else Qt.CursorShape.SizeBDiagCursor
+            )
+        if horizontal:
+            return Qt.CursorShape.SizeHorCursor
+        if vertical:
+            return Qt.CursorShape.SizeVerCursor
+        return Qt.CursorShape.ArrowCursor
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """Show the resize cursor while the pointer is over the border."""
+        edges = self._edges_at(event.position().toPoint())
+        if edges != self._resize_edges:
+            self._resize_edges = edges
+            if edges:
+                self.setCursor(self._cursor_for(edges))
+            else:
+                self.unsetCursor()
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Start a native resize when the press lands on the border.
+
+        ``startSystemResize`` and not a hand-rolled geometry loop, for the
+        same reasons the chrome row uses ``startSystemResize``'s sibling for
+        dragging: the window manager's resize snaps to screen edges, respects
+        the minimum size, handles a display with a different DPI correctly,
+        and cannot be left stuck on because a release event went missing.
+        """
+        edges = self._edges_at(event.position().toPoint())
+        handle = self.windowHandle()
+        if (
+            event.button() is Qt.MouseButton.LeftButton
+            and edges
+            and handle is not None
+            and handle.startSystemResize(edges)
+        ):
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        """Keep the maximise button and the resize border in step with the state.
+
+        ``WindowStateChange`` arrives for every route into and out of
+        maximised - the button in the chrome row, a double-click on it,
+        Win+Up, Win+Down, Aero Snap, and the taskbar's own context menu - so
+        handling it here covers all of them rather than only the one this
+        application initiates.
+        """
+        super().changeEvent(event)
+        if event.type() is QEvent.Type.WindowStateChange:
+            self.chrome.set_maximised(self.isMaximized())
+            self._apply_resize_margin()
 
     # ------------------------------------------------------------------
     # Qt overrides

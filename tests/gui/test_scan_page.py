@@ -192,12 +192,12 @@ class TestALaunch:
         return main_window
 
     def test_the_application_starts_with_every_workflow_stage(self, window: MainWindow):
-        assert len(window.navigator.steps) == len(WORKFLOW_PAGES)
+        assert len(window.ribbon.steps) == len(WORKFLOW_PAGES)
 
-    def test_step_one_and_step_two_are_both_visible_in_the_navigator(
+    def test_step_one_and_step_two_are_both_visible_in_the_ribbon(
         self, window: MainWindow
     ):
-        labels = [step.display_text for step in window.navigator.steps]
+        labels = [step.display_text for step in window.ribbon.steps]
         assert any("Template" in text for text in labels), labels
         assert any("Scan" in text for text in labels), labels
 
@@ -1105,3 +1105,4 @@ class TestKProcessingSectionLayout:
         assert loaded_page.process_all_button.isEnabled()
         with qtbot.waitSignal(loaded_page.batch_finished, timeout=BATCH_TIMEOUT_MS):
             loaded_page.process_all_button.click()
+

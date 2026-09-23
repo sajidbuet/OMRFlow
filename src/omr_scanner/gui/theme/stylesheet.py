@@ -101,7 +101,15 @@ QToolTip {{
 }}
 
 /* -------------------------------------------------- Application shell */
-#appHeader {{
+/* The window's own edge. A frameless window gets no drop shadow from
+   Windows, so this hairline is what separates the application from whatever
+   is behind it - without it the shell bleeds into a light desktop. */
+#appCentralWidget {{
+    background: {Color.SURFACE_SUNKEN};
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER_STRONG};
+}}
+
+#appChrome {{
     background: {Color.SURFACE};
     border-bottom: {Stroke.HAIRLINE}px solid {Color.BORDER};
 }}
@@ -129,20 +137,34 @@ QToolTip {{
     width: 0px;
 }}
 
-#appTagline {{
-    color: {Color.TEXT_SECONDARY};
+QToolButton[chromeControl="true"] {{
+    background: transparent;
+    border: {Stroke.BORDER}px solid transparent;
+    border-radius: {Radius.SM}px;
+    padding: 0px;
 }}
 
-#appHeaderSeparator {{
+QToolButton[chromeControl="true"]:hover {{
+    background: {Color.SURFACE_HOVER};
+}}
+
+QToolButton[chromeControl="true"]:pressed {{
+    background: {Color.SURFACE_PRESSED};
+}}
+
+QToolButton[chromeControl="true"]:focus {{
+    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+}}
+
+QToolButton[chromeControl="true"]:disabled {{
+    color: {Color.TEXT_DISABLED};
+}}
+
+#appChromeSeparator {{
     color: {Color.BORDER_STRONG};
 }}
 
-#workflowNavigatorBand {{
-    background: {Color.SURFACE};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.BORDER};
-}}
-
-#workflowNavigatorScroll {{
+#workflowRibbon, #workflowRibbonScroll, #workflowRibbonStrip {{
     background: transparent;
     border: none;
 }}
@@ -153,10 +175,10 @@ QToolTip {{
 }}
 
 #appFooterVersion {{
-    color: {Color.TEXT_SECONDARY};
+    color: {Color.TEXT_PRIMARY};
 }}
 
-#appFooterCredit, #appFooterSeparator {{
+#appFooterProject, #appFooterCredit, #appFooterLicence, #appFooterSeparator {{
     color: {Color.TEXT_SECONDARY};
 }}
 

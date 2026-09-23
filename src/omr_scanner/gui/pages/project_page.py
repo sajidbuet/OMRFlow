@@ -50,7 +50,6 @@ from omr_scanner.gui.pages.catalog import WorkflowPageSpec
 from omr_scanner.gui.theme import Dashboard, IconSize, Spacing
 from omr_scanner.gui.widgets.buttons import primary_button, secondary_button
 from omr_scanner.gui.widgets.card import ActionRow, Card, EmptyState
-from omr_scanner.gui.widgets.page_header import PageHeader
 from omr_scanner.services import ProjectSession, project_sets
 
 NO_PROJECT_HEADLINE = "No project is open."
@@ -150,13 +149,12 @@ class ProjectPage(WorkflowPage):
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         card.setMinimumWidth(Dashboard.MAIN_MIN_WIDTH // 2)
 
-        self.header = PageHeader(
-            self.spec.title, self.spec.summary, self.spec.icon, card, hero=True
-        )
-        self.title_widget = self.header.title_label
-        self.summary_widget = self.header.summary_label
-        card.body.addWidget(self.header)
-
+        # No stage heading. The workflow ribbon above already says "1.
+        # Project" in accent colour, and the card's own empty state says what
+        # to do next; a large "Project" between the two repeated the first and
+        # delayed the second. Removing it also takes the decorative hero
+        # tagline with it, which is the correct trade: the reference concept
+        # placed that artwork *beside* a heading that no longer exists.
         self.empty_state = EmptyState(
             "folder", NO_PROJECT_HEADLINE, NO_PROJECT_DETAIL, card
         )
@@ -421,12 +419,6 @@ class ProjectPage(WorkflowPage):
             self._grid.setRowStretch(1, 0)
             self._side_column.setMinimumWidth(0)
             self._side_column.setMaximumWidth(16_777_215)
-
-        if self.header is not None:
-            # The decorative tagline is the first thing to go: it is beside
-            # the heading, and once the page is one column narrow enough to
-            # stack, the heading needs that width for its own summary.
-            self.header.set_hero_visible(side_by_side)
 
     def content_width(self) -> int:
         """Width actually available to the two columns.

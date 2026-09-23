@@ -6,17 +6,18 @@ Scope:
     credit and the status.
 
     The shell this file used to describe had a fixed left sidebar with the
-    logo at its foot. That sidebar is gone: the wordmark is now in the compact
-    header, beside the application-menu button, and the footer is a real
-    status band rather than a centred credit line. The asset-loading tests
-    below are unchanged, because how an asset is *resolved* did not change -
-    only where it is shown.
+    logo at its foot, and then a branded header band above a separate
+    navigator band. Both are gone: the wordmark now sits in the single chrome
+    row that is also the window's title bar, and the footer is a real status
+    band rather than a centred credit line. The asset-loading tests below are
+    unchanged, because how an asset is *resolved* did not change - only where
+    it is shown.
 
 Policy:
     Existence and relationship checks, not pixel coordinates - see
     `docs/TESTING.md`. Where a coordinate is asserted it is a *relationship*
-    ("the navigator is directly below the header"), which is the property that
-    would actually regress.
+    ("the pages start directly below the chrome row"), which is the property
+    that would actually regress.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from omr_scanner.config import AppConfig
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, application_icon, logo_svg_path
 from omr_scanner.gui.main_window import DEVELOPER_URL, MainWindow
-from omr_scanner.gui.theme import Header
+from omr_scanner.gui.theme import Chrome
 from omr_scanner.gui.widgets.status_footer import AppStatus
 
 pytestmark = pytest.mark.gui
@@ -85,14 +86,20 @@ class TestBrandingAssetLoading:
         assert application_icon() is application_icon()
 
 
-class TestLogoInTheHeader:
-    """The wordmark lives in the compact header, and is never stretched."""
+class TestLogoInTheChromeRow:
+    """The wordmark lives in the chrome row, and is never stretched.
+
+    How the artwork is *rendered* - and the view-box narrowing that stopped it
+    being stretched by half again - belongs with the rest of the chrome row,
+    in ``test_window_chrome.py``. What is here is where the asset comes from
+    and that exactly one of it reaches the shell.
+    """
 
     def test_the_logo_is_an_svg_widget(self, window: MainWindow):
-        assert isinstance(window.header.logo, QSvgWidget)
+        assert isinstance(window.chrome.logo, QSvgWidget)
 
     def test_the_logo_is_a_child_of_the_window(self, window: MainWindow):
-        assert window.isAncestorOf(window.header.logo)
+        assert window.isAncestorOf(window.chrome.logo)
 
     def test_the_logo_aspect_ratio_is_preserved_not_stretched(self, window: MainWindow):
         """The one branding property that is not a matter of taste.
@@ -101,24 +108,24 @@ class TestLogoInTheHeader:
         displayed ratio is checked against the artwork's own measured ratio
         rather than against a hard-coded width and height.
         """
-        size = window.header.logo.size()
+        size = window.chrome.logo.size()
         assert size.width() / size.height() == pytest.approx(LOGO_ASPECT_RATIO, rel=0.02)
 
     def test_the_logo_is_rendered_as_a_vector_for_high_dpi(self, window: MainWindow):
         """A `QSvgWidget` re-renders at the device pixel ratio.
 
-        Asserted because the alternative - a `QPixmap` scaled to the header's
+        Asserted because the alternative - a `QPixmap` scaled to the row's
         height - looks identical at 100% scaling and visibly soft at 150%,
         which is exactly the kind of regression nobody notices in a test that
         only checks the size.
         """
-        assert isinstance(window.header.logo, QSvgWidget)
+        assert isinstance(window.chrome.logo, QSvgWidget)
         assert logo_svg_path().suffix == ".svg"
 
-    def test_the_header_is_compact(self, window: MainWindow):
-        """It replaces the menu bar rather than adding a band above it."""
-        assert window.header.height() == Header.HEIGHT
-        assert Header.HEIGHT <= 56
+    def test_the_whole_chrome_is_one_compact_row(self, window: MainWindow):
+        """It replaces the menu bar *and* the navigator band, not adds to them."""
+        assert window.chrome.height() == Chrome.HEIGHT
+        assert Chrome.HEIGHT <= 56
 
     def test_the_window_icon_is_set(self, window: MainWindow):
         assert not window.windowIcon().isNull()
@@ -217,26 +224,23 @@ class TestFooterAttribution:
 class TestNoWastedChrome:
     """The shell's bands sit directly on top of one another."""
 
-    def test_the_header_is_the_first_band_in_the_central_widget(self, window: MainWindow):
+    def test_the_chrome_row_is_the_first_band_in_the_central_widget(
+        self, window: MainWindow
+    ):
         window.show()
         QApplication.processEvents()
-        assert window.header.y() == 0
+        assert window.chrome.y() == 0
 
-    def test_the_navigator_sits_directly_below_the_header(self, window: MainWindow):
+    def test_the_pages_sit_directly_below_the_chrome_row(self, window: MainWindow):
         """No gap, and nothing between them.
 
-        The brief calls out a "large blank vertical gap between the header and
-        workflow navigator" as a defect, so the relationship is asserted
-        rather than the coordinate.
+        The brief calls out any blank vertical band above the content as a
+        defect, so the relationship is asserted rather than the coordinate -
+        and there is now only one band to be below.
         """
         window.show()
         QApplication.processEvents()
-        assert window.navigator.y() == window.header.y() + window.header.height()
-
-    def test_the_pages_sit_directly_below_the_navigator(self, window: MainWindow):
-        window.show()
-        QApplication.processEvents()
-        assert window.stack.y() == window.navigator.y() + window.navigator.height()
+        assert window.stack.y() == window.chrome.y() + window.chrome.height()
 
     def test_the_footer_is_the_last_band_above_the_status_bar(self, window: MainWindow):
         window.show()
@@ -257,11 +261,36 @@ class TestNoWastedChrome:
 class TestExistingChromeUnaffected:
     """The redesign must not disturb the pre-existing status bar."""
 
-    def test_the_status_bar_still_shows_the_no_project_message(self, window: MainWindow):
-        from omr_scanner.gui.main_window import NO_PROJECT_STATUS
+    def test_the_status_bar_no_longer_duplicates_the_project_indicator(
+        self, window: MainWindow
+    ):
+        """The footer states the open project; the status bar used to as well.
 
-        assert window._project_status.text() == NO_PROJECT_STATUS
+        Its permanent widget read ``"<folder name>  (<absolute path>)"``, two
+        rows below a footer that now names the *examination* - so it was both
+        a duplicate and the long filesystem path the footer's own brief asks
+        not to put permanently on screen. The bar keeps its transient
+        messages, which is the next test.
+        """
+        from PySide6.QtWidgets import QLabel
+
+        assert not hasattr(window, "_project_status")
+        permanent = [
+            label.text()
+            for label in window.statusBar().findChildren(QLabel)
+            if label.text()
+        ]
+        assert "No project open" not in permanent
+
+    def test_the_footer_is_where_the_open_project_is_stated(
+        self, window: MainWindow, tmp_path: Path
+    ):
+        """What replaced it, and by a title rather than a path."""
+        assert window.create_project_at(tmp_path, "Status Bar Project")
+        assert window.footer.project_title == "Status Bar Project"
+        assert str(tmp_path) not in window.footer.project_label.full_text
 
     def test_a_transient_status_message_still_works(self, window: MainWindow):
         window.statusBar().showMessage("Testing")
         assert window.statusBar().currentMessage() == "Testing"
+

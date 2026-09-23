@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QDoubleSpinBox, QToolBar
+from PySide6.QtWidgets import QDoubleSpinBox, QToolBar, QWidget
 
 from omr_scanner.domain.geometry import NormalizedRect
 from omr_scanner.domain.template_authoring import (
@@ -435,29 +435,62 @@ class TestNumericResizePreservesPosition:
         assert page._designer_state.template.zone_by_id(zone_id).bounds == before
 
 
-class TestPageHeaderIsCompact:
-    def test_the_summary_sentence_does_not_occupy_a_row(self, page: TemplateDesignerPage):
+class TestThePageHasNoHeadingOfItsOwn:
+    """The canvas starts at the top of the page.
+
+    This page used to carry a heading reading "Template" with the stage's
+    summary suppressed to a tooltip - a compromise that saved one row of the
+    two the heading cost. The workflow ribbon names the stage now, so both
+    rows are gone, and the canvas is the first thing in the page.
+    """
+
+    def test_there_is_no_heading_row(self, page: TemplateDesignerPage):
+        assert page.header is None
+        assert page.title_widget is None
         assert page.summary_widget is None
 
-    def test_the_sentence_survives_as_the_title_tooltip(self, page: TemplateDesignerPage):
-        assert page.title_widget.toolTip() == TEMPLATE_SPEC.summary
-        assert page.title_widget.statusTip() == TEMPLATE_SPEC.summary
-
-    def test_no_visible_label_still_carries_the_summary_text(
+    def test_no_label_carries_the_stage_name_or_its_summary(
         self, page: TemplateDesignerPage
     ):
+        """Removed, not hidden - a hidden label still holds its layout row."""
         from PySide6.QtWidgets import QLabel
 
         texts = {label.text() for label in page.findChildren(QLabel)}
         assert TEMPLATE_SPEC.summary not in texts
+        assert TEMPLATE_SPEC.title not in texts
 
-    def test_other_pages_keep_their_summary_row(self, qtbot):
-        """The compact header is opt-in; placeholder pages are unaffected."""
+    def test_the_canvas_starts_near_the_top_of_the_page(
+        self, page: TemplateDesignerPage
+    ):
+        """No margin left behind where the heading used to be.
+
+        The toolbar is above the canvas and is functional, so the assertion is
+        that the page's own first widget is at its margin - not that the
+        canvas itself is at zero.
+        """
+        from omr_scanner.gui.pages.base_page import COMPACT_MARGIN_PX
+
+        children = [
+            child
+            for child in page.findChildren(QWidget)
+            if child.parentWidget() is page and child.isVisibleTo(page)
+        ]
+        assert children
+        assert min(child.y() for child in children) <= COMPACT_MARGIN_PX
+
+    def test_a_stage_not_yet_implemented_still_says_what_it_will_do(self, qtbot):
+        """The summary moved into the body rather than disappearing with the heading.
+
+        A placeholder page's whole job is to describe a stage that does not
+        exist yet, and that sentence used to live in the heading's summary
+        row.
+        """
         from omr_scanner.gui.pages.placeholder_page import PlaceholderPage
 
         spec = next(spec for spec in WORKFLOW_PAGES if spec.key == "scan")
         widget = PlaceholderPage(spec)
         qtbot.addWidget(widget)
+        assert widget.header is None
         assert widget.summary_widget is not None
         assert widget.summary_widget.text() == spec.summary
 

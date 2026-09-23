@@ -23,17 +23,23 @@ import re
 
 import pytest
 
+from omr_scanner.config import (
+    DEFAULT_RIBBON_DENSITY,
+    MAX_RIBBON_DENSITY,
+    MIN_RIBBON_DENSITY,
+)
 from omr_scanner.gui.theme import (
     VARIANT_DESTRUCTIVE,
     VARIANT_PRIMARY,
     VARIANT_PROPERTY,
     Card,
+    Chrome,
     Color,
     Dashboard,
+    Density,
     FontSize,
     FontWeight,
     Footer,
-    Header,
     IconSize,
     Navigator,
     Radius,
@@ -261,55 +267,114 @@ class TestTypeSizesAreDeltas:
             FontSize.SECTION_TITLE,
             FontSize.SECONDARY,
             FontSize.FOOTER,
-            FontSize.TAGLINE,
         ):
             assert abs(delta) <= 8
 
 
-class TestNavigatorMetrics:
-    def test_the_padding_clears_the_arrow(self):
+class TestRibbonMetrics:
+    def test_a_step_is_tall_enough_to_click_comfortably(self):
+        assert Navigator.STEP_HEIGHT >= 32
+
+    def test_the_seam_is_small_but_not_zero(self):
+        """Two accent-adjacent steps with no seam read as one wide shape."""
+        assert Navigator.STEP_GAP > 0
+
+    def test_the_active_step_can_be_scrolled_clear_of_the_viewport_edge(self):
+        assert Navigator.SCROLL_MARGIN > 0
+        assert Navigator.WHEEL_STEP > 0
+
+
+class TestDensityLevels:
+    """The invariants every density level has to satisfy, swept across all of them."""
+
+    @pytest.mark.parametrize("level", range(Density.MINIMUM, Density.MAXIMUM + 1))
+    def test_the_padding_clears_the_arrow(self, level: int):
         """The one relationship that matters in the chevron's geometry.
 
         The arrow eats into the step's box at both ends, so padding that did
         not clear it would let the label collide with the chevron's point.
+        Both vary per level, so this is swept rather than spot-checked - the
+        tightest level is where it would break first.
         """
-        assert Navigator.STEP_H_PADDING > 0
-        assert Navigator.ARROW_DEPTH > 0
-        assert Navigator.STEP_H_PADDING >= Navigator.ARROW_DEPTH * 0.5
+        metrics = Density.level(level)
+        assert metrics.h_padding > 0
+        assert metrics.arrow_depth > 0
+        assert metrics.h_padding >= metrics.arrow_depth * 0.5
 
-    def test_the_seam_is_smaller_than_the_arrow_it_sits_in(self):
-        """The seam fits inside the arrow it sits in.
+    @pytest.mark.parametrize("level", range(Density.MINIMUM, Density.MAXIMUM + 1))
+    def test_the_seam_fits_inside_the_arrow_it_sits_in(self, level: int):
+        """Otherwise consecutive chevrons would not overlap at all."""
+        assert Density.level(level).arrow_depth > Navigator.STEP_GAP
 
-        Otherwise consecutive chevrons would not overlap at all, and the row
-        would read as separate tiles.
+    @pytest.mark.parametrize("level", range(Density.MINIMUM, Density.MAXIMUM + 1))
+    def test_every_level_leaves_room_for_an_icon_and_a_label(self, level: int):
+        metrics = Density.level(level)
+        assert metrics.icon_extent >= 14
+        assert metrics.min_label_width > 0
+        assert metrics.icon_text_gap > 0
+
+    def test_the_levels_are_ordered_tightest_to_roomiest(self):
+        """The ``-``/``+`` buttons step through them, so the order is the contract."""
+        for attribute in ("h_padding", "icon_text_gap", "arrow_depth", "min_label_width"):
+            values = [getattr(level, attribute) for level in Density.LEVELS]
+            assert values == sorted(values), (attribute, values)
+        assert Density.LEVELS[0].h_padding < Density.LEVELS[-1].h_padding
+
+    def test_the_default_is_inside_the_range(self):
+        assert Density.MINIMUM <= Density.DEFAULT <= Density.MAXIMUM
+
+    def test_out_of_range_levels_are_clamped_rather_than_raising(self):
+        """A paint event must never be able to raise an `IndexError`."""
+        assert Density.clamp(-10) == Density.MINIMUM
+        assert Density.clamp(99) == Density.MAXIMUM
+        assert Density.level(99) is Density.LEVELS[Density.MAXIMUM]
+
+    def test_the_stored_preference_range_matches_the_design_system(self):
+        """The two halves of the density contract have to agree.
+
+        `omr_scanner.config` declares the persisted bounds without importing
+        the user interface - a stored preference has to validate in a process
+        with no Qt in it. A design system that added a sixth level without
+        widening that range would silently refuse to save it, and the only
+        symptom would be a preference that did not stick.
         """
-        assert 0 < Navigator.STEP_GAP < Navigator.ARROW_DEPTH
-        assert Navigator.STEP_GAP < Navigator.ARROW_DEPTH_COMPACT
-
-    def test_the_compact_metrics_are_smaller_but_not_absent(self):
-        assert Navigator.STEP_HEIGHT_COMPACT < Navigator.STEP_HEIGHT
-        assert Navigator.ARROW_DEPTH_COMPACT < Navigator.ARROW_DEPTH
-        assert Navigator.STEP_HEIGHT_COMPACT > 0
-
-    def test_a_step_is_tall_enough_to_click_comfortably(self):
-        assert Navigator.STEP_HEIGHT >= 32
-        assert Navigator.STEP_HEIGHT_COMPACT >= 28
-
-    def test_there_is_a_minimum_label_allowance(self):
-        assert Navigator.MIN_LABEL_WIDTH > 0
+        assert MIN_RIBBON_DENSITY == Density.MINIMUM
+        assert MAX_RIBBON_DENSITY == Density.MAXIMUM
+        assert DEFAULT_RIBBON_DENSITY == Density.DEFAULT
 
 
 class TestShellMetrics:
-    def test_the_header_is_compact(self):
-        """It replaces the menu bar; it must not become a band of its own."""
-        assert Header.HEIGHT <= 56
+    def test_the_whole_chrome_is_one_compact_row(self):
+        """It replaces the menu bar *and* the navigator band."""
+        assert Chrome.HEIGHT <= 56
 
     def test_the_menu_button_is_a_comfortable_target(self):
-        assert Header.MENU_BUTTON_SIZE >= 28
-        assert Header.MENU_BUTTON_SIZE <= Header.HEIGHT
+        assert Chrome.MENU_BUTTON_SIZE >= 28
+        assert Chrome.MENU_BUTTON_SIZE <= Chrome.HEIGHT
 
-    def test_the_logo_fits_inside_the_header(self):
-        assert Header.LOGO_HEIGHT < Header.HEIGHT
+    def test_the_small_controls_are_still_a_usable_target(self):
+        """Smaller than the menu button, not smaller than a pointer can hit."""
+        assert Chrome.SMALL_BUTTON_SIZE >= 24
+        assert Chrome.SMALL_BUTTON_SIZE < Chrome.MENU_BUTTON_SIZE
+
+    def test_the_logo_fits_inside_the_row(self):
+        assert Chrome.LOGO_HEIGHT < Chrome.HEIGHT
+
+    def test_a_workflow_step_fits_inside_the_row(self):
+        """The ribbon shares the row with the window buttons."""
+        assert Navigator.STEP_HEIGHT <= Chrome.HEIGHT
+
+    def test_the_window_buttons_match_the_platforms_own(self):
+        """Muscle memory: Close has to be the size the pointer expects."""
+        assert 40 <= Chrome.WINDOW_BUTTON_WIDTH <= 48
+        assert Chrome.WINDOW_BUTTON_GLYPH < Chrome.WINDOW_BUTTON_WIDTH
+
+    def test_there_is_a_guaranteed_drag_handle(self):
+        """Once the ribbon fills its viewport, this is the only empty space left."""
+        assert Chrome.DRAG_HANDLE_WIDTH >= 16
+
+    def test_the_resize_border_is_grabbable_but_not_a_visible_frame(self):
+        assert 3 <= Chrome.RESIZE_BORDER <= 8
 
     def test_the_footer_is_compact(self):
         assert Footer.HEIGHT <= 36

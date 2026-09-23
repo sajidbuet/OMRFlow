@@ -22,6 +22,16 @@ at Beta — see
 | **Screen reader** | 🟠 **Not tested** |
 | Full audit with assistive-technology users | 🟠 Not performed |
 
+> **The shell was rebuilt after this result was recorded.** The single chrome
+> row, the one-line workflow ribbon, its narrow-mode stage selector, the
+> density controls and the custom window buttons all postdate it. Every item
+> below marked `[x]` for those components is backed by an automated test, and
+> the row's behaviour under a larger *application font* is exercised by the
+> suite — but the **manual** pass at 125%, 150%, 175% and 200% Windows
+> *display* scaling has not been repeated on the new shell. Treat the "Text
+> scaling and high DPI" row above as verified for the pages and pending for
+> the chrome row until that pass is redone.
+
 ---
 
 ## Keyboard
@@ -32,18 +42,27 @@ at Beta — see
       it is the first stop in the tab order, so the whole File/Tools/Help
       hierarchy is available without a mouse
 - [x] Every workflow stage is reachable by Tab
-- [x] The workflow navigator additionally supports Left/Right, Up/Down, Home
-      and End — both axes, because the same nine stages are one row, two rows
-      or a grid depending on the window
+- [x] The workflow ribbon additionally supports Left/Right, Up/Down, Home and
+      End — both axes, so an operator never has to know which of the three
+      layouts is on screen to use the keyboard
 - [x] Arrow movement skips disabled stages rather than stopping on a dead end
+- [x] The previous/next stage buttons, the ribbon density `-`/`+` buttons and
+      the minimise/maximise/close buttons are all keyboard-focusable and named
+- [x] **The narrow layout's stage selector is not hover-only.** Hovering the
+      current stage reveals the other eight, and so does clicking it, and so
+      does Down from the keyboard; Escape and a click outside close it
 - [x] Space and Enter activate a focused control
 - [x] No keyboard trap: an unhandled key falls through, so Tab can always
       leave a component
+- [x] Window state has its usual keyboard routes as well as its buttons —
+      Alt+F4, Win+Up and Win+Down all still work, because the window is
+      frameless but otherwise an ordinary top-level window
 - [x] Dialog tab order is sensible, and Cancel — not the destructive action —
       is the default button on the qualification launcher
 
-*Automated coverage:* `tests/gui/test_workflow_navigator.py` (class K),
-`tests/gui/test_app_shell.py` (class I).
+*Automated coverage:* `tests/gui/test_workflow_ribbon.py` (classes E and K),
+`tests/gui/test_window_chrome.py` (classes C and E),
+`tests/gui/test_app_shell.py` (class J).
 
 ## Focus visibility
 
@@ -85,8 +104,10 @@ No state is carried by colour alone:
 - [x] Verified at display scaling 100%, 125%, 150%, 175% and 200%
 - [x] Verified at application font scaling 125%, 150%, 200% and 250%
 - [x] **No text is clipped** and **no label is elided** at any of them
-- [x] A larger font changes the *layout* — the navigator moves to two rows,
-      then a two-column grid — rather than shrinking the text
+- [x] A larger font changes the *layout* — the ribbon starts scrolling, and
+      then collapses to the current stage — rather than shrinking the text.
+      The ribbon's density `-`/`+` controls change padding only and never the
+      font, for the same reason
 - [x] The logo is a vector and keeps its aspect ratio at every scale
 - [x] Custom-painted geometry (the chevrons) is computed per repaint, so it
       is sharp and unclipped at every device pixel ratio
@@ -102,10 +123,15 @@ No state is carried by colour alone:
       a description from the stage's summary
 - [x] A disabled stage's accessible description states **why** it is disabled
 - [x] Clickable card rows carry their heading as an accessible name
+- [x] Every icon-only control in the chrome row is named: the density
+      buttons, the previous/next stage arrows, and the window buttons —
+      the last using Windows' own wording (*Minimise*, *Maximise*,
+      *Restore Down*, *Close*), so a screen-reader user hears the same names
+      here as on every other window on the machine
 - [x] Tooltips are used where a label may be elided, and never as the only
-      route to essential information
-- [x] The tagline is text, not an image, so it scales and is readable to a
-      screen reader
+      route to essential information — a long project title in the footer
+      elides with its full value in the tooltip, and the version beside it
+      is never pushed off the row
 
 ## Not yet done
 

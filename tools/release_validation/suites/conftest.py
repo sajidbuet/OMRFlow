@@ -74,7 +74,7 @@ def main_window(qtbot, tmp_path: Path):
 def shown_window(main_window, qtbot):
     """A main window that has been shown and has had its layout settle.
 
-    Several checks - navigator layout mode, focus order, screenshots - are
+    Several checks - ribbon layout mode, focus order, screenshots - are
     meaningless on a window that was never shown.
     """
     main_window.resize(1280, 860)

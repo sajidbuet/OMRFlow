@@ -87,25 +87,55 @@ tests drive.
 
 ## The application shell
 
-The window is four bands - header, workflow navigator, stacked pages, status
+The window is three bands - one chrome row, the stacked pages, and a status
 footer - and `MainWindow` assembles them and owns nothing about how any of
-them looks. There is no left sidebar; the horizontal navigator replaced one,
-and the width it used to hold now belongs to the pages.
+them looks.
 
 ```text
-gui/theme/      tokens.py       colours, spacing, radii, type, shell metrics
++----------------------------------------------------------------------+
+| = [OMRFlow] | - +  <  [1 Project > 2 Template > ... > 9 Reports]  >   |
+|                                                          _   []   X   |
++----------------------------------------------------------------------+
+|  the current stage's page, starting here                              |
++----------------------------------------------------------------------+
+| OMRFlow v… | Project: …      Developed by … | Open Source … | * Ready |
++----------------------------------------------------------------------+
+```
+
+Qt's own `QStatusBar` sits below the footer and carries transient messages
+only ("Project opened read-only", "Recovered 3 scan(s)"). Its permanent
+project indicator was removed with this redesign: it read
+`"<folder name>  (<absolute path>)"` two rows beneath a footer that now names
+the examination, so it was simultaneously a duplicate and the long filesystem
+path the footer's own rule exists to avoid showing.
+
+The chrome row **is** the title bar: the window is frameless and the three
+window buttons live at its right end. That merge is the point of the design -
+it removed a branded header band, a separate navigator band and a per-stage
+heading, and gave roughly a hundred logical pixels of every screen back to
+the workspace. There is no left sidebar either; the horizontal ribbon
+replaced one.
+
+```text
+gui/theme/      tokens.py       colours, spacing, radii, type, shell metrics,
+                                the ribbon's density levels
                                 (no Qt import at all)
                 stylesheet.py   the Qt stylesheets, composed from tokens
-gui/widgets/    app_header      branded header + the application-menu button
-                workflow_navigator / workflow_step
-                                the responsive chevron navigator
-                status_footer   build, licence, credit, application status
-                page_header     the heading every stage shares
+gui/widgets/    app_chrome      the single chrome row: menu button, wordmark,
+                                density and previous/next controls, the
+                                ribbon, the window buttons, window dragging
+                window_buttons  minimise / maximise / restore / close
+                workflow_ribbon / workflow_step
+                                the one-line responsive chevron ribbon and
+                                its narrow-mode stage selector
+                status_footer   build, project, credit, licence, status
+                page_header     a heading a page may give itself (no stage
+                                does; the ribbon already names it)
                 card            card, empty state, clickable action row
                 buttons         primary / secondary / destructive roles
 ```
 
-Three rules hold this together.
+Four rules hold this together.
 
 **Every visual constant is named once.** A colour, a gap or a radius lives in
 `theme.tokens` and nowhere else; `tests/unit/test_theme_tokens.py` fails if a
@@ -113,13 +143,20 @@ hex literal appears in a stylesheet, and computes the WCAG contrast ratios
 rather than trusting a comment about them. `theme.tokens` imports no Qt, which
 is what lets those checks run without a display.
 
-**Each part decides its own layout from its own width.** The navigator picks
-one of four layouts by measuring nine labels in the font currently in use; the
+**Each part decides its own layout from its own width.** The ribbon picks one
+of three layouts by measuring nine labels in the font currently in use; the
 Project dashboard picks one or two columns by asking whether both columns'
 minimum readable widths still fit. Neither consults the window, and neither
 consults the other - the brief requires those two transitions to be
 independent, and they genuinely need different thresholds. There is no
 resolution constant anywhere in the shell.
+
+**The workflow is always one line.** Never two rows, never a grid. A workflow
+is an ordered sequence, and a second row breaks the one thing the chevrons
+exist to show. When the nine no longer fit, the strip scrolls; when scrolling
+would show barely one stage at a time, it collapses to the current stage plus
+a selector listing all nine. Neither hides a stage - every one keeps its
+widget, its enabled state and its place in the order, and stays reachable.
 
 **Layout changes move widgets; they never rebuild them.** A responsive
 transition repositions the same nine step widgets and re-parents the same two
@@ -128,7 +165,7 @@ stages, reload sheet images for no reason.
 
 ### Why the menu bar is hidden rather than removed
 
-The header's menu button replaces the permanent *File / Tools / Help* row, but
+The chrome row's menu button replaces the permanent *File / Tools / Help* row, but
 the menus are still built on `menuBar()` and are then added to one application
 menu as submenus. That keeps the hierarchy, the nesting, the actions and Qt's
 own shortcut context exactly as they were, with nothing duplicated or
@@ -149,11 +186,44 @@ and are easy to get wrong:
   parent, never to the sibling underneath, so without this a click on step 4's
   visible arrowhead would do nothing at all. For the same reason the steps are
   stacked with step 1 on top.
-* The scrolled strip's horizontal scrollbar is switched **off** in every layout
-  except the compact one. The other three are chosen because everything fits,
-  so a scrollbar there can only be spurious - and it is not harmless: it
-  appears inside a band whose height was computed without it and clips the
-  bottom of every chevron.
+* The scrolled strip has **no visible scrollbar at all**. The ribbon is one
+  34-pixel line inside a 46-pixel chrome row, and a horizontal scrollbar would
+  take a third of that line from the chevrons - which is exactly what clipped
+  them in the previous design. Scrolling is the wheel (either axis, with or
+  without Shift), the previous/next buttons beside the strip, and the
+  automatic scroll that brings the active stage into view after every
+  navigation.
+* Measurement has to agree with the renderer. `QFontMetrics.horizontalAdvance`
+  sums glyph advances while `elidedText` lays the string out, and they differ
+  by up to a pixel; a step drawn at exactly its measured advance therefore
+  elides. `ELISION_SLACK` is that pixel, and without it the first label
+  rendered as "1. Proje..." in the layout chosen precisely because all nine
+  fitted.
+
+### Why the window is frameless, and what that cost
+
+Drawing the title bar inside the chrome row is what made the merge possible,
+and it is only worth doing if the window still behaves like a Windows window.
+Nothing re-implements what the platform already does:
+
+| Behaviour | Mechanism |
+|---|---|
+| Move, and with it Aero Snap | `QWindow.startSystemMove()` from the chrome row |
+| Resize from edges and corners | `QWindow.startSystemResize()` from a 5px border |
+| Minimise / maximise / restore | `showMinimized()` / `showMaximized()` / `showNormal()` |
+| Maximised geometry, multi-monitor, DPI | Qt and the window manager, untouched |
+| Taskbar, Alt+F4, Win+Up/Down, activation | unaffected - it is still an ordinary top-level window |
+
+A press on the chrome row is classified before it can drag: `is_drag_area`
+answers "is there an interactive child here?", so adding a control to the row
+cannot silently make its area draggable. The logo and the separator opt *in*
+to dragging by being transparent to the mouse.
+
+One thing is genuinely lost and is not worked around: **Windows draws no drop
+shadow around a frameless window.** Restoring it means a DWM call or a
+translucent parent widget, both of which are the brittle platform hack the
+design brief rules out. A hairline border on the central widget stands in for
+it.
 
 ## Error handling
 

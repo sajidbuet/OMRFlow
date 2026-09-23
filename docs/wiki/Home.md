@@ -8,9 +8,15 @@ workbook.
 
 Everything happens on your machine. Nothing is uploaded anywhere.
 
-![The Project stage as OMRFlow opens: the branded header, the nine-stage
-workflow navigator across the top, the no-project panel, and the Getting
-Started and Recent Projects cards](../images/omrflow-main-window.png)
+![The Project stage as OMRFlow opens: the compact chrome row with the
+application menu, the wordmark and the nine-stage workflow ribbon across the
+top, the no-project panel, and the Getting Started and Recent Projects
+cards](../images/omrflow-main-window.png)
+
+<sub>This screenshot predates the shell redesign: the stages, the panel and
+the cards are current, the two-band chrome above them is not. See *The
+application window* in the
+[README](https://github.com/sajidbuet/OMRflow#the-application-window).</sub>
 
 > ### ⚠️ This is an Alpha release
 >
