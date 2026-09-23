@@ -16,14 +16,15 @@ generate auditable results — entirely on your own machine.**
 
 </div>
 
-![The OMRFlow window cycling through its nine workflow stages: Project,
-Template, Calibrate, Scan, Resolve, Attendance, Answer Key, Results and
-Reports](docs/images/omrflow-workflow-stages.gif)
+![OMRFlow opening a demonstration project and moving through its workflow: the
+compact ribbon across the top, the Template stage with a marked-up answer
+sheet, the Scan stage recognising a sheet and listing the roll number, set code
+and answers it read, then the Attendance and Reports
+stages](docs/images/omrflow-workflow-stages.gif)
 
-<div align="center"><sub>The nine examination stages, two seconds each.
-Recorded before the application shell was rebuilt — the stages and their
-order are current, the chrome around them is not: see
-<a href="#the-application-window">The application window</a>.</sub></div>
+<div align="center"><sub>A demonstration project, a real template, and one real
+sheet recognised — captured from the running application by
+<a href="scripts/generate_readme_demo.py"><code>scripts/generate_readme_demo.py</code></a>.</sub></div>
 
 ---
 
@@ -204,7 +205,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 4,294 tests passing, plus `ruff` and `mypy` |
+| Automated suite | 4,293 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
 | Cross-platform CI | 🟠 Three Ubuntu-only failures fixed and verified locally; **the Ubuntu runner itself has not re-run yet** |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
