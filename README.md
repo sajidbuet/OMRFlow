@@ -20,6 +20,8 @@ generate auditable results — entirely on your own machine.**
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue)](docs/wiki/Installation.md)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
 [![Licence](https://img.shields.io/badge/licence-MIT-green)](LICENSE)
+[![Zenodo](https://img.shields.io/badge/Zenodo-archived-1682D4?logo=zenodo&logoColor=white)](https://doi.org/10.5281/zenodo.22943575)
+[![DOI](https://zenodo.org/badge/1371137095.svg)](https://doi.org/10.5281/zenodo.22943575)
 
 </div>
 
@@ -193,6 +195,9 @@ enter an answer key → score → generate reports.
 | [Architecture](docs/wiki/Developer-Architecture.md) | For contributors |
 | [Release Process](docs/wiki/Release-Process.md) | How a release is made |
 
+If OMRFlow is useful in your work, please consider citing it using the
+[Zenodo DOI](https://doi.org/10.5281/zenodo.22943575).
+
 ## Development status
 
 **Current release: `0.1.0-alpha.2`**
@@ -321,6 +326,41 @@ OMRFlow has **no telemetry, no analytics and no network access** during
 examination processing. Everything stays in the project folder on your disk.
 Treat that folder as confidential examination material — see
 [Backup & Data Retention](docs/wiki/Backup-and-Data-Retention.md).
+
+## Citation
+
+If you use OMRFlow in research, teaching, academic work, software, or another
+project, please cite the software. Citation helps others discover the project
+and supports continued development.
+
+**DOI:** <https://doi.org/10.5281/zenodo.22943575>
+
+[![DOI](https://zenodo.org/badge/1371137095.svg)](https://doi.org/10.5281/zenodo.22943575)
+
+Every release is archived on [Zenodo](https://doi.org/10.5281/zenodo.22943575).
+The DOI above is the *concept* DOI: it represents OMRFlow as a project and
+always resolves to the most recent archived release, so it stays correct as new
+versions appear. Each individual release also receives its own DOI, listed on
+the Zenodo record, for when you need to point at one exact version.
+
+GitHub's **Cite this repository** button, on the right of the repository page,
+reads [`CITATION.cff`](CITATION.cff) and will generate these for you.
+
+```text
+Choudhury, S. M. (2026). OMRFlow [Computer software]. Zenodo.
+https://doi.org/10.5281/zenodo.22943575
+```
+
+```bibtex
+@software{choudhury_omrflow,
+  author    = {Choudhury, Sajid Muhaimin},
+  title     = {OMRFlow},
+  year      = {2026},
+  publisher = {Zenodo},
+  doi       = {10.5281/zenodo.22943575},
+  url       = {https://doi.org/10.5281/zenodo.22943575}
+}
+```
 
 ## Licence
 

@@ -14,6 +14,15 @@ authors:
     website: 'https://www.sajid.bd'
 repository-code: 'https://github.com/sajidbuet/OMRFlow'
 url: 'https://github.com/sajidbuet/OMRFlow'
+# The Zenodo *concept* DOI. It represents OMRFlow across every release and
+# resolves to the most recent archived version, so it stays correct as new
+# versions appear - which is what a citation should point at. Each release
+# also gets its own DOI on Zenodo; that one is for citing an exact version.
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.22943575
+    description: >-
+      The concept DOI for OMRFlow, resolving to the latest archived release.
 abstract: >-
   Template-driven optical mark recognition for examination processing.
   OMRFlow designs answer-sheet templates, recognises scanned sheets,

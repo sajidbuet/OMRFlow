@@ -96,6 +96,18 @@ implemented; the current work is Phase 11, which takes the application from
 See the [Development Roadmap](Development-Roadmap) for the detail, and
 [Release History](Release-History) for what has shipped.
 
+## Citation and archival
+
+Every OMRFlow release is archived on Zenodo.
+
+[![DOI](https://zenodo.org/badge/1371137095.svg)](https://doi.org/10.5281/zenodo.22943575)
+
+**DOI:** <https://doi.org/10.5281/zenodo.22943575>
+
+If you use OMRFlow in research, teaching, academic work, software, or another
+project, please cite the project using its Zenodo DOI. See
+[Citation](Citation) for a ready-made plain-text and BibTeX entry.
+
 ## Licence
 
 MIT. See [LICENSE](https://github.com/sajidbuet/OMRFlow/blob/main/LICENSE).
