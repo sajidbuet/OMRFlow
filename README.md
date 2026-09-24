@@ -1,8 +1,15 @@
+# OMRFlow
+
+**Open-source Optical Mark Recognition (OMR) scanner and examination
+processing software for Windows.**
+
+OMRFlow lets educators and examination administrators design OMR
+bubble-sheet templates, process scanned answer sheets, review uncertain
+marks, reconcile attendance, score MCQ examinations, and generate
+auditable Excel results locally.
 <div align="center">
 
 <img src="src/omr_scanner/gui/resources/branding/logo.svg" alt="OMRFlow" width="220">
-
-### Smart Mark Checker — Open-Source OMR Examination Processing
 
 **Design OMR templates, process scanned answer sheets, resolve recognition
 conflicts, reconcile candidate attendance, evaluate MCQ examinations and
