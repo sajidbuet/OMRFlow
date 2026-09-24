@@ -623,6 +623,39 @@ class TestFCommandLine:
         assert run_git(repo, "tag", "--list") == ""
         assert run_git(repo, "status", "--porcelain") == ""
 
+    def test_an_interrupted_release_restores_the_version_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Ctrl+C during the gates must leave the checkout as it was.
+
+        The gates take about half an hour, so interrupting them is an
+        ordinary thing to do. Catching only the script's own error left the
+        tree bumped to the new version with no commit and no tag, and the
+        next run then refused to start on a dirty tree - for a reason that
+        looked nothing like "you pressed Ctrl+C".
+        """
+        repo = make_repository(tmp_path)
+        before = {
+            name: (repo / name).read_text(encoding="utf-8")
+            for name in ("CITATION.cff", "README.md", str(release.VERSION_FILE))
+        }
+
+        def interrupt(_root: Path) -> None:
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(release, "run_release_gates", interrupt)
+        monkeypatch.setattr(release, "refresh_installed_metadata", lambda _root: None)
+        monkeypatch.chdir(repo)
+
+        with pytest.raises(KeyboardInterrupt):
+            release.prepare_release(repo, release.parse_version("0.1.0-alpha.3"),
+                                    dry_run=False)
+
+        for name, text in before.items():
+            assert (repo / name).read_text(encoding="utf-8") == text, name
+        assert release.changed_paths(repo) == []
+        assert run_git(repo, "tag", "--list") == ""
+
     def test_a_dry_run_on_a_dirty_tree_still_refuses(self, tmp_path: Path):
         """Dry run is not a way to preview a release you could not make."""
         repo = make_repository(tmp_path)

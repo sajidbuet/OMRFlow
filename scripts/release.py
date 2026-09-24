@@ -837,7 +837,7 @@ def prepare_release(repo_root: Path, target: Version, *, dry_run: bool) -> int:
 
     try:
         refresh_installed_metadata(repo_root)
-    except ReleaseError:
+    except BaseException:
         restore()
         raise
     print("  updated  installed package metadata")
@@ -845,7 +845,12 @@ def prepare_release(repo_root: Path, target: Version, *, dry_run: bool) -> int:
     print(f"[4/{total}] Running release checks")
     try:
         run_release_gates(repo_root)
-    except ReleaseError:
+    # BaseException, not ReleaseError: the gates take about half an hour, so
+    # Ctrl+C during them is an ordinary thing to do. Catching only the
+    # script's own error left the checkout bumped to the new version with no
+    # commit, no tag and nothing to say why - a state the next run then
+    # refuses to start from, for a reason that looks unrelated.
+    except BaseException:
         restore()
         raise
     print("  OK       lint, types and the full suite passed")
