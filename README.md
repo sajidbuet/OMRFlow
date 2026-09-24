@@ -15,7 +15,7 @@ auditable Excel results locally.
 conflicts, reconcile candidate attendance, evaluate MCQ examinations and
 generate auditable results — entirely on your own machine.**
 
-[![Release](https://img.shields.io/badge/release-0.1.0--alpha.1-AC1F24)](https://github.com/sajidbuet/OMRFlow/releases)
+[![Release](https://img.shields.io/badge/release-0.1.0--alpha.2-AC1F24)](https://github.com/sajidbuet/OMRFlow/releases)
 [![Status](https://img.shields.io/badge/status-Alpha-orange)](docs/wiki/Known-Limitations.md)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue)](docs/wiki/Installation.md)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
@@ -138,7 +138,7 @@ also the window's title bar:
 
 ## Current release status
 
-**`0.1.0-alpha.1`** — the current Alpha build.
+**`0.1.0-alpha.2`** — the current Alpha build.
 
 | | |
 |---|---|
@@ -152,7 +152,7 @@ claim a maturity its version does not support.
 
 ## Download and installation
 
-Get `OMRFlow-0.1.0-alpha.1-Setup-x64.exe` from the
+Get `OMRFlow-0.1.0-alpha.2-Setup-x64.exe` from the
 **[Releases page](https://github.com/sajidbuet/OMRFlow/releases)**. No Python
 required.
 
@@ -161,7 +161,7 @@ unsigned, so the checksum is how you confirm you have the file that was
 built:
 
 ```powershell
-certutil -hashfile OMRFlow-0.1.0-alpha.1-Setup-x64.exe SHA256
+certutil -hashfile OMRFlow-0.1.0-alpha.2-Setup-x64.exe SHA256
 ```
 
 Full instructions, including the SmartScreen warning and where your data
@@ -195,7 +195,7 @@ enter an answer key → score → generate reports.
 
 ## Development status
 
-**Current release: `0.1.0-alpha.1`**
+**Current release: `0.1.0-alpha.2`**
 
 Phases 0–10 are implemented; Phase 11 takes OMRFlow from "implemented and
 synthetically tested" to a qualified stable release.

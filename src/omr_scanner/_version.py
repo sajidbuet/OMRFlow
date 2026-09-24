@@ -45,7 +45,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Final
 
-__version__: Final = "0.1.0-alpha.1"
+__version__: Final = "0.1.0-alpha.2"
 """The application version. **The only place it is written down.**
 
 Semantic Versioning, and simultaneously a PEP 440 prerelease that normalises
