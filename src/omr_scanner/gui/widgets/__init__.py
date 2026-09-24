@@ -37,6 +37,7 @@ from omr_scanner.gui.widgets.buttons import (
     set_button_variant,
 )
 from omr_scanner.gui.widgets.card import ActionRow, Card, EmptyState
+from omr_scanner.gui.widgets.collapsible import CollapsibleSection
 from omr_scanner.gui.widgets.page_header import PageHeader
 from omr_scanner.gui.widgets.status_footer import AppStatus, FooterTier, StatusFooter
 from omr_scanner.gui.widgets.window_buttons import WindowButton, WindowButtonKind
@@ -52,6 +53,7 @@ __all__ = [
     "AppChrome",
     "AppStatus",
     "Card",
+    "CollapsibleSection",
     "EmptyState",
     "FooterTier",
     "LayoutPlan",
@@ -68,3 +70,4 @@ __all__ = [
     "secondary_button",
     "set_button_variant",
 ]
+

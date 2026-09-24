@@ -39,6 +39,13 @@ The dialog has four sections: the template and destination, the image contents
 (profile, case families, count, seed), **Attendance and reconciliation**, and
 the image/output settings.
 
+Each section folds. **Images and output** starts folded, because format, JPEG
+quality and resolution are the settings that are changed least often — click
+its header to open it. A folded section shows its current values beside the
+title, and folding one never changes a setting: everything inside keeps its
+value and is still used when you press **Generate**. The form itself scrolls;
+the caveat and the **Generate** / **Cancel** buttons stay put at the bottom.
+
 It needs a `.omrt` template. Everything about the sheets — page size,
 registration markers, orientation mark, zone geometry, bubble grids, roll-number
 and set-code fields — is read from that template, so a template for a different

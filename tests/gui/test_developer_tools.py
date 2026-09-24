@@ -15,6 +15,8 @@ Scope:
     E     Benchmark mode loads a dataset, banners it, and scores a run.
     F     The results dialog shows the categories and reaches a failing scan.
     G     A second run is compared against the first.
+    H     The generation dialog fits, and scrolls, on a small laptop.
+    I     Folding a section hides it without changing anything.
     ===== ==========================================================
 
 Why the dialogs are constructed rather than ``exec``-ed:
@@ -33,8 +35,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QMenu, QTableWidget
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QGroupBox,
+    QLabel,
+    QMenu,
+    QScrollArea,
+    QTableWidget,
+    QWidget,
+)
 from tests.conftest import build_answer_sheet_template
 
 from omr_scanner.evaluation.session import REPORT_DIRNAME, BenchmarkSession
@@ -307,16 +318,10 @@ class TestTheGenerationDialog:
         dialog.profile_combo.setCurrentIndex(
             dialog.profile_combo.findData(DatasetProfile.CUSTOM)
         )
-        assert dialog.families_list.isEnabled()
+        assert dialog.families_widget.isEnabled()
         assert dialog.request() is None
 
-        for row in range(dialog.families_list.count()):
-            item = dialog.families_list.item(row)
-            # Qt hands item data back as a plain value, never the enum object,
-            # which is why the dialog coerces it - and why this compares by
-            # value rather than identity.
-            if item.data(Qt.ItemDataRole.UserRole) == CaseFamily.GEOMETRY.value:
-                item.setCheckState(Qt.CheckState.Checked)
+        dialog.family_boxes[CaseFamily.GEOMETRY].setChecked(True)
         request = dialog.request()
         assert request is not None
         assert request.families == (CaseFamily.GEOMETRY,)
@@ -333,6 +338,318 @@ class TestTheGenerationDialog:
 # ----------------------------------------------------------------------
 # C and D. Generating
 # ----------------------------------------------------------------------
+def _is_scrolled_into_view(area: QScrollArea, widget: QWidget) -> bool:
+    """Whether the scroll area has actually brought a widget within its viewport.
+
+    Geometry rather than ``QWidget.visibleRegion``: the offscreen platform
+    plugin never paints, so it reports a null region for everything and would
+    make this pass or fail for the wrong reason. Mapping the widget's rectangle
+    into the viewport's coordinates asks the question the test actually means -
+    is this control inside the part of the form the operator can see.
+    """
+    viewport = area.viewport()
+    top_left = widget.mapTo(viewport, widget.rect().topLeft())
+    return viewport.rect().intersects(QRect(top_left, widget.size()))
+
+
+class TestTheDialogFitsSmallScreens:
+    """The dialog must never be taller than the display it opens on.
+
+    Before this layout the form's own ``minimumSizeHint`` was about 1,100
+    logical pixels - taller than the usable height of a 1366x768 laptop, and a
+    *minimum*, so the window could not even be dragged smaller. The bottom
+    controls were unreachable with no way to get at them.
+    """
+
+    def _dialog(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ) -> GenerateDatasetDialog:
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_it_opens_inside_the_available_screen_area(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """Available geometry, not raw screen size - the taskbar is not usable."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        available = dialog.screen().availableGeometry()
+        assert dialog.height() <= available.height()
+        assert dialog.width() <= available.width()
+
+    def test_it_does_not_fill_the_whole_screen(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """A configuration dialog that fills the display looks broken."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        available = dialog.screen().availableGeometry()
+        assert dialog.height() <= int(available.height() * 0.9)
+
+    def test_the_minimum_is_a_viewport_not_the_whole_form(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """The regression that made the dialog unusable.
+
+        A minimum derived from the content is what stopped the window being
+        resized down to fit; the floor has to describe the smallest workable
+        *viewport* instead.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        assert dialog.minimumHeight() <= 400
+        assert dialog.minimumSizeHint().height() <= 400
+
+    @pytest.mark.parametrize(("width", "height"), [(1280, 720), (1366, 768)])
+    def test_it_can_be_resized_to_a_small_laptop(
+        self, qtbot, tmp_path: Path, template_path: Path, width: int, height: int
+    ):
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.resize(width, height)
+        QApplication.processEvents()
+        assert dialog.height() <= height
+        assert dialog.width() <= width
+
+    def test_the_form_scrolls_and_the_footer_does_not(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """The footer must be outside the scrolling area, not below it."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        buttons = dialog.findChild(QDialogButtonBox)
+        assert buttons is not None
+        assert not dialog.scroll_area.isAncestorOf(buttons)
+        assert dialog.scroll_area.widgetResizable() is True
+
+    def test_normal_use_never_scrolls_sideways(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """A horizontal bar here would mean something is clipped."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        assert (
+            dialog.scroll_area.horizontalScrollBarPolicy()
+            is Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+
+    def test_every_control_is_reachable_at_1280x720(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """The acceptance criterion, checked on the control furthest down.
+
+        With every section expanded - the worst case - the last checkbox in
+        the last group must still be brought into view by the main scroll
+        area.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.resize(1280, 720)
+        dialog.show()
+        qtbot.waitExposed(dialog)
+        for section in dialog._sections():
+            section.set_expanded(True)
+        QApplication.processEvents()
+
+        last = dialog.benchmark_checkbox
+        dialog.scroll_area.ensureWidgetVisible(last)
+        QApplication.processEvents()
+        assert _is_scrolled_into_view(dialog.scroll_area, last)
+
+    def test_tabbing_never_leaves_the_focused_control_off_screen(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """Keyboard-only operation on a scrolling form.
+
+        Tabbing to a control the viewport has scrolled past would put the
+        caret somewhere invisible - the operator types into a field they
+        cannot see. Every control the Tab order reaches must be scrolled into
+        view as it takes focus.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.resize(1024, 560)
+        dialog.show()
+        qtbot.waitExposed(dialog)
+        for section in dialog._sections():
+            section.set_expanded(True)
+        QApplication.processEvents()
+
+        seen = []
+        for _ in range(120):
+            qtbot.keyClick(dialog, Qt.Key.Key_Tab)
+            focused = dialog.focusWidget()
+            if focused is None or focused in seen:
+                break
+            seen.append(focused)
+            if not dialog.scroll_area.isAncestorOf(focused):
+                continue  # A footer button: outside the scrolling form.
+            assert _is_scrolled_into_view(dialog.scroll_area, focused), (
+                focused.objectName() or focused
+            )
+        assert len(seen) > 10, "the Tab order should reach the whole form"
+
+    def test_a_section_title_is_not_printed_twice(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """Found by looking at a screenshot, not by a failing assertion.
+
+        Each group is a ``QGroupBox`` that already had a title, and wrapping it
+        in a section whose header says the same words drew both - a text line
+        and a frame label per group, four wasted rows on the form whose height
+        was the whole problem.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        for section in dialog._sections():
+            assert isinstance(section.content, QGroupBox)
+            assert section.content.title() == ""
+            assert section.header.text()
+
+    def test_short_controls_share_a_row(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """A two-digit spin box does not need a row to itself.
+
+        Sheets and seed are read together, as are format and quality; pairing
+        each saves a row without making either harder to find.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        assert dialog.count_spin.parent() is dialog.seed_spin.parent().parent()
+        assert dialog.format_combo.parent() is dialog.quality_spin.parent()
+
+    def test_the_case_families_no_longer_scroll_inside_the_form(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """Two nested scroll regions competed for the mouse wheel.
+
+        Pointing at the family list and scrolling moved the list, not the
+        dialog, and the list showed three of nine families in a box that could
+        not grow. A grid has no scroll area of its own.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        assert dialog.findChild(QScrollArea, "datasetFamiliesList") is None
+        scroll_areas = dialog.findChildren(QScrollArea)
+        assert scroll_areas == [dialog.scroll_area]
+        assert len(dialog.family_boxes) == len(CaseFamily)
+
+    def test_every_case_family_is_visible_without_scrolling_a_sublist(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        for family, box in dialog.family_boxes.items():
+            assert box.isVisibleTo(dialog.families_widget), family
+
+
+class TestCollapsibleSections:
+    def _dialog(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ) -> GenerateDatasetDialog:
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_the_common_groups_start_open_and_the_rarest_folded(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        assert dialog.source_section.is_expanded is True
+        assert dialog.content_section.is_expanded is True
+        assert dialog.attendance_section.is_expanded is True
+        assert dialog.output_section.is_expanded is False
+
+    def test_folding_a_section_keeps_every_value(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """Collapsing hides a widget; it must never reset one."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.output_section.set_expanded(True)
+        dialog.dpi_spin.setValue(400)
+        dialog.quality_spin.setValue(77)
+
+        dialog.output_section.set_expanded(False)
+        dialog.output_section.set_expanded(True)
+
+        assert dialog.dpi_spin.value() == 400
+        assert dialog.quality_spin.value() == 77
+        assert dialog.request().dpi == 400
+
+    def test_a_folded_section_still_contributes_to_the_request(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.dpi_spin.setValue(600)
+        assert dialog.output_section.is_expanded is False
+        assert dialog.request().dpi == 600
+
+    def test_a_folded_section_summarises_itself(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """So "is anything unusual set in there?" needs no unfolding."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.dpi_spin.setValue(300)
+        summary = dialog.output_section.summary_label
+        assert "300 dpi" in summary.text()
+        assert summary.isVisibleTo(dialog.output_section)
+
+    def test_an_expanded_section_hides_its_summary(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """The values are on screen; repeating them above is noise."""
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.output_section.set_expanded(True)
+        assert not dialog.output_section.summary_label.isVisibleTo(
+            dialog.output_section
+        )
+
+    def test_the_header_is_keyboard_operable(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        header = dialog.output_section.header
+        assert header.focusPolicy() != Qt.FocusPolicy.NoFocus
+        assert header.accessibleName()
+        before = dialog.output_section.is_expanded
+        header.click()
+        assert dialog.output_section.is_expanded is not before
+
+    def test_validation_reveals_a_control_inside_a_folded_section(
+        self, qtbot, tmp_path: Path, template_path: Path, silent_message_boxes
+    ):
+        """Complaining about a field the operator cannot see is useless.
+
+        The set-codes field lives in a section that can be folded; emptying it
+        and pressing Generate must unfold that section, scroll to the field and
+        focus it - not merely pop a message box.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.show()
+        qtbot.waitExposed(dialog)
+        dialog.attendance_section.set_expanded(False)
+        dialog.sets_edit.setText("")
+
+        dialog._on_accept()
+        QApplication.processEvents()
+
+        assert dialog.attendance_section.is_expanded is True
+        assert dialog.sets_edit.hasFocus()
+        assert silent_message_boxes, "the operator should still be told why"
+
+    def test_validation_focuses_a_control_not_a_container(
+        self, qtbot, tmp_path: Path, template_path: Path, silent_message_boxes
+    ):
+        """"Tick a case family" has to put the caret on a check box.
+
+        The families are a plain ``QWidget`` holding a grid, and a plain widget
+        cannot take focus - so focusing the thing the complaint is about would
+        silently focus nothing at all.
+        """
+        dialog = self._dialog(qtbot, tmp_path, template_path)
+        dialog.show()
+        qtbot.waitExposed(dialog)
+        dialog.profile_combo.setCurrentIndex(
+            dialog.profile_combo.findData(DatasetProfile.CUSTOM)
+        )
+
+        dialog._on_accept()
+        QApplication.processEvents()
+
+        assert dialog.focusWidget() in dialog.family_boxes.values()
+        assert silent_message_boxes
+
+
 class TestGenerating:
     def test_a_run_writes_a_dataset_and_reports_progress(
         self, qtbot, tmp_path: Path, template_path: Path
