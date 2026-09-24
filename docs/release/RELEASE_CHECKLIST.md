@@ -1,5 +1,72 @@
 # Release Checklist
 
+## The short version
+
+A routine release is one command:
+
+```powershell
+.\scripts\release.ps1 -Version 0.1.0-alpha.3
+```
+
+Run with nothing to be told the current version and what is required. It
+changes nothing:
+
+```powershell
+.\scripts\release.ps1
+```
+
+```text
+OMRFlow release automation
+
+Current repository version: 0.1.0-alpha.2
+
+ERROR: A release version is required.
+```
+
+Full usage, which also reports the current version:
+
+```powershell
+.\scripts\release.ps1 --help
+```
+
+See exactly what a release would do, without doing any of it:
+
+```powershell
+.\scripts\release.ps1 -Version 0.1.0-alpha.3 -DryRun
+```
+
+Then make it:
+
+```powershell
+.\scripts\release.ps1 -Version 0.1.0-alpha.3
+```
+
+The script checks the repository, updates the version metadata, runs lint,
+types and the full suite, commits, creates an annotated tag, and pushes the
+commit and tag together. **GitHub Actions then builds and publishes the
+canonical release** from that tag — it re-runs the gates on a clean runner,
+builds the installer, verifies it, writes `SHA256SUMS.txt` and publishes the
+GitHub release. Zenodo archives the release once GitHub publishes it.
+
+Nothing in that path needs a person to make a judgement, and nothing in it
+needs an AI assistant.
+
+What the script refuses to do, with no option to override: release from a
+branch other than `main`, release with anything uncommitted or untracked,
+release when local and `origin/main` disagree, reuse or move an existing tag,
+go backwards or sideways in version, or continue past a failing gate. A
+release that needs a bypass is a release that should not be published.
+
+If it fails after the commit and tag but before the push, it says so and
+gives the two commands to either retry or undo. Nothing is published until
+the push succeeds, and nothing is downloadable until GitHub Actions finishes.
+
+The rest of this page is the manual checklist: what the script does not and
+cannot check — the clean-machine test, the accessibility pass, the release
+notes, and everything after publication.
+
+---
+
 Work through this in order. Copy it into the release's tracking issue and
 tick as you go.
 
@@ -14,11 +81,16 @@ The commands are in [Release Process](../wiki/Release-Process.md).
 
 ## 1. Source
 
-- [ ] Working tree clean (`git status`)
-- [ ] On `main`, up to date with `origin/main`
-- [ ] The release commit identified and its hash recorded
+Everything marked *(script)* is checked or done by `scripts/release.ps1`, which
+refuses to continue if it is not true. They are listed so the checklist still
+describes the whole release, not so they are done by hand.
+
+- [ ] Working tree clean (`git status`) *(script)*
+- [ ] On `main`, up to date with `origin/main` *(script)*
+- [ ] The release commit identified and its hash recorded *(script — it prints
+      the commit)*
 - [ ] `src/omr_scanner/_version.py` updated to the release version — **the
-      only place the version is edited**
+      only place the version is edited** *(script)*
 - [ ] `pip install -e .` re-run, so the installed metadata matches (an
       editable install caches its metadata at install time)
 - [ ] `CHANGELOG.md` has a section for this version, dated, with Known
@@ -31,9 +103,10 @@ The commands are in [Release Process](../wiki/Release-Process.md).
 
 ## 2. Testing
 
-- [ ] `ruff check src tests` — clean
-- [ ] `mypy src/omr_scanner` — clean
-- [ ] `pytest` — the whole suite; record passed / failed / skipped
+- [ ] `ruff check src tests tools` — clean *(script, and again in CI)*
+- [ ] `mypy src/omr_scanner` — clean *(script, and again in CI)*
+- [ ] `pytest` — the whole suite; record passed / failed / skipped *(script,
+      and again in CI on both Windows and Ubuntu)*
 - [ ] Any skip is understood and expected (environmental, not a regression)
 - [ ] Any pre-existing failure is recorded **as pre-existing**, with evidence
       it predates this release
@@ -122,17 +195,27 @@ The commands are in [Release Process](../wiki/Release-Process.md).
 
 ## 6. Release
 
-- [ ] The tag matches the version exactly: `v<version>`
-- [ ] Tag created on the release commit
-- [ ] Tag pushed
-- [ ] The release workflow ran and produced a **draft**
+`scripts/release.ps1` creates and pushes the tag; the `Release` workflow does
+the rest and **publishes the release itself**. It is not a draft: Zenodo
+archives a repository when GitHub *publishes* a release, and a draft would
+never reach it.
+
+- [ ] The tag matches the version exactly: `v<version>` *(script, and the
+      workflow refuses to build a tag that disagrees with the source)*
+- [ ] Tag created on the release commit, annotated *(script)*
+- [ ] Tag pushed atomically with the commit *(script)*
+- [ ] The `Release` workflow completed — watch it at
+      [Actions](https://github.com/sajidbuet/OMRflow/actions)
 - [ ] **Pre-release flag correct** — ticked for Alpha, Beta and RC; clear
-      only for a stable release
+      only for a stable release *(workflow, derived from the version)*
 - [ ] *Set as the latest release* is **not** ticked for a prerelease
-- [ ] Installer attached
-- [ ] `SHA256SUMS.txt` attached
-- [ ] Release notes reviewed — no claim stronger than the evidence
-- [ ] Published
+      *(workflow, same derivation)*
+- [ ] Installer attached *(workflow; it fails if the file is missing)*
+- [ ] `SHA256SUMS.txt` attached *(workflow)*
+- [ ] Release notes read — they are generated from the commits and pull
+      requests since the previous tag. Add anything the history does not say,
+      especially any qualification that was **not** performed
+- [ ] The release page shows the expected version and assets
 
 ## 7. Post-release
 

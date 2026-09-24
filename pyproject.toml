@@ -62,6 +62,12 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
+    # Only the tests use it, to read `.github/workflows/*.yml` and assert the
+    # release pipeline's shape - that publication needs every gate, that only
+    # the publishing job can write. A broken release workflow is discovered at
+    # the exact moment it is least welcome, so it is checked like any other
+    # code rather than by reading it.
+    "PyYAML>=6.0",
 ]
 # Needed only to produce a distributable Windows build, not to develop or
 # test OMRFlow - see `docs/wiki/Release-Process.md`. The Windows installer

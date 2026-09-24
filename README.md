@@ -15,7 +15,7 @@ auditable Excel results locally.
 conflicts, reconcile candidate attendance, evaluate MCQ examinations and
 generate auditable results — entirely on your own machine.**
 
-[![Release](https://img.shields.io/badge/release-0.1.0--alpha.1-AC1F24)](https://github.com/sajidbuet/OMRflow/releases)
+[![Release](https://img.shields.io/badge/release-0.1.0--alpha.2-AC1F24)](https://github.com/sajidbuet/OMRflow/releases)
 [![Status](https://img.shields.io/badge/status-Alpha-orange)](docs/wiki/Known-Limitations.md)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue)](docs/wiki/Installation.md)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
@@ -138,7 +138,7 @@ also the window's title bar:
 
 ## Current release status
 
-**`0.1.0-alpha.1`** — the first installable release.
+**`0.1.0-alpha.2`** — the second Alpha build.
 
 | | |
 |---|---|
@@ -152,7 +152,7 @@ claim a maturity its version does not support.
 
 ## Download and installation
 
-Get `OMRFlow-0.1.0-alpha.1-Setup-x64.exe` from the
+Get `OMRFlow-0.1.0-alpha.2-Setup-x64.exe` from the
 **[Releases page](https://github.com/sajidbuet/OMRflow/releases)**. No Python
 required.
 
@@ -161,7 +161,7 @@ unsigned, so the checksum is how you confirm you have the file that was
 built:
 
 ```powershell
-certutil -hashfile OMRFlow-0.1.0-alpha.1-Setup-x64.exe SHA256
+certutil -hashfile OMRFlow-0.1.0-alpha.2-Setup-x64.exe SHA256
 ```
 
 Full instructions, including the SmartScreen warning and where your data
@@ -195,7 +195,7 @@ enter an answer key → score → generate reports.
 
 ## Development status
 
-**Current release: `0.1.0-alpha.1`**
+**Current release: `0.1.0-alpha.2`**
 
 Phases 0–10 are implemented; Phase 11 takes OMRFlow from "implemented and
 synthetically tested" to a qualified stable release.
@@ -205,7 +205,7 @@ synthetically tested" to a qualified stable release.
 | 0–2 — Foundation, geometry, template designer | **Complete** |
 | 3–9 — Recognition, calibration, batch, conflicts, attendance, scoring, reporting | Implemented; synthetic testing complete, real-data testing in progress |
 | 10 — Integration, recovery, production hardening | Implemented; 100,000-sheet acceptance run pending |
-| **11A — Alpha release infrastructure** | **Implemented — validation pending**; clean-machine test run and passed, its manual steps outstanding |
+| **11A — Alpha release infrastructure** | **Implemented — validation pending**; release automation complete and tested, clean-machine test run and passed, its manual steps outstanding |
 | 11B — Real-data qualification & Beta | Pending |
 | 11C — Release candidate & stable | Pending |
 
@@ -214,7 +214,7 @@ synthetically tested" to a qualified stable release.
 | | |
 |---|---|
 | Automated suite | 4,293 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
-| Cross-platform CI | 🟠 Three Ubuntu-only failures fixed and verified locally; **the Ubuntu runner itself has not re-run yet** |
+| Cross-platform CI | ✅ Green on Windows and Ubuntu ([run 35809212682](https://github.com/sajidbuet/OMRflow/actions/runs/35809212682), 2026-09-23); a fourth Ubuntu-only defect found and fixed for this release |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
 | Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
@@ -223,10 +223,11 @@ synthetically tested" to a qualified stable release.
 | Accessibility | 🟠 Automated checks pass; 8 controls have no accessible name (recorded, non-blocking at Alpha) |
 | Real examination data | ❌ **Not started** — this is Phase 11B |
 | 100,000-sheet qualification | ⚪ Harness ready, not run |
+| Release automation | ✅ One command prepares a release; GitHub Actions builds and publishes it. 96 tests, no step needs a person or a model — see [Release Checklist](docs/release/RELEASE_CHECKLIST.md) |
 
 #### Cross-platform CI defects fixed
 
-Three Ubuntu-only failures, all of them the suite correctly reporting a genuine
+Four Ubuntu-only failures, all of them the suite correctly reporting a genuine
 platform difference rather than flakiness:
 
 | Defect | Cause | Fix |
@@ -234,11 +235,15 @@ platform difference rather than flakiness:
 | `mypy` reported an unreachable statement in `services/process_containment.py` | The Windows path sat behind an early `return` rather than a `sys.platform` *block*; mypy exempts platform-guarded branch bodies from `--warn-unreachable`, but not code following an early return | Restructured into `if sys.platform == "win32": … else: …`. No `type: ignore`, no change to the mypy configuration |
 | Workflow labels elided in layouts chosen *because* the labels fit | `QFontMetrics.horizontalAdvance` sums glyph advances, `elidedText` lays the text out; they disagree by up to a pixel of right bearing, so a step drawn at exactly its measured width elides | One pixel of measured headroom per step (`ELISION_SLACK`), plus a test that pins the invariant at the exact boundary |
 | The kill/resume test asserted that workers die with the coordinator | That is a Windows Job Object guarantee; `process_containment` documents that no POSIX equivalent is implemented | The Windows guarantee is still asserted on Windows; every other property is still asserted everywhere; surviving workers are reaped so no run leaks processes |
+| A synthetic-dataset test compared ink over a fixed percentage crop of the raw page | Two causes. The sheet it measured was picked from an unsorted `glob`, so a different filesystem chose a different candidate — and a different candidate has a different number of marked bubbles, which *is* the measurement. The crop itself was also meaningless: a rendered sheet is not in canonical coordinates, since it carries a scan margin and the geometry cases rotate and crop it, so the rectangle covered whatever happened to fall in it | The scan is rectified with `align_sheet` and its bubbles measured with `measure_bubbles` — the same pair recognition uses — and the representative sheet comes from a sorted listing. Compared on `fill_ratio`, which is normalised against levels read from the image itself. A second test now also pins that a blank identifier renders *no* marked bubble at all |
 
-Verified locally with `mypy --platform linux` (which reproduces the CI type
-error exactly) and with the GUI suite under `QT_QPA_PLATFORM=offscreen` (what
-CI sets on both runners). **Confirmation on the Ubuntu runner itself is still
-pending** — see the limitation note below.
+The first three were verified locally with `mypy --platform linux` and the GUI
+suite under `QT_QPA_PLATFORM=offscreen`, and then **confirmed green on the
+Ubuntu runner itself** in
+[run 35809212682](https://github.com/sajidbuet/OMRflow/actions/runs/35809212682).
+The fourth was found by the Ubuntu runner afterwards, in
+[run 35959715301](https://github.com/sajidbuet/OMRflow/actions/runs/35959715301),
+and is fixed in this release.
 
 ### Release qualification infrastructure
 
@@ -261,9 +266,9 @@ Current qualification focus:
 - real attendance workbooks;
 - set-specific end-to-end validation;
 - the clean-machine steps that need a person;
-- a green Ubuntu CI run: the three cross-platform defects above were diagnosed
-  and fixed on Windows, using `mypy --platform linux` and headless Qt to
-  reproduce each one, but no Linux machine has run the suite since.
+- a green Ubuntu CI run **for this release**: the Ubuntu runner has been green
+  since the first three cross-platform defects were fixed, but the fourth was
+  found after that and its fix has been verified only on Windows so far.
 
 **Implemented, automated tests passing, synthetic dataset validated, real
 scanned dataset validated and production validated are five different
