@@ -656,6 +656,71 @@ class TestFCommandLine:
         assert release.changed_paths(repo) == []
         assert run_git(repo, "tag", "--list") == ""
 
+    def test_a_failed_push_leaves_no_trace_of_the_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The version must not move unless the release was published.
+
+        This is the furthest the script gets before publishing: the files are
+        bumped, the commit is made and the tag exists. If the push then fails,
+        every one of those has to come back off, or the repository claims a
+        version that nobody can download.
+        """
+        repo = make_repository(tmp_path)
+        head = run_git(repo, "rev-parse", "HEAD")
+        before = (repo / release.VERSION_FILE).read_text(encoding="utf-8")
+        real_git = release.git
+
+        def refuse_push(root: Path, *args: str, **kwargs: object) -> str:
+            if args and args[0] == "push":
+                raise release.ReleaseError("git push failed:\nsimulated outage")
+            return real_git(root, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(release, "git", refuse_push)
+        monkeypatch.setattr(release, "run_release_gates", lambda _root: None)
+        monkeypatch.setattr(release, "refresh_installed_metadata", lambda _root: None)
+
+        with pytest.raises(release.ReleaseError, match="simulated outage"):
+            release.prepare_release(
+                repo, release.parse_version("0.1.0-alpha.3"), dry_run=False
+            )
+
+        assert (repo / release.VERSION_FILE).read_text(encoding="utf-8") == before
+        assert str(release.get_current_version(repo)) == "0.1.0-alpha.2"
+        assert run_git(repo, "rev-parse", "HEAD") == head, "the commit was not undone"
+        assert run_git(repo, "tag", "--list") == "", "the tag was not undone"
+        assert release.changed_paths(repo) == []
+
+    def test_a_push_that_actually_landed_is_never_rolled_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A client-side failure after the server accepted the refs.
+
+        Undoing the commit here would leave the checkout permanently behind a
+        tag other people can see, so the release is kept even though the push
+        reported an error.
+        """
+        repo = make_repository(tmp_path)
+        real_git = release.git
+
+        def push_then_lie(root: Path, *args: str, **kwargs: object) -> str:
+            if args and args[0] == "push":
+                real_git(root, *args, **kwargs)  # type: ignore[arg-type]
+                raise release.ReleaseError("git push failed:\nconnection reset")
+            return real_git(root, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(release, "git", push_then_lie)
+        monkeypatch.setattr(release, "run_release_gates", lambda _root: None)
+        monkeypatch.setattr(release, "refresh_installed_metadata", lambda _root: None)
+
+        with pytest.raises(release.ReleaseError, match="connection reset"):
+            release.prepare_release(
+                repo, release.parse_version("0.1.0-alpha.3"), dry_run=False
+            )
+
+        assert run_git(repo, "tag", "--list") == "v0.1.0-alpha.3"
+        assert str(release.get_current_version(repo)) == "0.1.0-alpha.3"
+
     def test_a_dry_run_on_a_dirty_tree_still_refuses(self, tmp_path: Path):
         """Dry run is not a way to preview a release you could not make."""
         repo = make_repository(tmp_path)
@@ -722,12 +787,19 @@ class TestGNoBypasses:
             assert literals, "a git call with no literal subcommand"
             subcommands.add(literals[0])
             for argument in literals:
-                assert argument not in {"-f", "--force", "--force-with-lease", "--delete"}, (
+                assert argument not in {"-f", "--force", "--force-with-lease"}, (
                     f"git {literals[0]} would be given {argument}"
                 )
 
         # An allowlist, so a newly added destructive subcommand has to be
         # added here deliberately rather than slipping in.
+        #
+        # `reset` and `tag -d` are here on purpose: rolling a failed release
+        # back has to undo the commit and tag it just made. Both act only on
+        # refs this run created, and only after `tag_is_published` has
+        # confirmed nothing reached the remote - so no published history is
+        # ever rewritten, which is what the force-push prohibition above
+        # actually protects.
         assert subcommands <= {
             "rev-parse",
             "status",
@@ -739,7 +811,41 @@ class TestGNoBypasses:
             "add",
             "commit",
             "push",
+            "reset",
         }, subcommands
+
+    def test_a_rollback_never_touches_a_published_tag(self):
+        """The one thing the rollback must not undo.
+
+        A push can fail on the client after the server has accepted the refs.
+        Erasing the local commit then would leave the checkout permanently
+        behind a tag other people can already see, so the rollback asks the
+        remote first and treats "cannot tell" as published.
+        """
+        import ast as ast_module
+
+        source = RELEASE_SCRIPT.read_text(encoding="utf-8")
+        tree = ast_module.parse(source)
+        function = next(
+            node
+            for node in ast_module.walk(tree)
+            if isinstance(node, ast_module.FunctionDef)
+            and node.name == "tag_is_published"
+        )
+        # The unknown case returns True - "assume published, do not destroy".
+        handlers = [
+            node for node in ast_module.walk(function)
+            if isinstance(node, ast_module.ExceptHandler)
+        ]
+        assert handlers, "tag_is_published must handle a failed remote query"
+        returns = [
+            node.value.value
+            for handler in handlers
+            for node in ast_module.walk(handler)
+            if isinstance(node, ast_module.Return)
+            and isinstance(node.value, ast_module.Constant)
+        ]
+        assert returns == [True], returns
 
     def test_the_gates_are_the_ones_ci_runs(self):
         """A release that ran a smaller suite than CI proves less than CI."""

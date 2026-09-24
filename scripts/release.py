@@ -637,6 +637,22 @@ def verify_replacements(repo_root: Path, plan: list[Replacement]) -> None:
             )
 
 
+def tag_is_published(repo_root: Path, tag: str) -> bool:
+    """Whether ``tag`` exists on the remote.
+
+    Asked before any rollback touches a commit or a tag. A push can fail on
+    the client - a dropped connection after the server has accepted the refs -
+    while having actually landed, and undoing a *published* release locally
+    would leave the checkout permanently behind a tag other people can see.
+    When this cannot be determined the answer is "published", because leaving
+    a local commit in place is recoverable and erasing a published one is not.
+    """
+    try:
+        return bool(git(repo_root, "ls-remote", "--tags", REMOTE, f"refs/tags/{tag}"))
+    except ReleaseError:
+        return True
+
+
 def changelog_has_section(repo_root: Path, target: Version) -> bool:
     """Whether ``CHANGELOG.md`` already documents ``target``."""
     path = repo_root / "CHANGELOG.md"
@@ -824,80 +840,85 @@ def prepare_release(repo_root: Path, target: Version, *, dry_run: bool) -> int:
     for path in changed:
         print(f"  updated  {path.as_posix()}")
 
-    def restore() -> None:
-        """Put the tree back exactly as it was.
+    # Where the branch stood before any of this. Rolling back resets to this
+    # exact commit rather than to HEAD~1, so an unexpected extra commit can
+    # never be silently discarded.
+    started_at = git(repo_root, "rev-parse", "HEAD")
+    committed = False
+    tagged = False
 
-        A failed release must not leave a half-bumped checkout behind for the
-        next person to discover, and the installed metadata has to follow the
-        files back or the next run starts out of step.
+    def restore() -> None:
+        """Put the repository back exactly as it was before this run.
+
+        The version only moves forward if the release is actually published.
+        Anything short of a successful push - a failing gate, a Ctrl+C, a
+        rejected push - undoes the tag, the commit, the files and the
+        installed metadata, in that order, so the next attempt starts from a
+        clean tree rather than from a half-made release nobody remembers
+        making.
+
+        The one thing it will not undo is a release that reached the remote.
         """
+        if tagged:
+            if tag_is_published(repo_root, target.tag):
+                print()
+                print(f"  {target.tag} is on {REMOTE}: the release was published.")
+                print("  Leaving the local commit and tag in place.")
+                return
+            git(repo_root, "tag", "-d", target.tag, check=False)
+        if committed:
+            # Safe because the tree was verified clean at step 1 and the
+            # commit's contents were verified at step 5: this discards only
+            # what this run itself created.
+            git(repo_root, "reset", "--hard", started_at, check=False)
         for path, text in originals.items():
             (repo_root / path).write_text(text, encoding="utf-8")
         refresh_installed_metadata(repo_root)
+        print()
+        print(f"  Rolled back. The version is {current} again, as it was.")
 
     try:
         refresh_installed_metadata(repo_root)
-    except BaseException:
-        restore()
-        raise
-    print("  updated  installed package metadata")
+        print("  updated  installed package metadata")
 
-    print(f"[4/{total}] Running release checks")
-    try:
+        print(f"[4/{total}] Running release checks")
+        # The gates take about half an hour, so Ctrl+C during them is an
+        # ordinary thing to do; BaseException rather than ReleaseError so that
+        # an interrupt rolls back like any other failure.
         run_release_gates(repo_root)
-    # BaseException, not ReleaseError: the gates take about half an hour, so
-    # Ctrl+C during them is an ordinary thing to do. Catching only the
-    # script's own error left the checkout bumped to the new version with no
-    # commit, no tag and nothing to say why - a state the next run then
-    # refuses to start from, for a reason that looks unrelated.
-    except BaseException:
-        restore()
-        raise
-    print("  OK       lint, types and the full suite passed")
+        print("  OK       lint, types and the full suite passed")
 
-    print(f"[5/{total}] Verifying release changes")
-    actual = changed_paths(repo_root)
-    if actual != files:
-        raise ReleaseError(
-            "The release would commit files it did not expect.\n"
-            f"  expected: {', '.join(files)}\n"
-            f"  found:    {', '.join(actual) or 'nothing'}\n"
-            "Nothing has been committed. Investigate before retrying."
-        )
-    print(f"  OK       {len(actual)} file(s): {', '.join(actual)}")
+        print(f"[5/{total}] Verifying release changes")
+        actual = changed_paths(repo_root)
+        if actual != files:
+            raise ReleaseError(
+                "The release would commit files it did not expect.\n"
+                f"  expected: {', '.join(files)}\n"
+                f"  found:    {', '.join(actual) or 'nothing'}\n"
+                "Nothing has been committed. Investigate before retrying."
+            )
+        print(f"  OK       {len(actual)} file(s): {', '.join(actual)}")
 
-    print(f"[6/{total}] Creating release commit")
-    git(repo_root, "add", "--", *files)
-    git(repo_root, "commit", "-m", f"chore(release): {target.tag}")
-    commit = git(repo_root, "rev-parse", "HEAD")
-    print(f"  OK       {commit[:12]}")
+        print(f"[6/{total}] Creating release commit")
+        git(repo_root, "add", "--", *files)
+        git(repo_root, "commit", "-m", f"chore(release): {target.tag}")
+        committed = True
+        commit = git(repo_root, "rev-parse", "HEAD")
+        print(f"  OK       {commit[:12]}")
 
-    print(f"[7/{total}] Creating tag")
-    git(repo_root, "tag", "-a", target.tag, "-m", f"OMRFlow {target.tag}")
-    print(f"  OK       {target.tag} (annotated)")
+        print(f"[7/{total}] Creating tag")
+        git(repo_root, "tag", "-a", target.tag, "-m", f"OMRFlow {target.tag}")
+        tagged = True
+        print(f"  OK       {target.tag} (annotated)")
 
-    print(f"[8/{total}] Pushing release")
-    try:
+        print(f"[8/{total}] Pushing release")
         # Atomic: the branch and the tag arrive together or not at all, so a
         # network failure cannot publish a tag whose commit is missing.
         git(repo_root, "push", "--atomic", REMOTE, DEFAULT_BRANCH, target.tag)
-    except ReleaseError as exc:
-        raise ReleaseError(
-            f"{exc}\n"
-            "\n"
-            "The push failed. Your local repository still holds:\n"
-            f"  commit {commit[:12]}  chore(release): {target.tag}\n"
-            f"  tag    {target.tag}\n"
-            "\n"
-            "Nothing was published, and nothing local was rewritten. Once the "
-            "cause is fixed, retry exactly this:\n"
-            f"  git push --atomic {REMOTE} {DEFAULT_BRANCH} {target.tag}\n"
-            "\n"
-            "To undo it locally instead:\n"
-            f"  git tag -d {target.tag}\n"
-            "  git reset --hard HEAD~1"
-        ) from exc
-    print(f"  OK       pushed {DEFAULT_BRANCH} and {target.tag}")
+        print(f"  OK       pushed {DEFAULT_BRANCH} and {target.tag}")
+    except BaseException:
+        restore()
+        raise
 
     print()
     print("OMRFlow release prepared successfully")
