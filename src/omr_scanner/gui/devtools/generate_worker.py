@@ -95,7 +95,17 @@ class DatasetWorker(QThread):
         self._tracker.prepare()
         try:
             template = load_template(request.template_path)
-            self._tracker.start(request.count, workers=1)
+            # Planned before the progress bar is sized, because with attendance
+            # on it is the roster - not the sheet count - the operator typed:
+            # absentees and missing scans mean fewer images than candidates,
+            # and a bar sized to the roster would stop short of full.
+            population = request.population()
+            expected = (
+                len(population.sheets_to_render())
+                if population is not None
+                else request.count
+            )
+            self._tracker.start(expected, workers=1)
             manifest = generate_dataset(
                 request.output_dir,
                 template,
@@ -109,6 +119,7 @@ class DatasetWorker(QThread):
                 name=request.name,
                 template_path=str(request.template_path),
                 write_metadata=request.write_metadata,
+                population=population,
                 on_progress=self._on_sheet,
                 should_cancel=lambda: self._cancelled,
             )

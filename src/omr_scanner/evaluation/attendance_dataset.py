@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from omr_scanner.domain.reconciliation import AttendanceState, ReconciliationStatus
+from omr_scanner.evaluation.test_cases import FieldLayout, MarkPlan, SheetCase
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
@@ -894,6 +895,132 @@ def write_ground_truth(population: Population, directory: Path) -> tuple[Path, P
     return candidates_path, reconciliation_path
 
 
+def bind_case(
+    case: SheetCase, candidate: SyntheticCandidate, layout: FieldLayout
+) -> SheetCase:
+    """Give ``case`` the identity ``candidate``'s script should carry.
+
+    Args:
+        case: A planned case from
+            :func:`~omr_scanner.evaluation.case_plans.plan_dataset`, which
+            already decides the answers, the mark styles and the scanner
+            degradation this sheet gets.
+        candidate: The population entry this sheet belongs to.
+        layout: The template's field layout, which names the identifier and
+            set-code zones. Required, and the reason is worth stating: the
+            renderer draws bubbles from ``case.marks``, keyed by zone id, while
+            ``roll_marks``/``set_marks`` only ever reach the *ground truth*.
+            An earlier version of this function set the second pair and not the
+            first, so every generated sheet carried its originally planned roll
+            while the truth file claimed the population's - a dataset that
+            disagreed with its own answer key, and one no test comparing
+            metadata to metadata would have caught.
+
+    Returns:
+        The same case with its identifier and set fields replaced, in both the
+        rendered marks and the recorded truth.
+
+    The division of labour, and the reason binding is one small function
+    rather than a second planner: the case plan owns everything about the
+    *image* - which marks are faint, how far the page is rotated, whether a
+    band crosses it - and the population owns everything about *identity* -
+    whose script this is, what number is marked on it, and whether that
+    number is readable at all. Neither needs to know how the other decides,
+    and the sheet that comes out has both.
+
+    Blank, partial and over-marked identifiers are expressed the way the
+    renderer already understands them: ``roll_marks`` is a tuple of marked
+    options per digit column, so a blank digit is an empty tuple and an
+    over-marked one has two entries. Nothing new had to be taught to the
+    renderer for these cases to exist.
+    """
+    roll = candidate.observed_roll or ""
+    conflict = candidate.conflict
+
+    if conflict is ConflictKind.BLANK_CANDIDATE_ID:
+        marks: tuple[tuple[str, ...], ...] = tuple(
+            () for _ in range(len(candidate.roll))
+        )
+        ambiguous = True
+    elif conflict is ConflictKind.PARTIAL_CANDIDATE_ID:
+        # The first two columns unmarked - a candidate who started filling the
+        # grid and stopped. Deterministic rather than random so the same seed
+        # reproduces the same partial value.
+        marks = tuple(
+            () if position < 2 else (digit,)
+            for position, digit in enumerate(candidate.roll)
+        )
+        ambiguous = True
+    elif conflict is ConflictKind.CANDIDATE_ID_MULTIPLE_MARK:
+        # One digit carries two marks. Distinct from a blank digit, and the
+        # engine must not silently pick one of them.
+        target = len(candidate.roll) // 2
+        marks = tuple(
+            (digit, _other_digit(digit)) if position == target else (digit,)
+            for position, digit in enumerate(candidate.roll)
+        )
+        ambiguous = True
+    else:
+        marks = tuple((digit,) for digit in roll)
+        ambiguous = False
+
+    set_code = candidate.observed_set or ""
+    set_marks: tuple[tuple[str, ...], ...] = (
+        () if candidate.observed_set is None else tuple((ch,) for ch in set_code)
+    )
+
+    # The marks that are actually drawn. Rebuilt from the same tuples the
+    # ground truth records, so the image and the truth cannot drift apart.
+    rendered = dict(case.marks)
+    if layout.identifier_zone:
+        rendered[layout.identifier_zone] = _column_plans(marks, ambiguous)
+    if layout.set_zone:
+        rendered[layout.set_zone] = _column_plans(
+            set_marks, candidate.observed_set is None
+        )
+
+    return replace(
+        case,
+        marks=rendered,
+        roll=roll,
+        roll_marks=marks,
+        roll_ambiguous=ambiguous,
+        set_code=set_code,
+        set_marks=set_marks,
+        set_ambiguous=candidate.observed_set is None,
+        # Both scripts of a duplicate pair share a group, which is how the
+        # existing ground truth already expresses "these two are the same
+        # candidate".
+        duplicate_group=(
+            candidate.roll
+            if conflict is ConflictKind.DUPLICATE_SCRIPT or candidate.duplicate_of
+            else case.duplicate_group
+        ),
+        notes=f"{candidate.candidate_uid} {conflict.value}",
+    )
+
+
+def _column_plans(
+    columns: tuple[tuple[str, ...], ...], ambiguous: bool
+) -> dict[int, MarkPlan]:
+    """One :class:`MarkPlan` per identifier column, from its marked labels.
+
+    An empty column still gets a plan with no labels rather than being left
+    out: "this column was considered and nothing was marked" and "this column
+    does not exist" are different statements, and only the first is what a
+    blank digit means.
+    """
+    return {
+        index: MarkPlan(labels=labels, ambiguous=ambiguous and len(labels) != 1)
+        for index, labels in enumerate(columns)
+    }
+
+
+def _other_digit(digit: str) -> str:
+    """A different digit, chosen deterministically, for an over-marked column."""
+    return str((int(digit) + 5) % 10) if digit.isdigit() else digit
+
+
 def summarise(population: Population) -> dict[str, object]:
     """Counts for the generation report and the completion dialog.
 
@@ -944,9 +1071,12 @@ __all__ = [
     "ConflictRates",
     "Population",
     "SyntheticCandidate",
+    "bind_case",
     "expected_states",
     "plan_population",
     "summarise",
     "write_ground_truth",
     "write_workbooks",
 ]
+
+

@@ -46,9 +46,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.evaluation.attendance_dataset import (
+    ConflictProfile,
+    ConflictRates,
+    plan_population,
+)
 from omr_scanner.evaluation.synthetic_dataset import (
     DEFAULT_DPI,
     DEFAULT_JPEG_QUALITY,
@@ -125,6 +131,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DPI,
         help="Rendering resolution, derived from the template's physical page size.",
     )
+    parser.add_argument(
+        "--sets",
+        default="",
+        help=(
+            "Comma-separated question-paper sets, e.g. 10,11,12. Given, the run "
+            "also writes one attendance workbook per set and the reconciliation "
+            "ground truth, and --count becomes the size of the candidate roster "
+            "rather than the number of images."
+        ),
+    )
+    parser.add_argument(
+        "--attendance-conflict-profile",
+        choices=[profile.value for profile in ConflictProfile],
+        default=ConflictProfile.NORMAL.value,
+        help="How much the generated attendance workbooks disagree with reality.",
+    )
+    parser.add_argument(
+        "--true-absentee-rate",
+        type=float,
+        default=ConflictRates().true_absentee,
+        help="Genuine non-attendance, as a fraction. Distinct from clerical error.",
+    )
+    parser.add_argument(
+        "--no-reconciliation-edge-cases",
+        action="store_true",
+        help="Do not force one of every reconciliation conflict into the roster.",
+    )
     parser.add_argument("--name", default="synthetic", help="Dataset name for the manifest.")
     parser.add_argument("--version", default="1", help="Dataset revision for the manifest.")
     parser.add_argument(
@@ -158,19 +191,47 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{key:<22} {value}")
         return EXIT_OK
 
+    set_codes = tuple(
+        code.strip() for code in arguments.sets.split(",") if code.strip()
+    )
     try:
         image_format = ImageFormat.parse(arguments.format)
         render = page_render_size(template, arguments.dpi)
+        population = (
+            plan_population(
+                count=arguments.count,
+                set_codes=set_codes,
+                seed=arguments.seed,
+                rates=replace(
+                    ConflictProfile(arguments.attendance_conflict_profile).rates(),
+                    true_absentee=arguments.true_absentee_rate,
+                ),
+                include_edge_cases=not arguments.no_reconciliation_edge_cases,
+            )
+            if set_codes
+            else None
+        )
     except ValueError as exc:
         print(f"Could not generate the dataset: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
     if not arguments.quiet:
+        sheets = (
+            len(population.sheets_to_render())
+            if population is not None
+            else arguments.count
+        )
         print(
-            f"Rendering {arguments.count} sheet(s) at {render.width}x{render.height} px "
+            f"Rendering {sheets} sheet(s) at {render.width}x{render.height} px "
             f"({render.dpi} dpi, from the template's {render.derived_from} page size) "
             f"as {image_format.value.upper()}"
         )
+        if population is not None:
+            print(
+                f"  {len(population.candidates)} candidate(s) across "
+                f"{len(population.by_set())} set(s); attendance workbooks and "
+                "reconciliation ground truth will be written alongside the images"
+            )
 
     def report(progress: GenerationProgress) -> None:
         """Print a progress line every :data:`PROGRESS_EVERY` sheets."""
@@ -182,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             arguments.output,
             template,
             count=arguments.count,
+            population=population,
             seed=arguments.seed,
             profile=DatasetProfile(arguments.profile),
             custom_families=(
@@ -211,3 +273,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

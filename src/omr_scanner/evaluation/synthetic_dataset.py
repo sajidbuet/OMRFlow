@@ -65,6 +65,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from omr_scanner.domain.template import IgnoredFieldDefinition
+from omr_scanner.evaluation.attendance_dataset import (
+    ATTENDANCE_DIRNAME,
+    Population,
+    bind_case,
+    write_ground_truth,
+    write_workbooks,
+)
+from omr_scanner.evaluation.attendance_dataset import (
+    summarise as summarise_population,
+)
 from omr_scanner.evaluation.case_plans import (
     CORNER_ROLES,
     DatasetProfile,
@@ -529,6 +539,7 @@ def generate_dataset(
     prefix: str = DEFAULT_PREFIX,
     template_path: str = "",
     write_metadata: bool = True,
+    population: Population | None = None,
     on_progress: Callable[[GenerationProgress], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> DatasetManifest:
@@ -554,6 +565,15 @@ def generate_dataset(
         write_metadata: Also write ``manifest.csv`` and
             ``dataset_summary.json``. The per-sheet ground truth is always
             written - without it the dataset is just pictures.
+        population: An attendance population from
+            :func:`~omr_scanner.evaluation.attendance_dataset.plan_population`.
+            When given, it decides *identity*: how many sheets exist, whose
+            script each one is, and what identifier and set code it carries -
+            including the deliberately blank, duplicated and unknown ones. The
+            case plan still decides everything about the image. The run also
+            writes ``attendance/`` and the two reconciliation ground-truth
+            files. ``count`` is ignored, because the population already
+            answered it.
         on_progress: Called after each sheet is written. Runs on the calling
             thread, so a GUI caller must marshal to the main thread.
         should_cancel: Polled before each sheet; returning ``True`` stops the
@@ -586,13 +606,34 @@ def generate_dataset(
         )
 
     render = page_render_size(template, dpi)
+
+    # The population, when there is one, is the authority on how many scripts
+    # exist - a cohort with absentees and missing scans produces fewer sheets
+    # than it has candidates, and that difference is the point.
+    sheets = population.sheets_to_render() if population is not None else ()
+    planned_count = len(sheets) if population is not None else count
+    if population is not None and planned_count < 1:
+        raise ValueError(
+            "This population produces no scripts at all - every candidate is "
+            "absent or missing a scan, so there is nothing to render"
+        )
+
     cases = plan_dataset(
         template,
-        count=count,
+        count=planned_count,
         seed=seed,
         profile=profile,
         custom_families=custom_families,
     )
+    if population is not None:
+        # Identity is overlaid onto the planned cases rather than planned
+        # twice. See `attendance_dataset.bind_case` for why the two concerns
+        # are split this way.
+        layout = FieldLayout.of(template)
+        cases = [
+            bind_case(case, candidate, layout)
+            for case, candidate in zip(cases, sheets, strict=True)
+        ]
 
     images = output_dir / IMAGES_DIRNAME
     truths = output_dir / GROUND_TRUTH_DIRNAME
@@ -688,6 +729,16 @@ def generate_dataset(
             "edge-case handling; not evidence of real-world recognition accuracy."
         ),
     )
+    if population is not None:
+        # Written after the images, and derived from the *plan* rather than
+        # from anything that was rendered or recognised - see
+        # `attendance_dataset`'s module docstring. A cancelled run still gets
+        # them: the workbook describes the cohort, which did not stop existing
+        # because the renderer was interrupted.
+        write_workbooks(population, output_dir / ATTENDANCE_DIRNAME)
+        write_ground_truth(population, truths)
+        manifest.generator["attendance"] = summarise_population(population)
+
     save_manifest(manifest, output_dir / MANIFEST_FILENAME)
 
     if write_metadata:
@@ -832,3 +883,4 @@ __all__ = [
     "sheet_spec_from_template",
     "validate_template",
 ]
+

@@ -177,6 +177,7 @@ enter an answer key → score → generate reports.
 | **[Documentation home](docs/wiki/Home.md)** | Everything, organised |
 | [Installation](docs/wiki/Installation.md) | Requirements, install, upgrade, uninstall |
 | [Quick Start](docs/wiki/Quick-Start.md) | The whole workflow, with synthetic data |
+| [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) | Generating test scans **and** attendance workbooks with exact ground truth |
 | [User Guide](docs/wiki/User-Guide.md) | The nine stages in detail |
 | [Known Limitations](docs/wiki/Known-Limitations.md) | **What is and is not trustworthy yet** |
 | [Troubleshooting](docs/wiki/Troubleshooting.md) | When something goes wrong |
@@ -208,6 +209,7 @@ synthetically tested" to a qualified stable release.
 | Automated suite | 4,293 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
 | Cross-platform CI | 🟠 Three Ubuntu-only failures fixed and verified locally; **the Ubuntu runner itself has not re-run yet** |
 | Synthetic end-to-end | ✅ Passing, from source |
+| Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
 | Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
 | Installer | ✅ Install → launch → uninstall → **user data preserved** → reinstall |
 | Clean machine | ✅ 56/56 automated checks on a pristine Windows image; its manual steps outstanding |
@@ -297,8 +299,9 @@ tests, database migrations, and never committing real candidate data.
 
 > **OMRFlow processes examination material.** Never attach real candidate
 > names, roll numbers, rosters, answer keys, scans or project folders to a
-> public issue. OMRFlow can generate synthetic sheets for exactly this
-> purpose: *Tools → Developer / Testing → Generate Synthetic Test Dataset…*
+> public issue. OMRFlow can generate synthetic sheets — and synthetic
+> attendance workbooks — for exactly this purpose:
+> *Tools → Developer / Testing → Generate Synthetic Test Dataset…*
 
 ## Privacy
 

@@ -25,7 +25,7 @@ Why the template is a file rather than "the loaded one":
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -49,6 +50,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.evaluation.attendance_dataset import (
+    ConflictProfile,
+    ConflictRates,
+    Population,
+    plan_population,
+)
 from omr_scanner.evaluation.synthetic_dataset import (
     DEFAULT_DPI,
     DEFAULT_JPEG_QUALITY,
@@ -66,6 +73,8 @@ memory - but a hundred thousand A4 pages is roughly 60 GB, and a spin box that
 allows it invites somebody to fill a disk by holding an arrow key."""
 
 MAX_SEED = 2_147_483_647
+
+DEFAULT_SET_CODES: tuple[str, ...] = ("10", "11", "12")
 
 PROFILE_DESCRIPTIONS: dict[DatasetProfile, str] = {
     DatasetProfile.BASELINE: "Clean, valid sheets only. Anything failing here is a defect.",
@@ -101,6 +110,17 @@ class GenerationRequest:
         name: Dataset name, recorded in the manifest.
         write_metadata: Also write the CSV manifest and the dataset summary.
         run_benchmark: Open the benchmark straight after generating.
+        with_attendance: Also generate the set-specific attendance workbooks
+            and the reconciliation ground truth. When on, :attr:`count` is the
+            size of the *candidate roster* rather than the number of images -
+            absentees and missing scans mean fewer sheets than candidates,
+            which is the point of generating the two together.
+        set_codes: The question-paper sets the roster is divided between.
+        conflict_profile: How much the paperwork disagrees with reality.
+        conflict_rates: The individual rates, used when
+            :attr:`conflict_profile` is ``CUSTOM``.
+        include_reconciliation_edge_cases: Guarantee one of every conflict,
+            whatever the rates work out to at this roster size.
     """
 
     template_path: Path
@@ -115,6 +135,46 @@ class GenerationRequest:
     name: str = "synthetic"
     write_metadata: bool = True
     run_benchmark: bool = False
+
+    with_attendance: bool = False
+    """Off by default *here*, on by default in the dialog.
+
+    The distinction is deliberate. This dataclass is the contract every
+    programmatic caller and test already builds against, and turning attendance
+    on by default would silently change what ``GenerationRequest(count=5)``
+    means - five candidates, and therefore fewer than five images, where it
+    used to mean five sheets. The dialog sets it explicitly, so an operator
+    still gets the paired dataset without existing callers changing behaviour
+    underneath them.
+    """
+
+    set_codes: tuple[str, ...] = DEFAULT_SET_CODES
+    conflict_profile: ConflictProfile = ConflictProfile.NORMAL
+    conflict_rates: ConflictRates | None = None
+    include_reconciliation_edge_cases: bool = True
+
+    def population(self) -> Population | None:
+        """The candidate roster this request implies, or ``None``.
+
+        Built here rather than in the worker so a test - and the dialog's own
+        pre-generation summary - can see exactly what a request would produce
+        without generating anything.
+        """
+        if not self.with_attendance:
+            return None
+        rates = (
+            self.conflict_rates
+            if self.conflict_profile is ConflictProfile.CUSTOM
+            and self.conflict_rates is not None
+            else self.conflict_profile.rates()
+        )
+        return plan_population(
+            count=self.count,
+            set_codes=self.set_codes,
+            seed=self.seed,
+            rates=rates,
+            include_edge_cases=self.include_reconciliation_edge_cases,
+        )
 
 
 class GenerateDatasetDialog(QDialog):
@@ -147,6 +207,7 @@ class GenerateDatasetDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_source_box(template_path, output_dir))
         layout.addWidget(self._build_content_box())
+        layout.addWidget(self._build_attendance_box())
         layout.addWidget(self._build_output_box())
 
         caveat = QLabel(
@@ -166,10 +227,85 @@ class GenerateDatasetDialog(QDialog):
         layout.addWidget(buttons)
 
         self._on_profile_changed()
+        self._on_attendance_toggled()
 
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
+    def _build_attendance_box(self) -> QGroupBox:
+        """The paperwork half: who was registered, and what the office recorded.
+
+        Separated from "Contents" because it answers a different question.
+        The contents box decides what the *images* look like; this decides who
+        exists and how badly the attendance workbook disagrees with them - the
+        input to the Attendance stage rather than to recognition.
+        """
+        box = QGroupBox("Attendance and reconciliation")
+        form = QFormLayout(box)
+
+        self.attendance_checkbox = QCheckBox(
+            "Generate attendance workbooks and reconciliation ground truth"
+        )
+        self.attendance_checkbox.setObjectName("datasetAttendanceCheckBox")
+        self.attendance_checkbox.setChecked(True)
+        self.attendance_checkbox.setToolTip(
+            "Writes one .xlsx per set, in the layout the Attendance stage "
+            "imports, plus candidates.csv and reconciliation.csv. With this on, "
+            "'Sheets' above is the size of the candidate roster - absentees and "
+            "missing scans produce fewer images than candidates."
+        )
+        self.attendance_checkbox.toggled.connect(self._on_attendance_toggled)
+        form.addRow("", self.attendance_checkbox)
+
+        self.sets_edit = QLineEdit(", ".join(DEFAULT_SET_CODES))
+        self.sets_edit.setObjectName("datasetSetsEdit")
+        self.sets_edit.setToolTip(
+            "Comma-separated question-paper sets. One workbook is written per "
+            "set, and set codes are never assumed to be a single digit."
+        )
+        form.addRow("Sets:", self.sets_edit)
+
+        self.conflict_combo = QComboBox()
+        self.conflict_combo.setObjectName("datasetConflictProfileCombo")
+        for profile in ConflictProfile:
+            self.conflict_combo.addItem(profile.value.title(), profile)
+        self.conflict_combo.setCurrentIndex(
+            self.conflict_combo.findData(ConflictProfile.NORMAL)
+        )
+        self.conflict_combo.currentIndexChanged.connect(self._on_attendance_toggled)
+        form.addRow("Conflict profile:", self.conflict_combo)
+
+        self.absentee_spin = QDoubleSpinBox()
+        self.absentee_spin.setObjectName("datasetAbsenteeRateSpin")
+        self.absentee_spin.setRange(0.0, 50.0)
+        self.absentee_spin.setDecimals(2)
+        self.absentee_spin.setSuffix(" %")
+        self.absentee_spin.setValue(ConflictRates().true_absentee * 100.0)
+        self.absentee_spin.setToolTip(
+            "Genuine non-attendance, before any clerical error. Distinct from "
+            "a present candidate wrongly recorded as absent, which the conflict "
+            "profile controls."
+        )
+        form.addRow("True absentee rate:", self.absentee_spin)
+
+        self.edge_case_checkbox = QCheckBox(
+            "Guarantee one of every reconciliation conflict"
+        )
+        self.edge_case_checkbox.setObjectName("datasetReconciliationEdgeCheckBox")
+        self.edge_case_checkbox.setChecked(True)
+        self.edge_case_checkbox.setToolTip(
+            "Stages every conflict at least once even when the rates are too "
+            "low to produce one at this roster size. A dataset that omits a "
+            "case cannot be used to prove that case is handled."
+        )
+        form.addRow("", self.edge_case_checkbox)
+
+        self.attendance_summary = QLabel("")
+        self.attendance_summary.setObjectName("datasetAttendanceSummary")
+        self.attendance_summary.setWordWrap(True)
+        form.addRow("", self.attendance_summary)
+        return box
+
     def _build_source_box(
         self, template_path: Path | None, output_dir: Path | None
     ) -> QGroupBox:
@@ -245,6 +381,9 @@ class GenerateDatasetDialog(QDialog):
             "The profile's edge cases are generated first, so a small dataset is "
             "still a spread of them rather than a random sample."
         )
+        # The attendance summary is a function of this and of the seed, so both
+        # have to re-run it or the figures shown describe the previous answer.
+        self.count_spin.valueChanged.connect(self._refresh_attendance_summary)
         form.addRow("Sheets:", self.count_spin)
 
         self.seed_spin = QSpinBox()
@@ -257,6 +396,7 @@ class GenerateDatasetDialog(QDialog):
         )
         randomise = QPushButton("New seed")
         randomise.setObjectName("newSeedButton")
+        self.seed_spin.valueChanged.connect(self._refresh_attendance_summary)
         randomise.clicked.connect(
             lambda: self.seed_spin.setValue(random.randint(1, MAX_SEED))
         )
@@ -333,6 +473,85 @@ class GenerateDatasetDialog(QDialog):
         """Quality is a JPEG question; PNG has none."""
         self.quality_spin.setEnabled(self.selected_format() is ImageFormat.JPEG)
 
+    def selected_conflict_profile(self) -> ConflictProfile:
+        """The chosen conflict profile. See :meth:`selected_profile`."""
+        return ConflictProfile(self.conflict_combo.currentData())
+
+    def selected_set_codes(self) -> tuple[str, ...]:
+        """The sets, parsed from the comma-separated field.
+
+        Order is preserved and duplicates dropped, because the roster is dealt
+        round-robin across this sequence and a set listed twice would quietly
+        get double the candidates.
+        """
+        seen: list[str] = []
+        for chunk in self.sets_edit.text().split(","):
+            code = chunk.strip()
+            if code and code not in seen:
+                seen.append(code)
+        return tuple(seen)
+
+    def _on_attendance_toggled(self) -> None:
+        """Enable the attendance controls, and re-describe what they will make."""
+        enabled = self.attendance_checkbox.isChecked()
+        for widget in (
+            self.sets_edit,
+            self.conflict_combo,
+            self.absentee_spin,
+            self.edge_case_checkbox,
+        ):
+            widget.setEnabled(enabled)
+        self._refresh_attendance_summary()
+
+    def _refresh_attendance_summary(self) -> None:
+        """Recompute the summary, tolerating a form that is not yet built.
+
+        The count and seed spin boxes are created before the attendance box is,
+        and connecting them means they can fire during construction.
+        """
+        if not hasattr(self, "attendance_summary"):
+            return
+        self.attendance_summary.setText(self._summarise_attendance())
+
+    def _summarise_attendance(self) -> str:
+        """The pre-generation summary: what this roster will actually contain.
+
+        Computed from the real plan rather than from the rates, so the numbers
+        shown are the numbers that will be generated - a 0.25 per cent rate
+        over 100 candidates is not a quarter of a sheet, and quoting the
+        request instead of the outcome would describe a dataset nobody is
+        about to produce.
+        """
+        if not self.attendance_checkbox.isChecked():
+            return "No attendance workbooks; images and their ground truth only."
+        request = self.request()
+        if request is None:
+            population = None
+        else:
+            try:
+                population = request.population()
+            except ValueError as exc:
+                return f"Cannot plan this roster: {exc}"
+        if population is None:
+            return ""
+        # Read off the typed plan rather than the summary mapping: the mapping
+        # exists for the manifest, where values are heterogeneous JSON.
+        counts = population.counts()
+        conflicts = sum(
+            count
+            for kind, count in counts.items()
+            if kind not in {"none", "true_absentee"}
+        )
+        absent = counts["true_absentee"] + counts["marked_present_but_absent"]
+        sets = len(population.by_set())
+        return (
+            f"{len(population.candidates)} candidates across {sets} set(s) - "
+            f"{len(population.candidates) - absent} present, {absent} absent. "
+            f"{len(population.sheets_to_render())} image(s) and "
+            f"{sets} workbook(s). "
+            f"{conflicts} deliberate reconciliation conflict(s)."
+        )
+
     def _prompt_template(self) -> None:
         """Ask for the template file."""
         start = self.template_edit.text() or str(Path.home())
@@ -375,6 +594,19 @@ class GenerateDatasetDialog(QDialog):
         if profile is DatasetProfile.CUSTOM and not families:
             return None
 
+        with_attendance = self.attendance_checkbox.isChecked()
+        set_codes = self.selected_set_codes()
+        if with_attendance and not set_codes:
+            return None
+
+        conflict_profile = self.selected_conflict_profile()
+        # The absentee rate is always the operator's; the rest come from the
+        # profile. Exposing one rate directly is what the brief asks for, and
+        # it is the one an examination office actually knows.
+        rates = replace(
+            conflict_profile.rates(), true_absentee=self.absentee_spin.value() / 100.0
+        )
+
         return GenerationRequest(
             template_path=Path(template),
             output_dir=Path(output),
@@ -388,6 +620,11 @@ class GenerateDatasetDialog(QDialog):
             name=self.name_edit.text().strip() or "synthetic",
             write_metadata=self.metadata_checkbox.isChecked(),
             run_benchmark=self.benchmark_checkbox.isChecked(),
+            with_attendance=with_attendance,
+            set_codes=set_codes,
+            conflict_profile=ConflictProfile.CUSTOM,
+            conflict_rates=rates,
+            include_reconciliation_edge_cases=self.edge_case_checkbox.isChecked(),
         )
 
     def _on_accept(self) -> None:
@@ -404,6 +641,22 @@ class GenerateDatasetDialog(QDialog):
         if self.selected_profile() is DatasetProfile.CUSTOM and not self.selected_families():
             self._complain("A custom profile needs at least one case family ticked.")
             return
+        if self.attendance_checkbox.isChecked():
+            if not self.selected_set_codes():
+                self._complain(
+                    "Attendance workbooks need at least one question-paper set. "
+                    "Enter the set codes, separated by commas."
+                )
+                return
+            request = self.request()
+            try:
+                if request is not None:
+                    request.population()
+            except ValueError as exc:
+                # The rates cannot be satisfied at this roster size. Said here
+                # rather than thrown from the worker thread ten seconds later.
+                self._complain(str(exc))
+                return
         self.accept()
 
     def _complain(self, message: str) -> None:
@@ -422,3 +675,5 @@ def _with_button(widget: QWidget, button: QPushButton) -> QWidget:
 
 
 __all__ = ["PROFILE_DESCRIPTIONS", "GenerateDatasetDialog", "GenerationRequest"]
+
+

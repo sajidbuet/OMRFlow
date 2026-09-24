@@ -175,6 +175,132 @@ class TestTheGenerationDialog:
         qtbot.addWidget(dialog)
         assert dialog.request() is None
 
+    # ------------------------------------------------------------------
+    # Attendance and reconciliation
+    # ------------------------------------------------------------------
+    def test_attendance_generation_is_offered_and_on_by_default(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """A paired dataset is the useful default for qualification work."""
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        assert dialog.attendance_checkbox.isChecked() is True
+        assert dialog.request().with_attendance is True
+
+    def test_the_attendance_controls_follow_the_checkbox(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        controls = (
+            dialog.sets_edit,
+            dialog.conflict_combo,
+            dialog.absentee_spin,
+            dialog.edge_case_checkbox,
+        )
+        assert all(control.isEnabled() for control in controls)
+        dialog.attendance_checkbox.setChecked(False)
+        assert not any(control.isEnabled() for control in controls)
+
+    def test_the_sets_field_accepts_multi_character_codes(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """A set code is never assumed to be one digit."""
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.sets_edit.setText("10, 11, 12")
+        assert dialog.selected_set_codes() == ("10", "11", "12")
+        assert dialog.request().set_codes == ("10", "11", "12")
+
+    def test_a_set_listed_twice_is_only_counted_once(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """The roster is dealt round-robin, so a repeat would double that set."""
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.sets_edit.setText("10, 11, 10")
+        assert dialog.selected_set_codes() == ("10", "11")
+
+    def test_the_absentee_rate_reaches_the_request(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.absentee_spin.setValue(12.5)
+        request = dialog.request()
+        assert request.conflict_rates is not None
+        assert request.conflict_rates.true_absentee == pytest.approx(0.125)
+
+    def test_the_conflict_profile_can_be_changed(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        from omr_scanner.evaluation.attendance_dataset import ConflictProfile
+
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.conflict_combo.setCurrentIndex(
+            dialog.conflict_combo.findData(ConflictProfile.HIGH)
+        )
+        assert dialog.selected_conflict_profile() is ConflictProfile.HIGH
+
+    def test_attendance_without_a_set_produces_no_request(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """One workbook per set, so with no sets there is nothing to write."""
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.sets_edit.setText("   ")
+        assert dialog.request() is None
+
+    def test_the_summary_describes_what_will_actually_be_generated(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """Counts from the real plan, not from the requested rates.
+
+        A rate of a quarter of a per cent over 100 candidates is not a quarter
+        of a sheet, and a summary quoting the request would describe a dataset
+        nobody is about to produce.
+        """
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.count_spin.setValue(120)
+        dialog.attendance_checkbox.setChecked(True)
+
+        summary = dialog.attendance_summary.text()
+        assert "120 candidates" in summary
+        assert "3 set(s)" in summary
+        assert "workbook(s)" in summary
+        assert "conflict(s)" in summary
+
+    def test_the_summary_says_so_when_attendance_is_off(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.attendance_checkbox.setChecked(False)
+        assert "No attendance workbooks" in dialog.attendance_summary.text()
+
+    def test_the_request_can_plan_its_own_population(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        """The plan is available before anything is generated."""
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.count_spin.setValue(60)
+        population = dialog.request().population()
+        assert population is not None
+        assert len(population.candidates) == 60
+        # Fewer images than candidates: absentees and missing scans.
+        assert len(population.sheets_to_render()) < 60
+
+    def test_turning_attendance_off_plans_no_population(
+        self, qtbot, tmp_path: Path, template_path: Path
+    ):
+        dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
+        qtbot.addWidget(dialog)
+        dialog.attendance_checkbox.setChecked(False)
+        assert dialog.request().population() is None
+
     def test_a_custom_profile_needs_families(self, qtbot, tmp_path: Path, template_path: Path):
         dialog = GenerateDatasetDialog(template_path=template_path, output_dir=tmp_path)
         qtbot.addWidget(dialog)
