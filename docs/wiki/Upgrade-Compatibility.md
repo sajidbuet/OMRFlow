@@ -40,8 +40,9 @@ half-applying.
   schema. There is no supported path back.
 - **No guarantee that a project created by one Alpha will open in the next.**
   It is expected to, via migration, and it is tested at the schema level —
-  but an upgrade between two *released builds* has never been performed,
-  because `0.1.0-alpha.1` is the first release.
+  but an upgrade between two *released builds* has never been performed.
+  `0.1.0-alpha.2` is the first release with a predecessor, and the upgrade
+  from `0.1.0-alpha.1` has not been exercised.
 
 From `v1.0.0` onwards, opening a project created by any earlier 1.x release
 becomes a promise rather than an expectation.

@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: OMRFlow
+message: >-
+  If you use OMRFlow in academic work, please cite it using the metadata in
+  this file.
+type: software
+authors:
+  - given-names: Sajid Muhaimin
+    family-names: Choudhury
+    email: sajid@eee.buet.ac.bd
+    affiliation: >-
+      Department of Electrical and Electronic Engineering, Bangladesh
+      University of Engineering and Technology
+    website: 'https://www.sajid.bd'
+repository-code: 'https://github.com/sajidbuet/OMRFlow'
+url: 'https://github.com/sajidbuet/OMRFlow'
+abstract: >-
+  Template-driven optical mark recognition for examination processing.
+  OMRFlow designs answer-sheet templates, recognises scanned sheets,
+  reconciles them against attendance records, scores them against an answer
+  key and generates auditable result workbooks, entirely on a local machine.
+keywords:
+  - optical mark recognition
+  - OMR
+  - examination
+  - assessment
+  - education
+  - PySide6
+license: MIT
+version: 0.1.0-alpha.2
+date-released: '2026-09-24'

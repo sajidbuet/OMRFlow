@@ -1,6 +1,6 @@
 **[OMRFlow](Home)**
 
-`0.1.0-alpha.1` · Alpha
+`0.1.0-alpha.2` · Alpha
 
 **Getting Started**
 - [Installation](Installation)

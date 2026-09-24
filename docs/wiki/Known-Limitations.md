@@ -1,6 +1,6 @@
 # Known Limitations
 
-**For `0.1.0-alpha.1`.** This page is the honest account of what OMRFlow can
+**For `0.1.0-alpha.2`.** This page is the honest account of what OMRFlow can
 be trusted with. It distinguishes five things that are often run together:
 
 | Status | Meaning |
@@ -126,7 +126,7 @@ Closing this is the whole purpose of
 |---|---|
 | ✅ | Windows installer; install, launch and uninstall verified, with user data preserved |
 | ✅ | No Python needed on the target machine |
-| ✅ | **Clean-machine installation verified.** On a pristine Windows 11 image with no Python, Qt or build tools: checksum verified there, per-user install with no elevation, first launch with no missing DLL or Qt plugin, clean exit, uninstall with user data intact, and reinstall — 56 checks, none failed. [Full record](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/validation/0.1.0-alpha.1-clean-machine.md) |
+| 🟠 | **Clean-machine installation verified for `0.1.0-alpha.1`, not re-run for `0.1.0-alpha.2`.** On a pristine Windows 11 image with no Python, Qt or build tools: checksum verified there, per-user install with no elevation, first launch with no missing DLL or Qt plugin, clean exit, uninstall with user data intact, and reinstall — 56 checks, none failed. That record describes the previous build. [Full record](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/validation/0.1.0-alpha.1-clean-machine.md) |
 | 🟠 | **The installed build has never been driven through a recognition run.** Recognition, Excel reporting and the parallel worker path are covered by the automated suite, but from source — not from the installer. Nothing suggests they differ; nobody has checked. The remaining steps are in [the procedure](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/CLEAN_MACHINE_TEST.md) |
 | 🟠 | **Windows 10 has not been tested.** Built and tested on Windows 11; Windows 10 1809 is the floor the bundled runtime supports |
 | ⚪ | **The installer is unsigned**, so SmartScreen warns. Signing is a Phase 11C item |
@@ -138,7 +138,7 @@ Closing this is the whole purpose of
 | | Area |
 |---|---|
 | ✅ | Database migrations are append-only and refuse to open a newer schema |
-| 🟠 | **Upgrading between released versions is untested** — `0.1.0-alpha.1` is the first release, so there is nothing to upgrade from. **Back up projects before installing a later Alpha.** See [Upgrading OMRFlow](Upgrading-OMRFlow) |
+| 🟠 | **Upgrading between released versions is untested** — `0.1.0-alpha.2` is the first release with a predecessor, and the `0.1.0-alpha.1` → `0.1.0-alpha.2` upgrade has not been exercised. **Back up projects before installing a later Alpha.** See [Upgrading OMRFlow](Upgrading-OMRFlow) |
 
 ---
 

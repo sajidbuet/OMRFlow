@@ -13,7 +13,7 @@ older prereleases, and there is no long-term support commitment before
 
 | Version | Supported |
 |---|---|
-| `0.1.0-alpha.1` (latest Alpha) | Yes — fixes land in the next prerelease |
+| `0.1.0-alpha.2` (latest Alpha) | Yes — fixes land in the next prerelease |
 | Any earlier prerelease | No — upgrade to the latest release |
 | Unreleased `main` | Yes, on a best-effort basis |
 

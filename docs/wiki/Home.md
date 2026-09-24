@@ -20,7 +20,7 @@ application window* in the
 
 > ### ⚠️ This is an Alpha release
 >
-> **Version `0.1.0-alpha.1`.** Core workflows are implemented and covered by
+> **Version `0.1.0-alpha.2`.** Core workflows are implemented and covered by
 > an automated test suite, but **real examination-data qualification is
 > still in progress** — no real attendance workbook and no real scanned
 > cohort has been processed end to end.

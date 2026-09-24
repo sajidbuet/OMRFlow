@@ -27,11 +27,15 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
+from omr_scanner.domain.template import OmrTemplate
 from omr_scanner.evaluation.attendance_dataset import (
     ATTENDANCE_DIRNAME,
     CANDIDATES_FILENAME,
@@ -46,6 +50,7 @@ from omr_scanner.evaluation.synthetic_dataset import (
     ImageFormat,
     generate_dataset,
 )
+from omr_scanner.evaluation.test_cases import FieldLayout
 from omr_scanner.services import load_template
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -56,6 +61,83 @@ SEED = 20260923
 DPI = 100
 """Low on purpose: the binding does not depend on resolution, and a full-page
 render per sheet is the slow part of this module."""
+
+FILLED = 0.5
+"""``fill_ratio`` above which a bubble counts as shaded.
+
+Half the interior. Not a tuned number: the renderer draws a mark as a solid
+ellipse covering the whole sample, and the only other thing inside a bubble is
+the printed digit, which is drawn at grey 150 and falls under the ink
+threshold entirely. Anything strictly between "nothing" and "a solid disc"
+would do; a half is simply the least arbitrary point in that gap."""
+
+
+def _sorted_truths(output: Path) -> list[dict]:
+    """Every ground-truth record, in a stable order.
+
+    Sorted because several sheets share a conflict kind and the callers take
+    the first of them. ``glob`` yields directory order, so an unsorted listing
+    picked a different sheet on a different filesystem - and a different sheet
+    is a different candidate, with a different roll number and so a different
+    number of marked bubbles, which is the measurement itself.
+    """
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted((output / GROUND_TRUTH_DIRNAME).glob("*.json"))
+    ]
+
+
+def _scan_for(truths: list[dict], kind: ConflictKind) -> str:
+    """The first rendered scan staged with ``kind``."""
+    return next(
+        truth["scan"]
+        for truth in truths
+        if (truth.get("notes") or "").endswith(kind.value)
+    )
+
+
+def _identifier_fill(
+    output: Path, template: OmrTemplate
+) -> Callable[[str], tuple[float, ...]]:
+    """Build a function giving each identifier bubble's ``fill_ratio``.
+
+    Runs the production path and nothing else: rectify the scan onto canonical
+    coordinates with :func:`align_sheet`, place the bubbles with
+    :meth:`BubbleGrid.bubble_center`, and measure them with
+    :func:`measure_bubbles`. A test that re-derived any of those three would be
+    testing its own arithmetic rather than the renderer's output.
+    """
+    from omr_scanner.imaging.alignment import align_sheet
+    from omr_scanner.imaging.metrics import measure_bubbles
+    from omr_scanner.services.alignment_service import alignment_config_from_template
+
+    layout = FieldLayout.of(template)
+    zone = next(one for one in template.zones if one.id == layout.identifier_zone)
+    grid = zone.grid
+    assert grid is not None, "the identifier zone must have a bubble lattice"
+    config = alignment_config_from_template(template)
+
+    def fills(scan: str) -> tuple[float, ...]:
+        raw = np.array(Image.open(output / IMAGES_DIRNAME / scan).convert("L"))
+        page = align_sheet(raw, config=config).normalized_image
+        height, width = page.shape[:2]
+        centers = [
+            (
+                grid.bubble_center(row, column).x * width,
+                grid.bubble_center(row, column).y * height,
+            )
+            for row in range(zone.field.rows)
+            for column in range(zone.field.columns)
+        ]
+        measured = measure_bubbles(
+            page,
+            centers,
+            width_px=grid.bubble_size.width * width,
+            height_px=grid.bubble_size.height * height,
+        )
+        return tuple(one.fill_ratio for one in measured)
+
+    return fills
 
 
 @pytest.fixture(scope="module")
@@ -224,46 +306,70 @@ class TestBIdentityReachesTheSheets:
             (digit,) for digit in normal.roll
         ]
 
-    def test_an_unmarked_identifier_really_has_less_ink_on_the_page(self, paired):
+    def test_an_unmarked_identifier_really_has_less_ink_in_its_bubbles(
+        self, paired, template
+    ):
         """Measured on the pixels, because that is where the bug was.
 
-        A blank identifier must render fewer filled bubbles than a complete
-        one. Compared as an inequality over the same grid region rather than
-        against an absolute count, so the assertion survives a change of DPI,
+        A blank identifier must carry strictly less mark ink than a partial
+        one, and a partial less than a complete one. Asserted as an ordering
+        rather than against absolute counts, so it survives a change of DPI,
         template or mark style.
+
+        Measured the way recognition measures, which is the only reason this
+        is stable across machines:
+
+        * The scan is **rectified first**, with :func:`align_sheet`. A
+          rendered sheet is not in canonical coordinates - it carries a scan
+          margin, and the geometry cases rotate, translate and crop it - so
+          template coordinates mean nothing on the raw file. The first
+          version of this test skipped that step and read a fixed percentage
+          crop of the raw page, which is why it was measuring whatever
+          happened to fall in that rectangle.
+        * Bubbles are then located by :meth:`BubbleGrid.bubble_center` and
+          measured by :func:`measure_bubbles`, the same pair
+          ``recognition_service`` uses. No coordinates are written down here.
+        * ``fill_ratio`` is the quantity compared: the fraction of the
+          bubble's *interior* that is ink, sampled inside the printed ring at
+          ``sample_radius_ratio`` and thresholded halfway between the local
+          paper level and the page's own ink level. Being a ratio against
+          levels read from the same image, it does not move with DPI,
+          exposure, paper tint or JPEG quality, and the printed digit inside
+          an empty bubble sits well under the threshold by design.
         """
-        import numpy as np
-        from PIL import Image
-
         output, _, _ = paired
+        ink = _identifier_fill(output, template)
+        truths = _sorted_truths(output)
 
-        def roll_ink(scan: str) -> int:
-            page = np.array(Image.open(output / IMAGES_DIRNAME / scan).convert("L"))
-            height, width = page.shape
-            grid = page[
-                int(height * 0.26) : int(height * 0.44),
-                int(width * 0.09) : int(width * 0.30),
-            ]
-            return int((grid < 100).sum())
-
-        truths = {
-            json.loads(path.read_text(encoding="utf-8"))["scan"]: json.loads(
-                path.read_text(encoding="utf-8")
-            )
-            for path in (output / GROUND_TRUTH_DIRNAME).glob("*.json")
-        }
-
-        def scan_for(kind: ConflictKind) -> str:
-            return next(
-                scan
-                for scan, truth in truths.items()
-                if (truth.get("notes") or "").endswith(kind.value)
-            )
-
-        blank = roll_ink(scan_for(ConflictKind.BLANK_CANDIDATE_ID))
-        complete = roll_ink(scan_for(ConflictKind.NONE))
-        partial = roll_ink(scan_for(ConflictKind.PARTIAL_CANDIDATE_ID))
+        blank = sum(ink(_scan_for(truths, ConflictKind.BLANK_CANDIDATE_ID)))
+        complete = sum(ink(_scan_for(truths, ConflictKind.NONE)))
+        partial = sum(ink(_scan_for(truths, ConflictKind.PARTIAL_CANDIDATE_ID)))
         assert blank < partial < complete
+
+    def test_a_blank_identifier_renders_no_marked_bubble_at_all(
+        self, paired, template
+    ):
+        """The renderer's side of the same question, asserted absolutely.
+
+        The ordering above would still hold if a blank identifier drew a few
+        marked bubbles, as long as a partial one drew more. This pins what the
+        ground truth actually claims: ``BLANK_CANDIDATE_ID`` means *nothing*
+        was shaded, so no bubble may read as filled - while the complete sheet,
+        measured identically, must read exactly one per printed column. A
+        renderer that marked a blank sheet fails here even when the ordering
+        survives, which is what separates a renderer defect from a test one.
+        """
+        output, _, _ = paired
+        ink = _identifier_fill(output, template)
+        truths = _sorted_truths(output)
+
+        def filled(kind: ConflictKind) -> int:
+            return sum(1 for ratio in ink(_scan_for(truths, kind)) if ratio > FILLED)
+
+        columns = FieldLayout.of(template).identifier_columns
+        assert filled(ConflictKind.BLANK_CANDIDATE_ID) == 0
+        assert filled(ConflictKind.NONE) == columns
+        assert 0 < filled(ConflictKind.PARTIAL_CANDIDATE_ID) < columns
 
     def test_the_set_codes_rendered_are_the_ones_planned(self, paired):
         output, population, _ = paired

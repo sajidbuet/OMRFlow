@@ -73,10 +73,11 @@ and restore your pre-upgrade backup.
 
 ## Upgrading between Alpha releases specifically
 
-Because `0.1.0-alpha.1` is the **first** release, no upgrade path has been
-exercised yet — there is nothing to upgrade from. Migration code is covered
-by automated tests against databases created by previous *schema* versions,
-but an upgrade between two *released builds* has never been performed.
+`0.1.0-alpha.2` is the **first** release with a predecessor, and the
+`0.1.0-alpha.1` → `0.1.0-alpha.2` upgrade has **not** been exercised.
+Migration code is covered by automated tests against databases created by
+previous *schema* versions, but an upgrade between two *released builds* has
+never been performed.
 
 Treat the first Alpha-to-Alpha upgrade with corresponding caution: back up,
 and check a sample of results after opening a migrated project.

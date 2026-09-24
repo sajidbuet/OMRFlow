@@ -74,7 +74,7 @@ class TestAAccessible:
         assert __version__
 
     def test_the_current_version_is_the_alpha_release(self):
-        assert __version__ == "0.1.0-alpha.1"
+        assert __version__ == "0.1.0-alpha.2"
         assert RELEASE_VERSION == "0.1.0"
 
 
@@ -98,7 +98,7 @@ class TestBValidUnderBothSchemes:
         assert parsed.is_prerelease
 
     def test_pep_440_normalisation_is_what_packaging_will_use(self):
-        assert str(Version(__version__)) == "0.1.0a1"
+        assert str(Version(__version__)) == "0.1.0a2"
 
     def test_the_semver_and_pep_440_readings_agree_on_the_release(self):
         parsed = Version(__version__)
@@ -217,12 +217,12 @@ class TestDSingleSourceOfTruth:
 
 class TestETagAndArtifactNames:
     def test_the_release_tag_is_the_version_prefixed_with_v(self):
-        assert release_tag() == "v0.1.0-alpha.1"
+        assert release_tag() == "v0.1.0-alpha.2"
         assert release_tag("1.2.3") == "v1.2.3"
 
     def test_the_artifact_version_is_the_semver_spelling(self):
         """The installer filename must be readable, not normalised."""
-        assert artifact_version() == "0.1.0-alpha.1"
+        assert artifact_version() == "0.1.0-alpha.2"
 
     def test_the_build_identifier_starts_with_the_version(self):
         assert build_identifier().startswith(__version__)

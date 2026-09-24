@@ -24,7 +24,7 @@ Get the installer from the
 [Releases page](https://github.com/sajidbuet/OMRflow/releases):
 
 ```text
-OMRFlow-0.1.0-alpha.1-Setup-x64.exe
+OMRFlow-0.1.0-alpha.2-Setup-x64.exe
 ```
 
 ### Verify what you downloaded
@@ -34,7 +34,7 @@ unsigned, this checksum is the only way to confirm you have the file the
 maintainer built. In PowerShell, from your Downloads folder:
 
 ```powershell
-certutil -hashfile OMRFlow-0.1.0-alpha.1-Setup-x64.exe SHA256
+certutil -hashfile OMRFlow-0.1.0-alpha.2-Setup-x64.exe SHA256
 ```
 
 Compare the result with the line for that filename in `SHA256SUMS.txt`. If
@@ -76,7 +76,7 @@ that is the moment you are deciding whether to trust the build.
 For a managed rollout:
 
 ```powershell
-OMRFlow-0.1.0-alpha.1-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
+OMRFlow-0.1.0-alpha.2-Setup-x64.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER
 ```
 
 Add `/DIR="C:\Path\To\Install"` to choose the location, and `/LOG=install.log`
@@ -85,7 +85,7 @@ to record what happened.
 ## First launch
 
 OMRFlow opens on the **Project** stage with no project open. The window title
-reads `OMRFlow 0.1.0-alpha.1`, and *Getting Started* offers **Create a new
+reads `OMRFlow 0.1.0-alpha.2`, and *Getting Started* offers **Create a new
 project** and **Open an existing project**.
 
 Go to [Quick Start](Quick-Start) next.
@@ -94,11 +94,11 @@ Go to [Quick Start](Quick-Start) next.
 
 Three ways, in increasing precision:
 
-- The **title bar**: `OMRFlow 0.1.0-alpha.1`.
+- The **title bar**: `OMRFlow 0.1.0-alpha.2`.
 - **Application menu → Help → About OMRFlow**: the version, the release
   channel (*Alpha*), the licence, and a link to the repository. **Hover the
   version line** to see the full build identifier including the source
-  commit, for example `0.1.0-alpha.1+a1b2c3d`.
+  commit, for example `0.1.0-alpha.2+a1b2c3d`.
 - The **log file** records the version on its first line — see
   [Troubleshooting](Troubleshooting#finding-the-logs).
 

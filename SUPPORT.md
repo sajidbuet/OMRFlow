@@ -26,7 +26,7 @@ stage, so a well-formed one is genuinely useful.
 
 Three ways, in order of convenience:
 
-- **The title bar** reads `OMRFlow 0.1.0-alpha.1`.
+- **The title bar** reads `OMRFlow 0.1.0-alpha.2`.
 - **Application menu → Help → About OMRFlow** shows the version, the release
   channel, and — hover the version line — the exact build identifier
   including the source commit. Quote the build identifier if you have it; it

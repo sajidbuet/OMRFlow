@@ -21,6 +21,66 @@ Nothing yet.
 
 ---
 
+## [0.1.0-alpha.2] - 2026-09-24
+
+**Alpha: for evaluation and testing.** No change to the maturity claim of
+`0.1.0-alpha.1` — real examination-data qualification is still incomplete,
+and the 100,000-sheet acceptance run has still not been executed. See
+[Known Limitations](docs/wiki/Known-Limitations.md).
+
+This release redesigns the application shell, adds a template-driven
+synthetic dataset generator with paired attendance workbooks, and fixes the
+cross-platform CI failures that affected the Ubuntu job.
+
+### Added
+
+- **Synthetic test-dataset generator** driven by a real `.omrt` template
+  (`omr_scanner.evaluation.synthetic_dataset`). Renders labelled sheets
+  across nine case families — baseline, set code, mark styles, geometry,
+  markers, paper, student ID, answers, intensity, cropping, image quality
+  and duplicates — with the profile's edge cases generated first, so a small
+  dataset is a spread of the interesting ones rather than a random sample.
+- **Synthetic attendance population and reconciliation ground truth**
+  (`omr_scanner.evaluation.attendance_dataset`). Writes one `.xlsx` per
+  question-paper set in the layout the Attendance stage imports, plus
+  `candidates.csv` and `reconciliation.csv`. Thirteen conflict kinds are
+  assigned by quota rather than probability, so a given seed and roster size
+  produce a deterministic composition, and every conflict can be guaranteed
+  to appear at least once.
+- **Collapsible form sections** (`omr_scanner.gui.widgets.collapsible`), used
+  by the generator dialog.
+
+### Changed
+
+- **The application shell is one compact row.** The menu, wordmark, workflow
+  ribbon, density controls and window buttons now share a single row that is
+  also the title bar, replacing the separate header band, the tagline and the
+  per-page name banners. The nine-stage ribbon never wraps: it scrolls, and
+  then collapses to the current step with a flyout, as the window narrows.
+- **The Generate Synthetic Test Dataset dialog fits a laptop screen.** Its
+  minimum height was previously taller than the usable height of a 1366×768
+  display, so the window could not be resized small enough to reach the
+  bottom controls. The form now scrolls inside a fixed footer, sizes itself
+  from the available screen geometry, and folds the settings that are changed
+  least often.
+- README's demo animation regenerated from the redesigned GUI.
+
+### Fixed
+
+- Three defects that failed CI on Ubuntu but not on Windows: an unreachable
+  statement flagged by mypy in `process_containment`, workflow-navigator
+  label elision, and a forced-kill test that left orphan workers behind.
+- The synthetic renderer drew from the case plan rather than the bound
+  candidate, so attendance-driven mark changes were recorded in the ground
+  truth but never rendered into the image. Metadata-only tests could not see
+  this; the regression guards now measure ink.
+
+### Removed
+
+- Two example scans (~12 MB) committed by accident in `2503a27`.
+
+---
+
 ## [0.1.0-alpha.1] - 2026-09-22
 
 **The first installable release. Alpha: for evaluation and testing.**
@@ -1552,5 +1612,7 @@ manages projects; no OMR processing exists yet.
 - Documentation set: architecture, development guide, data model, template
   format, image-processing plan, testing strategy, user guide and four ADRs.
 
-[Unreleased]: https://github.com/sajidbuet/OMRflow/compare/v0.1.0.dev0...HEAD
+[Unreleased]: https://github.com/sajidbuet/OMRflow/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/sajidbuet/OMRflow/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
+[0.1.0-alpha.1]: https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.1
 [0.1.0.dev0]: https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0.dev0
