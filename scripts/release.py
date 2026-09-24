@@ -553,6 +553,16 @@ def plan_metadata_updates(
                     f"**Current release: `{target}`**",
                     expected=None,
                 ),
+                # The heading of "Current release status". Matched without the
+                # trailing prose so the sentence after it can be reworded
+                # freely, and distinct from the line above because that one
+                # has "Current release: " between the ** and the backtick.
+                Replacement(
+                    README_FILE,
+                    f"**`{current}`**",
+                    f"**`{target}`**",
+                    expected=None,
+                ),
             ]
         )
     # A replacement whose text is unchanged is not an edit. The date is the

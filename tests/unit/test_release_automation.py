@@ -85,6 +85,8 @@ def make_repository(tmp_path: Path, version: str = "0.1.0-alpha.2") -> Path:
     badge = version.replace("-", "--")
     (work / "README.md").write_text(
         f"[![Release](https://img.shields.io/badge/release-{badge}-AC1F24)](x)\n"
+        f"## Current release status\n\n"
+        f"**`{version}`** - the current Alpha build.\n\n"
         f"Get `OMRFlow-{version}-Setup-x64.exe` from the releases page.\n"
         f"**Current release: `{version}`**\n",
         encoding="utf-8",
@@ -300,6 +302,9 @@ class TestDMetadataUpdates:
         assert "badge/release-0.1.0--alpha.3-AC1F24" in readme
         assert "OMRFlow-0.1.0-alpha.3-Setup-x64.exe" in readme
         assert "**Current release: `0.1.0-alpha.3`**" in readme
+        assert "**`0.1.0-alpha.3`**" in readme
+        # The strongest form of "every duplicate was updated": the old version
+        # survives nowhere in the file.
         assert "0.1.0-alpha.2" not in readme
 
     def test_it_leaves_everything_else_alone(self, tmp_path: Path):
