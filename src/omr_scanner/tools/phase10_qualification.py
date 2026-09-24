@@ -50,14 +50,14 @@ Examples:
 Validate the harness itself, in a few minutes::
 
     .\.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
-        --output-dir C:\OMRflow-qualification\smoke `
+        --output-dir C:\OMRFlow-qualification\smoke `
         --template examples\templates\100_question_4_choice_example.omrt `
         --sheets 1000 --checkpoints 25,75 --warmup-sheets 50
 
 The real thing - expect many hours, and leave it alone::
 
     .\.venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
-        --output-dir D:\OMRflow-qualification `
+        --output-dir D:\OMRFlow-qualification `
         --template examples\templates\100_question_4_choice_example.omrt
 """
 

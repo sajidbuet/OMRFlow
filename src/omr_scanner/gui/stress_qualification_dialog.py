@@ -97,7 +97,7 @@ DEFAULT_SHEETS = 100_000
 DEFAULT_CHECKPOINT_COUNT = 5
 DEFAULT_TEMPLATE_RELATIVE = Path("examples/templates/100_question_4_choice_example.omrt")
 
-DEFAULT_OUTPUT_DIR_NAME = "OMRflow-qualification"
+DEFAULT_OUTPUT_DIR_NAME = "OMRFlow-qualification"
 
 PREFLIGHT_TIMEOUT_SECONDS = 600.0
 """Ceiling for one preflight, not a delay.

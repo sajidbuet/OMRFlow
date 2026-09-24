@@ -1626,25 +1626,25 @@ establish — is in
 # Check whether it can finish. Changes nothing, takes seconds, and prints
 # the estimated runtime and peak disk for your machine.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification preflight `
-    --output-dir D:\OMRflow-qualification `
+    --output-dir D:\OMRFlow-qualification `
     --template examples\templates\100_question_4_choice_example.omrt
 
 # Start it, then leave the machine alone.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
-    --output-dir D:\OMRflow-qualification `
+    --output-dir D:\OMRFlow-qualification `
     --template examples\templates\100_question_4_choice_example.omrt
 
 # Watch it from any other window, as often or as rarely as you like.
 # Read-only; it cannot disturb the campaign.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification status `
-    --output-dir D:\OMRflow-qualification
+    --output-dir D:\OMRFlow-qualification
 
 # Continue an interrupted campaign. Verified runs are skipped.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification resume `
-    --output-dir D:\OMRflow-qualification
+    --output-dir D:\OMRFlow-qualification
 ```
 
-`.\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRflow-qualification`
+`.\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRFlow-qualification`
 is a thin wrapper over the same command, and **Tools → Developer / Testing
 → Run 100,000-Sheet Stress Test...** is a launcher and monitor for it —
 neither adds behaviour, and closing the GUI does not stop a running

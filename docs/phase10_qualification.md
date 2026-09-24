@@ -61,7 +61,7 @@ Check first. This changes nothing and takes a couple of seconds:
 
 ```powershell
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification preflight `
-    --output-dir D:\OMRflow-qualification `
+    --output-dir D:\OMRFlow-qualification `
     --template examples\templates\100_question_4_choice_example.omrt
 ```
 
@@ -75,7 +75,7 @@ Then start it and walk away:
 
 ```powershell
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
-    --output-dir D:\OMRflow-qualification `
+    --output-dir D:\OMRFlow-qualification `
     --template examples\templates\100_question_4_choice_example.omrt
 ```
 
@@ -83,7 +83,7 @@ Watch it from any other window, as often or as rarely as you like:
 
 ```powershell
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification status `
-    --output-dir D:\OMRflow-qualification
+    --output-dir D:\OMRFlow-qualification
 ```
 
 `status` is read-only and cannot disturb the campaign.
@@ -93,7 +93,7 @@ the orchestrator itself killed — continue it:
 
 ```powershell
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification resume `
-    --output-dir D:\OMRflow-qualification
+    --output-dir D:\OMRFlow-qualification
 ```
 
 Runs already verified are skipped. A run that was *in flight* is discarded
@@ -227,7 +227,7 @@ Everything lives under one directory, and nothing outside it is ever
 created or removed:
 
 ```text
-D:\OMRflow-qualification\
+D:\OMRFlow-qualification\
     qualification_config.json     what was asked for
     qualification_state.json      progress, rewritten atomically per stage
     environment.json              machine, versions, CPU, memory

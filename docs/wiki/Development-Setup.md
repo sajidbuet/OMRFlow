@@ -5,7 +5,7 @@ the engine and its tests are platform-neutral.
 
 ```powershell
 git clone https://github.com/sajidbuet/OMRFlow.git
-cd OMRflow
+cd OMRFlow
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"

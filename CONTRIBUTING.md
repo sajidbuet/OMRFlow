@@ -27,7 +27,7 @@ Requires **Python 3.12 or newer** and Windows for the GUI and packaging work
 
 ```powershell
 git clone https://github.com/sajidbuet/OMRFlow.git
-cd OMRflow
+cd OMRFlow
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"

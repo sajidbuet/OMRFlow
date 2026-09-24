@@ -1066,21 +1066,21 @@ To run it:
 ```powershell
 # Check first - changes nothing, takes seconds.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification preflight `
-    --output-dir D:\OMRflow-qualification `
+    --output-dir D:\OMRFlow-qualification `
     --template examples\templates\100_question_4_choice_example.omrt
 
 # Start it and leave the machine alone.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification run `
-    --output-dir D:\OMRflow-qualification `
+    --output-dir D:\OMRFlow-qualification `
     --template examples\templates\100_question_4_choice_example.omrt
 
 # From any other window, as often or as rarely as you like (read-only).
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification status `
-    --output-dir D:\OMRflow-qualification
+    --output-dir D:\OMRFlow-qualification
 
 # If it was interrupted.
 .venv\Scripts\python.exe -m omr_scanner.tools.phase10_qualification resume `
-    --output-dir D:\OMRflow-qualification
+    --output-dir D:\OMRFlow-qualification
 ```
 
 Also still outstanding from §13, unchanged by this section: lazy Qt models

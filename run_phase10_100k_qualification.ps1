@@ -48,16 +48,16 @@
     run against a campaign that is in progress.
 
 .EXAMPLE
-    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRflow-qualification -Preflight
+    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRFlow-qualification -Preflight
 
 .EXAMPLE
-    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRflow-qualification
+    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRFlow-qualification
 
 .EXAMPLE
-    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRflow-qualification -Status
+    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRFlow-qualification -Status
 
 .EXAMPLE
-    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRflow-qualification -Resume
+    .\run_phase10_100k_qualification.ps1 -OutputDir D:\OMRFlow-qualification -Resume
 #>
 [CmdletBinding()]
 param(
