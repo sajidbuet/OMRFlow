@@ -29,7 +29,7 @@ exists.
 
 Use GitHub's private vulnerability reporting:
 
-1. Go to <https://github.com/sajidbuet/OMRflow/security/advisories/new>
+1. Go to <https://github.com/sajidbuet/OMRFlow/security/advisories/new>
 2. Describe the problem, the version, and how to reproduce it.
 3. Submit. Only the repository maintainers can see the report.
 

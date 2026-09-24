@@ -1,7 +1,7 @@
 # Answer Keys and Scoring
 
 > The detailed reference is
-> **[`docs/scoring.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/scoring.md)**.
+> **[`docs/scoring.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/scoring.md)**.
 
 ## Answer keys
 

@@ -19,7 +19,7 @@ Demo Exam\
 identifiers, recognised answers, attendance states and marks; the imported
 workbooks hold names and roll numbers. This is why nothing from a project
 belongs in a public issue — see
-[SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md).
+[SUPPORT.md](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md).
 
 Imported scans are referenced by content hash and provenance rather than
 copied wholesale, so **the folder your scans live in matters too**. If you

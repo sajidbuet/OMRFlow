@@ -3,9 +3,9 @@
 Reading imported sheets, and what to do before you trust the results.
 
 > The detailed references are
-> **[`docs/scan_workflow.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/scan_workflow.md)**
+> **[`docs/scan_workflow.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/scan_workflow.md)**
 > and
-> **[`docs/calibration_workflow.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/calibration_workflow.md)**.
+> **[`docs/calibration_workflow.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/calibration_workflow.md)**.
 
 ## Calibrate before a real batch
 

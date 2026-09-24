@@ -92,7 +92,7 @@ describes the whole release, not so they are done by hand.
 - [ ] `src/omr_scanner/_version.py` updated to the release version — **the
       only place the version is edited** *(script)*
 - [ ] `pip install -e .` re-run, so the installed metadata matches (an
-      editable install caches its metadata at install time)
+      editable install caches its metadata at install time) *(script)*
 - [ ] `CHANGELOG.md` has a section for this version, dated, with Known
       Limitations
 - [ ] Documentation updated: README status, `docs/wiki/`, roadmap statuses
@@ -205,7 +205,7 @@ never reach it.
 - [ ] Tag created on the release commit, annotated *(script)*
 - [ ] Tag pushed atomically with the commit *(script)*
 - [ ] The `Release` workflow completed — watch it at
-      [Actions](https://github.com/sajidbuet/OMRflow/actions)
+      [Actions](https://github.com/sajidbuet/OMRFlow/actions)
 - [ ] **Pre-release flag correct** — ticked for Alpha, Beta and RC; clear
       only for a stable release *(workflow, derived from the version)*
 - [ ] *Set as the latest release* is **not** ticked for a prerelease

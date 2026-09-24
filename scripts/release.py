@@ -661,6 +661,39 @@ whole suite: a release is the one moment a shorter one is not good enough.
 """
 
 
+def refresh_installed_metadata(repo_root: Path) -> None:
+    """Re-install the package so its recorded metadata matches the new version.
+
+    An editable install writes the version into its metadata *at install
+    time* and never looks again, so after the version file is edited the
+    installed distribution still reports the old one. ``test_version.py``
+    compares the two deliberately - a wheel and an About dialog that disagree
+    is a real defect - so without this the release's own gates fail on the
+    bump the release just made.
+
+    The checklist carried this as a manual step ("pip install -e . re-run");
+    it belongs here, where it cannot be forgotten.
+
+    Raises:
+        ReleaseError: The re-install failed.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-e", ".", "--quiet", "--no-deps"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise ReleaseError(
+            "Could not refresh the installed package metadata:\n"
+            f"{detail}\n"
+            "\n"
+            "The version files have been restored."
+        )
+
+
 def run_release_gates(repo_root: Path) -> None:
     """Run the release gates, stopping at the first failure.
 
@@ -791,14 +824,29 @@ def prepare_release(repo_root: Path, target: Version, *, dry_run: bool) -> int:
     for path in changed:
         print(f"  updated  {path.as_posix()}")
 
+    def restore() -> None:
+        """Put the tree back exactly as it was.
+
+        A failed release must not leave a half-bumped checkout behind for the
+        next person to discover, and the installed metadata has to follow the
+        files back or the next run starts out of step.
+        """
+        for path, text in originals.items():
+            (repo_root / path).write_text(text, encoding="utf-8")
+        refresh_installed_metadata(repo_root)
+
+    try:
+        refresh_installed_metadata(repo_root)
+    except ReleaseError:
+        restore()
+        raise
+    print("  updated  installed package metadata")
+
     print(f"[4/{total}] Running release checks")
     try:
         run_release_gates(repo_root)
     except ReleaseError:
-        # Put the tree back exactly as it was. A failed release must not leave
-        # a half-bumped checkout behind for the next person to discover.
-        for path, text in originals.items():
-            (repo_root / path).write_text(text, encoding="utf-8")
+        restore()
         raise
     print("  OK       lint, types and the full suite passed")
 
@@ -862,7 +910,7 @@ def prepare_release(repo_root: Path, target: Version, *, dry_run: bool) -> int:
     print("  5. publish the GitHub release")
     print()
     print("No GitHub release exists yet. Watch it at:")
-    print("  https://github.com/sajidbuet/OMRflow/actions")
+    print("  https://github.com/sajidbuet/OMRFlow/actions")
     print()
     print("Zenodo archives the release once GitHub publishes it.")
     return 0

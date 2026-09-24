@@ -103,8 +103,8 @@ omrflow = "omr_scanner.main:main"
 omrflow-gui = "omr_scanner.main:main"
 
 [project.urls]
-Homepage = "https://github.com/sajidbuet/OMRflow"
-Documentation = "https://github.com/sajidbuet/OMRflow/tree/main/docs"
+Homepage = "https://github.com/sajidbuet/OMRFlow"
+Documentation = "https://github.com/sajidbuet/OMRFlow/tree/main/docs"
 
 [tool.setuptools.dynamic]
 # The single source of truth for the application version. `0.1.0-alpha.1` is

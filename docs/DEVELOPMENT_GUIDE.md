@@ -10,7 +10,7 @@
 ## Environment setup
 
 ```powershell
-git clone https://github.com/sajidbuet/OMRflow.git
+git clone https://github.com/sajidbuet/OMRFlow.git
 cd OMRflow
 python -m venv .venv
 .venv\Scripts\Activate.ps1          # Windows PowerShell

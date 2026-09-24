@@ -5,19 +5,19 @@ stage, so a well-formed one is genuinely useful.
 
 | I want to… | Go here |
 |---|---|
-| Report something broken | [Open a bug report](https://github.com/sajidbuet/OMRflow/issues/new/choose) |
-| Report a recognition mistake | [Recognition problem](https://github.com/sajidbuet/OMRflow/issues/new/choose) — a separate template, because these need different information |
-| Report an installer problem | [Installation problem](https://github.com/sajidbuet/OMRflow/issues/new/choose) |
-| Report a wrong result or workbook | [Result / Excel problem](https://github.com/sajidbuet/OMRflow/issues/new/choose) |
-| Suggest something | [Feature request](https://github.com/sajidbuet/OMRflow/issues/new/choose) |
-| Fix or improve the docs | [Documentation issue](https://github.com/sajidbuet/OMRflow/issues/new/choose) |
+| Report something broken | [Open a bug report](https://github.com/sajidbuet/OMRFlow/issues/new/choose) |
+| Report a recognition mistake | [Recognition problem](https://github.com/sajidbuet/OMRFlow/issues/new/choose) — a separate template, because these need different information |
+| Report an installer problem | [Installation problem](https://github.com/sajidbuet/OMRFlow/issues/new/choose) |
+| Report a wrong result or workbook | [Result / Excel problem](https://github.com/sajidbuet/OMRFlow/issues/new/choose) |
+| Suggest something | [Feature request](https://github.com/sajidbuet/OMRFlow/issues/new/choose) |
+| Fix or improve the docs | [Documentation issue](https://github.com/sajidbuet/OMRFlow/issues/new/choose) |
 | Report a security or privacy problem | **Not an issue** — see [SECURITY.md](SECURITY.md) |
 | Ask how something works | [Documentation](docs/wiki/Home.md) first, then open a question issue |
 
 ## Before reporting
 
-1. Check you are on the latest release — [Releases](https://github.com/sajidbuet/OMRflow/releases).
-2. Search [existing issues](https://github.com/sajidbuet/OMRflow/issues).
+1. Check you are on the latest release — [Releases](https://github.com/sajidbuet/OMRFlow/releases).
+2. Search [existing issues](https://github.com/sajidbuet/OMRFlow/issues).
 3. Check [Known Limitations](docs/wiki/Known-Limitations.md). Some behaviour
    is a documented gap in this Alpha rather than a defect, and it saves
    everyone time to know which.

@@ -38,7 +38,7 @@
 
 #define AppName        "OMRFlow"
 #define AppPublisher   "Dr. Sajid Muhaimin Choudhury"
-#define AppURL         "https://github.com/sajidbuet/OMRflow"
+#define AppURL         "https://github.com/sajidbuet/OMRFlow"
 #define AppExeName     "OMRFlow.exe"
 
 [Setup]

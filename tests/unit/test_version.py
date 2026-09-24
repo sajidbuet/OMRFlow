@@ -73,9 +73,17 @@ class TestAAccessible:
         assert __version__.strip() == __version__
         assert __version__
 
-    def test_the_current_version_is_the_alpha_release(self):
-        assert __version__ == "0.1.0-alpha.2"
-        assert RELEASE_VERSION == "0.1.0"
+    def test_the_release_version_is_the_version_without_its_prerelease(self):
+        """Asserted as a property, never as a literal.
+
+        This test used to pin the exact version string. That made every
+        release edit a test in order to pass its own gates - and since
+        `scripts/release.ps1` runs those gates *after* bumping the version,
+        the bump aborted itself. A version-independent assertion checks the
+        same relationship without being a release blocker.
+        """
+        assert __version__.startswith(RELEASE_VERSION)
+        assert re.fullmatch(r"\d+\.\d+\.\d+", RELEASE_VERSION), RELEASE_VERSION
 
 
 class TestBValidUnderBothSchemes:
@@ -98,7 +106,18 @@ class TestBValidUnderBothSchemes:
         assert parsed.is_prerelease
 
     def test_pep_440_normalisation_is_what_packaging_will_use(self):
-        assert str(Version(__version__)) == "0.1.0a2"
+        """Derived from the current version rather than pinned to one.
+
+        `-alpha.N` normalises to `aN`, `-beta.N` to `bN`, `-rc.N` to `rcN`.
+        Computing the expectation keeps this a real check of what packaging
+        does, without making it something a release has to edit.
+        """
+        suffixes = {"alpha": "a", "beta": "b", "rc": "rc"}
+        expected = RELEASE_VERSION
+        match = re.search(r"-(alpha|beta|rc)\.(\d+)$", __version__)
+        if match:
+            expected += suffixes[match.group(1)] + match.group(2)
+        assert str(Version(__version__)) == expected
 
     def test_the_semver_and_pep_440_readings_agree_on_the_release(self):
         parsed = Version(__version__)
@@ -217,12 +236,12 @@ class TestDSingleSourceOfTruth:
 
 class TestETagAndArtifactNames:
     def test_the_release_tag_is_the_version_prefixed_with_v(self):
-        assert release_tag() == "v0.1.0-alpha.2"
+        assert release_tag() == f"v{__version__}"
         assert release_tag("1.2.3") == "v1.2.3"
 
     def test_the_artifact_version_is_the_semver_spelling(self):
         """The installer filename must be readable, not normalised."""
-        assert artifact_version() == "0.1.0-alpha.2"
+        assert artifact_version() == __version__
 
     def test_the_build_identifier_starts_with_the_version(self):
         assert build_identifier().startswith(__version__)

@@ -14,14 +14,14 @@
 runtime supports, and the installer refuses to run below it. OMRFlow has been
 built and tested on **Windows 11**. Windows 10 is expected to work but has not
 been tested — if you use it, please
-[say whether it worked](https://github.com/sajidbuet/OMRflow/issues/new/choose).
+[say whether it worked](https://github.com/sajidbuet/OMRFlow/issues/new/choose).
 
 32-bit Windows and Windows on ARM are not supported.
 
 ## Download
 
 Get the installer from the
-[Releases page](https://github.com/sajidbuet/OMRflow/releases):
+[Releases page](https://github.com/sajidbuet/OMRFlow/releases):
 
 ```text
 OMRFlow-0.1.0-alpha.2-Setup-x64.exe

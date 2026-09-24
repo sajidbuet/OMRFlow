@@ -42,7 +42,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $source = Join-Path $repositoryRoot 'docs\wiki'
-$wikiRemote = 'https://github.com/sajidbuet/OMRflow.wiki.git'
+$wikiRemote = 'https://github.com/sajidbuet/OMRFlow.wiki.git'
 
 $temporary = $null
 try {

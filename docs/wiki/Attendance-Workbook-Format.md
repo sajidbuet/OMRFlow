@@ -38,7 +38,7 @@ delete your institution's logo from its own official report.
 🟡 **Synthetic testing only.** Real institutional workbooks vary in ways
 synthetic ones do not: several header rows, trailing totals, unexpected
 columns, merged blocks. If yours does not import, please
-[report it](https://github.com/sajidbuet/OMRflow/issues/new/choose) — with
+[report it](https://github.com/sajidbuet/OMRFlow/issues/new/choose) — with
 every name and roll number replaced by fabricated ones, keeping the
 structure, which is the part that matters.
 

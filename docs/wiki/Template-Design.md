@@ -9,9 +9,9 @@ stage exists.
 
 > This page orients you. The detailed, verified walkthrough — every toolbar
 > action, the region types, the bubble-grid generation and the validation
-> rules — is **[`docs/template_designer.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/template_designer.md)**.
+> rules — is **[`docs/template_designer.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/template_designer.md)**.
 > The `.omrt` format itself is
-> **[`docs/TEMPLATE_FORMAT.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/TEMPLATE_FORMAT.md)**.
+> **[`docs/TEMPLATE_FORMAT.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/TEMPLATE_FORMAT.md)**.
 
 ## The order of work
 

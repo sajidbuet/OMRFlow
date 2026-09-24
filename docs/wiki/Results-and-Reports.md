@@ -3,7 +3,7 @@
 Turning calculated marks into the workbooks an examination office files.
 
 > The detailed reference is
-> **[`docs/reporting.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/reporting.md)**.
+> **[`docs/reporting.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/reporting.md)**.
 
 ## The idea
 

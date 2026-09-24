@@ -7,7 +7,7 @@ body:
       value: |
         If Windows SmartScreen warned you that the publisher is unknown, that
         is expected: Alpha installers are **unsigned**. See
-        [Installation](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Installation.md#windows-smartscreen)
+        [Installation](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Installation.md#windows-smartscreen)
         for what to do — it is not a defect and does not need an issue.
 
   - type: input

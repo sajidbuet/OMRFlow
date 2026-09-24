@@ -9,7 +9,7 @@ release, and only once the stable exit criterion has actually been met.
 
 > ⚠️ OMRFlow is currently undergoing real examination-data qualification.
 > **Generated results should be independently verified before operational
-> use.** See [Known Limitations](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Known-Limitations.md).
+> use.** See [Known Limitations](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Known-Limitations.md).
 
 ## Highlights
 
@@ -27,10 +27,10 @@ Windows 10 1809 (build 17763) or newer, 64-bit. No Python required.
 > The installer is **unsigned**, so Windows SmartScreen will warn that the
 > publisher is unknown. Click *More info* → *Run anyway*, after verifying the
 > checksum below. See
-> [Installation](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Installation.md).
+> [Installation](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Installation.md).
 
 New to OMRFlow? Start with the
-[Quick Start](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Quick-Start.md).
+[Quick Start](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Quick-Start.md).
 
 ## Added
 
@@ -74,7 +74,7 @@ prerelease - a migration is applied in place and cannot be reversed.
 > **Back up your projects before upgrading.** Prerelease versions make no
 > compatibility promises to each other, and a database migration is applied
 > in place and cannot be undone. See
-> [Upgrading OMRFlow](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Upgrading-OMRFlow.md).
+> [Upgrading OMRFlow](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Upgrading-OMRFlow.md).
 
 ## Validation Status
 
@@ -132,17 +132,17 @@ sha256sum --check SHA256SUMS.txt
 
 ## Reporting problems
 
-[Open an issue](https://github.com/sajidbuet/OMRflow/issues/new/choose).
+[Open an issue](https://github.com/sajidbuet/OMRFlow/issues/new/choose).
 Please read
-[SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md)
+[SUPPORT.md](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md)
 first — in particular, **do not attach real candidate data, rosters, answer
 keys or scans** to a public issue.
 
 Security or privacy problems go through
-[SECURITY.md](https://github.com/sajidbuet/OMRflow/blob/main/SECURITY.md),
+[SECURITY.md](https://github.com/sajidbuet/OMRFlow/blob/main/SECURITY.md),
 not the issue tracker.
 
 ---
 
 **Full changelog:**
-[CHANGELOG.md](https://github.com/sajidbuet/OMRflow/blob/main/CHANGELOG.md)
+[CHANGELOG.md](https://github.com/sajidbuet/OMRFlow/blob/main/CHANGELOG.md)

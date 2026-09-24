@@ -11,7 +11,7 @@ body:
         *Application menu → Tools → Developer / Testing → Generate Synthetic
         Test Dataset…* makes a labelled dataset from any template.
 
-        See [SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md)
+        See [SUPPORT.md](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md)
         for how to sanitise a reproduction.
 
   - type: checkboxes

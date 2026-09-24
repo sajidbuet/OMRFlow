@@ -1,14 +1,14 @@
 # Release History
 
 The user-facing changelog is
-**[CHANGELOG.md](https://github.com/sajidbuet/OMRflow/blob/main/CHANGELOG.md)**.
+**[CHANGELOG.md](https://github.com/sajidbuet/OMRFlow/blob/main/CHANGELOG.md)**.
 Downloads are on the
-[Releases page](https://github.com/sajidbuet/OMRflow/releases).
+[Releases page](https://github.com/sajidbuet/OMRFlow/releases).
 
 | Version | Date | Channel | Notes |
 |---|---|---|---|
-| [`0.1.0-alpha.2`](https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.2) | 2026-09-24 | **Alpha** | Redesigned application shell; template-driven synthetic dataset generator with paired attendance workbooks; four cross-platform CI defects fixed. Clean-machine test not re-run for this build |
-| [`0.1.0-alpha.1`](https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.1) | 2026-09-22 | **Alpha** | First installable release. Core workflow implemented and clean-machine validated; real examination-data qualification incomplete |
+| [`0.1.0-alpha.2`](https://github.com/sajidbuet/OMRFlow/releases/tag/v0.1.0-alpha.2) | 2026-09-24 | **Alpha** | Redesigned application shell; template-driven synthetic dataset generator with paired attendance workbooks; four cross-platform CI defects fixed. Clean-machine test not re-run for this build |
+| [`0.1.0-alpha.1`](https://github.com/sajidbuet/OMRFlow/releases/tag/v0.1.0-alpha.1) | 2026-09-22 | **Alpha** | First installable release. Core workflow implemented and clean-machine validated; real examination-data qualification incomplete |
 
 ## What the channels mean
 

@@ -6,7 +6,7 @@ by a test** that parses every source file — the GUI imports no OpenCV or
 SQLAlchemy, `imaging` imports no Qt, `domain` imports nothing above it.
 
 > The authoritative document is
-> **[`docs/ARCHITECTURE.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/ARCHITECTURE.md)**.
+> **[`docs/ARCHITECTURE.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/ARCHITECTURE.md)**.
 > This page is an orientation.
 
 ## The layers
@@ -64,7 +64,7 @@ one thing framelessness costs.
 ## Key decisions, recorded
 
 Architecture decision records live in
-[`docs/decisions/`](https://github.com/sajidbuet/OMRflow/tree/main/docs/decisions):
+[`docs/decisions/`](https://github.com/sajidbuet/OMRFlow/tree/main/docs/decisions):
 the choice of a Python/PySide6 desktop application, the on-disk project
 layout, the migration approach, and normalised template coordinates.
 

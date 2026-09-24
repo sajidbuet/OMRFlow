@@ -1,7 +1,7 @@
 # Contribution Guide
 
 The full guide is
-**[CONTRIBUTING.md](https://github.com/sajidbuet/OMRflow/blob/main/CONTRIBUTING.md)**
+**[CONTRIBUTING.md](https://github.com/sajidbuet/OMRFlow/blob/main/CONTRIBUTING.md)**
 in the repository root, which is where GitHub looks for it.
 
 In summary:

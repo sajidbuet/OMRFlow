@@ -8,7 +8,7 @@ reviewer with a recorded reason — and the machine's original reading is kept
 alongside the decision rather than replaced by it.
 
 > The detailed reference is
-> **[`docs/conflict_review.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/conflict_review.md)**.
+> **[`docs/conflict_review.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/conflict_review.md)**.
 
 ## What reaches the queue
 

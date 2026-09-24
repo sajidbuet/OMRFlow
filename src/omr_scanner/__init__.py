@@ -45,7 +45,7 @@ APPLICATION_NAME = "OMRFlow"
 ORGANIZATION_NAME = "OMRFlow"
 """Used for per-user configuration and log directory resolution."""
 
-REPOSITORY_URL = "https://github.com/sajidbuet/OMRflow"
+REPOSITORY_URL = "https://github.com/sajidbuet/OMRFlow"
 """Public source repository, shown as a clickable link in the About dialog."""
 
 LICENSE_NAME = "MIT"

@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Please check the
-        [Development Roadmap](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Development-Roadmap.md)
+        [Development Roadmap](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Development-Roadmap.md)
         first. OMRFlow is developed in phases, and something may already be
         planned for a later one — in which case your use case is still
         valuable on the existing issue.

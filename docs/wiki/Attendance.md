@@ -8,7 +8,7 @@ also becomes that set's **result template**. Its layout is therefore what
 your final report looks like.
 
 > The detailed reference is
-> **[`docs/reconciliation.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/reconciliation.md)**.
+> **[`docs/reconciliation.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/reconciliation.md)**.
 > The workbook's expected shape is
 > [Attendance Workbook Format](Attendance-Workbook-Format).
 
@@ -65,7 +65,7 @@ which paper a mark came from. See [Examination Sets](Examination-Sets).
 🟡 **Per-set attendance is implemented and tested against synthetic rosters
 only.** Real institutional workbooks vary in ways synthetic ones do not.
 Check the reconciliation summary carefully on your first real import, and
-please [report](https://github.com/sajidbuet/OMRflow/issues/new/choose) a
+please [report](https://github.com/sajidbuet/OMRFlow/issues/new/choose) a
 workbook that does not import — with names and roll numbers replaced. See
 [Known Limitations](Known-Limitations).
 

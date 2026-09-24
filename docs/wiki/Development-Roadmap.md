@@ -52,7 +52,7 @@ been run: its automated portion passed on a pristine Windows image, 56 checks
 to none. What remains are the steps of that procedure that need a person to
 look at the screen — above all an end-to-end run through recognition on the
 *installed* build. Published as
-[`v0.1.0-alpha.1`](https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.1)
+[`v0.1.0-alpha.1`](https://github.com/sajidbuet/OMRFlow/releases/tag/v0.1.0-alpha.1)
 on 2026-09-22 with that limitation stated in the release notes.
 
 ### Purpose
@@ -103,7 +103,7 @@ for external evaluation while production qualification remains incomplete.
   a log written under the user profile and **nothing written into the
   installation directory**, clean exit, relaunch, uninstall with user data
   intact, and reinstall — 56 checks, none failed. Recorded in
-  [`docs/release/validation/`](https://github.com/sajidbuet/OMRflow/tree/main/docs/release/validation).
+  [`docs/release/validation/`](https://github.com/sajidbuet/OMRFlow/tree/main/docs/release/validation).
 - The installed application works from a path containing spaces and
   characters outside ASCII.
 - Every dependency the application imports survives the freeze, including the

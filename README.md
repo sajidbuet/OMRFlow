@@ -15,7 +15,7 @@ auditable Excel results locally.
 conflicts, reconcile candidate attendance, evaluate MCQ examinations and
 generate auditable results — entirely on your own machine.**
 
-[![Release](https://img.shields.io/badge/release-0.1.0--alpha.1-AC1F24)](https://github.com/sajidbuet/OMRflow/releases)
+[![Release](https://img.shields.io/badge/release-0.1.0--alpha.1-AC1F24)](https://github.com/sajidbuet/OMRFlow/releases)
 [![Status](https://img.shields.io/badge/status-Alpha-orange)](docs/wiki/Known-Limitations.md)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-blue)](docs/wiki/Installation.md)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](pyproject.toml)
@@ -153,7 +153,7 @@ claim a maturity its version does not support.
 ## Download and installation
 
 Get `OMRFlow-0.1.0-alpha.1-Setup-x64.exe` from the
-**[Releases page](https://github.com/sajidbuet/OMRflow/releases)**. No Python
+**[Releases page](https://github.com/sajidbuet/OMRFlow/releases)**. No Python
 required.
 
 Verify the download against the published `SHA256SUMS.txt` — the installer is
@@ -214,7 +214,7 @@ synthetically tested" to a qualified stable release.
 | | |
 |---|---|
 | Automated suite | 4,293 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
-| Cross-platform CI | ✅ Green on Windows and Ubuntu ([run 35809212682](https://github.com/sajidbuet/OMRflow/actions/runs/35809212682), 2026-09-23); a fourth Ubuntu-only defect found and fixed for this release |
+| Cross-platform CI | ✅ Green on Windows and Ubuntu ([run 35809212682](https://github.com/sajidbuet/OMRFlow/actions/runs/35809212682), 2026-09-23); a fourth Ubuntu-only defect found and fixed for this release |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
 | Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
@@ -240,9 +240,9 @@ platform difference rather than flakiness:
 The first three were verified locally with `mypy --platform linux` and the GUI
 suite under `QT_QPA_PLATFORM=offscreen`, and then **confirmed green on the
 Ubuntu runner itself** in
-[run 35809212682](https://github.com/sajidbuet/OMRflow/actions/runs/35809212682).
+[run 35809212682](https://github.com/sajidbuet/OMRFlow/actions/runs/35809212682).
 The fourth was found by the Ubuntu runner afterwards, in
-[run 35959715301](https://github.com/sajidbuet/OMRflow/actions/runs/35959715301),
+[run 35959715301](https://github.com/sajidbuet/OMRFlow/actions/runs/35959715301),
 and is fixed in this release.
 
 ### Release qualification infrastructure
@@ -281,7 +281,7 @@ Detail: **[Development Roadmap](docs/wiki/Development-Roadmap.md)** ·
 ## Running from source
 
 ```powershell
-git clone https://github.com/sajidbuet/OMRflow.git
+git clone https://github.com/sajidbuet/OMRFlow.git
 cd OMRflow
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -304,7 +304,7 @@ Contributions are welcome. Please read
 **[CONTRIBUTING.md](CONTRIBUTING.md)** first — in particular the parts about
 tests, database migrations, and never committing real candidate data.
 
-- **Report a problem:** [open an issue](https://github.com/sajidbuet/OMRflow/issues/new/choose),
+- **Report a problem:** [open an issue](https://github.com/sajidbuet/OMRFlow/issues/new/choose),
   after reading [SUPPORT.md](SUPPORT.md) on how to sanitise a reproduction.
 - **Security or privacy:** [SECURITY.md](SECURITY.md) — **not** a public
   issue.

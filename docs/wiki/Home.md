@@ -16,7 +16,7 @@ cards](../images/omrflow-main-window.png)
 <sub>This screenshot predates the shell redesign: the stages, the panel and
 the cards are current, the two-band chrome above them is not. See *The
 application window* in the
-[README](https://github.com/sajidbuet/OMRflow#the-application-window).</sub>
+[README](https://github.com/sajidbuet/OMRFlow#the-application-window).</sub>
 
 > ### ⚠️ This is an Alpha release
 >
@@ -39,7 +39,7 @@ application window* in the
 | Understand a particular stage | [User Guide](User-Guide) |
 | Install a newer Alpha without losing work | [Upgrading OMRFlow](Upgrading-OMRFlow) |
 | Fix something that has gone wrong | [Troubleshooting](Troubleshooting) |
-| Report a problem | [SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md) |
+| Report a problem | [SUPPORT.md](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md) |
 | Contribute code | [Contribution Guide](Contribution-Guide) |
 
 ## The workflow
@@ -98,4 +98,4 @@ See the [Development Roadmap](Development-Roadmap) for the detail, and
 
 ## Licence
 
-MIT. See [LICENSE](https://github.com/sajidbuet/OMRflow/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/sajidbuet/OMRFlow/blob/main/LICENSE).

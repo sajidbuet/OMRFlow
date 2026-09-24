@@ -107,16 +107,16 @@ authority on what may be deferred and what may not.
 ## Making a release
 
 Work through
-**[`docs/release/RELEASE_CHECKLIST.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/RELEASE_CHECKLIST.md)**,
+**[`docs/release/RELEASE_CHECKLIST.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/RELEASE_CHECKLIST.md)**,
 which covers source, testing, packaging, documentation, publication and
 post-release, and marks which stable-release requirements are not blocking
 for an Alpha.
 
 Release notes start from
-**[`docs/release/RELEASE_NOTES_TEMPLATE.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/RELEASE_NOTES_TEMPLATE.md)**.
+**[`docs/release/RELEASE_NOTES_TEMPLATE.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/RELEASE_NOTES_TEMPLATE.md)**.
 
 Clean-machine validation is
-**[`docs/release/CLEAN_MACHINE_TEST.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/CLEAN_MACHINE_TEST.md)**.
+**[`docs/release/CLEAN_MACHINE_TEST.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/CLEAN_MACHINE_TEST.md)**.
 In Windows Sandbox it is one command:
 
 ```powershell

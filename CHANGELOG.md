@@ -1612,7 +1612,7 @@ manages projects; no OMR processing exists yet.
 - Documentation set: architecture, development guide, data model, template
   format, image-processing plan, testing strategy, user guide and four ADRs.
 
-[Unreleased]: https://github.com/sajidbuet/OMRflow/compare/v0.1.0-alpha.2...HEAD
-[0.1.0-alpha.2]: https://github.com/sajidbuet/OMRflow/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
-[0.1.0-alpha.1]: https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0-alpha.1
-[0.1.0.dev0]: https://github.com/sajidbuet/OMRflow/releases/tag/v0.1.0.dev0
+[Unreleased]: https://github.com/sajidbuet/OMRFlow/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/sajidbuet/OMRFlow/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
+[0.1.0-alpha.1]: https://github.com/sajidbuet/OMRFlow/releases/tag/v0.1.0-alpha.1
+[0.1.0.dev0]: https://github.com/sajidbuet/OMRFlow/releases/tag/v0.1.0.dev0

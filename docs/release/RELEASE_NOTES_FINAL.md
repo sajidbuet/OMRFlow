@@ -4,7 +4,7 @@
 
 > ⚠️ OMRFlow is currently undergoing real examination-data qualification.
 > **Generated results should be independently verified before operational
-> use.** See [Known Limitations](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Known-Limitations.md).
+> use.** See [Known Limitations](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Known-Limitations.md).
 
 The first installable release. OMRFlow's workflow is implemented end to end —
 design a template, process scanned sheets, resolve what recognition could not
@@ -41,7 +41,7 @@ Windows 10 1809 (build 17763) or newer, 64-bit. No Python required.
 > The installer is **unsigned**, so Windows SmartScreen will warn that the
 > publisher is unknown. Click *More info* → *Run anyway*, after verifying the
 > checksum below. Code signing is a Phase 11C item. See
-> [Installation](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Installation.md).
+> [Installation](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Installation.md).
 
 Verify your download before installing:
 
@@ -54,7 +54,7 @@ certutil -hashfile OMRFlow-0.1.0-alpha.1-Setup-x64.exe SHA256
 ```
 
 New to OMRFlow? Start with the
-[Quick Start](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Quick-Start.md).
+[Quick Start](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Quick-Start.md).
 
 Installs per-user to `%LOCALAPPDATA%\Programs\OMRFlow` and needs no
 administrator rights. Your projects, settings and logs live in your user
@@ -69,7 +69,7 @@ profile and are **not** removed by uninstalling.
 | Synthetic end-to-end walkthrough | ✅ Passed, **from source** |
 | Packaged application smoke test | ✅ 16/16 |
 | Installer install / launch / uninstall | ✅ 15/15, user data preserved |
-| Clean-machine installation | ✅ **56/56** on a pristine Windows 11 image (no Python, Qt or build tools): checksum verified there, per-user install without elevation, first launch, uninstall with data intact, reinstall. [Record](https://github.com/sajidbuet/OMRflow/blob/main/docs/release/validation/0.1.0-alpha.1-clean-machine.md) |
+| Clean-machine installation | ✅ **56/56** on a pristine Windows 11 image (no Python, Qt or build tools): checksum verified there, per-user install without elevation, first launch, uninstall with data intact, reinstall. [Record](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/validation/0.1.0-alpha.1-clean-machine.md) |
 | — substitute: bundle import audit | ✅ 0 unresolved imports; the C/C++ runtime is bundled, not borrowed |
 | — substitute: sanitised-environment launch | ✅ 14/14, including installation under a path with spaces and non-ASCII characters |
 | **End-to-end workflow on the *installed* build** | ⚠️ **Not performed.** Recognition, Excel reporting and the parallel worker path are covered by the automated suite, but every one of those runs from source, not from the installer |
@@ -83,7 +83,7 @@ profile and are **not** removed by uninstalling.
 ## Known Limitations
 
 The full list is in
-[Known Limitations](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Known-Limitations.md).
+[Known Limitations](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Known-Limitations.md).
 The ones most likely to affect a decision to use this build:
 
 - **Real examination-data qualification is incomplete.** No real attendance
@@ -112,7 +112,7 @@ The ones most likely to affect a decision to use this build:
 > **Back up your projects before upgrading.** Prerelease versions make no
 > compatibility promises to each other, and a database migration is applied
 > in place and cannot be undone. See
-> [Upgrading OMRFlow](https://github.com/sajidbuet/OMRflow/blob/main/docs/wiki/Upgrading-OMRFlow.md).
+> [Upgrading OMRFlow](https://github.com/sajidbuet/OMRFlow/blob/main/docs/wiki/Upgrading-OMRFlow.md).
 
 ## Reporting problems
 
@@ -121,6 +121,6 @@ the version line): it reads `0.1.0-alpha.1+<commit>` and identifies the exact
 revision this installer was built from. A diagnostic bundle from
 **Tools → Create Diagnostic Bundle…** is the most useful thing to attach.
 
-[Issues](https://github.com/sajidbuet/OMRflow/issues) ·
-[Support](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md) ·
-[Security policy](https://github.com/sajidbuet/OMRflow/blob/main/SECURITY.md)
+[Issues](https://github.com/sajidbuet/OMRFlow/issues) ·
+[Support](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md) ·
+[Security policy](https://github.com/sajidbuet/OMRFlow/blob/main/SECURITY.md)

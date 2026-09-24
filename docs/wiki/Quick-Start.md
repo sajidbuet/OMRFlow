@@ -51,7 +51,7 @@ example, which is the quickest route through this guide.
 
    *Installed from the installer and have no repository checkout?* Download
    that file from
-   [the repository](https://github.com/sajidbuet/OMRflow/tree/main/examples/templates)
+   [the repository](https://github.com/sajidbuet/OMRFlow/tree/main/examples/templates)
    and open it.
 3. The canvas shows the reference sheet with its regions outlined, and the
    **Regions** list on the left names them: registration markers, an

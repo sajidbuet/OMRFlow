@@ -40,11 +40,11 @@ automatically when an older project is opened; a newer schema is refused. See
 SQLite is used in WAL mode with foreign keys enforced.
 
 > The full table-by-table description is
-> **[`docs/DATA_MODEL.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/DATA_MODEL.md)**.
+> **[`docs/DATA_MODEL.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/DATA_MODEL.md)**.
 > The rationale for this layout is
-> [ADR-0002](https://github.com/sajidbuet/OMRflow/blob/main/docs/decisions/ADR-0002-project-on-disk-layout.md),
+> [ADR-0002](https://github.com/sajidbuet/OMRFlow/blob/main/docs/decisions/ADR-0002-project-on-disk-layout.md),
 > and for the migration approach
-> [ADR-0003](https://github.com/sajidbuet/OMRflow/blob/main/docs/decisions/ADR-0003-schema-migrations.md).
+> [ADR-0003](https://github.com/sajidbuet/OMRFlow/blob/main/docs/decisions/ADR-0003-schema-migrations.md).
 
 ## Confidentiality
 
@@ -52,7 +52,7 @@ SQLite is used in WAL mode with foreign keys enforced.
 identifiers, recognised answers, attendance states and marks; the imported
 workbooks hold names and roll numbers. Never attach any of it to a public
 issue — see
-[SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md).
+[SUPPORT.md](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md).
 
 ## One writer at a time
 

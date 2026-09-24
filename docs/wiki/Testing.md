@@ -1,7 +1,7 @@
 # Testing
 
 > The authoritative document is
-> **[`docs/TESTING.md`](https://github.com/sajidbuet/OMRflow/blob/main/docs/TESTING.md)**.
+> **[`docs/TESTING.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/TESTING.md)**.
 
 ## Running
 

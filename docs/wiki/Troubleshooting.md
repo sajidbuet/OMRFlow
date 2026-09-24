@@ -29,7 +29,7 @@ organisation blocks unsigned installers by policy, run
 **The installer will not start, or fails part way.**
 Check you are on 64-bit Windows 10 1809 or newer. Re-run with a log:
 `OMRFlow-…-Setup-x64.exe /LOG=%TEMP%\omrflow-install.log` and attach it to an
-[installation problem](https://github.com/sajidbuet/OMRflow/issues/new/choose).
+[installation problem](https://github.com/sajidbuet/OMRFlow/issues/new/choose).
 
 **Installed, but nothing happens when I launch it.**
 Look in `%LOCALAPPDATA%\OMRFlow\logs\` — a start-up failure is logged even
@@ -94,7 +94,7 @@ candidate table is fine; OMRFlow searches for the header row. Unexpected
 columns, several header rows or merged blocks may not be handled — this area
 is
 🟡 [synthetically tested only](Known-Limitations). Please
-[report it](https://github.com/sajidbuet/OMRflow/issues/new/choose) with
+[report it](https://github.com/sajidbuet/OMRFlow/issues/new/choose) with
 names and roll numbers replaced.
 
 **Names or roll numbers look wrong after import.**
@@ -129,8 +129,8 @@ busy machine is not comparable to one measured on an idle machine.
 
 ## Still stuck
 
-[SUPPORT.md](https://github.com/sajidbuet/OMRflow/blob/main/SUPPORT.md)
+[SUPPORT.md](https://github.com/sajidbuet/OMRFlow/blob/main/SUPPORT.md)
 explains what makes a report actionable and how to sanitise a reproduction
 first. Security and privacy problems go through
-[SECURITY.md](https://github.com/sajidbuet/OMRflow/blob/main/SECURITY.md),
+[SECURITY.md](https://github.com/sajidbuet/OMRFlow/blob/main/SECURITY.md),
 **not** a public issue.
