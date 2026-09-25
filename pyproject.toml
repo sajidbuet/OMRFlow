@@ -218,6 +218,10 @@ extend-ignore-names = [
     # cards) override Qt's own measurement and hit-testing entry points.
     "changeEvent", "enterEvent", "leaveEvent",
     "sizeHint", "minimumSizeHint", "heightForWidth", "hitButton",
+    # `QLayout` subclasses must implement these by name; Qt has no flow
+    # layout, so the calibration status strip provides one.
+    "addItem", "itemAt", "takeAt", "setGeometry", "minimumSize",
+    "expandingDirections", "hasHeightForWidth",
 ]
 
 [tool.ruff.lint.per-file-ignores]

@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSplitter,
@@ -79,7 +80,8 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.scan.preview import ScanPreviewView
-from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
+from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET, Spacing
+from omr_scanner.gui.widgets import CollapsibleSection, StatusChipStrip
 from omr_scanner.services import (
     CalibrationStatus,
     RegistrationStatus,
@@ -110,8 +112,23 @@ _LOGGER = logging.getLogger(__name__)
 
 CONTROL_PANEL_WIDTH = 300
 DIAGNOSTIC_PANEL_WIDTH = 300
-PREVIEW_INITIAL_HEIGHT = 620
-SUMMARY_TABLE_INITIAL_HEIGHT = 160
+PREVIEW_MINIMUM_HEIGHT = 260
+"""Floor for the preview, not its size. The splitter's stretch factors decide
+the height; this only stops the drawer or a very short window squeezing the
+page down to a strip."""
+
+PREVIEW_STRETCH = 8
+DRAWER_STRETCH = 2
+"""How the centre column divides its height. The preview is the subject of the
+page and keeps four fifths of whatever is available; with the drawer shut it
+takes essentially all of it."""
+
+FIELD_DIAGNOSTICS_MIN_HEIGHT = 140
+"""Enough of the flagged-question list to be worth expanding; it scrolls past
+that rather than making the right panel demand more height than the window."""
+
+DRAWER_MINIMUM_HEIGHT = 180
+"""Enough of the results table to be worth opening."""
 
 THRESHOLD_SLIDER_STEPS = 1000
 """Slider resolution: the four thresholds are fractions in ``[0, 1]``, and a
@@ -199,6 +216,8 @@ class CalibrationPage(WorkflowPage):
     run_finished = Signal()
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
+        self._zoom_is_fit = True
+        """Whether the preview is following the viewport or a zoom the user chose."""
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setObjectName("calibrationPage")
         self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET)
@@ -228,16 +247,35 @@ class CalibrationPage(WorkflowPage):
         """Build the left-hand control column."""
         panel = QWidget()
         panel.setObjectName("calibrationControlPanel")
-        panel.setMaximumWidth(CONTROL_PANEL_WIDTH + 60)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 6, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, Spacing.XS, 0)
+        layout.setSpacing(Spacing.SM)
 
         layout.addWidget(self._build_template_box())
         layout.addWidget(self._build_scans_box())
-        layout.addWidget(self._build_threshold_box())
+        # Folded by default: once the working values are right, nobody needs
+        # eight sliders in view permanently, and they were what pushed Export
+        # Report off the bottom of a short window.
+        self.threshold_section = CollapsibleSection(
+            "Recognition thresholds", self._build_threshold_box(), expanded=False
+        )
+        self.threshold_section.setObjectName("calibrationThresholdSection")
+        layout.addWidget(self.threshold_section)
+        layout.addWidget(self._build_actions_row())
         layout.addStretch(1)
-        return panel
+
+        # The sidebar scrolls as a whole. Expanding the thresholds on a 768
+        # pixel screen then scrolls rather than pushing the buttons below the
+        # window, which is what made them unreachable before.
+        scroller = QScrollArea()
+        scroller.setObjectName("calibrationControlScroll")
+        scroller.setWidgetResizable(True)
+        scroller.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroller.setWidget(panel)
+        scroller.setMaximumWidth(CONTROL_PANEL_WIDTH + 60)
+        scroller.setMinimumWidth(CONTROL_PANEL_WIDTH)
+        return scroller
 
     def _build_template_box(self) -> QGroupBox:
         box = QGroupBox("Template")
@@ -379,6 +417,21 @@ class CalibrationPage(WorkflowPage):
         buttons_layout.addWidget(self.reset_defaults_button)
         box_layout.addWidget(buttons_row)
 
+        return box
+
+    def _build_actions_row(self) -> QWidget:
+        """Save and Export, outside the collapsible thresholds.
+
+        They used to sit inside the threshold group, which was harmless while
+        that group was always open and a defect the moment it folded: folding
+        the sliders away also hid Save and Export Report, neither of which is
+        a threshold control.
+        """
+        row = QWidget()
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.XS)
+
         self.save_button = QPushButton(load_icon("save"), "Save to Template")
         self.save_button.setObjectName("saveCalibrationButton")
         self.save_button.setToolTip(
@@ -386,13 +439,13 @@ class CalibrationPage(WorkflowPage):
             "the template file."
         )
         self.save_button.clicked.connect(self.save_to_template)
-        box_layout.addWidget(self.save_button)
+        layout.addWidget(self.save_button)
 
         self.export_report_button = QPushButton(load_icon("file-text"), "Export Report...")
         self.export_report_button.setObjectName("exportCalibrationReportButton")
         self.export_report_button.clicked.connect(self.export_report)
-        box_layout.addWidget(self.export_report_button)
-        return box
+        layout.addWidget(self.export_report_button)
+        return row
 
     def _build_threshold_row(
         self, parent_layout: QVBoxLayout, title: str, object_prefix: str, tooltip: str
@@ -456,17 +509,28 @@ class CalibrationPage(WorkflowPage):
         spin.valueChanged.connect(from_spin)
 
     def _build_centre(self) -> QWidget:
-        """Build the preview, its overlay toggles and the summary areas."""
+        """Build the preview, its toolbar, the status strip and the drawer.
+
+        The preview is the page's subject, so it gets the height: the status
+        below it is one wrapped row of chips rather than a ten-line paragraph,
+        and the sample table lives in a drawer that starts closed. The
+        splitter's stretch factors - not a fixed height - decide the split, so
+        the preview grows with the window and reclaims the drawer's space when
+        it is folded away.
+        """
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(Spacing.XS)
 
         layout.addWidget(self._build_preview_toolbar())
 
         self.preview = ScanPreviewView()
         self.preview.setObjectName("calibrationImageView")
-        self.preview.setMinimumHeight(240)
+        self.preview.setMinimumHeight(PREVIEW_MINIMUM_HEIGHT)
+        self.preview.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.preview.clicked_scene_point.connect(self._on_preview_clicked)
 
         self.calibration_status_label = QLabel("No scan selected")
@@ -476,23 +540,120 @@ class CalibrationPage(WorkflowPage):
         status_font.setBold(True)
         self.calibration_status_label.setFont(status_font)
 
+        self.status_chip_strip = StatusChipStrip()
+        self.status_chip_strip.setObjectName("calibrationStatusChips")
+
+        # Kept, and kept populated, but no longer shown under the preview: it
+        # is the body of the details drawer. Nothing that used to be readable
+        # has been deleted, only moved to where it is asked for.
         self.calibration_summary_panel = QLabel("")
         self.calibration_summary_panel.setObjectName("calibrationSummaryPanel")
         self.calibration_summary_panel.setWordWrap(True)
         self.calibration_summary_panel.setTextFormat(Qt.TextFormat.RichText)
 
-        vertical = QSplitter(Qt.Orientation.Vertical)
         preview_column = QWidget()
         preview_layout = QVBoxLayout(preview_column)
         preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(Spacing.XS)
         preview_layout.addWidget(self.preview, stretch=1)
-        preview_layout.addWidget(self.calibration_status_label)
-        preview_layout.addWidget(self.calibration_summary_panel)
-        vertical.addWidget(preview_column)
-        vertical.addWidget(self._build_sample_summary_box())
-        vertical.setSizes([PREVIEW_INITIAL_HEIGHT, SUMMARY_TABLE_INITIAL_HEIGHT])
-        layout.addWidget(vertical, stretch=1)
+
+        status_row = QWidget()
+        status_row.setObjectName("calibrationStatusStrip")
+        status_layout = QVBoxLayout(status_row)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(Spacing.XXS)
+        status_layout.addWidget(self.calibration_status_label)
+        status_layout.addWidget(self.status_chip_strip)
+        preview_layout.addWidget(status_row)
+
+        # Built after the summary panel exists: the drawer adopts it as its
+        # "Selected scan details" section.
+        self.results_drawer = CollapsibleSection(
+            "Sample results", self._build_sample_summary_box(), expanded=False
+        )
+        self.results_drawer.setObjectName("calibrationResultsDrawer")
+        self.results_drawer.toggled.connect(self._on_results_drawer_toggled)
+
+        self.centre_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.centre_splitter.setObjectName("calibrationCentreSplitter")
+        self.centre_splitter.setChildrenCollapsible(False)
+        self.centre_splitter.addWidget(preview_column)
+        self.centre_splitter.addWidget(self.results_drawer)
+        # Stretch, not pixels: the preview keeps its share of whatever height
+        # the window has, and takes nearly all of it while the drawer is shut.
+        self.centre_splitter.setStretchFactor(0, PREVIEW_STRETCH)
+        self.centre_splitter.setStretchFactor(1, DRAWER_STRETCH)
+        layout.addWidget(self.centre_splitter, stretch=1)
         return container
+
+    def _on_results_drawer_toggled(self, expanded: bool) -> None:
+        """Give the drawer room when it opens, and the preview it back when it shuts."""
+        total = max(1, self.centre_splitter.height())
+        if expanded:
+            drawer = max(
+                DRAWER_MINIMUM_HEIGHT,
+                total * DRAWER_STRETCH // (PREVIEW_STRETCH + DRAWER_STRETCH),
+            )
+            self.centre_splitter.setSizes([total - drawer, drawer])
+        else:
+            self.centre_splitter.setSizes([total, 0])
+        # A fitted page has to be re-fitted for the viewport it now has; a
+        # manually chosen zoom is the user's and is left alone.
+        self._refit_preview_if_fitted()
+
+    def _fit_preview(self) -> None:
+        """Fit the page, and remember that fit is what the user asked for."""
+        self._zoom_is_fit = True
+        self.preview.fit_to_window()
+
+    def _actual_size_preview(self) -> None:
+        """Show the page at 100%. Also a zoom the user chose, so fit stops."""
+        self._zoom_is_fit = False
+        self.preview.zoom_to_actual_size()
+
+    def _manual_zoom(self, direction: str) -> None:
+        """Zoom by one step, and stop re-fitting on every viewport change.
+
+        A zoom the user chose is theirs: once they have zoomed, collapsing the
+        drawer or resizing the window must not silently throw that away and
+        snap back to fit.
+        """
+        self._zoom_is_fit = False
+        if direction == "in":
+            self.preview.zoom_in()
+        else:
+            self.preview.zoom_out()
+
+    def _update_drawer_summary(self) -> None:
+        """Put the headline on the closed drawer's own header.
+
+        So "is there anything in there worth opening?" is answerable without
+        opening it, which is the difference between a drawer and somewhere
+        information goes to be forgotten.
+        """
+        reports = [
+            entry.report for entry in self.state.entries if entry.report is not None
+        ]
+        if not reports:
+            self.results_drawer.set_summary("No scans tested yet")
+            return
+        tested = reports
+        passed = sum(1 for report in reports if report.status.passed)
+        review = sum(1 for report in reports if report.answers_needing_review)
+        self.results_drawer.set_summary(
+            f"{len(tested)} scan(s) · {passed} passed · {len(tested) - passed} failed"
+            f" · {review} with review items"
+        )
+
+    def _refit_preview_if_fitted(self) -> None:
+        """Re-apply fit-to-page after the viewport changes size.
+
+        Only when fit is the current mode. The viewport changes whenever the
+        drawer opens or closes or the window is resized, and a page fitted to
+        the old viewport is no longer fitted to the new one.
+        """
+        if self._zoom_is_fit:
+            self.preview.fit_to_window()
 
     def _build_preview_toolbar(self) -> QToolBar:
         toolbar = QToolBar("Calibration view")
@@ -513,22 +674,22 @@ class CalibrationPage(WorkflowPage):
 
         self.zoom_out_action = QAction(load_icon("zoom-out"), "Zoom Out", self)
         self.zoom_out_action.setObjectName("zoomOutButton")
-        self.zoom_out_action.triggered.connect(lambda: self.preview.zoom_out())
+        self.zoom_out_action.triggered.connect(lambda: self._manual_zoom("out"))
         toolbar.addAction(self.zoom_out_action)
 
         self.zoom_in_action = QAction(load_icon("zoom-in"), "Zoom In", self)
         self.zoom_in_action.setObjectName("zoomInButton")
-        self.zoom_in_action.triggered.connect(lambda: self.preview.zoom_in())
+        self.zoom_in_action.triggered.connect(lambda: self._manual_zoom("in"))
         toolbar.addAction(self.zoom_in_action)
 
         self.fit_action = QAction(load_icon("maximize"), "Fit", self)
         self.fit_action.setObjectName("fitButton")
-        self.fit_action.triggered.connect(lambda: self.preview.fit_to_window())
+        self.fit_action.triggered.connect(self._fit_preview)
         toolbar.addAction(self.fit_action)
 
         self.actual_size_action = QAction(load_icon("scan"), "100%", self)
         self.actual_size_action.setObjectName("actualSizeButton")
-        self.actual_size_action.triggered.connect(lambda: self.preview.zoom_to_actual_size())
+        self.actual_size_action.triggered.connect(self._actual_size_preview)
         toolbar.addAction(self.actual_size_action)
         toolbar.addSeparator()
 
@@ -611,9 +772,24 @@ class CalibrationPage(WorkflowPage):
         toolbar.addWidget(self.field_filter_combo)
         return toolbar
 
-    def _build_sample_summary_box(self) -> QGroupBox:
-        box = QGroupBox("Sample summary")
+    def _build_sample_summary_box(self) -> QWidget:
+        """The drawer's contents: the details, the summary line and the table.
+
+        No longer a `QGroupBox`: the collapsible section already draws a
+        titled header, and a border inside a header is the visual noise this
+        pass exists to remove.
+        """
+        box = QWidget()
         box_layout = QVBoxLayout(box)
+        box_layout.setContentsMargins(0, Spacing.XS, 0, 0)
+
+        # The full per-scan detail that used to sit permanently under the
+        # preview. Same text, same information, on request.
+        self.details_section = CollapsibleSection(
+            "Selected scan details", self.calibration_summary_panel, expanded=False
+        )
+        self.details_section.setObjectName("calibrationDetailsSection")
+        box_layout.addWidget(self.details_section)
 
         self.sample_summary_label = QLabel("No scans tested yet.")
         self.sample_summary_label.setObjectName("calibrationSampleSummaryLabel")
@@ -653,21 +829,26 @@ class CalibrationPage(WorkflowPage):
         self.inspector_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.inspector_label)
 
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(separator)
-
-        field_heading = QLabel("Field diagnostics")
-        field_heading_font = field_heading.font()
-        field_heading_font.setBold(True)
-        field_heading.setFont(field_heading_font)
-        layout.addWidget(field_heading)
-
         self.field_diagnostics_label = QLabel("Run a scan to see per-position detail.")
         self.field_diagnostics_label.setObjectName("fieldDiagnosticsLabel")
         self.field_diagnostics_label.setWordWrap(True)
         self.field_diagnostics_label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(self.field_diagnostics_label)
+
+        # Scrolled, and folded by default. Thirty flagged questions is one
+        # problem, not thirty, and a list that long used to make the right
+        # panel demand more height than the window had.
+        field_scroll = QScrollArea()
+        field_scroll.setObjectName("fieldDiagnosticsScroll")
+        field_scroll.setWidgetResizable(True)
+        field_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        field_scroll.setMinimumHeight(FIELD_DIAGNOSTICS_MIN_HEIGHT)
+        field_scroll.setWidget(self.field_diagnostics_label)
+
+        self.field_diagnostics_section = CollapsibleSection(
+            "Field diagnostics", field_scroll, expanded=False
+        )
+        self.field_diagnostics_section.setObjectName("fieldDiagnosticsSection")
+        layout.addWidget(self.field_diagnostics_section)
 
         second_separator = QFrame()
         second_separator.setFrameShape(QFrame.Shape.HLine)
@@ -1132,14 +1313,21 @@ class CalibrationPage(WorkflowPage):
             self.calibration_summary_panel.setText(
                 "Not run yet - press Run Test to register and measure this scan."
             )
+            self.status_chip_strip.set_chips([])
             self.field_diagnostics_label.setText("Run a scan to see per-position detail.")
             return
 
         self._refresh_preview_mode(entry)
         self._show_status(entry.report)
         self.calibration_summary_panel.setText(_quality_summary_html(result, entry.report))
+        self.status_chip_strip.set_chips(_status_chips(result, entry.report))
+        self._update_drawer_summary()
         self.inspector_label.setText("Click a bubble in the preview to inspect it.")
         self.field_diagnostics_label.setText(_field_diagnostics_html(result))
+        review = entry.report.answers_needing_review if entry.report else 0
+        self.field_diagnostics_section.set_summary(
+            f"{review} question(s) require review" if review else "No questions flagged"
+        )
         self.advanced_panel.setText(_advanced_diagnostics_html(result))
 
     def _show_status(self, report: CalibrationReport | None) -> None:
@@ -1496,6 +1684,53 @@ def _quality_summary_html(result: ScanResult, report: CalibrationReport | None) 
         for finding in report.findings:
             lines.append(f"⚠ {finding.message}")
     return "<br>".join(lines)
+
+
+def _status_chips(
+    result: ScanResult, report: CalibrationReport | None
+) -> list[tuple[str, str]]:
+    """The one-line summary shown permanently under the preview.
+
+    Returns ``(tone, text)`` pairs, where tone is ``ok``, ``warn``, ``fail``
+    or ``neutral``. Every chip carries a word as well as a colour, because a
+    colour alone is not a status anybody can read.
+
+    Deliberately the *headline* only. The same numbers in full - the response
+    positions, the near-threshold count, the unusable sampling windows - stay
+    in the details drawer, so the page shows the answer and keeps the working
+    out one click away rather than spending a tenth of the workspace on it.
+    """
+    chips: list[tuple[str, str]] = []
+    registered = bool(report and report.registered)
+
+    if registered and report is not None:
+        chips.append(("ok", f"Registration {report.markers_detected}/4"))
+        chips.append(
+            ("ok", "Orientation") if report.orientation_ok
+            else ("warn", "Orientation assumed")
+        )
+    else:
+        chips.append(("fail", "Registration failed"))
+
+    identifier = result.identifier
+    if identifier is not None:
+        chips.append(
+            ("warn" if identifier.needs_review else "neutral", f"ID {identifier.value}")
+        )
+    set_code = result.set_code
+    if set_code is not None:
+        chips.append(
+            ("warn" if set_code.needs_review else "neutral", f"Set {set_code.value}")
+        )
+
+    if report is not None and registered:
+        chips.append(("neutral", f"{report.answers_single} marked"))
+        chips.append(("neutral", f"{report.answers_blank} blank"))
+        if report.answers_multiple:
+            chips.append(("warn", f"{report.answers_multiple} multiple"))
+        if report.answers_needing_review:
+            chips.append(("warn", f"{report.answers_needing_review} review"))
+    return chips
 
 
 MAX_LISTED_QUESTIONS = 12

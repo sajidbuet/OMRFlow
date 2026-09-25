@@ -39,6 +39,7 @@ from omr_scanner.gui.widgets.buttons import (
 from omr_scanner.gui.widgets.card import ActionRow, Card, EmptyState
 from omr_scanner.gui.widgets.collapsible import CollapsibleSection
 from omr_scanner.gui.widgets.page_header import PageHeader
+from omr_scanner.gui.widgets.status_chips import StatusChip, StatusChipStrip
 from omr_scanner.gui.widgets.status_footer import AppStatus, FooterTier, StatusFooter
 from omr_scanner.gui.widgets.window_buttons import WindowButton, WindowButtonKind
 from omr_scanner.gui.widgets.workflow_ribbon import (
@@ -59,6 +60,8 @@ __all__ = [
     "LayoutPlan",
     "PageHeader",
     "RibbonMode",
+    "StatusChip",
+    "StatusChipStrip",
     "StatusFooter",
     "StepShape",
     "WindowButton",

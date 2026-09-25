@@ -231,6 +231,42 @@ synthetically tested" to a qualified stable release.
 | Release automation | ✅ One command prepares a release; GitHub Actions builds and publishes it. 96 tests, no step needs a person or a model — see [Release Checklist](docs/release/RELEASE_CHECKLIST.md) |
 | Template Editor interaction | ✅ Debugging pass completed — see below |
 | Real-scan registration | 🟠 First real scanned cohort registered and calibrated — 8 sheets, one template. See below |
+| Calibration workspace | ✅ Reorganised around the scan preview — see below |
+
+#### Calibration workspace reorganised
+
+The Calibration stage now gives its height to the thing it is about. A
+ten-line status paragraph and an always-open results table used to sit
+permanently beneath the registered page; with a real result loaded the preview
+held **57%** of the workspace (547 px at 1920×1080) and the paragraph alone
+took 140 px of it.
+
+| | Before | After (drawer shut) | After (drawer open) |
+|---|---|---|---|
+| Preview, 1920×1080 | 547 px · 57% | **832 px · 87%** | 680 px · 71% |
+| Preview, 1366×768 | — | 499 px · 77% | 347 px · 54% |
+
+The split is decided by **stretch factors**, not fixed pixel heights, so the
+preview grows with the window and reclaims the drawer's space when it is shut.
+The status paragraph became a single wrapped row of labelled chips —
+`✓ Registration 4/4 · ✓ Orientation · ID … · 69 marked · ⚠ 31 review` — each
+carrying words as well as colour. Four sections now fold, all shut by default
+and each showing a one-line summary on its own header: **Sample results**,
+**Selected scan details**, **Recognition thresholds**, **Field diagnostics**.
+
+Nothing was deleted. The response-position counts, near-threshold count and
+unusable-window count are the body of *Selected scan details*; the per-question
+list is in *Field diagnostics*, scrolled rather than stacked.
+
+**Engine untouched.** No file under `imaging/`, `recognition/` or the
+calibration service's scoring was modified by this pass.
+
+**Testing.** 28 new layout tests plus the existing 90 calibration tests, all
+run. Each of four layout guarantees was verified load-bearing by reverting it
+and confirming its test fails. Screenshots captured at 1920×1080, 1600×900 and
+1366×768 across the empty, passed, failed, drawer-open, thresholds-open and
+diagnostics-open states, and inspected. The page was **not** driven by hand
+through a live calibration run.
 
 #### Real-scan registration debugging
 
