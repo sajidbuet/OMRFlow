@@ -96,17 +96,51 @@ DEFAULT_ORIENTATION_CENTER = NormalizedPoint(x=0.14, y=0.035)
 DEFAULT_ORIENTATION_SIZE = NormalizedSize(width=0.05, height=0.012)
 """Default orientation-mark size for a brand new template."""
 
-DEFAULT_BUBBLE_RADIUS = _FALLBACK_DEFAULT_BUBBLE_RADIUS
-"""Default bubble radius for a brand new template, normalised to the **page
-width** - so a radius is one number, the way a user thinks about a circular OMR
-bubble, rather than an independent width and height.
+DEFAULT_BUBBLE_RADIUS_PX = 20.0
+"""Bubble radius a **brand new** template starts with, in canonical page pixels.
 
-Half the ``0.022`` normalised bubble width every Phase 2 region dialog used as
-its hard-coded default, so a template created with the defaults keeps the
-horizontal geometry it always had. See
-:meth:`~omr_scanner.domain.template.OmrTemplate.default_bubble_size` for how the
-vertical half-axis is derived from the page aspect ratio, which is what keeps a
-bubble that is circular *in pixels* circular."""
+Stated in pixels because that is the unit the designer shows and the unit a
+person measuring a printed sheet with a ruler is working in; the model stores
+it normalised, and :func:`default_bubble_radius_for` does the conversion using
+the page the template is actually being built for. A single normalised constant
+could not mean "20 px" on two pages of different resolutions.
+
+Deliberately *not* the same number as
+:data:`~omr_scanner.domain.template._FALLBACK_DEFAULT_BUBBLE_RADIUS`, which the
+model uses for documents saved before ``default_bubble_radius`` existed. That
+one must never move: it is what those documents' geometry means, and changing
+it would silently resize every bubble in every template that predates the
+field. New templates get this; old templates keep theirs."""
+
+
+def default_bubble_radius_for(canonical_width_px: int) -> float:
+    """The new-template default radius, normalised to a page this wide.
+
+    Args:
+        canonical_width_px: The template's canonical page width in pixels.
+
+    Returns:
+        :data:`DEFAULT_BUBBLE_RADIUS_PX` expressed as a fraction of the page
+        width, clamped to the range the model accepts.
+    """
+    if canonical_width_px <= 0:
+        return _FALLBACK_DEFAULT_BUBBLE_RADIUS
+    return min(0.5, DEFAULT_BUBBLE_RADIUS_PX / float(canonical_width_px))
+
+
+DEFAULT_BUBBLE_RADIUS = _FALLBACK_DEFAULT_BUBBLE_RADIUS
+"""The radius assumed for a template that does not state one.
+
+Normalised to the **page width** - so a radius is one number, the way a user
+thinks about a circular OMR bubble, rather than an independent width and
+height. See :meth:`~omr_scanner.domain.template.OmrTemplate.default_bubble_size`
+for how the vertical half-axis is derived from the page aspect ratio, which is
+what keeps a bubble that is circular *in pixels* circular.
+
+Half the ``0.022`` normalised bubble width every Phase 2 region dialog
+hard-coded, so a document from before ``default_bubble_radius`` existed reads
+back with the geometry it was drawn with. A *new* template does not use this -
+see :data:`DEFAULT_BUBBLE_RADIUS_PX`."""
 
 
 class ColumnLayoutMode(StrEnum):
@@ -200,7 +234,7 @@ def build_blank_template(
         ),
         registration_markers=markers,
         orientation_marker=orientation,
-        default_bubble_radius=DEFAULT_BUBBLE_RADIUS,
+        default_bubble_radius=default_bubble_radius_for(canonical_width_px),
     )
 
 
@@ -1120,12 +1154,14 @@ def _format_ranges(numbers: Sequence[int]) -> str:
 __all__ = [
     "BUBBLE_SIZE_RELATIVE_TOLERANCE",
     "DEFAULT_BUBBLE_RADIUS",
+    "DEFAULT_BUBBLE_RADIUS_PX",
     "DEFAULT_DISPLAY_COLORS",
     "ColumnLayoutMode",
     "ColumnSpacingInfo",
     "DesignerValidationReport",
     "apply_default_bubble_radius",
     "build_blank_template",
+    "default_bubble_radius_for",
     "distribute_columns_evenly",
     "fit_grid_to_bounds",
     "generate_character_grid_zone",

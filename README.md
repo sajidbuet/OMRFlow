@@ -229,6 +229,65 @@ synthetically tested" to a qualified stable release.
 | Real examination data | ❌ **Not started** — this is Phase 11B |
 | 100,000-sheet qualification | ⚪ Harness ready, not run |
 | Release automation | ✅ One command prepares a release; GitHub Actions builds and publishes it. 96 tests, no step needs a person or a model — see [Release Checklist](docs/release/RELEASE_CHECKLIST.md) |
+| Template Editor interaction | ✅ Debugging pass completed — see below |
+| Real-scan registration | 🟠 First real scanned cohort registered and calibrated — 8 sheets, one template. See below |
+
+#### Real-scan registration debugging
+
+A real project — a real `.omrt` template and eight real scanned sheets — failed
+calibration with *"the orientation mark ... was not found"*. The mark was
+present, black, and exactly where the template said.
+
+**Root cause.** The orientation confidence was `fill / (1 / window_margin²)`,
+which assumes the template's declared orientation box tightly bounds the
+printed mark. Nothing enforces that, and the designer lets the box be drawn
+with margin — which is the natural way to draw one. This template's box was
+about twice the mark in each axis, so the ink was diluted over four times the
+area: the correct orientation scored **0.29** against a 0.35 floor, and sat
+only **0.01** ahead of its own 180° twin, because a window mostly full of
+paper scores much the same wherever it is placed.
+
+**Fix.** The mark is now scored over the best of several concentric windows,
+so the measurement no longer depends on how tightly the box was drawn. A
+template whose box already fits is unaffected. On the real sheets confidence
+went from 0.29 to **1.00** and the margin from 0.00 to **0.63–0.73**.
+
+The four registration markers were never the problem — they were detected all
+along, at scores 0.93–0.95. The calibration panel reported *"Markers detected:
+0 / 4"* purely because the failure path never recorded what the engine had
+found, which sent the investigation after a detector fault that did not exist.
+It now says *"not reached"* rather than asserting a count it never measured.
+
+**Verified on the real dataset:** 8/8 sheets register, resolve orientation and
+sample all 500 bubble positions, with 0.0 px reprojection error. Bubble
+overlays were inspected visually against the printed sheet and are concentric
+with the printed bubbles. The scans themselves are examination material and
+are not in this repository; the regression tests are synthetic.
+
+#### Template Editor interaction pass
+
+Five interaction defects, all of the same shape — the editor knew the right
+answer but did not show it until some later event:
+
+| Defect | Cause | Fix |
+|---|---|---|
+| Spin-box arrows showed an I-beam and clicking them put the caret in the text | Styling a spin box switches it to `QStyleSheetStyle`, which lays the line edit across the whole padded rect unless the up/down buttons declare a width. They did not, so `childAt()` over an arrow returned the `QLineEdit` — the editor was physically on top of the buttons | Explicit `::up-button` / `::down-button` geometry in the central stylesheet, so the editor stops short of them. Hit-testing, not appearance; Qt's auto-repeat, keyboard stepping and typing are untouched |
+| Editing X/Y/W/H in the inspector did not move the canvas | The panel emitted only on `editingFinished`, i.e. on Enter or focus loss | A separate `geometry_preview` signal on `valueChanged` redraws immediately; `geometry_edited` still commits once, so there is no undo entry per keystroke |
+| Bubbles did not follow a region being dragged or resized | The mid-drag handler updated the inspector numbers and nothing else; bubbles were recalculated only on release | The same handler now re-fits the layout with `resize_zone` — the *same* pure function the commit path uses, so preview and result are identical and releasing produces no jump |
+| Default bubble radius | `DEFAULT_BUBBLE_RADIUS` was the same constant as the legacy fallback for templates predating the field | Split them. New templates get **20 px**, converted per page; the fallback stays where it was, so existing templates keep the geometry they were drawn with |
+| Cursor stayed a hand while drawing a region | Three code paths fought: a crosshair on the view, `ScrollHandDrag` putting an open hand on the *viewport*, and `_stop_pan` calling `unsetCursor()` unconditionally | One `_apply_cursor()` derives the cursor from the mode and sets it on the viewport |
+
+Both directions of geometry editing are now synchronised: a canvas drag
+updates the inspector and its normalised values, and an inspector edit updates
+the canvas, the bubble layout and the normalised values.
+
+**Testing status.** 55 focused tests were added and run. Each of the five
+fixes was verified load-bearing by reverting it and confirming its test fails.
+The spin-box tests are **skipped on the offscreen platform** — the defect is an
+interaction with the *Windows* style, and on Fusion they pass whether or not
+the fix is present, so they run on a Windows desktop and report a skip in
+headless CI rather than false assurance. Manual GUI walkthroughs (TEST A–F)
+have **not** been performed.
 
 #### Cross-platform CI defects fixed
 

@@ -153,7 +153,12 @@ def determine_orientation(
             )
             continue
         matrices[turns] = matrix
-        fill = _window_ink_ratio(binary, matrix=matrix, window=evidence_window)
+        fill, _scale = _best_window_fill(
+            binary,
+            matrix=matrix,
+            window=evidence_window,
+            scales=config.orientation.evidence_window_scales,
+        )
         confidence = min(1.0, fill / expected_fill) if expected_fill > 0.0 else 0.0
         hypotheses.append(
             OrientationHypothesis(
@@ -268,6 +273,65 @@ def _window_ink_ratio(
     if patch.size == 0:
         return 0.0
     return float(cv2.countNonZero(patch)) / float(patch.size)
+
+
+def _concentric(window: BoundingBox, scale: float) -> BoundingBox:
+    """``window`` shrunk about its own centre by ``scale``."""
+    width = window.width * scale
+    height = window.height * scale
+    return BoundingBox(
+        x=window.x + (window.width - width) / 2.0,
+        y=window.y + (window.height - height) / 2.0,
+        width=width,
+        height=height,
+    )
+
+
+def _best_window_fill(
+    binary: NDArray[np.uint8],
+    *,
+    matrix: NDArray[np.float64],
+    window: BoundingBox,
+    scales: Sequence[float],
+) -> tuple[float, float]:
+    """Best ink fraction over a family of windows concentric with ``window``.
+
+    Why this is not simply the fill of the declared window:
+        The single-window measurement assumed the template's orientation box
+        tightly bounds the printed mark. Nothing enforces that - the designer
+        lets a box be drawn with margin around the mark, which is the natural
+        way to draw one - and a box drawn at twice the mark's size dilutes the
+        ink with four times as much paper. The fill then falls below the
+        threshold *and*, worse, falls to roughly whatever an arbitrary patch
+        of the page scores, so the correct orientation stops being
+        distinguishable from its 180 degree twin.
+
+        Searching concentric windows recovers the measurement without needing
+        to know how tightly the box was drawn: whatever the declared size, one
+        of the scales lands on the mark and reports a high fill, while a window
+        containing only scattered print reports a low fill at *every* scale.
+        A tight box is unaffected - its best scale is the full window, which is
+        what the old code measured.
+
+    Args:
+        binary: Preprocessed ink mask.
+        matrix: Transform from ``binary`` to canonical page coordinates.
+        window: The declared evidence window.
+        scales: Fractions of ``window`` to try, largest first.
+
+    Returns:
+        ``(fill, scale)`` for the best-scoring window.
+    """
+    best_fill = 0.0
+    best_scale = 1.0
+    for scale in scales:
+        candidate = _concentric(window, scale)
+        if candidate.width < 1.0 or candidate.height < 1.0:
+            continue
+        fill = _window_ink_ratio(binary, matrix=matrix, window=candidate)
+        if fill > best_fill:
+            best_fill, best_scale = fill, scale
+    return best_fill, best_scale
 
 
 def _window_in_source(

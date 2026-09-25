@@ -56,8 +56,21 @@ class PropertiesPanel(QWidget):
 
     geometry_edited = Signal(float, float, float, float)
 
+    geometry_preview = Signal(float, float, float, float)
+    """``(x, y, width, height)`` while the user is still adjusting a field.
+
+    The live counterpart to :attr:`geometry_edited`, and deliberately a
+    separate signal rather than the same one emitted more often. A preview
+    only moves what is drawn; the commit goes through the designer state and
+    pushes an undo entry. Emitting one signal for both would put an undo entry
+    on every keystroke and every click of a spin arrow.
+    """
+
     bubble_radius_edited = Signal(float)
     """``radius`` in image pixels - the user gave this region its own bubble size."""
+
+    bubble_radius_preview = Signal(float)
+    """``radius`` in image pixels, while the control is still being adjusted."""
 
     bubble_inherit_toggled = Signal(bool)
     """``True`` when the user asked this region to go back to the template default."""
@@ -126,6 +139,7 @@ class PropertiesPanel(QWidget):
         layout.addWidget(self.bubble_group)
 
         self.bubble_radius_box.editingFinished.connect(self._emit_bubble_radius)
+        self.bubble_radius_box.valueChanged.connect(self.bubble_radius_preview.emit)
         self.bubble_inherit_box.toggled.connect(self._on_inherit_toggled)
 
         self.question_column_label = QLabel("")
@@ -140,6 +154,7 @@ class PropertiesPanel(QWidget):
         self._boxes = (self.x_box, self.y_box, self.width_box, self.height_box)
         for box in self._boxes:
             box.editingFinished.connect(self._emit_change)
+            box.valueChanged.connect(self._emit_preview)
         self.setEnabled(False)
 
     def _make_pixel_box(self, object_name: str) -> QDoubleSpinBox:
@@ -147,7 +162,12 @@ class PropertiesPanel(QWidget):
         box.setObjectName(object_name)
         box.setDecimals(PIXEL_DECIMALS)
         box.setRange(-MAX_PIXEL_VALUE, MAX_PIXEL_VALUE)
-        box.setKeyboardTracking(False)
+        # Keyboard tracking on, so a typed digit previews as it is typed
+        # rather than only when the field loses focus. `QDoubleSpinBox` emits
+        # `valueChanged` only for input it could actually interpret, and
+        # clamps to the range above, so a half-typed "-" or an empty field
+        # emits nothing: the preview cannot be handed a partial value.
+        box.setKeyboardTracking(True)
         return box
 
     def set_bubble_geometry(self, radius_px: float | None, *, inherits: bool) -> None:
@@ -243,6 +263,17 @@ class PropertiesPanel(QWidget):
         x, y, width, height = (box.value() for box in self._boxes)
         self._update_normalized_label(x, y, width, height)
         self.geometry_edited.emit(x, y, width, height)
+
+    def _emit_preview(self) -> None:
+        """Report the in-progress value, and keep the normalised line with it.
+
+        Never reached by :meth:`set_geometry`, which blocks the boxes' signals
+        while it writes them - so the model -> panel direction cannot loop back
+        as a panel -> model preview.
+        """
+        x, y, width, height = (box.value() for box in self._boxes)
+        self._update_normalized_label(x, y, width, height)
+        self.geometry_preview.emit(x, y, width, height)
 
 
 __all__ = ["PropertiesPanel"]

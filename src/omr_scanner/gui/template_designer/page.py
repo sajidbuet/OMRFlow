@@ -69,6 +69,7 @@ from omr_scanner.domain.template_authoring import (
     build_blank_template,
     distribute_columns_evenly,
     measure_column_gap,
+    resize_zone,
     set_zone_bubble_size,
     validate_template_for_designer,
     zone_inherits_bubble_size,
@@ -536,7 +537,11 @@ class TemplateDesignerPage(WorkflowPage):
         properties_layout.setContentsMargins(0, 0, 0, 0)
         self.properties = PropertiesPanel()
         self.properties.geometry_edited.connect(self._on_properties_edited)
+        self.properties.geometry_preview.connect(self._on_properties_preview)
         self.properties.bubble_radius_edited.connect(self._on_region_bubble_radius_edited)
+        self.properties.bubble_radius_preview.connect(
+            self._on_region_bubble_radius_preview
+        )
         self.properties.bubble_inherit_toggled.connect(
             self._on_region_bubble_inherit_toggled
         )
@@ -1129,6 +1134,82 @@ class TemplateDesignerPage(WorkflowPage):
     ) -> None:
         title = self._title_for(item_id, kind)
         self.properties.set_geometry(title, x, y, width, height)
+        self._preview_bubbles(item_id, x, y, width, height)
+
+    def _preview_bubbles(
+        self, item_id: str, x: float, y: float, width: float, height: float
+    ) -> None:
+        """Redraw one zone's bubbles for a rectangle that is not committed yet.
+
+        Called on every mouse-move of a drag or resize, and on every valid
+        keystroke in the inspector, so the bubbles track the rectangle instead
+        of jumping into place on release.
+
+        The layout comes from :func:`~omr_scanner.domain.template_authoring.resize_zone`
+        - the *same* pure function the commit path calls through
+        :meth:`DesignerState.resize_zone`. Reusing it rather than approximating
+        is what guarantees the preview and the committed result are identical,
+        so releasing the mouse produces no visible jump. It returns a new
+        ``Zone`` and mutates nothing, so no undo entry is created.
+
+        A move needs no work at all: :attr:`RegionHandleItem.bubble_points` are
+        item-local, so they travel with the item. Only a size change re-fits
+        the grid.
+        """
+        if self._designer_state is None or self._decoded_image is None:
+            return
+        zone = self._designer_state.template.zone_by_id(item_id)
+        if zone is None or zone.grid is None:
+            return
+        image_width, image_height = self._decoded_image.width, self._decoded_image.height
+        nx, ny = x / image_width, y / image_height
+        nw, nh = width / image_width, height / image_height
+        try:
+            tentative = resize_zone(
+                zone,
+                bounds=NormalizedRect(
+                    x=max(0.0, min(nx, 1.0 - 1e-4)),
+                    y=max(0.0, min(ny, 1.0 - 1e-4)),
+                    width=max(1e-4, min(nw, 1.0 - max(0.0, nx))),
+                    height=max(1e-4, min(nh, 1.0 - max(0.0, ny))),
+                ),
+            )
+        except (ValidationError, ValueError):
+            # A rectangle the model would refuse - dragged inside-out, or a
+            # half-typed number. Leaving the previous preview on screen is
+            # better than clearing it: the bubbles stay put for the instant it
+            # takes the user to drag back into a valid shape.
+            return
+        self.canvas.preview_bubble_points(
+            item_id, _bubble_preview_points(tentative, image_width, image_height)
+        )
+
+    def _on_properties_preview(
+        self, x: float, y: float, width: float, height: float
+    ) -> None:
+        """Show an inspector edit on the canvas before it is committed.
+
+        The rectangle and its bubbles move as the value changes; the template
+        is written - and one undo entry pushed - only when editing finishes.
+        """
+        item_id = self.canvas.selected_region_id()
+        if item_id is None:
+            return
+        self.canvas.preview_region_geometry(item_id, x, y, width, height)
+        self._preview_bubbles(item_id, x, y, width, height)
+
+    def _on_region_bubble_radius_preview(self, radius_px: float) -> None:
+        """Resize the drawn bubbles as the radius spin box changes.
+
+        Only the drawn size changes: the centres and the region's rectangle
+        stay exactly where they are, which is what the committed edit does
+        too.
+        """
+        item_id = self.canvas.selected_region_id()
+        if item_id is None or self._decoded_image is None:
+            return
+        diameter = max(1.0, radius_px * 2.0)
+        self.canvas.preview_bubble_size(item_id, diameter, diameter)
 
     def _on_canvas_geometry_committed(
         self, item_id: str, kind: str, x: float, y: float, width: float, height: float

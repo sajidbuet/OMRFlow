@@ -46,7 +46,12 @@ desktop.ini
 *.sqlite-journal
 *.log
 /projects/
+# Both spellings deliberately. Git on Windows matches these case-insensitively,
+# so `/scratch/` alone appears to cover `Scratch/` here - but the Linux CI
+# runner is case-sensitive and would start tracking real scans and project data
+# that must never leave the machine they were created on.
 /scratch/
+/Scratch/
 
 # Generated GUI test artefacts: screenshots, geometry dumps and failure
 # diagnostics written by the `qtguitesting` skill's scripts. Regenerated on

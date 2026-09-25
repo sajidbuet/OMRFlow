@@ -1,0 +1,102 @@
+warning: in the working copy of 'src/omr_scanner/gui/calibration/page.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/omr_scanner/imaging/config.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/omr_scanner/imaging/orientation.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mindex 8856c26..c817ee1 100644[m
+[1m--- a/.gitignore[m
+[1m+++ b/.gitignore[m
+[36m@@ -46,7 +46,12 @@[m [mdesktop.ini[m
+ *.sqlite-journal[m
+ *.log[m
+ /projects/[m
+[32m+[m[32m# Both spellings deliberately. Git on Windows matches these case-insensitively,[m
+[32m+[m[32m# so `/scratch/` alone appears to cover `Scratch/` here - but the Linux CI[m
+[32m+[m[32m# runner is case-sensitive and would start tracking real scans and project data[m
+[32m+[m[32m# that must never leave the machine they were created on.[m
+ /scratch/[m
+[32m+[m[32m/Scratch/[m
+ [m
+ # Generated GUI test artefacts: screenshots, geometry dumps and failure[m
+ # diagnostics written by the `qtguitesting` skill's scripts. Regenerated on[m
+[1mdiff --git a/README.md b/README.md[m
+[1mindex b1468b5..a2da836 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -229,6 +229,65 @@[m [msynthetically tested" to a qualified stable release.[m
+ | Real examination data | ❌ **Not started** — this is Phase 11B |[m
+ | 100,000-sheet qualification | ⚪ Harness ready, not run |[m
+ | Release automation | ✅ One command prepares a release; GitHub Actions builds and publishes it. 96 tests, no step needs a person or a model — see [Release Checklist](docs/release/RELEASE_CHECKLIST.md) |[m
+[32m+[m[32m| Template Editor interaction | ✅ Debugging pass completed — see below |[m
+[32m+[m[32m| Real-scan registration | 🟠 First real scanned cohort registered and calibrated — 8 sheets, one template. See below |[m
+[32m+[m
+[32m+[m[32m#### Real-scan registration debugging[m
+[32m+[m
+[32m+[m[32mA real project — a real `.omrt` template and eight real scanned sheets — failed[m
+[32m+[m[32mcalibration with *"the orientation mark ... was not found"*. The mark was[m
+[32m+[m[32mpresent, black, and exactly where the template said.[m
+[32m+[m
+[32m+[m[32m**Root cause.** The orientation confidence was `fill / (1 / window_margin²)`,[m
+[32m+[m[32mwhich assumes the template's declared orientation box tightly bounds the[m
+[32m+[m[32mprinted mark. Nothing enforces that, and the designer lets the box be drawn[m
+[32m+[m[32mwith margin — which is the natural way to draw one. This template's box was[m
+[32m+[m[32mabout twice the mark in each axis, so the ink was diluted over four times the[m
+[32m+[m[32marea: the correct orientation scored **0.29** against a 0.35 floor, and sat[m
+[32m+[m[32monly **0.01** ahead of its own 180° twin, because a window mostly full of[m
+[32m+[m[32mpaper scores much the same wherever it is placed.[m
+[32m+[m
+[32m+[m[32m**Fix.** The mark is now scored over the best of several concentric windows,[m
+[32m+[m[32mso the measurement no longer depends on how tightly the box was drawn. A[m
+[32m+[m[32mtemplate whose box already fits is unaffected. On the real sheets confidence[m
+[32m+[m[32mwent from 0.29 to **1.00** and the margin from 0.00 to **0.63–0.73**.[m
+[32m+[m
+[32m+[m[32mThe four registration markers were never the problem — they were detected all[m
+[32m+[m[32malong, at scores 0.93–0.95. The calibration panel reported *"Markers detected:[m
+[32m+[m[32m0 / 4"* purely because the failure path never recorded what the engine had[m
+[32m+[m[32mfound, which sent the investigation after a detector fault that did not exist.[m
+[32m+[m[32mIt now says *"not reached"* rather than asserting a count it never measured.[m
+[32m+[m
+[32m+[m[32m**Verified on the real dataset:** 8/8 sheets register, resolve orientation and[m
+[32m+[m[32msample all 500 bubble positions, with 0.0 px reprojection error. Bubble[m
+[32m+[m[32moverlays were inspected visually against the printed sheet and are concentric[m
+[32m+[m[32mwith the printed bubbles. The scans themselves are examination material and[m
+[32m+[m[32mare not in this repository; the regression tests are synthetic.[m
+[32m+[m
+[32m+[m[32m#### Template Editor interaction pass[m
+[32m+[m
+[32m+[m[32mFive interaction defects, all of the same shape — the editor knew the right[m
+[32m+[m[32manswer but did not show it until some later event:[m
+[32m+[m
+[32m+[m[32m| Defect | Cause | Fix |[m
+[32m+[m[32m|---|---|---|[m
+[32m+[m[32m| Spin-box arrows showed an I-beam and clicking them put the caret in the text | Styling a spin box switches it to `QStyleSheetStyle`, which lays the line edit across the whole padded rect unless the up/down buttons declare a width. They did not, so `childAt()` over an arrow returned the `QLineEdit` — the editor was physically on top of the buttons | Explicit `::up-button` / `::down-button` geometry in the central stylesheet, so the editor stops short of them. Hit-testing, not appearance; Qt's auto-repeat, keyboard stepping and typing are untouched |[m
+[32m+[m[32m| Editing X/Y/W/H in the inspector did not move the canvas | The panel emitted only on `editingFinished`, i.e. on Enter or focus loss | A separate `geometry_preview` signal on `valueChanged` redraws immediately; `geometry_edited` still commits once, so there is no undo entry per keystroke |[m
+[32m+[m[32m| Bubbles did not follow a region being dragged or resized | The mid-drag handler updated the inspector numbers and nothing else; bubbles were recalculated only on release | The same handler now re-fits the layout with `resize_zone` — the *same* pure function the commit path uses, so preview and result are identical and releasing produces no jump |[m
+[32m+[m[32m| Default bubble radius | `DEFAULT_BUBBLE_RADIUS` was the same constant as the legacy fallback for templates predating the field | Split them. New templates get **20 px**, converted per page; the fallback stays where it was, so existing templates keep the geometry they were drawn with |[m
+[32m+[m[32m| Cursor stayed a hand while drawing a region | Three code paths fought: a crosshair on the view, `ScrollHandDrag` putting an open hand on the *viewport*, and `_stop_pan` calling `unsetCursor()` unconditionally | One `_apply_cursor()` derives the cursor from the mode and sets it on the viewport |[m
+[32m+[m
+[32m+[m[32mBoth directions of geometry editing are now synchronised: a canvas drag[m
+[32m+[m[32mupdates the inspector and its normalised values, and an inspector edit updates[m
+[32m+[m[32mthe canvas, the bubble layout and the normalised values.[m
+[32m+[m
+[32m+[m[32m**Testing status.** 55 focused tests were added and run. Each of the five[m
+[32m+[m[32mfixes was verified load-bearing by reverting it and confirming its test fails.[m
+[32m+[m[32mThe spin-box tests are **skipped on the offscreen platform** — the defect is an[m
+[32m+[m[32minteraction with the *Windows* style, and on Fusion they pass whether or not[m
+[32m+[m[32mthe fix is present, so they run on a Windows desktop and report a skip in[m
+[32m+[m[32mheadless CI rather than false assurance. Manual GUI walkthroughs (TEST A–F)[m
+[32m+[m[32mhave **not** been performed.[m
+ [m
+ #### Cross-platform CI defects fixed[m
+ [m
+[1mdiff --git a/src/omr_scanner/domain/template_authoring.py b/src/omr_scanner/domain/template_authoring.py[m
+[1mindex dc5c72f..6d0dadc 100644[m
+[1m--- a/src/omr_scanner/domain/template_authoring.py[m
+[1m+++ b/src/omr_scanner/domain/template_authoring.py[m
+[36m@@ -96,17 +96,51 @@[m [mDEFAULT_ORIENTATION_CENTER = NormalizedPoint(x=0.14, y=0.035)[m
+ DEFAULT_ORIENTATION_SIZE = NormalizedSize(width=0.05, height=0.012)[m
+ """Default orientation-mark size for a brand new template."""[m
+ [m
+[32m+[m[32mDEFAULT_BUBBLE_RADIUS_PX = 20.0[m
+[32m+[m[32m"""Bubble radius a **brand new** template starts with, in canonical page pixels.[m
+[32m+[m
+[32m+[m[32mStated in pi

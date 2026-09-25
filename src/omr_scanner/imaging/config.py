@@ -307,6 +307,27 @@ class OrientationConfig:
         """Fraction of the evidence window a correctly printed mark covers."""
         return 1.0 / (self.window_margin * self.window_margin)
 
+    @property
+    def evidence_window_scales(self) -> tuple[float, ...]:
+        """Concentric fractions of the evidence window to score the mark in.
+
+        The template's orientation box is whatever rectangle a person drew
+        around the printed mark, and a box drawn with margin is both normal
+        and, before this, fatal: at twice the mark's size the ink is diluted
+        by four times as much paper, the fill drops below
+        :attr:`min_confidence`, and the correct orientation stops being
+        distinguishable from its 180 degree twin.
+
+        Scoring the best of several concentric windows removes the dependence
+        on how tightly the box was drawn. ``1.0`` first, so a box that *is*
+        tight behaves exactly as before; the smallest entry recovers a box
+        drawn about three times oversized in each axis, past which a "box"
+        no longer describes the mark at all. Six windows on a patch of a few
+        thousand pixels is negligible beside the four perspective warps the
+        surrounding loop already performs.
+        """
+        return (1.0, 0.8, 0.65, 0.5, 0.4, 0.3)
+
 
 @dataclass(frozen=True, slots=True)
 class GeometryConfig:

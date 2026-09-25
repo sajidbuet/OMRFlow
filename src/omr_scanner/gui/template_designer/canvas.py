@@ -31,6 +31,7 @@ What does NOT belong here:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QSizeF, Qt, Signal
@@ -330,6 +331,58 @@ class TemplateCanvasView(QGraphicsView):
         self._scene.rebuild_regions(specs)
         self._wire_region_signals()
 
+    def preview_region_geometry(
+        self, item_id: str, x: float, y: float, width: float, height: float
+    ) -> None:
+        """Move/resize one region's rectangle without touching the document.
+
+        The visual half of an edit that has not been committed - a spin box
+        the user is still typing into. The item is repositioned and the
+        inspector stays authoritative; nothing is written to the template and
+        no undo entry is created until the edit finishes.
+        """
+        item = self._scene.region_items.get(item_id)
+        if item is None:
+            return
+        item.set_scene_rect(QRectF(x, y, width, height))
+
+    def preview_bubble_points(
+        self, item_id: str, points: Sequence[tuple[float, float]]
+    ) -> None:
+        """Redraw one region's bubble centres from tentative geometry.
+
+        Args:
+            item_id: The region being manipulated.
+            points: Bubble centres in **scene (image) pixels**, as the page
+                computed them from the tentative rectangle.
+
+        Converted to item-local coordinates here for the same reason
+        :meth:`TemplateCanvasScene.rebuild_regions` does it: the item paints
+        in its own frame, so a move needs no recalculation at all and only a
+        resize has to recompute anything.
+        """
+        item = self._scene.region_items.get(item_id)
+        if item is None:
+            return
+        origin = item.pos()
+        item.bubble_points = [
+            QPointF(px - origin.x(), py - origin.y()) for px, py in points
+        ]
+        item.update()
+
+    def preview_bubble_size(self, item_id: str, width: float, height: float) -> None:
+        """Change the drawn size of one region's bubbles, leaving centres alone.
+
+        The visual half of a bubble-radius edit. Matches what the committed
+        change does - a radius only ever resizes bubbles around the centres
+        they already have - so the preview and the result agree.
+        """
+        item = self._scene.region_items.get(item_id)
+        if item is None:
+            return
+        item.bubble_size = QSizeF(width, height)
+        item.update()
+
     def show_bubble_dots(self, dots: list[BubbleDotSpec]) -> None:
         """Show fine-tune dots for one zone's bubbles."""
         items = self._scene.show_bubble_dots(dots)
@@ -390,7 +443,7 @@ class TemplateCanvasView(QGraphicsView):
         a new rectangle.
         """
         self._draw_mode = True
-        self.setCursor(Qt.CursorShape.CrossCursor)
+        self._apply_cursor()
         for item in self._scene.region_items.values():
             item.setEnabled(False)
 
@@ -400,9 +453,36 @@ class TemplateCanvasView(QGraphicsView):
         self._draw_origin = None
         if self._rubber_band is not None:
             self._rubber_band.hide()
-        self.unsetCursor()
         for item in self._scene.region_items.values():
             item.setEnabled(True)
+        self._apply_cursor()
+
+    def _apply_cursor(self) -> None:
+        """Set the viewport cursor from the current mode. The only place that does.
+
+        There were three: `start_draw_mode` set a crosshair on the *view*,
+        `_start_pan`/`_stop_pan` set and then unconditionally unset a closed
+        hand, and holding space switched `dragMode` to `ScrollHandDrag`, which
+        makes Qt put an open hand on the *viewport*. A viewport cursor wins
+        over the view's, and `unsetCursor()` cleared whatever was there, so
+        panning once inside draw mode left the crosshair gone for the rest of
+        the gesture. Deriving the cursor from the mode instead means the
+        combinations cannot disagree, and it is set on the viewport - the
+        widget the pointer is actually over.
+
+        Panning outranks drawing because it is the transient gesture: while
+        the button is down the user is moving the page, not placing a region,
+        and the cursor goes back to the crosshair when they let go.
+        """
+        viewport = self.viewport()
+        if self._pan_active:
+            viewport.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._space_panning:
+            viewport.setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._draw_mode:
+            viewport.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            viewport.unsetCursor()
 
     @property
     def is_drawing(self) -> bool:
@@ -497,14 +577,17 @@ class TemplateCanvasView(QGraphicsView):
         """Enter pan mode while space is held, mirroring common editor conventions."""
         if event.key() == Qt.Key.Key_Space and not self._space_panning:
             self._space_panning = True
-            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            # Not `setDragMode(ScrollHandDrag)`: that hands Qt control of the
+            # viewport cursor, which is what used to wipe the crosshair.
+            # `_update_pan` already does the scrolling on its own.
+            self._apply_cursor()
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         """Leave pan mode when space is released."""
         if event.key() == Qt.Key.Key_Space:
             self._space_panning = False
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+            self._apply_cursor()
         super().keyReleaseEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -611,7 +694,7 @@ class TemplateCanvasView(QGraphicsView):
         self._pan_active = True
         self._pan_last_pos = pos
         self._pan_button = button
-        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        self._apply_cursor()
 
     def _update_pan(self, pos: QPoint) -> None:
         if self._pan_last_pos is None:
@@ -627,7 +710,7 @@ class TemplateCanvasView(QGraphicsView):
         self._pan_active = False
         self._pan_last_pos = None
         self._pan_button = None
-        self.unsetCursor()
+        self._apply_cursor()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Keep the fit-to-window behaviour stable across a window resize."""

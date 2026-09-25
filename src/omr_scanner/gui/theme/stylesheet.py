@@ -58,6 +58,14 @@ _CONTROL_MIN_HEIGHT: Final = 26
 """A minimum, never a fixed height: the control still grows when the platform
 font or Windows text scaling is larger, which a fixed height would clip."""
 
+_SPIN_BUTTON_WIDTH: Final = 18
+"""Width reserved for a spin box's up/down buttons.
+
+Wide enough to be an easy mouse target - Fitts's law applies to a 9-pixel-tall
+half-button more than to anything else in the interface - and the value the
+line edit's `padding-right` reserves, so the two cannot disagree and let the
+editor cover the arrows again."""
+
 
 def application_stylesheet() -> str:
     """Return the global stylesheet, applied to the `QApplication`.
@@ -366,6 +374,61 @@ QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
 QLineEdit[invalid="true"], QSpinBox[invalid="true"],
 QDoubleSpinBox[invalid="true"], QComboBox[invalid="true"] {{
     border: {Stroke.FOCUS_RING}px solid {Color.DESTRUCTIVE};
+}}
+
+/* Spin boxes: the buttons need explicit geometry, or the editor covers them.
+
+   Styling a `QSpinBox` at all switches it to `QStyleSheetStyle`, which lays
+   the line edit across the whole padded content rect unless the up/down
+   buttons declare a width. With only the `padding` rule above, the editor
+   spanned x=10..126 of a 160px control while the buttons sat at 112..136 -
+   so `childAt()` over the up arrow returned the `QLineEdit`. The arrows were
+   drawn, but the edit widget was on top of them: hovering showed an I-beam
+   and clicking put the caret in the text instead of stepping the value.
+
+   Reserving the width with `padding-right` and pinning both buttons to the
+   border box fixes the hit-testing rather than the appearance. Qt's own
+   auto-repeat, keyboard stepping and text entry are untouched. */
+QAbstractSpinBox {{
+    padding-right: {_SPIN_BUTTON_WIDTH + Spacing.XS}px;
+}}
+
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
+    subcontrol-origin: border;
+    width: {_SPIN_BUTTON_WIDTH}px;
+    border: none;
+    border-radius: 0px;
+    background: transparent;
+}}
+
+QAbstractSpinBox::up-button {{
+    subcontrol-position: top right;
+    margin: {Stroke.BORDER}px {Stroke.BORDER}px 0px 0px;
+}}
+
+QAbstractSpinBox::down-button {{
+    subcontrol-position: bottom right;
+    margin: 0px {Stroke.BORDER}px {Stroke.BORDER}px 0px;
+}}
+
+QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {{
+    background: {Color.SURFACE_HOVER};
+}}
+
+QAbstractSpinBox::up-button:pressed, QAbstractSpinBox::down-button:pressed {{
+    background: {Color.SURFACE_PRESSED};
+}}
+
+/* `width`/`height` rather than an image: Qt draws its own arrow primitive at
+   this size, so the control needs no bundled asset and follows the palette. */
+QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {{
+    width: {Spacing.SM}px;
+    height: {Spacing.SM}px;
+}}
+
+QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off,
+QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
+    opacity: 0.4;
 }}
 
 QComboBox::drop-down {{

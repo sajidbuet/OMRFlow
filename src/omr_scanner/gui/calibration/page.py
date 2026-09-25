@@ -1445,10 +1445,25 @@ def _bubble_inspector_html(bubble: BubbleView, template: OmrTemplate) -> str:
 
 def _quality_summary_html(result: ScanResult, report: CalibrationReport | None) -> str:
     """Render the per-scan recognition quality summary (spec section 28)."""
-    orientation_state = "resolved" if (report and report.orientation_ok) else "assumed/unresolved"
+    # A sheet that never registered has no marker count to report. Printing
+    # "0 / 4" for it stated something the engine never measured - registration
+    # can fail with all four markers found and only the orientation mark
+    # unresolved, and "0 / 4" sent a real investigation looking for a marker
+    # detection fault that did not exist.
+    registered = bool(report and report.registered)
+    markers = (
+        f"{report.markers_detected} / 4"
+        if registered and report is not None
+        else "not reached"
+    )
+    orientation_state = (
+        ("resolved" if (report and report.orientation_ok) else "assumed/unresolved")
+        if registered
+        else "not reached"
+    )
     lines = [
         f"Registration: <b>{_registration_label(result)}</b>",
-        f"Markers detected: {report.markers_detected if report else 0} / 4",
+        f"Markers detected: {markers}",
         f"Orientation: {orientation_state}",
     ]
     identifier = result.identifier
