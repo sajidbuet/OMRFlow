@@ -124,11 +124,14 @@ from omr_scanner.gui.widgets import (
 )
 from omr_scanner.services import (
     ProjectSession,
+    adopt_template_if_unambiguous,
     create_project,
     diagnostics,
     open_project,
     recover_interrupted,
+    resolve_active_template,
     review_store,
+    set_active_template,
 )
 from omr_scanner.services.project_lock import ProjectLockHeldError
 
@@ -343,7 +346,9 @@ class MainWindow(QMainWindow):
                 )
                 page = project_page
             elif spec.key == "template":
-                page = TemplateDesignerPage(spec)
+                designer_page = TemplateDesignerPage(spec)
+                designer_page.active_template_changed.connect(self.set_active_project_template)
+                page = designer_page
             elif spec.key == "calibration":
                 calibration_page = CalibrationPage(spec)
                 calibration_page.edit_template_requested.connect(self.edit_template)
@@ -1415,9 +1420,57 @@ class MainWindow(QMainWindow):
         self._session = session
         if not session.read_only:
             self._recover_interrupted_batches(session)
+        # Before any page sees the session: a project that names no template
+        # but owns exactly one adopts it here, once, so Template, Calibrate
+        # and Scan all receive it already resolved. Doing it per page would
+        # mean three disk scans and three chances to disagree.
+        self._adopt_project_template(session)
         self._remember_recent_project(session.root)
         self._broadcast_project_change()
         self.statusBar().showMessage(f"Project '{session.name}' is open", STATUS_MESSAGE_MS)
+
+    def _adopt_project_template(self, session: ProjectSession) -> None:
+        """Settle which template this project uses, once per open.
+
+        Only when the project names none: a recorded choice is never
+        second-guessed, and a project with two templates is left alone rather
+        than guessed at. Failure here is logged and otherwise ignored - a
+        project whose template cannot be settled must still open, because the
+        Template screen is where it gets fixed.
+        """
+        try:
+            adopted = adopt_template_if_unambiguous(session)
+        except OMRScannerError:
+            logger.warning(
+                "Could not record the active template for %s", session.name, exc_info=True
+            )
+            return
+        if adopted is not None:
+            logger.info("Adopted %s as the active template for %s", adopted.name, session.name)
+
+    def set_active_project_template(self, template_path: Path) -> None:
+        """Make ``template_path`` this project's template and tell every page.
+
+        The one way the active template changes. Called when the Template
+        screen saves, imports or creates one, and when a missing template is
+        replaced, so the three screens cannot drift apart: they are not told
+        individually, they are all re-broadcast from the same session.
+        """
+        if self._session is None:
+            return
+        # A page that opens the template it was just handed announces it right
+        # back. Recognising that as a no-op both saves a pointless rewrite of
+        # project.json and stops broadcast -> open -> announce -> broadcast
+        # from running forever.
+        if resolve_active_template(self._session.project) == template_path:
+            return
+        try:
+            set_active_template(self._session, template_path)
+        except OMRScannerError as exc:
+            logger.warning("Could not record the active template: %s", exc)
+            QMessageBox.warning(self, "Project template", exc.user_message)
+            return
+        self._broadcast_project_change()
 
     def _recover_interrupted_batches(self, session: ProjectSession) -> None:
         """Repair batch state left behind by a run that never finished.

@@ -28,10 +28,11 @@ Invariants:
 
 from __future__ import annotations
 
+import ntpath
 import re
 from datetime import UTC, datetime
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Self
 from uuid import uuid4
 
@@ -46,7 +47,7 @@ PROJECT_FILE_NAME = "project.json"
 DATABASE_FILE_NAME = "database.sqlite"
 """Authoritative working data store, next to ``project.json``."""
 
-PROJECT_FORMAT_VERSION = 2
+PROJECT_FORMAT_VERSION = 3
 """Version of the ``project.json`` document format.
 
 Bumped only for breaking changes. A build refuses to open a project whose
@@ -63,6 +64,12 @@ History:
        handed a version 2 document would reject it as invalid. The bump is
        what turns that into the accurate "created with a newer version of
        OMRFlow" message instead.
+    3. Adds :attr:`ProjectMetadata.active_template`: which template this
+       project uses, so Template, Calibrate and Scan stop asking for it
+       separately. Backward compatible in the same one direction - a version 2
+       document has no ``active_template`` and reads back with ``None``, which
+       is exactly the "not chosen yet" state - and bumped for the same reason,
+       so an older build reports what is actually wrong.
 """
 
 MAX_PROJECT_NAME_LENGTH = 120
@@ -226,6 +233,10 @@ class ProjectMetadata(BaseModel):
         created_at: Creation timestamp (timezone aware, UTC).
         modified_at: Last time the metadata document was written.
         created_with: OMRFlow version that created the project, for diagnostics.
+        active_template: The template this project's sheets are read against,
+            as a project-relative POSIX path, or ``None`` when no template has
+            been chosen yet. See the attribute's own documentation below for
+            why it is stored relative.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -238,6 +249,48 @@ class ProjectMetadata(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     modified_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     created_with: str = __version__
+    active_template: str | None = None
+    """The project's template, as a **project-relative** POSIX path.
+
+    ``"templates/OMR-Scan.omrt"``, never ``"D:/Scratch/Project1/templates/..."``.
+    Relative because a project folder is meant to be copied - onto a memory
+    stick, onto a marking machine, into a backup - and an absolute path
+    recorded on the machine that made it would break on arrival.
+
+    ``None`` means no template has been chosen yet, which is a valid state: a
+    project can be created before its answer sheet has been designed. It is
+    also what every project written before this field existed reads back as,
+    so an older ``project.json`` opens unchanged and the template is inferred
+    instead (see
+    :func:`~omr_scanner.services.project_service.resolve_active_template`).
+
+    Stored here rather than in the ``.omrt`` document because the relationship
+    belongs to the project: one template may legitimately be used by several
+    projects, and a template file should not record which of them are using
+    it.
+    """
+
+    @field_validator("active_template")
+    @classmethod
+    def _validate_active_template(cls, value: str | None) -> str | None:
+        """Reject anything that is not a relative path inside the project.
+
+        An absolute path defeats the point of the field, and ``..`` segments
+        would let a project document point anywhere on the machine - worth
+        refusing on a value that is read from a file the application did not
+        necessarily write.
+        """
+        if value is None:
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        pure = PurePosixPath(candidate.replace("\\", "/"))
+        if pure.is_absolute() or ntpath.isabs(candidate) or ".." in pure.parts:
+            raise ValueError(
+                f"active_template must be a relative path inside the project, not {value!r}"
+            )
+        return pure.as_posix()
 
     @field_validator("name")
     @classmethod

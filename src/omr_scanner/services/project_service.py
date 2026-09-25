@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -57,10 +58,15 @@ __all__ = [
     "ProjectDatabase",
     "ProjectLockHeldError",
     "ProjectSession",
+    "active_template_is_missing",
+    "adopt_template_if_unambiguous",
     "create_project",
+    "discover_templates",
     "is_project_directory",
     "open_project",
     "read_project_metadata",
+    "resolve_active_template",
+    "set_active_template",
     "update_exam_name",
 ]
 """``ProjectDatabase`` is re-exported deliberately.
@@ -412,6 +418,170 @@ def update_exam_name(session: ProjectSession, exam_name: str) -> ProjectMetadata
     _store_identity(session.database, updated)
     logger.info("Examination name set to %r for %s", validated, session.root)
     return updated
+
+
+TEMPLATE_SUFFIX = ".omrt"
+"""Extension of a template document, matched case-insensitively.
+
+A project copied from a case-insensitive filesystem can arrive carrying
+``.OMRT``, and refusing to see it would be a distinction the user never made.
+"""
+
+
+def discover_templates(project: Project) -> tuple[Path, ...]:
+    """Every template in the project's templates directory, sorted by name.
+
+    Args:
+        project: The open project.
+
+    Returns:
+        Absolute paths, sorted, so the order is the same on every machine.
+        Filesystem order is not: adopting "the first one" from an unsorted
+        listing would pick different files on different computers for the same
+        project.
+    """
+    directory = project.layout.templates_dir
+    if not directory.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            (
+                path
+                for path in directory.iterdir()
+                if path.is_file() and path.suffix.lower() == TEMPLATE_SUFFIX
+            ),
+            key=lambda path: path.name.lower(),
+        )
+    )
+
+
+def resolve_active_template(project: Project) -> Path | None:
+    """Where this project's template is, or ``None`` if it has none.
+
+    Args:
+        project: The open project.
+
+    Returns:
+        The absolute path recorded in ``project.json``, resolved against the
+        project root - or ``None`` when no template is recorded, **or when the
+        recorded one no longer exists**.
+
+    Returning ``None`` for a recorded-but-missing template is deliberate: the
+    caller that wants to tell the two apart asks
+    :func:`active_template_is_missing`, and every caller that only wants "a
+    template I can load" gets one answer to check rather than two. A project
+    whose template has been deleted or renamed must still open.
+    """
+    recorded = project.metadata.active_template
+    if not recorded:
+        return None
+    candidate = project.layout.resolve(Path(recorded))
+    return candidate if candidate.is_file() else None
+
+
+def active_template_is_missing(project: Project) -> bool:
+    """Whether the project records a template that is not on disk.
+
+    The state worth reporting in the interface: "this project had a template
+    and it has gone" is a different thing from "this project never had one",
+    and only the first is a problem to tell somebody about.
+    """
+    recorded = project.metadata.active_template
+    if not recorded:
+        return False
+    return not project.layout.resolve(Path(recorded)).is_file()
+
+
+def set_active_template(session: ProjectSession, template_path: Path | None) -> ProjectMetadata:
+    """Record which template this project uses, and write it to disk.
+
+    Args:
+        session: The open project session. Its
+            :attr:`~ProjectSession.project` is updated in place, so every page
+            already holding it sees the change without reopening - the same
+            contract :func:`update_exam_name` has.
+        template_path: Absolute path of the template, or ``None`` to clear it.
+
+    Returns:
+        The metadata as stored.
+
+    Raises:
+        ProjectValidationError: The session is read-only, the template lies
+            outside the project directory, or ``project.json`` could not be
+            written.
+
+    The path is stored **relative to the project root**, so copying the whole
+    folder to another machine or drive keeps it valid. A template outside the
+    project is refused rather than stored absolutely: an absolute path would
+    survive exactly until the project was moved, and then fail somewhere far
+    less obvious than here.
+    """
+    if session.read_only:
+        raise ProjectValidationError(
+            "Cannot change the active template of a read-only session",
+            user_message="This project is open read-only, so it cannot be changed.",
+        )
+
+    layout = session.project.layout
+    if template_path is None:
+        relative: str | None = None
+    else:
+        try:
+            relative = layout.relative_to_root(template_path).as_posix()
+        except ValueError as exc:
+            raise ProjectValidationError(
+                f"Template {template_path} is outside project {layout.root}",
+                user_message=(
+                    "That template is outside the project folder. Copy it into "
+                    "the project's 'templates' folder first, so the project "
+                    "stays self-contained."
+                ),
+            ) from exc
+
+    updated = session.project.metadata.model_copy(
+        update={"active_template": relative, "modified_at": datetime.now(UTC)}
+    )
+    try:
+        write_json_atomic(layout.project_file, updated.model_dump(mode="json"))
+    except OSError as exc:
+        raise ProjectValidationError(
+            f"Could not write {layout.project_file}: {exc}",
+            user_message="The project file could not be saved.",
+        ) from exc
+
+    session.project.metadata = updated
+    logger.info("Project %s active template set to %s", updated.name, relative)
+    return updated
+
+
+def adopt_template_if_unambiguous(session: ProjectSession) -> Path | None:
+    """Adopt the project's only template, when there is exactly one.
+
+    Called when a project is opened and its metadata names no template -
+    which is every project created before the field existed.
+
+    Args:
+        session: The open project session.
+
+    Returns:
+        The adopted template's absolute path, or ``None`` when the project has
+        no templates or more than one.
+
+    With two or more, this deliberately does nothing. Picking one would be
+    guessing, and guessing wrong is worse than asking: the sheets would be
+    read against the wrong geometry and the results would look plausible.
+    """
+    if session.project.metadata.active_template:
+        return None
+    candidates = discover_templates(session.project)
+    if len(candidates) != 1:
+        return None
+    chosen = candidates[0]
+    if session.read_only:
+        # Usable now, remembered next time the project opens writable.
+        return chosen
+    set_active_template(session, chosen)
+    return chosen
 
 
 def read_project_metadata(project_directory: Path) -> ProjectMetadata:

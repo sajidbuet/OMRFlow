@@ -69,6 +69,13 @@ with a project open, its `templates/` folder is offered by default.
 7. **Save** (or **Save As**) writes the `.omrt` file. **Open...** reopens it
    later, restoring the reference image alongside your regions.
 
+Saving a template inside the open project, or opening one of the project's own
+templates, makes it **the project's template**: Calibrate and Scan pick it up
+without being told, and it is still there the next time you open the project.
+A template from outside the project is opened for you to look at and changes
+nothing. If a project already contains exactly one template, opening the
+project is enough - it is loaded on all three screens.
+
 Full detail, including every keyboard shortcut, is in
 `docs/template_designer.md`.
 
@@ -76,7 +83,8 @@ Full detail, including every keyboard shortcut, is in
 
 Select **4. Scan** to read filled sheets against a template.
 
-1. **Load Template...** - the `.omrt` the sheets were printed from.
+1. **Load Template...** - the `.omrt` the sheets were printed from. Already
+   filled in when the project has a template; only needed to override it.
 2. **Add Scan(s)...** for individual images, or **Add Folder...** to take every
    supported image in a folder (PNG, JPEG, TIFF, BMP; anything else is ignored).
 3. **Process All**, or select rows and **Process Selected**. The window stays

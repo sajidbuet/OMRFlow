@@ -85,13 +85,14 @@ database is the authoritative store for working data.
 
 | Field | Type | Notes |
 |---|---|---|
-| `project_format_version` | int | Refuses to open a newer format. Currently 2. |
+| `project_format_version` | int | Refuses to open a newer format. Currently 3. |
 | `project_id` | uuid string | Stable; never regenerated. Referenced by exports. |
 | `name` | str | The workspace's name, and the default folder name; validated as a portable folder name. |
 | `exam_name` | str | The examination's title, as it should read on a report. Free text - it is never a path, so none of `name`'s folder-name restrictions apply. Empty only in a format-version-1 document; `Project.exam_name` then falls back to `name`. |
 | `description` | str | Free text. |
 | `created_at`, `modified_at` | datetime (UTC, aware) | Naive timestamps are rejected. |
 | `created_with` | str | OMRFlow version, for diagnostics. |
+| `active_template` | str or null | The template the project's sheets are read against, as a **project-relative POSIX path** (`templates/OMR-Scan.omrt`) so the folder stays portable. Absolute paths, `..` segments and UNC paths are rejected on load. Null in a format-version-1 or -2 document, and in a project that owns no template; a project that owns exactly one adopts it the first time it opens. Added in format version 3. |
 
 Directory layout and rationale: `docs/decisions/ADR-0002-project-on-disk-layout.md`.
 
@@ -660,6 +661,13 @@ deliberately **not** backfilled.
   *older* build handed a version 2 document would otherwise reject it as
   corrupt rather than saying "this project was created with a newer version of
   OMRFlow".
+- **`project.json` format version 2 -> 3.** Adds `active_template`, the
+  project's template as a project-relative POSIX path. Reading stays backward
+  compatible: an older document has no such field and loads with `None`, and a
+  project that owns exactly one template adopts it the first time it opens, so
+  the upgrade costs the operator nothing. The bump exists for the same reason
+  the last one did - unknown fields are forbidden, so an older build must be
+  told the document is newer rather than left to call it corrupt.
 
 ### Schema version 3 (Phase 6)
 

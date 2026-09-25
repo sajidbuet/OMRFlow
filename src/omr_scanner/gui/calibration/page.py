@@ -84,12 +84,15 @@ from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET, Spacing
 from omr_scanner.gui.widgets import CollapsibleSection, StatusChipStrip
 from omr_scanner.services import (
     CalibrationStatus,
+    ProjectSession,
     RegistrationStatus,
+    active_template_is_missing,
     aggregate_calibration,
     apply_calibration,
     collect_scan_files,
     evaluate_calibration,
     load_template,
+    resolve_active_template,
     save_template,
     separation_label,
     write_calibration_report,
@@ -216,6 +219,7 @@ class CalibrationPage(WorkflowPage):
     run_finished = Signal()
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
+        self._session: ProjectSession | None = None
         self._zoom_is_fit = True
         """Whether the preview is following the viewport or a zoom the user chose."""
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
@@ -873,12 +877,78 @@ class CalibrationPage(WorkflowPage):
     # Template
     # ------------------------------------------------------------------
     def _prompt_load_template(self) -> None:
-        start = self.state.template_path.parent if self.state.template_path else Path.home()
+        start = self._template_dialog_directory()
         path_str, _filter = QFileDialog.getOpenFileName(
             self, "Load template", str(start), "OMRFlow templates (*.omrt)"
         )
         if path_str:
             self.load_template_from(Path(path_str))
+
+    def on_project_changed(self, session: ProjectSession | None) -> None:
+        """Adopt the open project's template, and its folder for dialogs.
+
+        Calibration had no project hook at all: it kept its own template path
+        and its Browse dialog opened at the user's home directory, so the same
+        template had to be found again here after it had already been chosen
+        on the Template screen.
+
+        The template is *consumed* from the session, never re-discovered: the
+        main window settles which one the project uses, once, when the project
+        opens. Loading is skipped when the same file is already loaded, so
+        moving between screens does not reparse it.
+        """
+        self._session = session
+        if session is None:
+            self._clear_template()
+            return
+
+        active = resolve_active_template(session.project)
+        if active is None:
+            missing = active_template_is_missing(session.project)
+            loaded = self.state.template_path
+            # Nothing to adopt. What is already loaded is dropped when it came
+            # from the project that was open a moment ago, or when it is the
+            # file the project names and that file has gone - otherwise this
+            # project would be calibrated against another one's geometry. A
+            # template the user browsed to inside this project is left alone.
+            stale = loaded is not None and session.project.layout.root not in loaded.parents
+            if missing or stale:
+                self._clear_template()
+            if missing:
+                # Said on the page, after the label has been refreshed, and
+                # only here. A dialog would appear every time the user walked
+                # past this screen.
+                self._set_template_status("The project's template is missing. Load a replacement.")
+            return
+
+        if self.state.template_path != active or self.state.template is None:
+            self.load_template_from(active)
+
+    def _clear_template(self) -> None:
+        """Forget the loaded template, because the project no longer names one."""
+        self.state.template = None
+        self.state.template_path = None
+        self._refresh_template_label()
+        self._refresh_controls()
+
+    def _set_template_status(self, message: str) -> None:
+        """Show a one-line note about the project's template."""
+        self.template_name_label.setText(message)
+
+    def _template_dialog_directory(self) -> Path:
+        """Where the template browser opens.
+
+        The project root first: when a project is open, every file it owns is
+        under there, and starting anywhere else makes the user navigate back
+        to the project they already told the application about. Falls back to
+        the loaded template's folder, then to the home directory, so the page
+        still behaves sensibly with no project open.
+        """
+        if self._session is not None:
+            return self._session.root
+        if self.state.template_path is not None:
+            return self.state.template_path.parent
+        return Path.home()
 
     def load_template_from(self, path: Path) -> bool:
         """Load the template at ``path`` and reset the working state.
@@ -940,17 +1010,23 @@ class CalibrationPage(WorkflowPage):
     # ------------------------------------------------------------------
     # Representative scans
     # ------------------------------------------------------------------
+    def _scan_dialog_directory(self) -> Path:
+        """Where the scan browser opens: the project's own scans, if there is one."""
+        if self._session is not None:
+            return self._session.project.layout.scans_original_dir
+        return Path.home()
+
     def _prompt_add_scans(self) -> None:
         patterns = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)"
         paths, _filter = QFileDialog.getOpenFileNames(
-            self, "Add representative scans", str(Path.home()), patterns
+            self, "Add representative scans", str(self._scan_dialog_directory()), patterns
         )
         if paths:
             self.add_scan_paths([Path(item) for item in paths])
 
     def _prompt_add_folder(self) -> None:
         directory = QFileDialog.getExistingDirectory(
-            self, "Add a folder of representative scans", str(Path.home())
+            self, "Add a folder of representative scans", str(self._scan_dialog_directory())
         )
         if directory:
             self.add_scan_paths([Path(directory)])
@@ -1207,7 +1283,12 @@ class CalibrationPage(WorkflowPage):
             return
         tested = [entry.report for entry in self.state.entries if entry.report is not None]
         sample = aggregate_calibration(tested)
-        start = str(Path.home() / "calibration_report.json")
+        exports = (
+            self._session.project.layout.exports_dir
+            if self._session is not None
+            else Path.home()
+        )
+        start = str(exports / "calibration_report.json")
         path_str, _filter = QFileDialog.getSaveFileName(
             self, "Export calibration report", start, "JSON files (*.json)"
         )

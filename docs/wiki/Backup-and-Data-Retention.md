@@ -7,7 +7,7 @@ it:
 
 ```text
 Demo Exam\
-├── project.json          the project's identity and settings (format version 2)
+├── project.json          the project's identity and settings (format version 3)
 ├── database.sqlite       candidates, recognised results, decisions, marks
 ├── logs\                 what OMRFlow did on this project
 ├── answer_keys\

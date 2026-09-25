@@ -93,6 +93,7 @@ from omr_scanner.services import (
     RecognitionOptions,
     RecognitionOutcome,
     ScanResult,
+    active_template_is_missing,
     check_compatibility,
     collect_scan_files,
     completed_results,
@@ -108,6 +109,7 @@ from omr_scanner.services import (
     load_template,
     mark_cancelled,
     mark_queued,
+    resolve_active_template,
     resumable_scans,
     scan_ids_by_path,
     scan_paths,
@@ -840,8 +842,40 @@ class ScanPage(WorkflowPage):
         """
         self._session = session
         self.state.batch_id = None
+        self._adopt_project_template(session)
         self._refresh_batch_state_label()
         self._refresh_controls()
+
+    def _adopt_project_template(self, session: ProjectSession | None) -> None:
+        """Take the template from the project rather than asking again.
+
+        Scan kept its own template path, so a template already chosen on the
+        Template screen and used on Calibrate had to be browsed for a third
+        time here. It is consumed from the session - never re-discovered, the
+        main window settles that once - and reloaded only when it is genuinely
+        a different file, so walking between screens does not reparse it.
+        """
+        if session is None:
+            self._clear_template()
+            return
+        active = resolve_active_template(session.project)
+        if active is None:
+            # Nothing to adopt. What is already loaded is dropped when it came
+            # from the project that was open a moment ago, or when it is the
+            # file the project names and that file has gone - otherwise these
+            # sheets would silently be read against another project's geometry.
+            loaded = self.state.template_path
+            stale = loaded is not None and session.project.layout.root not in loaded.parents
+            if stale or active_template_is_missing(session.project):
+                self._clear_template()
+            return
+        if self.state.template_path != active or self.state.template is None:
+            self.load_template_from(active)
+
+    def _clear_template(self) -> None:
+        """Forget the loaded template, because the open project does not name it."""
+        self.state.template = None
+        self.state.template_path = None
 
     # ------------------------------------------------------------------
     # Durable batches (Phase 5)
@@ -1080,11 +1114,17 @@ class ScanPage(WorkflowPage):
         return True
 
     def _default_template_dir(self) -> Path:
-        """Where the template file dialog should start."""
-        if self.state.template_path is not None:
-            return self.state.template_path.parent
+        """Where the template file dialog should start.
+
+        The open project first. It used to prefer whatever template happened
+        to be loaded, which after switching projects was the *previous*
+        project's folder - so the dialog opened somewhere the user had
+        deliberately navigated away from.
+        """
         if self._session is not None:
             return self._session.project.layout.templates_dir
+        if self.state.template_path is not None:
+            return self.state.template_path.parent
         return Path.home()
 
     # ------------------------------------------------------------------

@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
@@ -113,6 +113,7 @@ from omr_scanner.services import (
     detect_orientation_marker_in_region,
     detect_registration_markers,
     load_template,
+    resolve_active_template,
     save_template,
 )
 
@@ -169,7 +170,17 @@ class TemplateDesignerPage(WorkflowPage):
     Args:
         spec: The "template" workflow stage description.
         parent: Optional Qt parent.
+
+    Signals:
+        active_template_changed: A template was saved to ``path``, which should
+            now be the open project's template. The page does not write
+            ``project.json`` itself - the main window owns the session and is
+            the one place that records the choice and re-broadcasts it, so
+            Calibrate and Scan learn about it the same way they learn about a
+            project being opened.
     """
+
+    active_template_changed = Signal(Path)
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         # `show_summary=False` / `compact=True`: this page's body is a full-size
@@ -596,8 +607,24 @@ class TemplateDesignerPage(WorkflowPage):
     # WorkflowPage hook
     # ------------------------------------------------------------------
     def on_project_changed(self, session: ProjectSession | None) -> None:
-        """Track the open project, used only to default file dialogs sensibly."""
+        """Track the open project and open its template, if it has one.
+
+        The project's template is the document this screen edits by default,
+        so opening a project opens it - the user should not have to find on
+        disk the file the project already knows about. Two things are never
+        overridden: a document with unsaved changes, and the template that is
+        already open, so a re-broadcast of the same project is free.
+        """
         self._session = session
+        if session is None:
+            return
+        active = resolve_active_template(session.project)
+        if active is None:
+            return
+        state = self._designer_state
+        if state is not None and (state.is_dirty or state.template_path == active):
+            return
+        self._load_template_file(active)
 
     # ------------------------------------------------------------------
     # File actions
@@ -707,6 +734,10 @@ class TemplateDesignerPage(WorkflowPage):
         self.canvas.set_grid_size(DEFAULT_GRID_SIZE_NORMALIZED)
         self._set_document_controls_enabled(True)
         self._refresh_all()
+        # Opening one of the project's own templates is how a user picks
+        # between several, so it settles the project's choice as firmly as
+        # saving does.
+        self._announce_active_template(path)
 
     def save(self) -> bool:
         """File > Save. Returns whether the save actually happened."""
@@ -754,7 +785,27 @@ class TemplateDesignerPage(WorkflowPage):
 
         self._designer_state.mark_saved(written)
         self._update_status()
+        self._announce_active_template(written)
         return True
+
+    def _announce_active_template(self, path: Path) -> None:
+        """Offer ``path`` as the project's template, when it is the project's to own.
+
+        Templates outside the project are left alone deliberately. Opening one
+        from a colleague's folder, or saving a copy to the desktop, is a way of
+        looking at a template, not a decision to adopt it, and the project can
+        only store paths that live inside it anyway.
+        """
+        if self._session is None:
+            return
+        root = self._session.project.layout.root
+        try:
+            resolved = path.expanduser().resolve()
+        except OSError:  # pragma: no cover - unreadable path, nothing to adopt
+            return
+        if root not in resolved.parents:
+            return
+        self.active_template_changed.emit(resolved)
 
     def _confirm_save_with_errors(self, report: DesignerValidationReport) -> bool:
         ValidationReportDialog(report, self).exec()

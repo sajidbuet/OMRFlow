@@ -91,13 +91,27 @@ class TestAThePreviewIsTheDominantArea:
         assert page.preview.height() > open_height
 
     def test_a_taller_window_makes_a_taller_preview(self, page, qtbot):
-        """Stretch factors, not a fixed height - the defect being avoided."""
+        """Stretch factors, not a fixed height - the defect being avoided.
+
+        Measured against the height the page was actually given, not the
+        height it asked for: on a real desktop the window manager clamps a
+        window to the screen, so at a high display scaling ``resize(1600,
+        1000)`` can land well short of 1000 and a test comparing against the
+        requested figure fails for a reason that has nothing to do with the
+        layout.
+        """
         page.resize(1600, 700)
         qtbot.wait(10)
+        short_page = page.height()
         short = page.preview.height()
         page.resize(1600, 1000)
         qtbot.wait(10)
-        assert page.preview.height() > short + 200
+        gained = page.height() - short_page
+        if gained < 250:
+            pytest.skip(f"the window manager granted only {gained} px of the 300 asked for")
+        # Nearly all of the extra height reaches the preview, which is what
+        # having the largest stretch factor means.
+        assert page.preview.height() - short > gained * 0.6
 
     def test_the_preview_is_weighted_above_the_drawer(self):
         assert PREVIEW_STRETCH > DRAWER_STRETCH

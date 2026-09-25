@@ -4,7 +4,7 @@
 
 ```text
 My Exam\
-├── project.json          identity and settings; format version 2
+├── project.json          identity and settings; format version 3
 ├── database.sqlite       everything about candidates and results; schema 9
 ├── logs\                 what OMRFlow did on this project
 ├── answer_keys\
@@ -19,9 +19,10 @@ are referenced by path and content hash rather than copied in — see
 ## `project.json`
 
 Holds the project's identity and settings: its stable project identifier, its
-display name, its examination name, its description, and when it was created
-and last modified. **Format version 2**; version 1 is read backward
-compatibly.
+display name, its examination name, its description, when it was created and
+last modified, and which template its sheets are read against - stored as a
+project-relative path, so the folder can be copied anywhere and still find it.
+**Format version 3**; versions 1 and 2 are read backward compatibly.
 
 It is written atomically, so an interrupted write cannot leave a truncated
 file.

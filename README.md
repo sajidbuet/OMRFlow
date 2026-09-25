@@ -232,6 +232,44 @@ synthetically tested" to a qualified stable release.
 | Template Editor interaction | ✅ Debugging pass completed — see below |
 | Real-scan registration | 🟠 First real scanned cohort registered and calibrated — 8 sheets, one template. See below |
 | Calibration workspace | ✅ Reorganised around the scan preview — see below |
+| Project template | ✅ The template is now project state, chosen once and shared by Template, Calibrate and Scan — see below |
+
+#### One template per project
+
+The template used to be three independent copies of a path — one held by the
+Template screen, one by Calibrate, one by Scan — so the same `.omrt` file had
+to be browsed for three times, and nothing stopped the three from disagreeing.
+
+A project now records its template in `project.json`, as a **project-relative**
+POSIX path (`templates/OMR-Scan.omrt`), so copying the project folder onto a
+memory stick or a marking machine carries the choice with it. `project.json`
+moves to format version 3; the field is optional, and a project written before
+it existed opens unchanged.
+
+Which template a project uses is decided in one place, when the project opens:
+
+| The project… | What happens |
+|---|---|
+| names a template that exists | it is used, on all three screens |
+| names a template that has gone | the project still opens; Calibrate says so and asks for a replacement |
+| names none and owns exactly one | that one is adopted, and written down |
+| names none and owns several | nothing is guessed — picking wrong would read the sheets against the wrong geometry and still look plausible |
+| names none and owns none | the screens are empty, as before |
+
+Saving a template, or opening one of the project's own templates, on the
+Template screen makes it the project's template: the page tells the main
+window, which records it and re-broadcasts the session, so Calibrate and Scan
+learn about it exactly as they learn about a project being opened. A template
+from outside the project is opened for viewing and adopted by nothing.
+Switching projects swaps the template on every screen, and a project with no
+template clears what the previous one left behind. File dialogs on these
+screens now open inside the project rather than at the home directory.
+
+**Testing.** 30 tests, all run: 20 against real project directories on disk,
+10 driving a real main window through open, save, switch and delete. Two
+defects the tests found — Scan keeping the previous project's template, and
+Calibrate's "template missing" notice being overwritten by the label refresh —
+were fixed and are covered.
 
 #### Calibration workspace reorganised
 
