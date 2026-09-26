@@ -188,6 +188,7 @@ enter an answer key → score → generate reports.
 | [Quick Start](docs/wiki/Quick-Start.md) | The whole workflow, with synthetic data |
 | [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) | Generating test scans **and** attendance workbooks with exact ground truth |
 | [User Guide](docs/wiki/User-Guide.md) | The nine stages in detail |
+| [Scan quality](docs/scan_quality.md) | How a folded or curled sheet is detected, and what it deliberately does not flag |
 | [Known Limitations](docs/wiki/Known-Limitations.md) | **What is and is not trustworthy yet** |
 | [Troubleshooting](docs/wiki/Troubleshooting.md) | When something goes wrong |
 | [Upgrading](docs/wiki/Upgrading-OMRFlow.md) | And what happens to your projects |
@@ -209,6 +210,7 @@ synthetically tested" to a qualified stable release.
 |---|---|
 | 0–2 — Foundation, geometry, template designer | **Complete** |
 | 3–9 — Recognition, calibration, batch, conflicts, attendance, scoring, reporting | Implemented; synthetic testing complete, real-data testing in progress |
+| 3/6 addendum — scan-quality (page-geometry) detection | Implemented; **under testing** — synthetic and real-scan validation done, wider real-batch validation pending |
 | 10 — Integration, recovery, production hardening | Implemented; 100,000-sheet acceptance run pending |
 | **11A — Alpha release infrastructure** | **Implemented — validation pending**; release automation complete and tested, clean-machine test run and passed, its manual steps outstanding |
 | 11B — Real-data qualification & Beta | Pending |
@@ -234,6 +236,7 @@ synthetically tested" to a qualified stable release.
 | Calibration workspace | ✅ Reorganised around the scan preview — see below |
 | Project template | ✅ The template is now project state, chosen once and shared by Template, Calibrate and Scan — see below |
 | Conflict-resolution semantics | ✅ Updated — Resolve now covers student ID / roll and set code only; ambiguous answers stay in the recognition result. See below |
+| Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 
 #### Conflict resolution is for identity, not for answers
 

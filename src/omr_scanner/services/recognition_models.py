@@ -48,6 +48,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from omr_scanner.domain.scan_quality import (
+    PageArea,
+    ScanQualityAssessment,
+    ScanQualityIssue,
+    ScanQualityIssueCode,
+    ScanQualityStatus,
+)
 from omr_scanner.recognition.models import FieldStatus, MarkStatus
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -146,6 +153,18 @@ class StatusCode(StrEnum):
 
     ORIENTATION_FAILED = "ORIENTATION_FAILED"
     """Which way up the page is could not be established."""
+
+    SCAN_QUALITY_REVIEW = "SCAN_QUALITY_REVIEW"
+    """The paper's own geometry is doubtful somewhere on the page - a bend, a
+    fold, a curl, or an area the scan never captured - so the values read there
+    may not come from where the template says they do. Distinct from
+    :attr:`ALIGNMENT_WARNING`, which is about the *fit* being marginal; this is
+    about the sheet not having been flat. See
+    :class:`~omr_scanner.domain.scan_quality.ScanQualityAssessment`."""
+
+    SCAN_QUALITY_UNUSABLE = "SCAN_QUALITY_UNUSABLE"
+    """The same, but where what is damaged is what identifies the script, or
+    where registration is untrustworthy across most of the page."""
 
     MARKER_NOT_FOUND = "MARKER_NOT_FOUND"
     """One or more registration markers could not be located."""
@@ -551,6 +570,13 @@ class ScanResult:
         recognised_at: ISO-8601 UTC timestamp.
         quality: Diagnostic measurements of the scan, or ``None`` when they were
             not requested.
+        scan_quality: The page-geometry verdict - whether the template-to-paper
+            mapping still holds, and where it does not. ``None`` when the check
+            did not run: the page never registered, or the caller turned it off.
+            Kept apart from :attr:`quality` because the two answer different
+            questions - :attr:`quality` reports how the *scan* looked
+            (brightness, sharpness, skew) and decides nothing, while this is a
+            verdict about whether the coordinates can be trusted, and does.
         timings: Per-stage durations.
         source_transform: The **inverse** of the fitted homography, row-major,
             nine values - the map from canonical page pixels back to this
@@ -593,6 +619,7 @@ class ScanResult:
     template_version: int = 0
     recognised_at: str = ""
     quality: ScanQuality | None = None
+    scan_quality: ScanQualityAssessment | None = None
     timings: StageTimings = field(default_factory=StageTimings)
     source_transform: tuple[float, ...] = ()
 
@@ -708,6 +735,15 @@ class ScanResult:
             "bubbles": [_plain(item) for item in self.bubbles],
             "markers": [_plain(item) for item in self.markers],
             "quality": _plain(self.quality) if self.quality is not None else None,
+            # Additive and optional, like every field before it: a project
+            # written by an earlier build simply has no "scan_quality" key and
+            # loads with ``None``, which reads as "never checked" rather than
+            # as "checked and found clean".
+            "scan_quality": (
+                _scan_quality_to_dict(self.scan_quality)
+                if self.scan_quality is not None
+                else None
+            ),
             "timings": _plain(self.timings),
             "geometry": {
                 "canonical_width": self.canonical_width,
@@ -789,6 +825,7 @@ class ScanResult:
             template_version=int(template.get("format_version", 0)),
             recognised_at=payload.get("recognised_at", ""),
             quality=_build(ScanQuality, quality) if quality else None,
+            scan_quality=_scan_quality_from_dict(payload.get("scan_quality")),
             timings=_build(StageTimings, payload.get("timings") or {}),
             # `or 0.0` per element: a non-finite coefficient was written as
             # null, and a transform with a hole in it is unusable rather than a
@@ -809,6 +846,128 @@ def utc_timestamp() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _scan_quality_to_dict(assessment: ScanQualityAssessment) -> dict[str, Any]:
+    """Return a geometry assessment as JSON-safe plain data.
+
+    Written out longhand rather than through :func:`_plain` because the issues
+    are a nested structure of enums, and a stored assessment has to stay
+    readable by a build that does not recognise every code in it - see
+    :func:`_scan_quality_from_dict`.
+    """
+    return {
+        "status": assessment.status.value,
+        "evaluated": assessment.evaluated,
+        "reason": assessment.reason,
+        "probe_count": assessment.probe_count,
+        "matched_count": assessment.matched_count,
+        "affected_count": assessment.affected_count,
+        "unmatched_count": assessment.unmatched_count,
+        "displacement_median_pitch": _encode_value(assessment.displacement_median_pitch),
+        "displacement_p95_pitch": _encode_value(assessment.displacement_p95_pitch),
+        "displacement_max_pitch": _encode_value(assessment.displacement_max_pitch),
+        "nonprojective_p95_pitch": _encode_value(assessment.nonprojective_p95_pitch),
+        "global_fit_rms_pitch": _encode_value(assessment.global_fit_rms_pitch),
+        "coverage_ratio": _encode_value(assessment.coverage_ratio),
+        "marker_residual_max_px": _encode_value(assessment.marker_residual_max_px),
+        "missing_markers": list(assessment.missing_markers),
+        "issues": [
+            {
+                "code": issue.code.value,
+                "status": issue.status.value,
+                "detail": issue.detail,
+                "areas": [area.value for area in issue.areas],
+                "zone_ids": list(issue.zone_ids),
+                "zone_labels": list(issue.zone_labels),
+                "question_range": issue.question_range,
+                "metrics": {
+                    key: _encode_value(value) for key, value in issue.metrics.items()
+                },
+            }
+            for issue in assessment.issues
+        ],
+    }
+
+
+def _coverage_or_full(value: Any) -> float:
+    """Read a stored coverage fraction, defaulting to "fully captured".
+
+    ``1.0`` rather than ``0.0`` when the key is absent: a result written before
+    coverage was measured says nothing about coverage, and reading silence as
+    "none of the page was captured" would condemn every older scan.
+    """
+    if value is None:
+        return 1.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _scan_quality_from_dict(payload: Any) -> ScanQualityAssessment | None:
+    """Rebuild a geometry assessment, or ``None`` when one was never stored.
+
+    An issue whose ``code``, ``status`` or ``area`` this build does not
+    recognise is **skipped**, not raised on. A project carries a durable record
+    that a newer build may have written, and refusing to open it because one
+    finding has a name this version has not heard of would make a newer
+    project unreadable rather than merely incompletely understood.
+    """
+    if not isinstance(payload, dict):
+        return None
+    issues: list[ScanQualityIssue] = []
+    for item in payload.get("issues", ()):
+        if not isinstance(item, dict):
+            continue
+        try:
+            code = ScanQualityIssueCode(item.get("code", ""))
+            status = ScanQualityStatus(item.get("status", ""))
+        except ValueError:
+            continue
+        areas: list[PageArea] = []
+        for name in item.get("areas", ()):
+            try:
+                areas.append(PageArea(name))
+            except ValueError:
+                continue
+        issues.append(
+            ScanQualityIssue(
+                code=code,
+                status=status,
+                detail=str(item.get("detail", "")),
+                areas=tuple(areas),
+                zone_ids=tuple(item.get("zone_ids", ())),
+                zone_labels=tuple(item.get("zone_labels", ())),
+                question_range=str(item.get("question_range", "")),
+                metrics={
+                    str(key): float(value or 0.0)
+                    for key, value in (item.get("metrics") or {}).items()
+                },
+            )
+        )
+    try:
+        status = ScanQualityStatus(payload.get("status", ScanQualityStatus.PASS.value))
+    except ValueError:
+        status = ScanQualityStatus.PASS
+    return ScanQualityAssessment(
+        status=status,
+        issues=tuple(issues),
+        probe_count=int(payload.get("probe_count", 0) or 0),
+        matched_count=int(payload.get("matched_count", 0) or 0),
+        affected_count=int(payload.get("affected_count", 0) or 0),
+        unmatched_count=int(payload.get("unmatched_count", 0) or 0),
+        displacement_median_pitch=float(payload.get("displacement_median_pitch") or 0.0),
+        displacement_p95_pitch=float(payload.get("displacement_p95_pitch") or 0.0),
+        displacement_max_pitch=float(payload.get("displacement_max_pitch") or 0.0),
+        nonprojective_p95_pitch=float(payload.get("nonprojective_p95_pitch") or 0.0),
+        global_fit_rms_pitch=float(payload.get("global_fit_rms_pitch") or 0.0),
+        coverage_ratio=_coverage_or_full(payload.get("coverage_ratio")),
+        marker_residual_max_px=float(payload.get("marker_residual_max_px") or 0.0),
+        missing_markers=tuple(payload.get("missing_markers", ())),
+        evaluated=bool(payload.get("evaluated", False)),
+        reason=str(payload.get("reason", "")),
+    )
+
+
 def derive_status_codes(
     *,
     outcome: RecognitionOutcome,
@@ -819,6 +978,7 @@ def derive_status_codes(
     answers: tuple[AnswerView, ...],
     fields_: tuple[FieldView, ...],
     has_zones: bool,
+    scan_quality: ScanQualityStatus | None = None,
 ) -> tuple[str, ...]:
     """Summarise one result's condition as machine-readable codes.
 
@@ -839,6 +999,10 @@ def derive_status_codes(
         codes.add(StatusCode.ALIGNMENT_WARNING)
     if not has_zones:
         codes.add(StatusCode.INVALID_TEMPLATE)
+    if scan_quality is ScanQualityStatus.REVIEW:
+        codes.add(StatusCode.SCAN_QUALITY_REVIEW)
+    elif scan_quality is ScanQualityStatus.UNUSABLE:
+        codes.add(StatusCode.SCAN_QUALITY_UNUSABLE)
 
     group_statuses = [answer.status for answer in answers]
     group_statuses.extend(

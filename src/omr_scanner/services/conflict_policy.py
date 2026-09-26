@@ -68,6 +68,7 @@ from omr_scanner.domain.review import (
     FieldRef,
     MachineObservation,
 )
+from omr_scanner.domain.scan_quality import ScanQualityStatus
 from omr_scanner.domain.template import (
     GridFieldDefinition,
     IgnoredFieldDefinition,
@@ -109,10 +110,20 @@ class ConflictPolicy:
             orientation was assumed rather than measured. On by default: an
             upside-down sheet read as upright produces a full set of confidently
             wrong answers, which is precisely what review exists to catch.
+        flag_scan_quality: Raise a sheet-scope conflict when the page-geometry
+            check found the sheet was not flat, or that part of it never reached
+            the scanner. On by default, for the same reason as
+            ``flag_assumed_orientation`` and unlike ``flag_alignment_warnings``:
+            it does not fire on every sheet. It is raised only when the
+            printing itself is measurably displaced from where the template puts
+            it, which an undamaged scan - however rotated, skewed, dim or
+            heavily marked - does not produce. See
+            :mod:`omr_scanner.services.scan_quality`.
     """
 
     flag_alignment_warnings: bool = False
     flag_assumed_orientation: bool = True
+    flag_scan_quality: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,6 +400,17 @@ def _detect_sheet_conflicts(
             )
         ]
 
+    geometry = result.scan_quality
+    if rules.flag_scan_quality and geometry is not None and geometry.needs_attention:
+        found.append(
+            _sheet_conflict(
+                ConflictType.SCAN_QUALITY,
+                geometry.reason
+                or "The page geometry could not be verified across the whole sheet.",
+                severity=1 if geometry.status is ScanQualityStatus.UNUSABLE else 0,
+            )
+        )
+
     quality = result.quality
     if rules.flag_assumed_orientation and quality is not None and quality.orientation_assumed:
         found.append(
@@ -408,13 +430,20 @@ def _detect_sheet_conflicts(
     return found
 
 
-def _sheet_conflict(conflict_type: ConflictType, detail: str) -> DetectedConflict:
-    """Build one sheet-scope conflict."""
+def _sheet_conflict(
+    conflict_type: ConflictType, detail: str, *, severity: int | None = None
+) -> DetectedConflict:
+    """Build one sheet-scope conflict.
+
+    ``severity`` overrides the type's own rank for the one case where a single
+    type spans both: a scan-quality finding is ordinary when a corner curled and
+    serious when what curled was the candidate identifier.
+    """
     return DetectedConflict(
         conflict_type=conflict_type,
         field=FieldRef(kind=FieldKind.OTHER, label="Sheet"),
         observation=MachineObservation(detail=detail),
-        severity=_severity_of(conflict_type),
+        severity=_severity_of(conflict_type) if severity is None else severity,
     )
 
 

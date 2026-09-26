@@ -565,6 +565,132 @@ def apply_distortion(sheet: SyntheticSheet, spec: DistortionSpec) -> DistortedSh
     )
 
 
+@dataclass(frozen=True, slots=True)
+class LocalWarpSpec:
+    """A smooth, strictly local, **non-projective** deformation of a page.
+
+    The distortion :class:`DistortionSpec` cannot express, and the only kind
+    worth testing a page-geometry check against. Every field of
+    ``DistortionSpec`` is projective or photometric, which means a homography
+    can undo it exactly - so a sheet distorted that way *should* pass a geometry
+    check, and using one as a positive test would only prove the check was
+    broken. A physically curled, folded or lifted page is not a plane at all,
+    and no homography can undo it; that is what this reproduces.
+
+    Modelled as a Gaussian displacement bump, which is what a corner lifting off
+    a platen actually does to the image: maximal where the paper is furthest
+    from the glass, falling away smoothly, and zero where the sheet still lies
+    flat.
+
+    Attributes:
+        center_x: Centre of the deformation, normalised to page width.
+        center_y: The same, to page height.
+        radius: Standard deviation of the bump, as a fraction of the page.
+            Roughly "how much of the sheet lifted".
+        amplitude_px: Peak displacement in pixels, at the centre of the bump.
+        direction_x: Horizontal component of the displacement direction.
+        direction_y: Vertical component. The vector need not be normalised; its
+            length scales ``amplitude_px``.
+        edge_margin: Fraction of the page over which the deformation is faded
+            out to zero at the borders. This is what keeps the **registration
+            markers** where they were, which is the entire point of the test: a
+            sheet whose markers moved would simply fail to register, and would
+            never reach the geometry check. The hard case - the one this models
+            - is a page that registers perfectly on four crisp corner markers
+            while its interior printing has moved.
+    """
+
+    center_x: float = 0.8
+    center_y: float = 0.8
+    radius: float = 0.22
+    amplitude_px: float = 40.0
+    direction_x: float = 1.0
+    direction_y: float = 0.6
+    edge_margin: float = 0.07
+
+    def __post_init__(self) -> None:
+        """Reject a warp that could not be applied."""
+        if self.radius <= 0.0:
+            raise ValueError("radius must be positive")
+        if not 0.0 < self.edge_margin < 0.5:
+            raise ValueError("edge_margin must lie in (0, 0.5)")
+        if self.direction_x == 0.0 and self.direction_y == 0.0:
+            raise ValueError("The displacement direction must not be the zero vector")
+
+
+def apply_local_warp(
+    image: NDArray[np.uint8], spec: LocalWarpSpec
+) -> NDArray[np.uint8]:
+    """Return ``image`` deformed by ``spec``.
+
+    Args:
+        image: The page to deform. Read only.
+        spec: The deformation.
+
+    Returns:
+        A new array the same shape and dtype. Deterministic: no randomness is
+        involved anywhere, so a failing test reproduces exactly.
+
+    The result is **not** accompanied by a homography, because none exists -
+    that is the property being tested. To measure the deformation's ground
+    truth, call :func:`local_warp_field` for the displacement applied at a
+    point.
+    """
+    height, width = image.shape[:2]
+    grid_y, grid_x = np.mgrid[0:height, 0:width]
+    xs = grid_x.astype(np.float32)
+    ys = grid_y.astype(np.float32)
+    factor = _warp_factor(xs / float(width), ys / float(height), spec)
+    return np.asarray(
+        cv2.remap(
+            image,
+            (xs + factor * spec.amplitude_px * spec.direction_x).astype(np.float32),
+            (ys + factor * spec.amplitude_px * spec.direction_y).astype(np.float32),
+            interpolation=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_REPLICATE,
+        ),
+        dtype=np.uint8,
+    )
+
+
+def local_warp_displacement(
+    x: float, y: float, spec: LocalWarpSpec, *, width: int, height: int
+) -> float:
+    """Return the displacement ``spec`` applies at one pixel, in pixels.
+
+    The ground truth a test asserts against, so that a case can be described as
+    "0.8 of a bubble pitch at the worst point" rather than as an opaque
+    amplitude.
+    """
+    factor = float(
+        _warp_factor(
+            np.array([[x / float(width)]], dtype=np.float32),
+            np.array([[y / float(height)]], dtype=np.float32),
+            spec,
+        )[0, 0]
+    )
+    magnitude = float(np.hypot(spec.direction_x, spec.direction_y))
+    return factor * spec.amplitude_px * magnitude
+
+
+def _warp_factor(
+    normalised_x: NDArray[np.float32],
+    normalised_y: NDArray[np.float32],
+    spec: LocalWarpSpec,
+) -> NDArray[np.float32]:
+    """The bump's strength at each normalised position, in ``[0, 1]``."""
+    squared = (
+        (normalised_x - spec.center_x) ** 2 + (normalised_y - spec.center_y) ** 2
+    ) / (spec.radius**2)
+    bump = np.exp(-squared)
+    border = np.minimum(
+        np.minimum(normalised_x, 1.0 - normalised_x),
+        np.minimum(normalised_y, 1.0 - normalised_y),
+    )
+    taper = np.clip(border / spec.edge_margin, 0.0, 1.0)
+    return np.asarray(bump * taper, dtype=np.float32)
+
+
 def control_point_errors(
     transform: NDArray[np.float64], distorted: DistortedSheet
 ) -> tuple[float, ...]:

@@ -68,6 +68,12 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy as np
 
+from omr_scanner.domain.scan_quality import (
+    ScanQualityAssessment,
+    ScanQualityIssue,
+    ScanQualityIssueCode,
+    ScanQualityStatus,
+)
 from omr_scanner.domain.template import IgnoredFieldDefinition
 from omr_scanner.errors import ImagingError, OMRScannerError
 from omr_scanner.imaging.alignment import align_sheet
@@ -109,6 +115,7 @@ from omr_scanner.services.recognition_settings import (
     DiagnosticsOptions,
     RecognitionOptions,
 )
+from omr_scanner.services.scan_quality import assess_page_geometry
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -493,9 +500,27 @@ def _decide_and_build(
         else None
     )
 
+    geometry = (
+        assess_page_geometry(
+            measured.page,
+            template,
+            inverse_transform=measured.alignment.inverse_transform_matrix,
+            source_size=(measured.source_width, measured.source_height),
+        )
+        if options.check_page_geometry
+        else None
+    )
+
     warnings = tuple(warning.value for warning in measured.alignment.warnings)
     registration = _registration_status(warnings)
-    needs_review = recognition.review_count > 0
+    needs_review = recognition.review_count > 0 or (
+        geometry is not None and geometry.needs_attention
+    )
+    # A doubtful page does **not** discard what was read. The values stay on the
+    # result, exported and scored as usual; the sheet is merely marked as one a
+    # human should look at, because throwing away a script whose identity and
+    # ninety of whose answers are perfectly legible - because one corner curled
+    # - loses more than it protects. See docs/SCAN_QUALITY.md.
     outcome = RecognitionOutcome.REVIEW if needs_review else RecognitionOutcome.COMPLETE
     identifier = next(
         (item for item in fields if item.zone_id == recognition.identifier_zone_id), None
@@ -512,6 +537,7 @@ def _decide_and_build(
         answers=answers,
         fields_=fields,
         has_zones=bool(template.zones),
+        scan_quality=geometry.status if geometry is not None else None,
     )
     clock.mark("present")
     local_timings = clock.finish()
@@ -554,6 +580,7 @@ def _decide_and_build(
         template_version=identity.version,
         recognised_at=utc_timestamp(),
         quality=quality,
+        scan_quality=geometry,
         timings=timings,
         source_transform=_inverse_transform(measured.alignment),
     )
@@ -864,6 +891,17 @@ def _failed_result(
     described as a successful one - same engine stamp, same timestamp, same
     status codes - instead of being a stub that later phases have to special
     case.
+
+    That includes the page-geometry verdict, which is recorded here as
+    *explicitly not evaluated* rather than left as ``None``. The difference
+    matters: ``None`` is indistinguishable from "this build does not check
+    geometry", and a caller asking "is this sheet's geometry sound?" would read
+    the absence as reassurance. A sheet that never rectified has geometry
+    nobody has looked at, and this says so - see
+    :attr:`~omr_scanner.domain.scan_quality.ScanQualityAssessment.is_confirmed_clean`.
+    Observed on a real folded sheet, whose fold destroyed the bottom-right
+    registration marker outright: the page failed to register, so the check
+    that would have described the fold never ran.
     """
     return ScanResult(
         source_path=path,
@@ -871,6 +909,21 @@ def _failed_result(
         registration=RegistrationStatus.FAILED,
         registration_message=message,
         error_code=error_code,
+        scan_quality=ScanQualityAssessment(
+            status=ScanQualityStatus.UNUSABLE,
+            issues=(
+                ScanQualityIssue(
+                    code=ScanQualityIssueCode.GEOMETRY_NOT_VERIFIED,
+                    status=ScanQualityStatus.UNUSABLE,
+                    detail=(
+                        "The page could not be rectified, so its geometry was "
+                        "never measured."
+                    ),
+                ),
+            ),
+            evaluated=False,
+            reason=message or "The page could not be rectified.",
+        ),
         status_codes=derive_status_codes(
             outcome=outcome,
             registration=RegistrationStatus.FAILED,

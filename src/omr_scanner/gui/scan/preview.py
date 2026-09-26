@@ -58,9 +58,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.domain.scan_quality import ScanQualityStatus
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
+    from omr_scanner.domain.scan_quality import ScanQualityAssessment
     from omr_scanner.services import BubbleView, DecodedImage, MarkerView, ZoneView
 
 ZOOM_STEP = 1.25
@@ -81,6 +84,17 @@ UNREADABLE_COLOR = QColor(150, 40, 150)
 
 EMPTY_COLOR = QColor(120, 140, 170, 130)
 """Muted blue-grey: a bubble that was measured and found empty."""
+
+_SCAN_QUALITY = QColor(230, 120, 0)
+"""Amber: this region's template-to-paper mapping is in doubt."""
+
+_SCAN_QUALITY_SEVERE = QColor(190, 30, 140)
+"""Magenta: the same, where what is in doubt is what identifies the script.
+
+Deliberately not the red the overlay already uses for a multiply-marked bubble.
+Red there means "this value is disputed"; the whole point of a scan-quality
+finding is that it is *not* a dispute about a value, and re-using the colour
+would merge the two categories the feature exists to keep apart."""
 
 _STATUS_COLORS: dict[str, QColor] = {
     "resolved": SELECTED_COLOR,
@@ -164,12 +178,15 @@ class OverlayItem(QGraphicsItem):
         self._zones: tuple[ZoneView, ...] = ()
         self._bubbles: tuple[BubbleView, ...] = ()
         self._markers: tuple[MarkerView, ...] = ()
+        self._doubtful_zone_ids: frozenset[str] = frozenset()
+        self._doubtful_is_severe = False
         self.show_zones = True
         self.show_bubbles = True
         self.show_empty_bubbles = False
         self.show_markers = False
         self.show_sample_windows = False
         self.show_centers = False
+        self.show_scan_quality = True
         self.setZValue(10)
 
     def set_page_size(self, width: float, height: float) -> None:
@@ -200,6 +217,23 @@ class OverlayItem(QGraphicsItem):
         self._markers = tuple(markers)
         self.update()
 
+    def set_scan_quality(self, assessment: ScanQualityAssessment | None) -> None:
+        """Mark the zones whose geometry the page-geometry check doubted.
+
+        Drawn only when there is something to draw. A clean sheet - which is
+        almost every sheet - gets no extra ink at all, because an overlay that
+        decorates every page teaches the operator to stop seeing it.
+        """
+        if assessment is None or not assessment.needs_attention:
+            self._doubtful_zone_ids = frozenset()
+            self._doubtful_is_severe = False
+        else:
+            self._doubtful_zone_ids = frozenset(assessment.affected_zone_ids)
+            self._doubtful_is_severe = (
+                assessment.status is ScanQualityStatus.UNUSABLE
+            )
+        self.update()
+
     def boundingRect(self) -> QRectF:
         """Return the canonical page rectangle."""
         return self._page
@@ -222,6 +256,30 @@ class OverlayItem(QGraphicsItem):
             self._paint_centers(painter)
         if self.show_markers:
             self._paint_markers(painter)
+        if self.show_scan_quality:
+            self._paint_scan_quality(painter)
+
+    def _paint_scan_quality(self, painter: QPainter) -> None:
+        """Outline the regions whose template-to-paper mapping is in doubt.
+
+        A hatched fill rather than another coloured border: the zone outlines
+        already carry a colour each and a status tint, and a seventh border
+        colour would be one distinction too many to read at a glance. Hatching
+        says "do not trust what is under here" without competing with them.
+        """
+        if not self._doubtful_zone_ids:
+            return
+        colour = QColor(_SCAN_QUALITY_SEVERE if self._doubtful_is_severe else _SCAN_QUALITY)
+        brush = QBrush(colour, Qt.BrushStyle.BDiagPattern)
+        pen = QPen(colour, 2.0)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(brush)
+        for zone in self._zones:
+            if zone.zone_id not in self._doubtful_zone_ids:
+                continue
+            painter.drawRect(QRectF(zone.x, zone.y, zone.width, zone.height))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
 
     def _paint_zones(self, painter: QPainter) -> None:
         """Outline each zone in its template colour, tinted by its status."""
@@ -418,6 +476,7 @@ class ScanPreviewView(QGraphicsView):
             self._scene.removeItem(self._background)
             self._background = None
         self._overlay.set_content((), ())
+        self._overlay.set_scan_quality(None)
         self._page_size = (0, 0)
         self._scene.setSceneRect(QRectF(0, 0, 1, 1))
         self.viewport().update()
@@ -480,6 +539,10 @@ class ScanPreviewView(QGraphicsView):
         """Replace the overlay content."""
         self._overlay.set_content(zones, bubbles, markers)
 
+    def set_scan_quality(self, assessment: ScanQualityAssessment | None) -> None:
+        """Show which regions the page-geometry check could not vouch for."""
+        self._overlay.set_scan_quality(assessment)
+
     def set_overlay_visible(
         self,
         *,
@@ -489,6 +552,7 @@ class ScanPreviewView(QGraphicsView):
         markers: bool = False,
         sample_windows: bool = False,
         centers: bool = False,
+        scan_quality: bool = True,
     ) -> None:
         """Choose which overlay layers are drawn."""
         self._overlay.show_zones = zones
@@ -497,6 +561,7 @@ class ScanPreviewView(QGraphicsView):
         self._overlay.show_markers = markers
         self._overlay.show_sample_windows = sample_windows
         self._overlay.show_centers = centers
+        self._overlay.show_scan_quality = scan_quality
         self._overlay.update()
 
     @property

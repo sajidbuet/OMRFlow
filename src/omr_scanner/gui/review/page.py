@@ -75,6 +75,7 @@ from omr_scanner.domain.review import (
     ReasonCode,
     ValueSource,
 )
+from omr_scanner.domain.scan_quality import issue_label
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
@@ -106,6 +107,7 @@ from omr_scanner.services import (
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable
 
+    from omr_scanner.domain.scan_quality import ScanQualityAssessment
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import (
@@ -878,6 +880,7 @@ class ResolvePage(WorkflowPage):
                     preview_scale=result.preview_scale,
                 )
                 view.set_overlay(result.zones, self._conflict_bubbles(conflict), ())
+                view.set_scan_quality(result.scan_quality)
                 view.set_overlay_visible(
                     zones=True, bubbles=True, empty=True, centers=True
                 )
@@ -894,6 +897,7 @@ class ResolvePage(WorkflowPage):
                 canonical_height=bundle.original.height,
             )
             self.original_view.set_overlay((), (), ())
+            self.original_view.set_scan_quality(None)
             self.original_view.set_overlay_visible(zones=False, bubbles=False, empty=False)
             self.original_view.fit_to_window()
             self._describe_original_location(conflict)
@@ -1032,7 +1036,10 @@ class ResolvePage(WorkflowPage):
     # ------------------------------------------------------------------
     def _refresh_evidence(self, conflict: ConflictRecord) -> None:
         """Render what the machine saw."""
-        self.evidence_label.setText(_evidence_html(conflict))
+        bundle = self.state.bundle
+        result = bundle.result if bundle is not None else None
+        assessment = result.scan_quality if result is not None else None
+        self.evidence_label.setText(_evidence_html(conflict, assessment))
 
     def _refresh_sheet_progress(self, conflict: ConflictRecord) -> None:
         """Say how many conflicts this sheet has, and how many are left."""
@@ -1289,7 +1296,50 @@ class ResolvePage(WorkflowPage):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
-def _evidence_html(conflict: ConflictRecord) -> str:
+def _scan_quality_html(assessment: ScanQualityAssessment) -> str:
+    """Render the page-geometry diagnostics behind a scan-quality conflict.
+
+    Shown only for that conflict type, and only the numbers a person can act
+    on. The full measurement - every probe, its displacement and its
+    correlation peak - stays in the stored result for a developer to read; a
+    reviewer deciding whether to re-scan a sheet needs to know *where* and *how
+    bad*, not the contents of a correlation surface.
+    """
+    lines = [
+        "<br><b>Scan quality</b><br>",
+        f"Verdict: <b>{assessment.status.value.upper()}</b><br>",
+    ]
+    for issue in assessment.issues:
+        where = issue.area_label or "across the page"
+        lines.append(f"&nbsp;&nbsp;&bull; {issue_label(issue.code)} &mdash; {where}")
+        if issue.question_range:
+            lines.append(f" (questions {issue.question_range})")
+        lines.append("<br>")
+        if issue.zone_labels:
+            lines.append(
+                f"&nbsp;&nbsp;&nbsp;&nbsp;<i>{', '.join(issue.zone_labels)}</i><br>"
+            )
+    if assessment.evaluated:
+        lines.append(
+            "<br>Printed areas checked: "
+            f"{assessment.matched_count}/{assessment.probe_count} located, "
+            f"{assessment.affected_count} displaced<br>"
+            "Displacement (95th percentile): "
+            f"{assessment.displacement_p95_pitch:.2f} bubble pitches<br>"
+            "Unexplained by a flat page: "
+            f"{assessment.nonprojective_p95_pitch:.2f}<br>"
+        )
+    else:
+        lines.append(
+            "<br><i>The page geometry could not be verified; this is not a "
+            "confirmation that it is sound.</i><br>"
+        )
+    return "".join(lines)
+
+
+def _evidence_html(
+    conflict: ConflictRecord, assessment: ScanQualityAssessment | None = None
+) -> str:
     """Render one conflict's machine evidence.
 
     Fill ratios are labelled **fill score**, never "probability" or
@@ -1313,6 +1363,10 @@ def _evidence_html(conflict: ConflictRecord) -> str:
         )
     if observation.detail:
         lines.append(f"<i>{observation.detail}</i><br>")
+
+    if conflict.conflict_type is ConflictType.SCAN_QUALITY and assessment is not None:
+        lines.append(_scan_quality_html(assessment))
+        return "".join(lines)
 
     if observation.candidates:
         lines.append("<br><b>Measured fill scores</b><br>")

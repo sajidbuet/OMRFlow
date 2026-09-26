@@ -127,6 +127,14 @@ class RecognitionOptions:
             way.
         keep_quality_metrics: Measure the scan's brightness, contrast and
             sharpness. Cheap, diagnostic, and never consulted by a decision.
+        check_page_geometry: Verify that the rectified page really is flat, by
+            locating the template's own printing across the sheet - see
+            :mod:`omr_scanner.services.scan_quality`. On by default, and cheap:
+            about 5 ms on a 2480x3508 sheet, against the tens of milliseconds
+            registration and measurement already cost. Turning it off is for
+            the calibration loop, which re-decides an already-measured sheet
+            thousands of times and would learn nothing new from re-probing the
+            same pixels.
         diagnostics: Debug-image output; off unless asked for.
 
     Immutability:
@@ -140,6 +148,7 @@ class RecognitionOptions:
     preview_max_dimension: int | None = DEFAULT_PREVIEW_MAX_DIMENSION
     keep_bubble_measurements: bool = True
     keep_quality_metrics: bool = True
+    check_page_geometry: bool = True
     diagnostics: DiagnosticsOptions = field(default_factory=DiagnosticsOptions)
 
     def __post_init__(self) -> None:

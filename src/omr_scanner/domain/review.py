@@ -140,6 +140,23 @@ class ConflictType(StrEnum):
     ORIENTATION_ASSUMED = "orientation_assumed"
     """Which way up the page is was assumed rather than measured."""
 
+    SCAN_QUALITY = "scan_quality"
+    """The paper itself was not flat, or part of it never reached the scanner.
+
+    A **different kind of doubt** from every other member here, and the reason
+    it is its own type rather than another ``alignment_warning``. The others say
+    a *value* is disputed, or that the page could not be rectified at all. This
+    one says the page rectified successfully and the values were read - but the
+    mapping from template coordinates to paper stopped being trustworthy over
+    part of the sheet, so the values read *there* may have come from the wrong
+    place. It names the area and, where the template says so, the questions.
+
+    Sheet-scope, so it is acknowledged or deferred rather than corrected: "the
+    lower-right corner was curled" is not a question with an answer of A, B, C
+    or D. The recognised values stay on the result either way - see
+    :class:`~omr_scanner.domain.scan_quality.ScanQualityAssessment` and
+    ``docs/SCAN_QUALITY.md``."""
+
     IMAGE_UNREADABLE = "image_unreadable"
     """The file could not be decoded. A *processing* failure that a human can
     still act on (re-scan, replace the file), which is why it is reviewable -
@@ -221,6 +238,7 @@ _SHEET_TYPES = frozenset(
         ConflictType.REGISTRATION_FAILED,
         ConflictType.ALIGNMENT_WARNING,
         ConflictType.ORIENTATION_ASSUMED,
+        ConflictType.SCAN_QUALITY,
         ConflictType.IMAGE_UNREADABLE,
         ConflictType.PROCESSING_ERROR,
     }
@@ -271,6 +289,7 @@ _TYPE_LABELS: dict[ConflictType, str] = {
     ConflictType.REGISTRATION_FAILED: "Registration failed",
     ConflictType.ALIGNMENT_WARNING: "Alignment warning",
     ConflictType.ORIENTATION_ASSUMED: "Orientation assumed",
+    ConflictType.SCAN_QUALITY: "Scan quality",
     ConflictType.IMAGE_UNREADABLE: "Image unreadable",
     ConflictType.PROCESSING_ERROR: "Processing error",
 }

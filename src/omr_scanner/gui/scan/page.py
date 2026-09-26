@@ -2113,6 +2113,7 @@ class ScanPage(WorkflowPage):
             preview_scale=result.preview_scale,
         )
         self.preview.set_overlay(result.zones, result.bubbles)
+        self.preview.set_scan_quality(result.scan_quality)
         self._refresh_overlay_visibility()
         self.preview.fit_to_window()
         self.preview_status_label.setText(

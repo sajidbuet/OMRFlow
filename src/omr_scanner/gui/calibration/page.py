@@ -1365,6 +1365,7 @@ class CalibrationPage(WorkflowPage):
                 image, canonical_width=width, canonical_height=height, preview_scale=scale
             )
             self.preview.set_overlay((), (), ())
+            self.preview.set_scan_quality(None)
             self.preview.set_overlay_visible(zones=False, bubbles=False, empty=False)
         else:
             if showing_original:
@@ -1447,6 +1448,7 @@ class CalibrationPage(WorkflowPage):
             result.bubbles, self.field_filter_combo.currentText(), result, self.state.template
         )
         self.preview.set_overlay(result.zones, bubbles, result.markers)
+        self.preview.set_scan_quality(result.scan_quality)
         self._refresh_overlay_visibility()
 
     def _refresh_preview(self) -> None:
