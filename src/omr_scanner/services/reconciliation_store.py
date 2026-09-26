@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import ColumnElement, and_, delete, func, select
 
 from omr_scanner.database.models import (
     AuditEvent,
@@ -319,7 +319,7 @@ def import_roster(
             # because they are independent candidate lists that merely happen
             # to belong to the same examination.
             for row in session.scalars(
-                _active_roster_query(set_id)
+                select(CandidateRoster).where(_active_roster_filter(set_id))
             ).all():
                 row.is_active = False
 
@@ -375,18 +375,28 @@ def import_roster(
     return roster_id
 
 
-def _active_roster_query(set_id: str | None) -> Select[tuple[CandidateRoster]]:
-    """Select the active roster(s) belonging to one set, or to no set.
+def _roster_set_filter(set_id: str | None) -> ColumnElement[bool]:
+    """Match the rosters belonging to one set, or to no set.
 
     ``set_id=None`` deliberately matches only rosters whose ``set_id`` *is*
     NULL rather than every roster: "the project's unscoped roster" and "Set
     10's roster" are different things, and a query that confused them would
     hand one set's candidate list to another - see §19.
     """
-    query = select(CandidateRoster).where(CandidateRoster.is_active.is_(True))
     if set_id is None:
-        return query.where(CandidateRoster.set_id.is_(None))
-    return query.where(CandidateRoster.set_id == set_id)
+        return CandidateRoster.set_id.is_(None)
+    return CandidateRoster.set_id == set_id
+
+
+def _active_roster_filter(set_id: str | None) -> ColumnElement[bool]:
+    """Match the active roster(s) belonging to one set, or to no set.
+
+    A predicate rather than a prebuilt statement, so that each caller owns the
+    ordering and limit it needs - and so that nothing here has to name the
+    element type of a SELECT, whose spelling changed between SQLAlchemy 2.0
+    and 2.1. A column predicate is spelled the same in both.
+    """
+    return and_(CandidateRoster.is_active.is_(True), _roster_set_filter(set_id))
 
 
 def list_rosters(
@@ -404,11 +414,7 @@ def list_rosters(
     with database.session() as session:
         query = select(CandidateRoster).order_by(CandidateRoster.roster_id.desc())
         if set_id is not _ANY_SET:
-            query = (
-                query.where(CandidateRoster.set_id.is_(None))
-                if set_id is None
-                else query.where(CandidateRoster.set_id == set_id)
-            )
+            query = query.where(_roster_set_filter(set_id))
         return tuple(_roster_summary(row) for row in session.scalars(query).all())
 
 
@@ -430,7 +436,8 @@ def active_roster(
     """
     with database.session() as session:
         row = session.scalars(
-            _active_roster_query(set_id)
+            select(CandidateRoster)
+            .where(_active_roster_filter(set_id))
             .order_by(CandidateRoster.roster_id.desc())
             .limit(1)
         ).first()
@@ -477,7 +484,9 @@ def assign_roster_to_set(
                     "Import it again for this set instead."
                 ),
             )
-        for row in session.scalars(_active_roster_query(set_id)).all():
+        for row in session.scalars(
+            select(CandidateRoster).where(_active_roster_filter(set_id))
+        ).all():
             row.is_active = False
         target.set_id = set_id
         target.is_active = True
@@ -518,7 +527,9 @@ def set_active_roster(database: ProjectDatabase, roster_id: int) -> None:
             )
         # Only among this roster's own set: activating Set 11's older list
         # must not deactivate Set 10's current one.
-        for row in session.scalars(_active_roster_query(target.set_id)).all():
+        for row in session.scalars(
+            select(CandidateRoster).where(_active_roster_filter(target.set_id))
+        ).all():
             row.is_active = False
         target.is_active = True
     _LOGGER.info("Active candidate roster changed: roster=%d", roster_id)
