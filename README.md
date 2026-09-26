@@ -218,7 +218,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 4,293 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
+| Automated suite | 4,659 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
 | Cross-platform CI | ✅ Green on Windows and Ubuntu ([run 35809212682](https://github.com/sajidbuet/OMRFlow/actions/runs/35809212682), 2026-09-23); a fourth Ubuntu-only defect found and fixed for this release |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -288,9 +288,12 @@ GUI: `ConflictType.requires_resolution` and `FieldKind.is_record_identity` in
 in `services/review_store.py`. See
 [Conflict detection and human review](docs/conflict_review.md).
 
-**Testing.** 39 Resolve-stage GUI tests, 35 end-to-end conflict-review tests and
-40 detection-policy tests, all run. Recognition, scoring, export, reporting and
-health checks were re-run unchanged. Real examination data remains Phase 11B.
+**Testing.** 39 Resolve-stage GUI tests, 35 end-to-end conflict-review tests,
+53 review-store tests, 40 detection-policy tests and 12 new tests for the
+scoring guard, all run. The whole suite (4,659 tests), `ruff`, `mypy` and the
+55-check Qt GUI smoke run were re-run green — the smoke run includes a new
+check that a sheet carrying both a bad roll-number column and a double-marked
+answer stages only the roll number. Real examination data remains Phase 11B.
 
 #### One template per project
 
