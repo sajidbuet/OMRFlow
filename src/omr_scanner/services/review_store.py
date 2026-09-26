@@ -60,6 +60,7 @@ from sqlalchemy import func, select
 
 from omr_scanner.database.models import AuditEvent, BatchScan, ReviewConflict
 from omr_scanner.domain.review import (
+    RESOLUTION_TYPES,
     WHOLE_FIELD,
     Candidate,
     ConflictState,
@@ -110,6 +111,38 @@ class ReviewError(OMRScannerError):
 def _now() -> datetime:
     """Current UTC time. One place, so every timestamp agrees."""
     return datetime.now(UTC)
+
+
+# ----------------------------------------------------------------------
+# Which stored rows are still conflicts
+# ----------------------------------------------------------------------
+_RESOLUTION_TYPE_VALUES: tuple[str, ...] = tuple(item.value for item in RESOLUTION_TYPES)
+"""The stored ``conflict_type`` values that belong in the resolution queue.
+
+Derived from :data:`~omr_scanner.domain.review.RESOLUTION_TYPES`, so the SQL
+and the domain cannot disagree about what a conflict is."""
+
+
+def _resolution_only(statement: Any) -> Any:
+    """Restrict a select over conflicts to the ones needing resolution.
+
+    **Applied to every read that counts, lists or blocks on conflicts**, which
+    is what makes an older project behave like a new one the moment it is
+    opened - without rewriting a single row of it.
+
+    A project scanned before answer ambiguity stopped being a conflict may hold
+    thousands of ``answer_*`` rows. They are evidence, and a decision somebody
+    recorded on one is still theirs, so nothing here deletes them; they simply
+    do not appear in the working queue, do not inflate any count, and do not
+    stop a batch proceeding. A re-read of the sheet withdraws the untouched
+    ones in the ordinary way, because detection no longer produces them.
+
+    Their *decisions* are still honoured - see :func:`sheet_resolutions` and
+    :func:`effective_answers`, which deliberately do not use this filter when
+    applying what a reviewer already decided. Dropping a correction a person
+    made would be the one genuinely destructive reading of this change.
+    """
+    return statement.where(ReviewConflict.conflict_type.in_(_RESOLUTION_TYPE_VALUES))
 
 
 # ----------------------------------------------------------------------
@@ -368,6 +401,7 @@ def sync_conflicts(
 
     Returns:
         How many conflicts this sheet now has in a non-withdrawn state.
+        Legacy answer rows are not counted; see :func:`_resolution_only`.
 
     Called once per finished sheet, from the coordinating process. Running it
     again on the same sheet - a Phase 5 retry, a resumed batch, a re-review -
@@ -420,11 +454,13 @@ def sync_conflicts(
         session.flush()
         return int(
             session.scalar(
-                select(func.count())
-                .select_from(ReviewConflict)
-                .where(ReviewConflict.batch_id == batch_id)
-                .where(ReviewConflict.scan_id == scan_id)
-                .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
+                _resolution_only(
+                    select(func.count())
+                    .select_from(ReviewConflict)
+                    .where(ReviewConflict.batch_id == batch_id)
+                    .where(ReviewConflict.scan_id == scan_id)
+                    .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
+                )
             )
             or 0
         )
@@ -1039,6 +1075,7 @@ def list_conflicts(
 
 def _apply_filters(statement: Any, rules: ConflictFilter) -> Any:
     """Apply a :class:`ConflictFilter` to a select over conflicts."""
+    statement = _resolution_only(statement)
     if rules.states:
         statement = statement.where(
             ReviewConflict.state.in_([item.value for item in rules.states])
@@ -1068,23 +1105,33 @@ def count_conflicts(database: ProjectDatabase, batch_id: str) -> ReviewCounts:
     Counted in SQL, grouped, in two queries - never by loading the rows. A
     summary panel that walked ten thousand objects on every repaint is exactly
     the kind of thing that makes a large batch unusable.
+
+    **Answer ambiguity is not counted here.** A batch with a hundred
+    double-marked questions, two disputed student IDs and one disputed set code
+    reports three, not a hundred and three - which is the number an operator has
+    to act on. How many answers were ambiguous is a recognition statistic and is
+    reported with the recognition results.
     """
     with database.session() as session:
         by_state = {
             str(state): int(count)
             for state, count in session.execute(
-                select(ReviewConflict.state, func.count())
-                .where(ReviewConflict.batch_id == batch_id)
-                .group_by(ReviewConflict.state)
+                _resolution_only(
+                    select(ReviewConflict.state, func.count())
+                    .where(ReviewConflict.batch_id == batch_id)
+                    .group_by(ReviewConflict.state)
+                )
             ).all()
         }
         by_type = {
             str(kind): int(count)
             for kind, count in session.execute(
-                select(ReviewConflict.conflict_type, func.count())
-                .where(ReviewConflict.batch_id == batch_id)
-                .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
-                .group_by(ReviewConflict.conflict_type)
+                _resolution_only(
+                    select(ReviewConflict.conflict_type, func.count())
+                    .where(ReviewConflict.batch_id == batch_id)
+                    .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
+                    .group_by(ReviewConflict.conflict_type)
+                )
             ).all()
         }
     return ReviewCounts(
@@ -1105,10 +1152,12 @@ def count_conflicts_for_scan(
         by_state = {
             str(state): int(count)
             for state, count in session.execute(
-                select(ReviewConflict.state, func.count())
-                .where(ReviewConflict.batch_id == batch_id)
-                .where(ReviewConflict.scan_id == scan_id)
-                .group_by(ReviewConflict.state)
+                _resolution_only(
+                    select(ReviewConflict.state, func.count())
+                    .where(ReviewConflict.batch_id == batch_id)
+                    .where(ReviewConflict.scan_id == scan_id)
+                    .group_by(ReviewConflict.state)
+                )
             ).all()
         }
     return ReviewCounts(
@@ -1175,7 +1224,13 @@ def sheet_resolutions(
                 {"identifier": "", "set_code": "", "answers": {}, "unresolved": 0,
                  "reviewed": False},
             )
-            if ConflictState(conflict.state).needs_attention:
+            # Counted only for conflicts that still require resolution: the
+            # exported `unresolved_conflicts` column says how much of this row
+            # is waiting for a person, and an ambiguous answer is not.
+            if (
+                ConflictState(conflict.state).needs_attention
+                and ConflictType(conflict.conflict_type).requires_resolution
+            ):
                 entry["unresolved"] += 1
             if conflict.state != ConflictState.RESOLVED.value:
                 continue
@@ -1465,9 +1520,21 @@ class EffectiveAnswers:
             number. Only these - a question nobody touched keeps the machine's
             reading, which the caller already has.
         unresolved_questions: Printed question numbers whose conflict is still
-            open or deferred. **Scoring is blocked while this is non-empty**:
-            an unread answer is not a blank, and marking it as one would award
-            a candidate's blank mark for a question they may well have answered.
+            open or deferred, among conflicts that
+            :attr:`~omr_scanner.domain.review.ConflictType.requires_resolution`.
+            **Empty in practice**, because an answer no longer produces a
+            conflict of any kind - and a legacy ``answer_*`` row must not block
+            a batch that this build would never have flagged. Kept, with
+            :attr:`~omr_scanner.domain.scoring.BlockReason.UNRESOLVED_ANSWERS`,
+            so that the guarantee it expresses - scoring never invents an
+            answer nobody has settled - stays wired up rather than being
+            deleted and having to be remembered.
+
+            What stops an ambiguous answer being *marked as though it were a
+            clean one* is now
+            :func:`~omr_scanner.services.scoring.build_candidate_answers`,
+            which renders an answer the engine could not decide as the
+            canonical "not a single answer" symbol.
     """
 
     scan_id: int
@@ -1518,10 +1585,14 @@ def effective_answers(
             )
             state = ConflictState(conflict.state)
             if state.needs_attention:
-                found[conflict.scan_id] = replace(
-                    entry,
-                    unresolved_questions=(*entry.unresolved_questions, number),
-                )
+                # A legacy answer conflict nobody decided is not a reason to
+                # refuse to mark the script: this build would never have raised
+                # it, and there is now nowhere to go and resolve it.
+                if ConflictType(conflict.conflict_type).requires_resolution:
+                    found[conflict.scan_id] = replace(
+                        entry,
+                        unresolved_questions=(*entry.unresolved_questions, number),
+                    )
                 continue
             if state is not ConflictState.RESOLVED:
                 continue

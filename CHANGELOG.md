@@ -12,11 +12,42 @@ produced them, because that is how the work was sequenced and how
 
 ## [Unreleased]
 
-Nothing yet.
-
 ### Added
+
+- `ConflictType.requires_resolution` and `FieldKind.is_record_identity`
+  (`omr_scanner.domain.review`) — the single definition of what belongs in the
+  Conflict Resolution queue, read by detection, the store, the GUI and the
+  health check instead of each deciding for itself.
+- `services.scoring._scorable_answer` — an answer the engine could not reduce
+  to one option is marked as a multiple (`?`), never as the option it nearly
+  said and never as a blank.
+
 ### Changed
+
+- **Conflict Resolution now applies only to the student ID / roll number, the
+  set code and sheets that could not be read.** An ambiguous or multiply-marked
+  *answer* is no longer a conflict: it stays in the recognition result, exports
+  unchanged (`B-D`, `?`, `B?`, blank) and no longer waits for a human. A batch
+  with 100 ambiguous answers, 2 disputed student IDs and 1 disputed set code
+  now reports **3** unresolved conflicts, not 103 — on the Scan badge, in the
+  Resolve summary, in the export's `unresolved_conflicts` column and in the
+  project health check. Enforced in `services.conflict_policy`, where conflicts
+  are created, rather than filtered in the GUI.
+- Ambiguous answers no longer block a batch through the conflict-resolution
+  stage, nor block scoring. An unresolved **set code** still does.
+- `ConflictPolicy.flag_blank_answers` removed: with answers out of the conflict
+  system it decided nothing.
+- Resolve stage wording and its conflict-type filter now describe
+  identification conflicts only; the Results page's **Review Answers…** button
+  is **Review Sheet…**.
+
 ### Fixed
+
+- A project scanned by an earlier build keeps its stored `answer_*` conflicts
+  and any decisions recorded against them, but they no longer appear in the
+  queue or in any count, and a re-read withdraws the untouched ones. Nothing is
+  deleted or rewritten on load.
+
 ### Security
 
 ---

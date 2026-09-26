@@ -39,20 +39,39 @@ Question *N* is character *N*. The string is never compressed and a blank never
 removed, so a candidate's answers can be read against a key without either side
 having to say which questions it covers.
 
-### `?` is not "the recogniser is unsure"
+### `?` means "not one determinable answer"
 
-This distinction is load-bearing. A double mark that a reviewer has looked at
-is a **fact about the paper** and is scored under the multiple-answer rule. A
-reading still sitting in the Phase 6 queue is a **doubt**, and scoring is
-**blocked** until somebody settles it:
+Two different readings both arrive here as `?`, and the reason they share a
+symbol is that the marking rule for them is the same:
+
+| What the engine read | Why it is `?` |
+|---|---|
+| a **confirmed multiple** — two or more bubbles filled | the candidate marked more than one |
+| an **undecided** group — too faint to accept, too close to its runner-up, or unmeasurable | nothing in it can be called *the* answer |
+
+Neither is a conflict, and neither blocks a mark: an ambiguous answer is a fact
+about the paper rather than a question for a reviewer, and no human decision
+could make a two-bubble question into a one-bubble one.
+
+What must never happen is the opposite mistake. An `UNCERTAIN` group with one
+faint mark still *has* a value — the engine's `"B"` — and marking that as a
+clean `B` would award or deny credit on evidence the engine itself refused to
+stand behind. Treating it as a blank would quietly award the blank mark for a
+question the candidate may well have answered. So it is rendered as `?`:
 
 ```text
-Cannot be scored: Answers still awaiting review:
-Question 37 - resolve on the Resolve stage.
+services.scoring._scorable_answer
+    status UNCERTAIN / UNREADABLE  ->  MULTIPLE ("?")
+    everything else                ->  the engine's own value
 ```
 
-Treating an unread answer as a blank would quietly award the blank mark for a
-question the candidate may well have answered.
+The recognition result is untouched; this is a projection of it, and
+`machine_answers` keeps what recognition read either way.
+
+**An unresolved *set code* still blocks a mark.** That one is not a doubt about
+a question but about which paper the script answers, and falling back to
+another set's key produces a plausible mark against the wrong paper — the worst
+available outcome. See [`conflict_review.md`](conflict_review.md).
 
 ---
 

@@ -18,9 +18,16 @@ The scenario the phase brief requires (§55):
     100004     A        ABSENT
     100005     B        scored against Set B's different key
     100006     A        a wrong question, answered wrongly
-    100007     A        an answer corrected on the Resolve stage
+    100007     A        a double-marked answer, scored as a multiple
     100008     X        no verified key for that set
+    100009     A/B      an ambiguous set code, corrected on Resolve
     ========== ======== ============================================
+
+Where Phase 6 meets Phase 8:
+    An ambiguous *answer* never blocks a mark - it is scored as a multiple,
+    which is what the paper says. An ambiguous *set code* does block one,
+    because marking a script against the wrong paper's key is the worst
+    available outcome. 100007 and 100009 are those two cases side by side.
 
 Why the sheets are rendered rather than faked:
     The answers being marked are the ones the engine genuinely read off a page.
@@ -41,7 +48,7 @@ from tests.conftest import build_answer_sheet_template, render_marked_sheet
 
 from omr_scanner.database import open_project_database
 from omr_scanner.database.models import CandidateResult
-from omr_scanner.domain.review import ReasonCode
+from omr_scanner.domain.review import FieldKind, ReasonCode
 from omr_scanner.domain.scoring import (
     BLANK,
     MULTIPLE,
@@ -97,8 +104,12 @@ def scans_dir(tmp_path: Path) -> Path:
     return directory
 
 
-def sheet_marks(roll: str, set_code: str, answers: dict[int, object]) -> dict:
-    """Marks for a sheet: a roll number, a set code and per-question answers."""
+def sheet_marks(roll: str, set_code: object, answers: dict[int, object]) -> dict:
+    """Marks for a sheet: a roll number, a set code and per-question answers.
+
+    ``set_code`` may be a list to mark two of its bubbles, which is how the
+    ambiguous-set-code candidate is produced.
+    """
     return {
         "roll_number": dict(enumerate(roll)),
         "set_code": {0: set_code},
@@ -129,7 +140,8 @@ def roster_file(tmp_path: Path) -> Path:
         "100005,CAND SET B,55\n"
         "100006,CAND WRONG Q,55\n"
         "100007,CAND CORRECTED,55\n"
-        "100008,CAND UNKNOWN SET,55\n",
+        "100008,CAND UNKNOWN SET,55\n"
+        "100009,CAND SET AMBIGUOUS,55\n",
         encoding="utf-8",
     )
     return path
@@ -172,6 +184,7 @@ def prepared(database, template, plan, make_scan, roster_file):
         make_scan("c6.png", sheet_marks("100006", "A", {2: "D"})),
         make_scan("c7.png", sheet_marks("100007", "A", {5: ["A", "B"]})),
         make_scan("c8.png", sheet_marks("100008", "C", {})),
+        make_scan("c9.png", sheet_marks("100009", ["A", "B"], {})),
     ]
     batch_id = run_batch(database, template, paths)
     roster_id = reconciliation_store.import_roster(
@@ -222,35 +235,22 @@ class TestTheAcceptanceScenario:
     def test_blanks_and_multiples_are_distinguished_in_the_answer_string(
         self, database, prepared, template
     ):
-        # A blank is not a conflict; a double mark is. So this candidate is
-        # blocked pending review - but the string already tells the two apart,
-        # which is exactly the distinction the phase brief insists on.
+        # Neither a blank nor a double mark is a conflict: both are facts about
+        # the paper. The string tells the two apart, which is exactly the
+        # distinction the phase brief insists on, and the candidate is marked.
         roster_id, batch_id = prepared
         found = results_by_id(database, roster_id, batch_id, template)["100003"]
         assert found.answer_string[0] == BLANK
         assert found.answer_string[1] == MULTIPLE
-        assert found.status is ResultStatus.BLOCKED
+        assert found.status is ResultStatus.SCORED
 
-    def test_once_reviewed_blanks_and_multiples_are_counted_separately(
+    def test_blanks_and_multiples_are_counted_separately(
         self, database, prepared, template
     ):
+        # The candidate really did mark two bubbles on Q2 and none on Q1, which
+        # are two different things to score - and neither needed a reviewer.
         roster_id, batch_id = prepared
-        scan_id = next(
-            item.scripts[0].script.scan_id
-            for item in reconciliation_store.list_entries(database, roster_id, batch_id)
-            if item.candidate_id == "100003"
-        )
-        # Confirm the double mark as a multiple: the candidate really did mark
-        # two bubbles, which is a fact to score rather than a doubt to hide.
-        for conflict in review_store.list_conflicts(database, batch_id):
-            if conflict.scan_id == scan_id and conflict.field.kind.value == "question":
-                review_store.accept_machine_value(
-                    database, conflict.conflict_id, reviewer=OPERATOR
-                )
-        scoring_store.score_batch(database, roster_id, batch_id, template)
-
         found = results_by_id(database, roster_id, batch_id, template)["100003"]
-        assert found.status is ResultStatus.SCORED
         assert found.blank_count == 1
         assert found.multiple_count == 1
         assert found.answer_string[0] == BLANK
@@ -283,7 +283,7 @@ class TestTheAcceptanceScenario:
     def test_the_summary_accounts_for_everybody(self, database, prepared, template):
         roster_id, batch_id = prepared
         counts = scoring_store.count_results(database, roster_id, batch_id, template)
-        assert counts.registered == 8
+        assert counts.registered == 9
         assert counts.absent == 1
         assert counts.blocked >= 1
         assert counts.scored + counts.absent + counts.blocked == counts.registered
@@ -347,42 +347,34 @@ class TestWrongQuestions:
 
 
 class TestPhase6Integration:
-    def test_an_unresolved_answer_blocks_scoring(self, database, prepared, template):
-        # 100007's Q5 is a double mark, which Phase 6 raises as a conflict.
-        roster_id, batch_id = prepared
-        found = results_by_id(database, roster_id, batch_id, template)["100007"]
-        assert found.status is ResultStatus.BLOCKED
-        assert BlockReason.UNRESOLVED_ANSWERS in {item.reason for item in found.blocks}
-        assert "Question 5" in found.describe_blocks()
-
-    def test_resolving_the_conflict_lets_the_candidate_be_scored(
-        self, database, prepared, template, plan
-    ):
-        roster_id, batch_id = prepared
+    def _set_code_conflict(
+        self, database, roster_id, batch_id, candidate_id
+    ) -> review_store.ConflictRecord:
         scan_id = next(
             item.scripts[0].script.scan_id
             for item in reconciliation_store.list_entries(database, roster_id, batch_id)
-            if item.candidate_id == "100007"
+            if item.candidate_id == candidate_id
         )
-        conflict = next(
+        return next(
             item
             for item in review_store.list_conflicts(database, batch_id)
-            if item.scan_id == scan_id and item.field.kind.value == "question"
+            if item.scan_id == scan_id and item.field.kind is FieldKind.SET_CODE
         )
-        review_store.correct_value(
-            database,
-            conflict.conflict_id,
-            value="A",
-            reviewer=OPERATOR,
-            reason=ReasonCode.DOMINANT_MARK,
-        )
-        scoring_store.score_batch(database, roster_id, batch_id, template)
 
+    def test_an_ambiguous_answer_does_not_block_scoring(
+        self, database, prepared, template, plan
+    ):
+        # 100007's Q5 carries two marks. That is a fact about the paper, not a
+        # question for a reviewer: the candidate is marked, and the multiple
+        # deduction applies. Nothing about it reaches the Resolve stage.
+        roster_id, batch_id = prepared
         found = results_by_id(database, roster_id, batch_id, template)["100007"]
         assert found.status is ResultStatus.SCORED
-        assert found.final_score == plan.question_count
+        assert found.answer_string[4] == MULTIPLE
+        assert found.multiple_count == 1
+        assert found.final_score == plan.question_count - 1
 
-    def test_a_correction_changes_the_effective_answer_not_the_machine_one(
+    def test_no_answer_conflict_is_raised_for_that_candidate(
         self, database, prepared, template
     ):
         roster_id, batch_id = prepared
@@ -391,11 +383,28 @@ class TestPhase6Integration:
             for item in reconciliation_store.list_entries(database, roster_id, batch_id)
             if item.candidate_id == "100007"
         )
-        conflict = next(
+        assert [
             item
             for item in review_store.list_conflicts(database, batch_id)
-            if item.scan_id == scan_id and item.field.kind.value == "question"
-        )
+            if item.scan_id == scan_id
+        ] == []
+
+    def test_an_unresolved_set_code_still_blocks_scoring(
+        self, database, prepared, template
+    ):
+        # The opposite case, and the reason identity conflicts are still
+        # conflicts: a sheet marked against the wrong paper's key produces a
+        # plausible mark that is simply wrong.
+        roster_id, batch_id = prepared
+        found = results_by_id(database, roster_id, batch_id, template)["100009"]
+        assert found.status is ResultStatus.BLOCKED
+        assert BlockReason.SET_MISSING in {item.reason for item in found.blocks}
+
+    def test_resolving_the_set_code_lets_the_candidate_be_scored(
+        self, database, prepared, template, plan
+    ):
+        roster_id, batch_id = prepared
+        conflict = self._set_code_conflict(database, roster_id, batch_id, "100009")
         review_store.correct_value(
             database,
             conflict.conflict_id,
@@ -405,56 +414,61 @@ class TestPhase6Integration:
         )
         scoring_store.score_batch(database, roster_id, batch_id, template)
 
-        found = results_by_id(database, roster_id, batch_id, template)["100007"]
-        assert found.answer_string[4] == "A", "the effective answer"
-        assert found.machine_answer_string[4] == MULTIPLE, "what the machine read"
-        assert 5 in found.corrected_questions
+        found = results_by_id(database, roster_id, batch_id, template)["100009"]
+        assert found.status is ResultStatus.SCORED
+        assert found.set_code == "A"
+        assert found.final_score == plan.question_count
+
+    def test_a_correction_changes_the_effective_set_not_the_machine_one(
+        self, database, prepared, template
+    ):
+        roster_id, batch_id = prepared
+        conflict = self._set_code_conflict(database, roster_id, batch_id, "100009")
+        machine_value = conflict.observation.value
+        review_store.correct_value(
+            database,
+            conflict.conflict_id,
+            value="A",
+            reviewer=OPERATOR,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        scoring_store.score_batch(database, roster_id, batch_id, template)
+
+        found = results_by_id(database, roster_id, batch_id, template)["100009"]
+        assert found.set_code == "A", "the effective set"
         # And Phase 6's own record is intact.
         provenance = review_store.provenance_for(database, conflict.conflict_id)
-        assert provenance.machine_value != "A"
+        assert provenance.machine_value == machine_value
         assert provenance.reviewer == OPERATOR
 
     def test_a_correction_makes_an_existing_result_stale(
         self, database, prepared, template
     ):
         roster_id, batch_id = prepared
-        # 100003's Q2 is a double mark, so it is blocked; resolve it, score,
-        # then correct it again and check the result goes stale.
-        scan_id = next(
-            item.scripts[0].script.scan_id
-            for item in reconciliation_store.list_entries(database, roster_id, batch_id)
-            if item.candidate_id == "100003"
+        conflict = self._set_code_conflict(database, roster_id, batch_id, "100009")
+        review_store.correct_value(
+            database,
+            conflict.conflict_id,
+            value="A",
+            reviewer=OPERATOR,
+            reason=ReasonCode.DOMINANT_MARK,
         )
-        conflicts = [
-            item
-            for item in review_store.list_conflicts(database, batch_id)
-            if item.scan_id == scan_id and item.field.kind.value == "question"
-        ]
-        for conflict in conflicts:
-            review_store.correct_value(
-                database,
-                conflict.conflict_id,
-                value="A",
-                reviewer=OPERATOR,
-                reason=ReasonCode.DOMINANT_MARK,
-            )
         scoring_store.score_batch(database, roster_id, batch_id, template)
-        scored = results_by_id(database, roster_id, batch_id, template)["100003"]
+        scored = results_by_id(database, roster_id, batch_id, template)["100009"]
         assert scored.status is ResultStatus.SCORED
         assert scored.is_stale is False
 
-        target = conflicts[0]
-        review_store.reopen(database, target.conflict_id, reviewer=OPERATOR)
+        review_store.reopen(database, conflict.conflict_id, reviewer=OPERATOR)
         review_store.correct_value(
             database,
-            target.conflict_id,
+            conflict.conflict_id,
             value="B",
             reviewer=OPERATOR,
             reason=ReasonCode.MISCLASSIFICATION,
         )
-        after = results_by_id(database, roster_id, batch_id, template)["100003"]
+        after = results_by_id(database, roster_id, batch_id, template)["100009"]
         assert after.is_stale
-        assert StaleReason.ANSWERS in after.stale_reasons
+        assert StaleReason.SET_CODE in after.stale_reasons
         assert after.final_score == scored.final_score, "the mark is not patched"
 
 

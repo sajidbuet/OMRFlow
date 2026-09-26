@@ -114,11 +114,18 @@ Full detail - supported formats, the recognition conventions, the duplicate
 naming rule, the CSV columns and the known limitations - is in
 `docs/scan_workflow.md`.
 
-## Reviewing what the machine was unsure about
+## Settling which record a sheet is
 
-Select **5. Resolve** — or press **Review Conflicts** on the Scan page — to look
-at everything recognition could not decide. The Scan page tells you how many
-there are when a batch finishes.
+Select **5. Resolve** — or press **Review Conflicts** on the Scan page — to
+settle the sheets whose **student ID / roll number** or **set code**
+recognition could not read, and the sheets it could not read at all. The Scan
+page tells you how many there are when a batch finishes.
+
+**Answers are not resolved here.** A question with two bubbles filled, or a mark
+too faint to call, is a result rather than a question for you: it stays in the
+results and the export as the sheet was marked (`B-D`, `?`, `B?`, or empty —
+see above), it is scored as a multiple, and it does not hold the batch up. A
+batch whose only ambiguity is in its answers shows **0 conflicts** here.
 
 **First, put your name in File > Settings > Reviewer.** It is remembered between
 sessions, and it is recorded against every decision you make. You cannot save a
@@ -136,13 +143,13 @@ The page has the queue on the left and the sheet on the right.
      the sheet it sits.
    - **Original scan** — the file exactly as it arrived, in case the problem is
      with the scan rather than the reading.
-3. Read **What the machine saw**. Alongside its answer it shows each option's
+3. Read **What the machine saw**. Alongside its reading it shows each option's
    *fill score* — how much of that bubble was covered in ink. These are
    measurements, not probabilities: a low score on the option you can plainly
    see marked usually means a light pencil or a tick rather than a fill.
 4. Decide:
    - **Accept machine value** if you looked and it was right.
-   - Click the **correct answer** instead if it was not. For a whole roll number
+   - Click the **correct value** instead if it was not. For a whole roll number
      or a duplicate ID you type the value rather than picking one.
    - **Defer** to come back to it.
    - **Reopen** to change a decision — yours or somebody else's.
@@ -158,7 +165,7 @@ What to expect:
 - **Reopening a decision** puts the machine's value back as the current one, but
   the correction you are replacing stays in the history under the name of
   whoever made it.
-- **Some conflicts have no answer to pick.** A sheet that would not register, or
+- **Some conflicts have no value to pick.** A sheet that would not register, or
   a file that would not open, needs re-scanning — so those offer only *Defer*.
 - **Duplicate roll numbers** are found across the whole batch. Each sheet's
   conflict names the others.
@@ -372,16 +379,19 @@ Every reason a candidate cannot be scored names something you can go and fix:
 *Reconciliation is not complete*, *No script was received*, *More than one
 script, none nominated*, *Script belongs to no registered candidate*,
 *Question-paper set not yet resolved*, *No question-paper set was read*, *No
-verified answer key for this set*, *Answers still awaiting review*, *Answers do
-not match the key length*, *This sheet has no stored recognition result*. None
-of them is ever resolved by guessing.
+verified answer key for this set*, *Answers do not match the key length*, *This
+sheet has no stored recognition result*. None of them is ever resolved by
+guessing.
+
+An ambiguous *answer* is not among them. A question the engine could not reduce
+to one option is marked as a multiple — never as the option it nearly said, and
+never as a blank — so the candidate is scored under the same rule as anybody who
+filled two bubbles.
 
 Select a row for the detail: the total, the counts, the key and configuration
 revision it was computed under, and the full question-by-question breakdown —
 what the candidate marked, what the key says, and the mark that question earned.
-Any question whose answer a person corrected on the Resolve stage is named —
-the machine's reading is still kept. **Review Answers...** jumps to that
-candidate's sheet on the Resolve stage.
+**Review Sheet...** jumps to that candidate's sheet on the Resolve stage.
 
 ### When something changes underneath
 

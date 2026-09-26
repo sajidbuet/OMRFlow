@@ -61,7 +61,7 @@ from omr_scanner.database.models import (
     ScanJobStatus,
 )
 from omr_scanner.domain.reconciliation import ReconciliationStatus
-from omr_scanner.domain.review import ConflictState
+from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState
 from omr_scanner.services import project_backup, scan_provenance
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -319,11 +319,25 @@ def _source_scan_issues(database: ProjectDatabase) -> list[HealthIssue]:
 
 
 def _unresolved_conflict_issue(database: ProjectDatabase) -> list[HealthIssue]:
+    """Open conflicts that still need a person.
+
+    Counts only the types that
+    :attr:`~omr_scanner.domain.review.ConflictType.requires_resolution` - the
+    student ID, the set code, and sheets that could not be read. A project
+    scanned by an earlier build may also hold ``answer_*`` rows; reporting
+    those would tell an operator to go and resolve something the Resolve stage
+    no longer offers, which is worse than saying nothing.
+    """
     with database.session() as session:
         open_count = session.scalar(
             select(func.count())
             .select_from(ReviewConflict)
             .where(ReviewConflict.state == ConflictState.OPEN.value)
+            .where(
+                ReviewConflict.conflict_type.in_(
+                    [item.value for item in RESOLUTION_TYPES]
+                )
+            )
         )
     if not open_count:
         return []
@@ -331,7 +345,9 @@ def _unresolved_conflict_issue(database: ProjectDatabase) -> list[HealthIssue]:
         HealthIssue(
             level=HealthLevel.WARNING,
             code="UNRESOLVED_CONFLICTS",
-            message=f"{open_count} recognition conflict(s) are still awaiting review.",
+            message=(
+                f"{open_count} identification conflict(s) are still awaiting review."
+            ),
         )
     ]
 

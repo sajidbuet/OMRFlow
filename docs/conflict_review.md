@@ -1,8 +1,19 @@
 # Conflict detection and human review (Phase 6)
 
-The stage between processing a batch and trusting its results: every value
-recognition could not decide is put in front of a person, with the evidence
-behind it, and what they decide is recorded permanently against their name.
+The stage between processing a batch and trusting its results: every value that
+decides **which record a sheet is** and that recognition could not settle is put
+in front of a person, with the evidence behind it, and what they decide is
+recorded permanently against their name.
+
+> **Conflict Resolution is for identity, not for answers.**
+> Only the **student ID / roll number**, the **set code**, and the **sheet
+> itself** can produce a conflict. An ambiguous or multiply-marked *answer* is a
+> recognition result: it stays in the result, it is exported and scored as the
+> sheet was marked, and it never waits for a human.
+>
+> See [§3](#3-what-becomes-a-conflict) for why, and
+> [§12](#12-projects-from-an-earlier-build) for what happens to a project
+> scanned before this was true.
 
 For the recognition that produces the conflicts, see
 [`recognition_engine.md`](recognition_engine.md); for the batch that runs it,
@@ -70,7 +81,23 @@ sheet, so it cannot be seen while reading one.
 ## 3. What becomes a conflict
 
 Derived from what recognition *already decided*, never from a second opinion
-about the pixels.
+about the pixels - and only where the ambiguity leaves the **record** unusable:
+
+```text
+recognition result
+     |
+     +-- student ID ambiguity ----> conflict   (nobody knows whose script this is)
+     |
+     +-- set code ambiguity ------> conflict   (nobody knows which paper it answers)
+     |
+     +-- sheet unreadable --------> conflict   (nothing was measured at all)
+     |
+     +-- answer ambiguity --------> answer result only
+```
+
+The single definition lives in
+`omr_scanner.domain.review.ConflictType.requires_resolution`; every count,
+queue, badge and block asks it rather than deciding for itself.
 
 ### Student ID
 
@@ -95,15 +122,36 @@ states. Set codes may be **multi-position and multi-character** (`10`, `11`,
 `12`), and each printed position is reported separately; nothing here assumes
 one character.
 
-### Questions
+### Questions — never
 
-Multiple marks, uncertain, unreadable, low confidence.
+**No answer produces a conflict, in any state.** Not a double mark, not a mark
+too faint to accept, not a group that could not be sampled, not a blank.
 
-**A blank answer is not a conflict by default.** A candidate is entitled to
-leave a question unanswered, and one queue entry per unanswered question would
-bury the conflicts that matter. An examination where every question is
-compulsory can switch it on
-(`ConflictPolicy.flag_blank_answers`).
+An answer ambiguity is a fact about the paper, and the paper is not in dispute:
+
+| What the sheet says | Where it lives |
+| --- | --- |
+| `B` | the answer value |
+| `B-D` (two bubbles filled) | the answer value - **both marks kept** |
+| `?` / `B?` (too faint, or too close to call) | the answer's display value and status |
+| `` (blank) | the answer value |
+
+All of it stays in the recognition result - `status`, `needs_review`, `value`,
+the per-bubble fill ratios - is exported in the question column, and is counted
+in the sheet's `warning_count`. Nothing is discarded; it is simply not a
+*conflict*.
+
+Why it changed: an examination of a hundred questions can produce a hundred
+answer ambiguities per sheet. A queue holding them made the two entries that
+genuinely stopped a script being attributed impossible to find, and blocked a
+batch on ambiguity that no human decision could improve. A candidate who filled
+two bubbles filled two bubbles; a reviewer cannot know which they meant, and the
+marking scheme already says what a multiple is worth.
+
+**Scoring still refuses to guess.** An answer the engine could not reduce to one
+option is marked as `?` (`domain.scoring.MULTIPLE`) - never as the option it
+nearly said, and never as a blank. That guard is
+`services.scoring._scorable_answer`; see [`scoring.md`](scoring.md).
 
 ### The sheet itself
 
@@ -121,9 +169,9 @@ acknowledgement and deferral for them and no value buttons at all.
 
 ### Where the thresholds come from
 
-There are none here. Conflict detection reads the engine's own `needs_review`
-flag, which the decision layer computed from **the template's own**
-`ambiguity_margin` and `min_confidence`. Calibrating a template in
+There are none here. Conflict detection reads the statuses and confidences the
+decision layer computed from **the template's own** `ambiguity_margin` and
+`min_confidence`. Calibrating a template in
 [Phase 4](calibration_workflow.md) therefore moves the conflict queue with it,
 and there is exactly one place where "how sure is sure enough" is configured.
 
@@ -271,11 +319,15 @@ computes. Two columns carry the provenance:
 | Column | Meaning |
 | --- | --- |
 | `value_source` | `human` when a named reviewer decided anything on this sheet, `machine` otherwise. |
-| `unresolved_conflicts` | How many of that sheet's disputes are still waiting. |
+| `unresolved_conflicts` | How many of that sheet's **identification** disputes are still waiting. An ambiguous answer counts zero here; it is in its own question column, as the sheet was marked. |
 
 Exporting a batch with unresolved conflicts warns first, stating the count. It
 does not block - an interim export is legitimate - but unresolved ambiguity
 never leaves the application silently looking like finished data.
+
+A batch whose only ambiguity is in its answers reports `0` unresolved
+conflicts and proceeds without a warning. That is correct: there is nothing for
+anybody to resolve, and the ambiguity itself is in the exported row.
 
 The export reads the resolutions; it never writes to them, and the machine's
 own values stay in the project database whatever the file says. A CSV can
@@ -324,10 +376,36 @@ scores were not kept rather than failing.
 
 ---
 
-## 12. What Phase 6 does not do
+## 12. Projects from an earlier build
+
+A project scanned before answer ambiguity stopped being a conflict may hold
+thousands of `answer_*` rows in `review_conflict`. Opening it in this build is
+safe and needs no migration step:
+
+- **Nothing is deleted or rewritten on load.** A stored observation is
+  evidence, and a decision somebody recorded is still theirs.
+- **They are excluded from every active read** - the queue, the batch and
+  per-sheet counts, the scan page's badge, the export's
+  `unresolved_conflicts`, the project health check, and the scoring block for
+  unresolved answers. One filter, `review_store._resolution_only`, built from
+  `ConflictType.requires_resolution`.
+- **Decisions already made are still honoured.** A reviewer who corrected an
+  answer under the old semantics still sees their value in the export and in
+  scoring.
+- **Re-reading a sheet tidies up.** Detection no longer produces them, so an
+  untouched legacy answer conflict is *withdrawn* in the ordinary way - kept,
+  with its history, and out of the queue.
+
+The five `ConflictType` members are kept for exactly this reason: refusing to
+name `"answer_multiple"` would make an old project unreadable rather than
+merely out of date. They are listed in `domain.review.LEGACY_ANSWER_TYPES`.
+
+---
+
+## 13. What Phase 6 does not do
 
 - It does not make recognition more accurate. It makes what recognition was
-  unsure about visible and correctable.
+  unsure about *in a record's identity* visible and correctable.
 - It does not verify that a correction is *right*. It records who made it, when
   and why, so that a wrong one can be found and reopened.
 - It has been exercised against **synthetic sheets and the repository's single

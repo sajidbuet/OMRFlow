@@ -11,12 +11,20 @@ Mapping to the Phase 6 scenarios:
     ========= ==============================================================
     Scenario  Covered by
     ========= ==============================================================
-    A         :class:`TestScenarioAMultipleAnswer`
+    A         :class:`TestScenarioAMultiplyMarkedIdentifier`
     B         :class:`TestScenarioBAcceptMachineValue`
     C         :class:`TestScenarioCReReviewKeepsHistory`
     D         :class:`TestScenarioDSurvivesRestart`
     E         :class:`TestScenarioEDuplicateIdentifier`
+    F         :class:`TestAnswerAmbiguityIsNotAConflict`
     ========= ==============================================================
+
+What a conflict is here:
+    Only the identifier, the set code and the sheet itself. Every scenario
+    below is built on one of those, because an ambiguous *answer* no longer
+    produces a conflict of any kind - which
+    :class:`TestAnswerAmbiguityIsNotAConflict` asserts end to end, from marks
+    on a page through to the exported CSV.
 
 Why the sheets are rendered rather than faked:
     Each scenario starts from marks on a page, so the conflicts under test are
@@ -37,6 +45,7 @@ from omr_scanner.database import open_project_database
 from omr_scanner.domain.review import (
     ConflictState,
     ConflictType,
+    FieldKind,
     ReasonCode,
     ReviewAction,
     ValueSource,
@@ -152,24 +161,28 @@ def only_conflict(database, batch_id, conflict_type: ConflictType):
 
 
 # ----------------------------------------------------------------------
-# Scenario A - a double mark, corrected
+# Scenario A - a doubly marked roll-number column, corrected
 # ----------------------------------------------------------------------
-class TestScenarioAMultipleAnswer:
+class TestScenarioAMultiplyMarkedIdentifier:
     @pytest.fixture
     def prepared(self, database, template, make_scan):
-        # Question 1 carries two marks. The engine reports "B-C"; a reviewer
-        # decides the candidate meant "B".
+        # The first roll-number column carries two digits. The engine reports
+        # "1-7"; a reviewer decides the candidate meant "1". Until then nobody
+        # knows whose script this is, which is what makes it a conflict.
         marks = sheet_marks()
-        marks["questions_0"] = {**marks["questions_0"], 0: ["B", "C"]}
-        path = make_scan("double.png", marks)
+        marks["roll_number"] = {**marks["roll_number"], 0: ["1", "7"]}
+        path = make_scan("double_id.png", marks)
         batch_id = run_and_detect(database, template, [path])
-        return batch_id, only_conflict(database, batch_id, ConflictType.ANSWER_MULTIPLE)
+        return batch_id, only_conflict(
+            database, batch_id, ConflictType.IDENTIFIER_MULTIPLE
+        )
 
     def test_the_engine_produces_a_multiple_mark_conflict(self, prepared):
         _batch_id, conflict = prepared
-        assert conflict.observation.value in ("B-C", "C-B")
+        assert conflict.observation.value in ("1-7", "7-1")
         assert conflict.state is ConflictState.OPEN
-        assert conflict.field.question_number == 1
+        assert conflict.field.kind is FieldKind.IDENTIFIER
+        assert conflict.field.group_key == 0
 
     def test_correcting_it_leaves_the_machine_value_and_sets_the_effective_one(
         self, database, prepared
@@ -180,12 +193,12 @@ class TestScenarioAMultipleAnswer:
         found = review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="B",
+            value="1",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )
 
-        assert found.value == "B"
+        assert found.value == "1"
         assert found.source is ValueSource.HUMAN
         assert found.machine_value == machine_value
         assert found.reviewer == REVIEWER
@@ -199,7 +212,7 @@ class TestScenarioAMultipleAnswer:
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="B",
+            value="1",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )
@@ -218,7 +231,7 @@ class TestScenarioAMultipleAnswer:
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="B",
+            value="1",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )
@@ -232,7 +245,7 @@ class TestScenarioAMultipleAnswer:
 
         header, row = csv_text.splitlines()[0].split(","), csv_text.splitlines()[1].split(",")
         record = dict(zip(header, row, strict=True))
-        assert record["Q1"] == "B"
+        assert record["roll"].startswith("1")
         assert record["value_source"] == "human"
         assert record["unresolved_conflicts"] == "0"
 
@@ -293,10 +306,10 @@ class TestScenarioCReReviewKeepsHistory:
     @pytest.fixture
     def prepared(self, database, template, make_scan):
         marks = sheet_marks()
-        marks["questions_0"] = {**marks["questions_0"], 0: ["B", "D"]}
+        marks["set_code"] = {0: ["A", "B"]}
         path = make_scan("rereview.png", marks)
         batch_id = run_and_detect(database, template, [path])
-        return batch_id, only_conflict(database, batch_id, ConflictType.ANSWER_MULTIPLE)
+        return batch_id, only_conflict(database, batch_id, ConflictType.SET_CODE_MULTIPLE)
 
     def test_two_reviewers_two_corrections_one_machine_value(self, database, prepared):
         _batch_id, conflict = prepared
@@ -305,7 +318,7 @@ class TestScenarioCReReviewKeepsHistory:
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="C",
+            value="A",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )
@@ -316,13 +329,13 @@ class TestScenarioCReReviewKeepsHistory:
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="D",
+            value="B",
             reviewer=SECOND_REVIEWER,
             reason=ReasonCode.MISCLASSIFICATION,
         )
 
         found = review_store.provenance_for(database, conflict.conflict_id)
-        assert found.value == "D"
+        assert found.value == "B"
         assert found.reviewer == SECOND_REVIEWER
         assert found.machine_value == machine_value
 
@@ -331,7 +344,7 @@ class TestScenarioCReReviewKeepsHistory:
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="C",
+            value="A",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )
@@ -339,7 +352,7 @@ class TestScenarioCReReviewKeepsHistory:
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="D",
+            value="B",
             reviewer=SECOND_REVIEWER,
             reason=ReasonCode.MISCLASSIFICATION,
         )
@@ -351,13 +364,13 @@ class TestScenarioCReReviewKeepsHistory:
             ReviewAction.REOPENED,
             ReviewAction.CORRECTED,
         ]
-        # The history reads "machine read X, Dr. Rahman made it C, Dr. Haque
-        # reopened it, Dr. Haque made it D" - never as though the first
-        # reviewer had chosen D all along.
+        # The history reads "machine read X, Dr. Rahman made it A, Dr. Haque
+        # reopened it, Dr. Haque made it B" - never as though the first
+        # reviewer had chosen B all along.
         assert history[1].reviewer == REVIEWER
-        assert history[1].new_value == "C"
+        assert history[1].new_value == "A"
         assert history[3].reviewer == SECOND_REVIEWER
-        assert history[3].new_value == "D"
+        assert history[3].new_value == "B"
 
 
 # ----------------------------------------------------------------------
@@ -370,7 +383,7 @@ class TestScenarioDSurvivesRestart:
         db_path = tmp_path / "database.sqlite"
 
         marks = sheet_marks()
-        marks["questions_0"] = {**marks["questions_0"], 0: ["B", "D"], 1: ["A", "C"]}
+        marks["roll_number"] = {**marks["roll_number"], 0: ["1", "7"], 1: ["2", "9"]}
         first_scan = scans_dir / "one.png"
         cv2.imwrite(str(first_scan), render_marked_sheet(template, marks))
         second_scan = scans_dir / "two.png"
@@ -381,17 +394,17 @@ class TestScenarioDSurvivesRestart:
         conflicts = [
             item
             for item in review_store.list_conflicts(first, batch_id)
-            if item.conflict_type is ConflictType.ANSWER_MULTIPLE
+            if item.conflict_type is ConflictType.IDENTIFIER_MULTIPLE
         ]
         assert len(conflicts) >= 2
 
         review_store.correct_value(
             first,
             conflicts[0].conflict_id,
-            value="B",
+            value="1",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
-            reason_text="Bubble B visibly darker",
+            reason_text="Bubble 1 visibly darker",
         )
         review_store.defer(first, conflicts[1].conflict_id, reviewer=REVIEWER)
         resolved_id = conflicts[0].conflict_id
@@ -408,9 +421,9 @@ class TestScenarioDSurvivesRestart:
             assert deferred.state is ConflictState.DEFERRED
 
             found = review_store.provenance_for(second, resolved_id)
-            assert found.value == "B"
+            assert found.value == "1"
             assert found.reviewer == REVIEWER
-            assert found.reason_text == "Bubble B visibly darker"
+            assert found.reason_text == "Bubble 1 visibly darker"
             assert found.machine_value == machine_value
 
             history = review_store.history_for(second, resolved_id)
@@ -431,7 +444,7 @@ class TestScenarioDSurvivesRestart:
         # The Phase 5 interaction: resuming or re-running a batch must not fill
         # the queue with second copies of every conflict.
         marks = sheet_marks()
-        marks["questions_0"] = {**marks["questions_0"], 0: ["B", "D"]}
+        marks["roll_number"] = {**marks["roll_number"], 0: ["1", "7"]}
         path = make_scan("resume.png", marks)
         batch_id = run_and_detect(database, template, [path])
         before = len(review_store.list_conflicts(database, batch_id))
@@ -580,6 +593,255 @@ class TestConflictTypesFromRealSheets:
         assert review_store.list_conflicts(database, batch_id) == ()
 
 
+# ----------------------------------------------------------------------
+# Scenario F - an ambiguous answer is a reading, never a conflict
+# ----------------------------------------------------------------------
+class TestAnswerAmbiguityIsNotAConflict:
+    """The distinction this stage exists to draw, end to end.
+
+    From marks on a page out to the exported CSV. Every assertion starts from a
+    real rendered sheet, so what is tested is what the engine genuinely
+    produces.
+    """
+
+    def _csv_record(self, database, template, batch_id) -> dict[str, str]:
+        paths = batch_store.scan_paths(database, batch_id)
+        report = process_batch(list(paths), template, workers=1)
+        resolutions = review_store.sheet_resolutions(database, batch_id, template)
+        text = render_scan_results(report.processed, template, resolutions=resolutions)
+        lines = text.splitlines()
+        return dict(zip(lines[0].split(","), lines[1].split(","), strict=True))
+
+    def test_one_clean_answer_is_read_and_raises_nothing(
+        self, database, template, make_scan
+    ):
+        path = make_scan("single.png", sheet_marks())
+        batch_id = run_and_detect(database, template, [path])
+        assert review_store.list_conflicts(database, batch_id) == ()
+        assert self._csv_record(database, template, batch_id)["Q1"] == "B"
+
+    def test_two_marks_on_one_question_raise_no_conflict(
+        self, database, template, make_scan
+    ):
+        marks = sheet_marks()
+        marks["questions_0"] = {**marks["questions_0"], 0: ["A", "C"]}
+        path = make_scan("two_marks.png", marks)
+        batch_id = run_and_detect(database, template, [path])
+
+        assert review_store.list_conflicts(database, batch_id) == ()
+        assert review_store.count_conflicts(database, batch_id).unresolved == 0
+        # ...and the reading itself survives, both marks kept.
+        record = self._csv_record(database, template, batch_id)
+        assert record["Q1"] in ("A-C", "C-A")
+
+    def test_many_ambiguous_questions_leave_the_queue_empty(
+        self, database, template, make_scan
+    ):
+        marks = sheet_marks()
+        marks["questions_0"] = {index: ["A", "C"] for index in range(10)}
+        path = make_scan("many.png", marks)
+        batch_id = run_and_detect(database, template, [path])
+
+        assert review_store.list_conflicts(database, batch_id) == ()
+        counts = review_store.count_conflicts(database, batch_id)
+        assert counts.total == 0
+        assert counts.is_clear is True
+        # Every one of them is still in the exported row.
+        record = self._csv_record(database, template, batch_id)
+        ambiguous = [record[f"Q{number}"] for number in range(1, 11)]
+        assert all("-" in value for value in ambiguous), ambiguous
+
+    def test_a_mixed_batch_counts_only_the_identity_conflicts(
+        self, database, template, make_scan
+    ):
+        """Ten ambiguous answers, one student ID and one set code: two, not twelve."""
+        ambiguous = sheet_marks("120301")
+        ambiguous["questions_0"] = {index: ["A", "C"] for index in range(10)}
+        bad_id = sheet_marks("120302")
+        bad_id["roll_number"] = {**bad_id["roll_number"], 0: ["1", "7"]}
+        bad_set = sheet_marks("120303")
+        bad_set["set_code"] = {0: ["A", "B"]}
+
+        paths = [
+            make_scan("mixed_answers.png", ambiguous),
+            make_scan("mixed_id.png", bad_id),
+            make_scan("mixed_set.png", bad_set),
+        ]
+        batch_id = run_and_detect(database, template, paths)
+
+        counts = review_store.count_conflicts(database, batch_id)
+        assert counts.unresolved == 2
+        assert {
+            item.conflict_type for item in review_store.list_conflicts(database, batch_id)
+        } == {ConflictType.IDENTIFIER_MULTIPLE, ConflictType.SET_CODE_MULTIPLE}
+
+    def test_a_batch_of_only_ambiguous_answers_can_proceed(
+        self, database, template, make_scan
+    ):
+        # The workflow consequence: nothing blocks, nothing is discarded.
+        marks = sheet_marks()
+        marks["questions_0"] = {index: ["A", "C"] for index in range(10)}
+        path = make_scan("proceed.png", marks)
+        batch_id = run_and_detect(database, template, [path])
+
+        assert review_store.count_conflicts(database, batch_id).unresolved == 0
+        record = self._csv_record(database, template, batch_id)
+        assert record["unresolved_conflicts"] == "0"
+        assert record["value_source"] == "machine"
+        assert "-" in record["Q1"]
+
+
+class TestLegacyAnswerConflictsInAnOldProject:
+    """A project scanned before this change still opens, and behaves.
+
+    The rows are written directly, exactly as the earlier build stored them,
+    because the point is that a database *this build can no longer produce*
+    is read correctly.
+    """
+
+    @pytest.fixture
+    def prepared(self, database, template, make_scan):
+        from datetime import UTC, datetime
+
+        from sqlalchemy import insert
+
+        from omr_scanner.database.models import ReviewConflict
+
+        marks = sheet_marks()
+        marks["roll_number"] = {**marks["roll_number"], 0: ["1", "7"]}
+        marks["questions_0"] = {**marks["questions_0"], 0: ["A", "C"]}
+        path = make_scan("legacy_answers.png", marks)
+        batch_id = run_and_detect(database, template, [path])
+
+        scan_id = next(iter(batch_store.scan_ids_by_path(database, batch_id).values()))
+        now = datetime.now(UTC)
+        with database.session() as session:
+            session.execute(
+                insert(ReviewConflict),
+                [
+                    {
+                        "batch_id": batch_id,
+                        "scan_id": scan_id,
+                        "conflict_type": ConflictType.ANSWER_MULTIPLE.value,
+                        "scope": "field",
+                        "severity": 0,
+                        "state": ConflictState.OPEN.value,
+                        "zone_id": "questions_0",
+                        "group_key": offset,
+                        "field_kind": "question",
+                        "field_label": "Questions",
+                        "question_number": offset + 1,
+                        "machine_value": "A-C",
+                        "machine_status": "multiple",
+                        "machine_confidence": 0.0,
+                        "machine_top_fill": 0.8,
+                        "machine_margin": 0.0,
+                        "machine_candidates": "",
+                        "machine_detail": "",
+                        "related_scan_ids": "",
+                        "created_at": now,
+                        "updated_at": now,
+                    }
+                    for offset in range(5)
+                ],
+            )
+        return batch_id, scan_id
+
+    def test_the_legacy_rows_are_not_in_the_working_queue(self, database, prepared):
+        batch_id, _scan_id = prepared
+        found = review_store.list_conflicts(database, batch_id)
+        assert {item.conflict_type for item in found} == {
+            ConflictType.IDENTIFIER_MULTIPLE
+        }
+
+    def test_they_do_not_inflate_any_count(self, database, prepared):
+        batch_id, scan_id = prepared
+        assert review_store.count_conflicts(database, batch_id).unresolved == 1
+        assert (
+            review_store.count_conflicts_for_scan(database, batch_id, scan_id).unresolved
+            == 1
+        )
+
+    def test_they_do_not_block_scoring(self, database, template, prepared):
+        batch_id, scan_id = prepared
+        decided = review_store.effective_answers(database, batch_id, template)
+        entry = decided.get(scan_id)
+        assert entry is None or entry.unresolved_questions == ()
+
+    def test_the_rows_themselves_are_not_deleted(self, database, prepared):
+        # Evidence is kept. They are excluded, not destroyed.
+        from sqlalchemy import func, select
+
+        from omr_scanner.database.models import ReviewConflict
+
+        batch_id, _scan_id = prepared
+        with database.session() as session:
+            stored = session.scalar(
+                select(func.count())
+                .select_from(ReviewConflict)
+                .where(ReviewConflict.batch_id == batch_id)
+                .where(ReviewConflict.conflict_type == ConflictType.ANSWER_MULTIPLE.value)
+            )
+        assert stored == 5
+
+    def test_a_decision_somebody_already_made_is_still_honoured(
+        self, database, template, prepared
+    ):
+        # A reviewer corrected an answer under the old semantics. That is their
+        # decision, and dropping it would be the one destructive reading of
+        # this change.
+        from sqlalchemy import select
+
+        from omr_scanner.database.models import ReviewConflict
+
+        batch_id, scan_id = prepared
+        with database.session() as session:
+            legacy_id = session.scalar(
+                select(ReviewConflict.conflict_id)
+                .where(ReviewConflict.batch_id == batch_id)
+                .where(ReviewConflict.conflict_type == ConflictType.ANSWER_MULTIPLE.value)
+                .order_by(ReviewConflict.conflict_id)
+            )
+        review_store.correct_value(
+            database,
+            legacy_id,
+            value="A",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        decided = review_store.effective_answers(database, batch_id, template)
+        assert decided[scan_id].decided[1] == "A"
+
+    def test_a_re_read_withdraws_them(self, database, template, prepared):
+        # Runtime normalisation is enough on its own, but a re-read tidies up:
+        # detection no longer produces them, so the untouched ones are
+        # withdrawn in the ordinary way.
+        from sqlalchemy import select
+
+        from omr_scanner.database.models import ReviewConflict
+
+        batch_id, scan_id = prepared
+        for item in batch_store.completed_results(database, batch_id):
+            review_store.sync_conflicts(
+                database,
+                batch_id=batch_id,
+                scan_id=scan_id,
+                result=item,
+                template=template,
+            )
+        with database.session() as session:
+            states = set(
+                session.scalars(
+                    select(ReviewConflict.state)
+                    .where(ReviewConflict.batch_id == batch_id)
+                    .where(
+                        ReviewConflict.conflict_type == ConflictType.ANSWER_MULTIPLE.value
+                    )
+                ).all()
+            )
+        assert states == {ConflictState.WITHDRAWN.value}
+
+
 class TestPhase5MultiprocessingIsIntact:
     """Detection must not have quietly cost the batch its worker pool.
 
@@ -676,7 +938,7 @@ class TestMigrationOntoAnExistingProject:
 
         db_path = tmp_path / "database.sqlite"
         marks = sheet_marks(roll="551234")
-        marks["questions_0"] = {**marks["questions_0"], 0: ["B", "D"]}
+        marks["set_code"] = {0: ["A", "B"]}
         path = make_scan("legacy.png", marks)
 
         # A project as Phase 5 would have left it: a processed batch, no review.
@@ -706,6 +968,7 @@ class TestMigrationOntoAnExistingProject:
             restored = batch_store.completed_results(reopened, batch_id)
             assert [item.identifier_value for item in restored] == ["551234"]
 
+
             # The batch carries no conflicts until it is looked at again...
             assert review_store.list_conflicts(reopened, batch_id) == ()
 
@@ -721,7 +984,7 @@ class TestMigrationOntoAnExistingProject:
                     template=template,
                 )
             recovered = review_store.list_conflicts(reopened, batch_id)
-            assert ConflictType.ANSWER_MULTIPLE in {
+            assert ConflictType.SET_CODE_MULTIPLE in {
                 item.conflict_type for item in recovered
             }
 
@@ -729,7 +992,7 @@ class TestMigrationOntoAnExistingProject:
             review_store.correct_value(
                 reopened,
                 only_conflict(
-                    reopened, batch_id, ConflictType.ANSWER_MULTIPLE
+                    reopened, batch_id, ConflictType.SET_CODE_MULTIPLE
                 ).conflict_id,
                 value="B",
                 reviewer=REVIEWER,
@@ -750,16 +1013,16 @@ class TestOriginalScansAreUntouched:
         import hashlib
 
         marks = sheet_marks()
-        marks["questions_0"] = {**marks["questions_0"], 0: ["B", "D"]}
+        marks["roll_number"] = {**marks["roll_number"], 0: ["1", "7"]}
         path = make_scan("untouched.png", marks)
         before = hashlib.sha256(path.read_bytes()).hexdigest()
 
         batch_id = run_and_detect(database, template, [path])
-        conflict = only_conflict(database, batch_id, ConflictType.ANSWER_MULTIPLE)
+        conflict = only_conflict(database, batch_id, ConflictType.IDENTIFIER_MULTIPLE)
         review_store.correct_value(
             database,
             conflict.conflict_id,
-            value="B",
+            value="1",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )

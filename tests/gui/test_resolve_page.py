@@ -28,6 +28,7 @@ from omr_scanner.config import AppConfig
 from omr_scanner.domain.review import (
     ConflictState,
     ConflictType,
+    FieldKind,
     ReasonCode,
     ReviewAction,
     ValueSource,
@@ -101,16 +102,29 @@ def template_path(project_session: ProjectSession, template) -> Path:
 
 @pytest.fixture
 def prepared(project_session: ProjectSession, template, tmp_path: Path):
-    """A batch with one double-marked answer and one duplicate identifier."""
+    """A batch holding exactly the conflicts this stage is now for.
+
+    One multiply-marked roll-number column and one duplicated identifier -
+    plus, on the same sheet as the bad roll number, a double-marked answer
+    that must never reach the queue.
+    """
     scans = tmp_path / "scans"
     scans.mkdir(parents=True, exist_ok=True)
 
-    double = sheet_marks("170501")
-    double["questions_0"] = {**double["questions_0"], 0: ["B", "D"]}
+    ambiguous = sheet_marks("170503")
+    # Two bad columns on one sheet, so that walking a sheet's conflicts is
+    # exercised rather than skipped.
+    ambiguous["roll_number"] = {
+        **ambiguous["roll_number"],
+        0: ["1", "7"],
+        2: ["0", "5"],
+    }
+    ambiguous["questions_0"] = {**ambiguous["questions_0"], 0: ["B", "D"]}
     paths = []
     for name, marks in (
-        ("double.png", double),
-        ("dup.png", sheet_marks("170501")),
+        ("ambiguous_id.png", ambiguous),
+        ("dup_a.png", sheet_marks("170501")),
+        ("dup_b.png", sheet_marks("170501")),
         ("clean.png", sheet_marks("170502")),
     ):
         path = scans / name
@@ -194,6 +208,28 @@ class TestQueue:
         page.state_filter.setCurrentText(FILTER_ALL)
         assert len(page.state.conflicts) == before
 
+    def test_the_queue_holds_only_identification_conflicts(self, page: ResolvePage):
+        # The sheet with the bad roll number also carries a double-marked
+        # answer. It is in the recognition result and in the export; it is not
+        # here, and no row of this queue is about a question.
+        assert page.state.conflicts
+        assert {item.conflict_type for item in page.state.conflicts} == {
+            ConflictType.IDENTIFIER_MULTIPLE,
+            ConflictType.IDENTIFIER_DUPLICATE,
+        }
+        assert all(
+            item.field.kind is not FieldKind.QUESTION for item in page.state.conflicts
+        )
+
+    def test_the_type_filter_offers_no_answer_conflict(self, page: ResolvePage):
+        offered = {
+            page.type_filter.itemText(index)
+            for index in range(page.type_filter.count())
+        }
+        assert ConflictType.IDENTIFIER_MULTIPLE.label in offered
+        assert ConflictType.SET_CODE_MULTIPLE.label in offered
+        assert ConflictType.ANSWER_MULTIPLE.label not in offered
+
     def test_filtering_by_type_narrows_the_queue(self, page: ResolvePage):
         page.type_filter.setCurrentText(ConflictType.IDENTIFIER_DUPLICATE.label)
         assert page.state.conflicts
@@ -230,7 +266,7 @@ class TestQueue:
 # ----------------------------------------------------------------------
 class TestWorkspace:
     def test_selecting_a_conflict_loads_all_three_views(self, qtbot, page: ResolvePage):
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         assert page.normalised_view.has_page is True
         assert page.original_view.has_page is True
         assert page.zoom_view.has_page is True
@@ -238,19 +274,20 @@ class TestWorkspace:
     def test_the_zoom_view_is_focused_on_the_disputed_field(
         self, qtbot, page: ResolvePage
     ):
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         # Magnified well past "fit the whole page", which is what makes the
         # bubbles legible enough to judge.
         assert page.zoom_view.zoom > page.normalised_view.zoom
 
     def test_only_the_disputed_group_is_ringed(self, qtbot, page: ResolvePage):
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         conflict = page.current_conflict()
         drawn = page.zoom_view._overlay._bubbles
         assert drawn
-        # Exactly the options of one question, not all five hundred bubbles.
+        # Exactly one response group - here one roll-number column's ten
+        # digits - not all five hundred bubbles on the sheet.
         assert all(item.zone_id == conflict.field.zone_id for item in drawn)
-        assert len(drawn) <= 8
+        assert len(drawn) <= 12
 
     def test_a_batch_level_conflict_still_highlights_its_field(
         self, qtbot, page: ResolvePage
@@ -273,12 +310,12 @@ class TestWorkspace:
         # Overlay coordinates are canonical-page pixels; the original is not in
         # that frame, so drawing them there would be wrong everywhere while
         # looking plausible.
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         assert page.original_view._overlay._bubbles == ()
         assert page.original_view._overlay.show_bubbles is False
 
     def test_the_original_view_says_where_the_field_is(self, qtbot, page: ResolvePage):
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         note = page.original_note.text()
         assert "never modified" in note
         assert "x=" in note and "y=" in note
@@ -286,7 +323,7 @@ class TestWorkspace:
     def test_the_evidence_panel_shows_measured_fill_scores(
         self, qtbot, page: ResolvePage
     ):
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         text = page.evidence_label.text()
         assert "Machine value" in text
         # Labelled as what it is. The engine measures coverage, not likelihood.
@@ -301,10 +338,10 @@ class TestWorkspace:
     def test_the_choice_buttons_come_from_the_template(
         self, qtbot, page: ResolvePage, template
     ):
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         labels = [button.text() for button in page._choice_buttons]
-        zone = next(item for item in template.zones if item.id == "questions_0")
-        assert labels == [*zone.field.answer_labels, BLANK_CHOICE]
+        zone = next(item for item in template.zones if item.id == "roll_number")
+        assert labels == [*zone.field.symbols, BLANK_CHOICE]
 
     def test_a_duplicate_identifier_offers_free_text_not_buttons(
         self, qtbot, page: ResolvePage
@@ -365,7 +402,7 @@ class TestWorkspace:
 # ----------------------------------------------------------------------
 class TestDecisions:
     def test_accepting_records_a_human_confirmation(self, qtbot, page: ResolvePage):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         machine_value = page.current_conflict().observation.value
 
         assert page.accept_machine() is True
@@ -380,14 +417,14 @@ class TestDecisions:
     def test_correcting_records_the_value_and_keeps_the_machines(
         self, qtbot, page: ResolvePage
     ):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         machine_value = page.current_conflict().observation.value
         page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
 
-        assert page.correct("B") is True
+        assert page.correct("1") is True
 
         found = review_store.provenance_for(page.database, conflict_id)
-        assert found.value == "B"
+        assert found.value == "1"
         assert found.machine_value == machine_value
         assert found.reviewer == REVIEWER
         assert found.reason == ReasonCode.DOMINANT_MARK.value
@@ -396,14 +433,14 @@ class TestDecisions:
         self, qtbot, monkeypatch, page: ResolvePage
     ):
 
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.set_reviewer("")
         shown: list[str] = []
         monkeypatch.setattr(
             "omr_scanner.gui.error_reporting.QMessageBox.warning",
             staticmethod(_recording_warning(shown)),
         )
-        assert page.correct("B") is False
+        assert page.correct("1") is False
         # Nothing was written.
         assert review_store.get_conflict(page.database, conflict_id).state is (
             ConflictState.OPEN
@@ -413,14 +450,14 @@ class TestDecisions:
         self, qtbot, monkeypatch, page: ResolvePage
     ):
 
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.reason_combo.setCurrentText(ReasonCode.OTHER.label)
         page.reason_text.setPlainText("   ")
         monkeypatch.setattr(
             "omr_scanner.gui.error_reporting.QMessageBox.warning",
             staticmethod(_accept_warning),
         )
-        assert page.correct("B") is False
+        assert page.correct("1") is False
         assert review_store.get_conflict(page.database, conflict_id).state is (
             ConflictState.OPEN
         )
@@ -435,9 +472,9 @@ class TestDecisions:
     def test_reopening_keeps_the_earlier_correction_in_the_history(
         self, qtbot, page: ResolvePage
     ):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
-        page.correct("B")
+        page.correct("1")
 
         # Resolving removes it from the default "Unresolved" view, so a
         # reviewer coming back to change their mind has to widen the filter -
@@ -448,7 +485,7 @@ class TestDecisions:
 
         assert page.select_conflict_by_id(conflict_id) is True
         page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
-        page.correct("D")
+        page.correct("7")
 
         history = review_store.history_for(page.database, conflict_id)
         assert [item.action for item in history] == [
@@ -457,14 +494,14 @@ class TestDecisions:
             ReviewAction.REOPENED,
             ReviewAction.CORRECTED,
         ]
-        assert history[1].new_value == "B"
-        assert history[3].new_value == "D"
-        assert review_store.provenance_for(page.database, conflict_id).value == "D"
+        assert history[1].new_value == "1"
+        assert history[3].new_value == "7"
+        assert review_store.provenance_for(page.database, conflict_id).value == "7"
 
     def test_the_queue_shows_the_new_state_after_a_decision(
         self, qtbot, page: ResolvePage
     ):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.accept_machine()
         page.state_filter.setCurrentText(FILTER_ALL)
         record = next(
@@ -475,7 +512,7 @@ class TestDecisions:
     def test_reopen_is_disabled_until_something_has_been_decided(
         self, qtbot, page: ResolvePage
     ):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         assert page.reopen_button.isEnabled() is False
         page.accept_machine()
 
@@ -489,10 +526,16 @@ class TestDecisions:
         # The defect this guards: if the queue empties but the workspace keeps
         # showing the conflict that was just decided, the next click acts on
         # something the reviewer is no longer looking at.
-        page.type_filter.setCurrentText(ConflictType.ANSWER_MULTIPLE.label)
+        page.type_filter.setCurrentText(ConflictType.IDENTIFIER_MULTIPLE.label)
         while page.state.conflicts:
-            with qtbot.waitSignal(page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            # The sheet is only re-read when the selection moves to a
+            # different one, so waiting unconditionally would hang on the
+            # second conflict of the same sheet.
+            if page.state.conflicts[0].scan_id == page._loaded_scan_id:
                 page.queue_table.selectRow(0)
+            else:
+                with qtbot.waitSignal(page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+                    page.queue_table.selectRow(0)
             page.accept_machine()
 
         assert page.current_conflict() is None
@@ -507,9 +550,9 @@ class TestHistory:
     def test_the_history_view_renders_real_persisted_events(
         self, qtbot, page: ResolvePage
     ):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
-        page.correct("B")
+        page.correct("1")
 
         conflict = review_store.get_conflict(page.database, conflict_id)
         events = review_store.history_for(page.database, conflict_id)
@@ -535,9 +578,9 @@ class TestStateSurvivesReopening:
     def test_decisions_made_in_the_page_are_still_there_on_a_fresh_page(
         self, qtbot, project_session, template, prepared, page: ResolvePage
     ):
-        conflict_id = select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
-        page.correct("B")
+        page.correct("1")
         page.close()
 
         spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
@@ -552,9 +595,9 @@ class TestStateSurvivesReopening:
             item for item in reopened.state.conflicts if item.conflict_id == conflict_id
         )
         assert record.state is ConflictState.RESOLVED
-        assert record.observation.value != "B", "the machine value must not be the correction"
+        assert record.observation.value != "1", "the machine value must not be the correction"
         found = review_store.provenance_for(reopened.database, conflict_id)
-        assert found.value == "B"
+        assert found.value == "1"
         assert found.reviewer == REVIEWER
         reopened.close()
 
@@ -605,7 +648,7 @@ class TestWindowIntegration:
         heartbeat.setInterval(10)
         heartbeat.timeout.connect(lambda: ticks.append(1))
         heartbeat.start()
-        select_first(qtbot, page, ConflictType.ANSWER_MULTIPLE)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         heartbeat.stop()
 
         # The sheet is decoded and re-read in a worker thread. If that happened

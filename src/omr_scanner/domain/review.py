@@ -22,6 +22,15 @@ What does NOT belong here:
       :mod:`omr_scanner.services.conflict_policy`; storage is
       :mod:`omr_scanner.services.review_store`.
 
+What counts as a conflict at all:
+    Only an ambiguity that leaves the *record* unusable - who the script
+    belongs to (:attr:`FieldKind.IDENTIFIER`), which paper it answers
+    (:attr:`FieldKind.SET_CODE`), or whether the page was read at all. An
+    ambiguous or multiply-marked **answer is not a conflict**: it is a
+    recognition result, it exports and scores as one, and it never waits for a
+    human. :attr:`ConflictType.requires_resolution` is where that line is
+    drawn; :data:`LEGACY_ANSWER_TYPES` is what an older project may still hold.
+
 The one rule this module exists to make structural:
     A human decision is *added* to a machine observation, never substituted for
     it. :class:`MachineObservation` is frozen and is copied into a conflict at
@@ -92,19 +101,34 @@ class ConflictType(StrEnum):
     SET_CODE_UNREADABLE = "set_code_unreadable"
     SET_CODE_LOW_CONFIDENCE = "set_code_low_confidence"
 
-    # -- question answers -----------------------------------------------
+    # -- question answers (legacy; no longer raised) ---------------------
+    #
+    # These five are **never produced** any more. An ambiguous answer is a
+    # recognition result, not a dispute about who a sheet belongs to or which
+    # paper it answers, so it stays in the result and never enters the review
+    # queue - see :attr:`requires_resolution` and ``docs/conflict_review.md``.
+    #
+    # The members remain so that a project written by an earlier build still
+    # deserialises: its stored rows say ``"answer_multiple"``, and refusing to
+    # name that value would make an old project unreadable rather than merely
+    # out of date.
     ANSWER_MULTIPLE = "answer_multiple"
-    """More than one option marked. **Both marks are kept**; the reviewer
-    decides what the sheet meant, and the machine's ``"B-D"`` survives."""
+    """More than one option marked. **Legacy.** Both marks are kept in the
+    recognition result (``"B-D"``); no conflict is raised for it."""
 
     ANSWER_UNCERTAIN = "answer_uncertain"
+    """Legacy. The result carries the uncertainty; no conflict is raised."""
+
     ANSWER_UNREADABLE = "answer_unreadable"
+    """Legacy. The result carries the failure; no conflict is raised."""
+
     ANSWER_LOW_CONFIDENCE = "answer_low_confidence"
+    """Legacy. The result carries the confidence; no conflict is raised."""
+
     ANSWER_BLANK = "answer_blank"
-    """No mark at all. **Not raised by default** - a candidate is entitled to
-    leave a question blank, and treating that as an error would bury the real
-    conflicts under one per unanswered question. See
-    :attr:`~omr_scanner.services.conflict_policy.ConflictPolicy.flag_blank_answers`."""
+    """No mark at all. **Legacy.** A candidate is entitled to leave a question
+    blank, and it was never raised by default even when answers were
+    conflicts."""
 
     # -- sheet level ----------------------------------------------------
     REGISTRATION_FAILED = "registration_failed"
@@ -133,6 +157,30 @@ class ConflictType(StrEnum):
         if self in _SHEET_TYPES:
             return ConflictScope.SHEET
         return ConflictScope.FIELD
+
+    @property
+    def requires_resolution(self) -> bool:
+        """Whether this conflict belongs in the Conflict Resolution queue.
+
+        **The one place the answer/identity distinction is named.** Everything
+        that counts, lists, blocks on or displays conflicts asks here, so there
+        is a single definition of "a conflict" rather than one per consumer.
+
+        ``False`` for the five :data:`LEGACY_ANSWER_TYPES`. An ambiguous or
+        multiply-marked answer is a *recognition result*: it says what is on the
+        paper, it is exported and scored as such, and no human decision is
+        needed before the batch can go on. Routing it through resolution made a
+        queue of a hundred entries per sheet that nobody could work through, and
+        buried the handful of conflicts that genuinely stop a script being
+        attributed or marked.
+
+        ``True`` for everything else - the identifier, the set code, and the
+        sheet-scope failures (a page that would not register, an image that
+        would not decode). Those are all *record*-level: without them settled,
+        nobody knows whose script this is, which paper it answers, or whether it
+        was read at all.
+        """
+        return self not in LEGACY_ANSWER_TYPES
 
     @property
     def is_processing_failure(self) -> bool:
@@ -177,6 +225,30 @@ _SHEET_TYPES = frozenset(
         ConflictType.PROCESSING_ERROR,
     }
 )
+
+LEGACY_ANSWER_TYPES: frozenset[ConflictType] = frozenset(
+    {
+        ConflictType.ANSWER_MULTIPLE,
+        ConflictType.ANSWER_UNCERTAIN,
+        ConflictType.ANSWER_UNREADABLE,
+        ConflictType.ANSWER_LOW_CONFIDENCE,
+        ConflictType.ANSWER_BLANK,
+    }
+)
+"""Conflict types this build never raises, kept so old projects still load.
+
+A project scanned by an earlier build may hold thousands of these rows. They
+are not deleted - a stored observation is evidence, and a decision somebody
+made on one is still theirs - but they are excluded from every active queue
+and count by :attr:`ConflictType.requires_resolution`.
+"""
+
+RESOLUTION_TYPES: tuple[ConflictType, ...] = tuple(
+    item for item in ConflictType if item.requires_resolution
+)
+"""Every conflict type that may appear in the resolution queue, in declaration
+order. Built from :attr:`ConflictType.requires_resolution` rather than listed
+again, so a new member cannot be added to one and forgotten in the other."""
 
 _TYPE_LABELS: dict[ConflictType, str] = {
     ConflictType.IDENTIFIER_BLANK: "Student ID blank",
@@ -374,6 +446,26 @@ class FieldKind(StrEnum):
     SET_CODE = "set_code"
     QUESTION = "question"
     OTHER = "other"
+
+    @property
+    def is_record_identity(self) -> bool:
+        """Whether ambiguity here leaves the *record* unidentifiable.
+
+        The semantic test conflict detection applies: an unreadable roll number
+        means nobody knows whose script this is, and an unreadable set code
+        means nobody knows which paper it answers. Both stop the sheet being
+        used at all.
+
+        A question does not. One answer in doubt leaves the other ninety-nine
+        perfectly usable, and what the sheet says about it is already recorded
+        in the recognition result.
+
+        Deliberately a property of the *field kind* rather than a check against
+        a zone's name or a GUI label: a template calls its identifier whatever
+        it likes, and matching on "roll" or "Question" would break the first
+        time somebody labelled a field in Bengali.
+        """
+        return self in (FieldKind.IDENTIFIER, FieldKind.SET_CODE)
 
 
 WHOLE_FIELD = -1
@@ -577,6 +669,8 @@ class ReviewCounts:
 
 
 __all__ = [
+    "LEGACY_ANSWER_TYPES",
+    "RESOLUTION_TYPES",
     "WHOLE_FIELD",
     "Candidate",
     "ConflictScope",

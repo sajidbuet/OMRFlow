@@ -19,21 +19,37 @@ What does NOT belong here:
     * A second opinion about the pixels. Recognition already decided what the
       sheet says; this module decides only *whether a person should look*.
 
-Why there is almost nothing tunable here:
+What is a conflict, and what is merely a reading:
+    A conflict is an ambiguity that leaves the **record** unusable - nobody can
+    say whose script this is, which paper it answers, or whether the page was
+    read at all. Only three things can produce one:
+
+    * the candidate identifier (roll / student ID), per printed position;
+    * the set code, per printed position;
+    * the sheet itself - it would not register, or would not decode.
+
+    An **answer is never a conflict**, however it was marked. Two options
+    filled in, a mark too faint to accept, a group that could not be sampled:
+    each is a fact about the paper that the recognition result already records
+    (:attr:`~omr_scanner.services.recognition_models.AnswerView.status`,
+    ``needs_review``, ``value``, the per-bubble fills), that the CSV already
+    exports (``"B-D"``, ``"?"``, ``"B?"``), and that scoring already handles.
+    None of it needs a person before the batch can go on, and routing it here
+    produced a queue of a hundred entries per sheet in which the two that
+    mattered could not be found.
+
+    See :attr:`~omr_scanner.domain.review.ConflictType.requires_resolution`,
+    which is where that line is drawn once for the whole application.
+
+Why there is nothing tunable about *how sure is sure enough* here:
     The obvious design would be a pile of thresholds - "flag anything under
     0.8 confidence". That would be a second, competing set of thresholds
     alongside the template's own
     :class:`~omr_scanner.domain.template.RecognitionSettings`, which Phase 4
-    exists to let an operator calibrate. Instead this module reads
-    ``needs_review``, which the decision layer already computed *using those
-    settings* (``not decided or confidence < min_confidence``). Calibrating the
-    template in Phase 4 therefore moves the conflict queue too, and there is
-    exactly one place where "how sure is sure enough" is configured.
-
-    What is left is genuine policy, and it is one flag: whether an unanswered
-    question is a conflict. It defaults to off, because a candidate is entitled
-    to leave a question blank and a queue with one entry per unanswered
-    question is a queue nobody reads.
+    exists to let an operator calibrate. Instead this module reads the statuses
+    and confidences the decision layer already produced *using those settings*.
+    Calibrating the template in Phase 4 therefore moves the conflict queue too,
+    and there is exactly one place where that judgement is configured.
 """
 
 from __future__ import annotations
@@ -66,7 +82,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from omr_scanner.domain.template import OmrTemplate, Zone
     from omr_scanner.services.recognition_models import (
-        AnswerView,
         BubbleView,
         CharacterView,
         ScanResult,
@@ -79,11 +94,12 @@ _LOGGER = logging.getLogger(__name__)
 class ConflictPolicy:
     """The choices about *what deserves review* that are genuinely choices.
 
+    Both remaining flags are about the **sheet**. There is deliberately no flag
+    for answers: whether an ambiguous answer is a conflict is not a policy
+    question this application asks, because it is not one - the answer belongs
+    in the result either way. See the module docstring.
+
     Attributes:
-        flag_blank_answers: Raise :attr:`~omr_scanner.domain.review.ConflictType.ANSWER_BLANK`
-            for every unanswered question. Off by default - see the module
-            docstring. An examination where every question is compulsory may
-            legitimately want it on.
         flag_alignment_warnings: Raise a sheet-scope conflict when a page
             registered but with a reservation. Off by default: the repository's
             own real sample raises ``MULTIPLE_CORNER_CANDIDATES`` on every
@@ -95,7 +111,6 @@ class ConflictPolicy:
             wrong answers, which is precisely what review exists to catch.
     """
 
-    flag_blank_answers: bool = False
     flag_alignment_warnings: bool = False
     flag_assumed_orientation: bool = True
 
@@ -152,19 +167,15 @@ _SET_CODE_BY_STATUS: dict[str, ConflictType] = {
     MarkStatus.RESOLVED.value: ConflictType.SET_CODE_LOW_CONFIDENCE,
 }
 
-_ANSWER_BY_STATUS: dict[str, ConflictType] = {
-    MarkStatus.MULTIPLE.value: ConflictType.ANSWER_MULTIPLE,
-    MarkStatus.UNCERTAIN.value: ConflictType.ANSWER_UNCERTAIN,
-    MarkStatus.UNREADABLE.value: ConflictType.ANSWER_UNREADABLE,
-    MarkStatus.BLANK.value: ConflictType.ANSWER_BLANK,
-    MarkStatus.RESOLVED.value: ConflictType.ANSWER_LOW_CONFIDENCE,
-}
 """One table per field kind rather than one table plus branching.
 
-The three kinds genuinely differ: a blank identifier column makes the sheet
-unattributable, a blank set code means the paper cannot be marked, and a blank
-answer is a candidate's own choice. Mapping them through a shared "blank"
-conflict type would erase exactly that difference."""
+The two kinds genuinely differ: a blank identifier column makes the sheet
+unattributable, while a blank set code means the paper cannot be marked.
+Mapping them through a shared "blank" conflict type would erase that
+difference.
+
+There is no third table. A question's statuses map to no conflict type at all -
+they map to an answer value, which the recognition result already carries."""
 
 _SERIOUS_TYPES = frozenset(
     {
@@ -317,10 +328,16 @@ def detect_conflicts(
         the same result always produces the same list in the same order, which
         is what makes storing them idempotent.
 
+    Only the identifier, the set code and the sheet itself can appear.
+    ``result.answers`` is never consulted: an ambiguous answer is a reading,
+    not a dispute, and it stays in the result. A sheet with a hundred
+    double-marked questions and a legible roll number therefore yields **no**
+    conflicts at all.
+
     A sheet that failed to register produces exactly **one** conflict. It has no
-    fields, no answers and no bubbles to dispute, and emitting a hundred
-    "answer unreadable" conflicts for a page that was never measured would be
-    noise standing in for the single fact that matters.
+    fields and no bubbles to dispute, and emitting one conflict per unreadable
+    position for a page that was never measured would be noise standing in for
+    the single fact that matters.
     """
     rules = policy if policy is not None else ConflictPolicy()
     found: list[DetectedConflict] = []
@@ -339,7 +356,6 @@ def detect_conflicts(
     found.extend(sheet_level)
 
     found.extend(_detect_field_conflicts(result, template))
-    found.extend(_detect_answer_conflicts(result, template, rules))
 
     found.sort(key=lambda item: (-item.severity, item.field.zone_id, item.field.group_key))
     return tuple(found)
@@ -405,7 +421,15 @@ def _sheet_conflict(conflict_type: ConflictType, detail: str) -> DetectedConflic
 def _detect_field_conflicts(
     result: ScanResult, template: OmrTemplate
 ) -> list[DetectedConflict]:
-    """Conflicts in the identifier, the set code and any other grid field."""
+    """Conflicts in the identifier and the set code, and nothing else.
+
+    Every other grid field is skipped. A template may carry any number of
+    numeric or alphanumeric regions - a centre number, a subject code, a
+    date - and none of them decides whose script this is or which paper it
+    answers. Treating "numeric" as "identity" would put them all in the queue;
+    the test is semantic, and :func:`_field_kind` makes it by asking the result
+    which zone it read the identifier and the set code from.
+    """
     found: list[DetectedConflict] = []
 
     for item in result.fields:
@@ -468,12 +492,16 @@ def _detect_field_conflicts(
 
 
 def _table_for(kind: FieldKind) -> dict[str, ConflictType] | None:
-    """Return the status table for a field kind, or ``None`` to skip it."""
-    if kind is FieldKind.IDENTIFIER:
-        return _IDENTIFIER_BY_STATUS
-    if kind is FieldKind.SET_CODE:
-        return _SET_CODE_BY_STATUS
-    return None
+    """Return the status table for a field kind, or ``None`` to skip it.
+
+    ``None`` for every kind that is not
+    :attr:`~omr_scanner.domain.review.FieldKind.is_record_identity` - which is
+    what makes "only identity fields raise conflicts" a property of the type
+    system rather than of a comment.
+    """
+    if not kind.is_record_identity:
+        return None
+    return _IDENTIFIER_BY_STATUS if kind is FieldKind.IDENTIFIER else _SET_CODE_BY_STATUS
 
 
 def _conflict_for_group(
@@ -507,79 +535,6 @@ def _is_low(character: CharacterView) -> bool:
     of ``1.0`` means the separation the template demanded was fully achieved.
     """
     return character.confidence < 1.0
-
-
-def _detect_answer_conflicts(
-    result: ScanResult, template: OmrTemplate, rules: ConflictPolicy
-) -> list[DetectedConflict]:
-    """Conflicts in the question blocks."""
-    found: list[DetectedConflict] = []
-    offsets = _question_offsets(template)
-
-    for answer in result.answers:
-        conflict_type = _conflict_for_answer(answer, rules)
-        if conflict_type is None:
-            continue
-        group_key = offsets.get((answer.zone_id, answer.number), WHOLE_FIELD)
-        zone = _zone_by_id(template, answer.zone_id)
-        cells = group_cells(template, answer.zone_id, group_key)
-        found.append(
-            DetectedConflict(
-                conflict_type=conflict_type,
-                field=FieldRef(
-                    zone_id=answer.zone_id,
-                    group_key=group_key,
-                    kind=FieldKind.QUESTION,
-                    label=zone.label if zone is not None else answer.zone_id,
-                    question_number=answer.number,
-                ),
-                observation=_observation_from_group(
-                    value=answer.value,
-                    status=answer.status,
-                    confidence=answer.confidence,
-                    top_fill=answer.top_fill,
-                    margin=answer.margin,
-                    candidates=_candidates_for(result.bubbles, answer.zone_id, cells),
-                ),
-                severity=_severity_of(conflict_type),
-            )
-        )
-    return found
-
-
-def _conflict_for_answer(
-    answer: AnswerView, rules: ConflictPolicy
-) -> ConflictType | None:
-    """Decide whether one question needs a human.
-
-    ``needs_review`` is the engine's own verdict, computed from the template's
-    ``ambiguity_margin`` and ``min_confidence``. Using it rather than a
-    threshold of this module's own is what makes Phase 4's calibration move the
-    conflict queue with it.
-    """
-    status = answer.status
-    if status == MarkStatus.BLANK.value:
-        return ConflictType.ANSWER_BLANK if rules.flag_blank_answers else None
-    if not answer.needs_review:
-        return None
-    return _ANSWER_BY_STATUS.get(status)
-
-
-def _question_offsets(template: OmrTemplate) -> dict[tuple[str, int], int]:
-    """Map ``(zone_id, printed question number)`` to its group key.
-
-    Built from the template's own ``first_question``, so a block starting at
-    question 51 maps question 51 to group 0 - which is what
-    :func:`~omr_scanner.recognition.fields.zone_groups` keys on.
-    """
-    offsets: dict[tuple[str, int], int] = {}
-    for zone in template.zones:
-        field = zone.field
-        if not isinstance(field, QuestionBlockFieldDefinition):
-            continue
-        for offset in range(field.question_count):
-            offsets[(zone.id, field.first_question + offset)] = offset
-    return offsets
 
 
 def detect_duplicate_identifiers(

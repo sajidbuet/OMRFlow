@@ -780,16 +780,25 @@ and the sampled-vs-printed geometry check).
 
 ## Scenario 18 - Conflict review (Phase 6)
 
-Process a batch with a project open, then review what the machine was unsure
-about. The whole scenario is about one claim: **the interface must never show a
-value different from the one the engine produced, and a human decision must
-never replace it.**
+Process a batch with a project open, then settle the sheets whose **identity**
+the machine could not read. The whole scenario is about one claim: **the
+interface must never show a value different from the one the engine produced,
+and a human decision must never replace it.**
+
+The queue holds only the student ID, the set code and sheets that could not be
+read. An ambiguous *answer* is a recognition result and never appears here, so
+a scenario must stage a bad roll-number column or set code to get a conflict at
+all — `ConflictType.ANSWER_MULTIPLE` is a legacy value this build never writes.
 
 ```python
 harness = build_review_page(scans, with_project=True, reviewer="Dr. Smoke Test")
 harness.run_batch()                          # detection runs when it finishes
-conflict = harness.select(ConflictType.ANSWER_MULTIPLE)
+conflict = harness.select(ConflictType.IDENTIFIER_MULTIPLE)
 ```
+
+A scenario worth running beside it: a sheet with several double-marked answers
+and a clean roll number and set code must produce **zero** rows in this queue,
+while its answers still appear in the results panel and the exported CSV.
 
 **Verify, in order:**
 

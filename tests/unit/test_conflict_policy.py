@@ -113,22 +113,12 @@ class TestNothingWrongProducesNothing:
         )
         assert detect_conflicts(result, template) == ()
 
-    def test_a_blank_answer_is_not_a_conflict_by_default(self, template):
-        # A candidate is entitled to leave a question blank. Raising one
-        # conflict per unanswered question would bury the real ones.
+    def test_a_blank_answer_is_not_a_conflict(self, template):
+        # A candidate is entitled to leave a question blank.
         result = clean_result(
             answers=(make_answer(1, "", "blank", needs_review=False),) * 3
         )
         assert detect_conflicts(result, template) == ()
-
-    def test_a_blank_answer_can_be_flagged_when_an_exam_requires_one(self, template):
-        result = clean_result(
-            answers=(make_answer(1, "", "blank", needs_review=False),)
-        )
-        found = detect_conflicts(
-            result, template, policy=ConflictPolicy(flag_blank_answers=True)
-        )
-        assert types_of(found) == {ConflictType.ANSWER_BLANK}
 
 
 class TestIdentifierConflicts:
@@ -220,46 +210,64 @@ class TestSetCodeConflicts:
         assert found[0].field.group_key == 1
 
 
-class TestAnswerConflicts:
+class TestAnswersAreNeverConflicts:
+    """Whatever a question says, it never reaches the review queue.
+
+    An ambiguous answer is a recognition result, not a dispute about identity:
+    nobody has to decide it before the batch can go on.
+    """
+
     @pytest.mark.parametrize(
-        ("status", "expected"),
-        [
-            ("multiple", ConflictType.ANSWER_MULTIPLE),
-            ("uncertain", ConflictType.ANSWER_UNCERTAIN),
-            ("unreadable", ConflictType.ANSWER_UNREADABLE),
-            ("resolved", ConflictType.ANSWER_LOW_CONFIDENCE),
-        ],
+        "status", ["multiple", "uncertain", "unreadable", "resolved", "blank"]
     )
-    def test_each_answer_problem_maps_to_its_own_type(self, template, status, expected):
+    def test_no_answer_status_produces_a_conflict(self, template, status):
         result = clean_result(
             answers=(make_answer(1, "B-D", status, needs_review=True),)
         )
-        found = detect_conflicts(result, template)
-        assert types_of(found) == {expected}
-        assert found[0].field.kind is FieldKind.QUESTION
-        assert found[0].field.question_number == 1
-
-    def test_a_double_mark_keeps_both_marks_in_the_observation(self, template):
-        # "B-D" says what is on the paper. A reviewer later choosing "B" does
-        # not make that untrue, so it has to survive into the conflict.
-        result = clean_result(answers=(make_answer(7, "B-D", "multiple"),))
-        found = detect_conflicts(result, template)
-        assert found[0].observation.value == "B-D"
-
-    def test_an_answer_the_engine_did_not_flag_is_left_alone(self, template):
-        # `needs_review` is the engine's own verdict, computed from the
-        # template's thresholds. Phase 6 defers to it rather than inventing a
-        # second threshold that would drift from Phase 4's calibration.
-        result = clean_result(answers=(make_answer(1, "B", "resolved", needs_review=False),))
         assert detect_conflicts(result, template) == ()
 
-    def test_the_question_number_comes_from_the_templates_own_numbering(self, template):
-        result = clean_result(answers=(make_answer(11, "B-D", "multiple"),))
+    def test_a_hundred_ambiguous_answers_produce_nothing(self, template):
+        # The failure this change exists to fix: a queue of one entry per
+        # double-marked question, in which the two that mattered could not be
+        # found.
+        result = clean_result(
+            answers=tuple(
+                make_answer(n, "A-C", "multiple", needs_review=True)
+                for n in range(1, 21)
+            )
+        )
+        assert detect_conflicts(result, template) == ()
+
+    def test_ambiguous_answers_beside_a_disputed_identifier_leave_only_the_identifier(
+        self, template
+    ):
+        result = clean_result(
+            fields=(
+                field_view(
+                    "roll_number", "Roll", [character(0, "?", "multiple")], value="?"
+                ),
+                field_view("set_code", "Set", [character(0, "?", "multiple")], value="?"),
+            ),
+            answers=tuple(
+                make_answer(n, "A-C", "multiple", needs_review=True)
+                for n in range(1, 11)
+            ),
+        )
         found = detect_conflicts(result, template)
-        assert found[0].field.question_number == 11
-        # And the group key is the *offset* within its block, which is what
-        # `zone_groups` keys on - not the printed number.
-        assert found[0].field.group_key != 11 or found[0].field.zone_id == "questions_0"
+        assert types_of(found) == {
+            ConflictType.IDENTIFIER_MULTIPLE,
+            ConflictType.SET_CODE_MULTIPLE,
+        }
+        assert all(item.field.kind is not FieldKind.QUESTION for item in found)
+
+    def test_the_answer_types_are_still_nameable_for_an_old_project(self):
+        # Not raised any more, but a project written by an earlier build stores
+        # these strings. Refusing to name one would make it unreadable.
+        assert ConflictType("answer_multiple") is ConflictType.ANSWER_MULTIPLE
+        assert ConflictType.ANSWER_MULTIPLE.requires_resolution is False
+        assert ConflictType.IDENTIFIER_MULTIPLE.requires_resolution is True
+        assert ConflictType.SET_CODE_MULTIPLE.requires_resolution is True
+        assert ConflictType.REGISTRATION_FAILED.requires_resolution is True
 
 
 class TestSheetLevelConflicts:
@@ -363,10 +371,18 @@ class TestDeterminismAndIdentity:
 
     def test_keys_are_unique_within_one_sheet(self, template):
         result = clean_result(
-            answers=tuple(make_answer(n, "B-D", "multiple") for n in range(1, 11))
+            fields=(
+                field_view(
+                    "roll_number",
+                    "Roll",
+                    [character(i, "?", "multiple") for i in range(6)],
+                    value="??????",
+                ),
+            )
         )
         found = detect_conflicts(result, template)
         keys = [item.key for item in found]
+        assert len(keys) == 6
         assert len(keys) == len(set(keys))
 
     def test_serious_conflicts_sort_before_ordinary_ones(self, template):
@@ -375,11 +391,14 @@ class TestDeterminismAndIdentity:
                 field_view(
                     "roll_number", "Roll", [character(0, "?", "multiple")], value="?"
                 ),
+                field_view(
+                    "set_code", "Set", [character(0, "1", confidence=0.4)], value="1"
+                ),
             ),
-            answers=(make_answer(1, "B-D", "multiple"),),
         )
         found = detect_conflicts(result, template)
         assert found[0].conflict_type is ConflictType.IDENTIFIER_MULTIPLE
+        assert found[-1].conflict_type is ConflictType.SET_CODE_LOW_CONFIDENCE
 
 
 class TestTemplateDrivenChoices:

@@ -573,8 +573,9 @@ failure handling. See `docs/calibration_workflow.md`.
 
 ## Conflict review (Phase 6)
 
-`omr_scanner.gui.review` puts a person in front of every value recognition was
-unsure about. It adds no recognition, no thresholds and no geometry of its own:
+`omr_scanner.gui.review` puts a person in front of every value that decides
+**which record a sheet is** and that recognition could not settle. It adds no
+recognition, no thresholds and no geometry of its own:
 
 ```text
 ScanPage._generate_conflicts       -> services.conflict_policy.detect_conflicts   (pure)
@@ -591,11 +592,22 @@ ResolvePage._refresh_provenance    -> review_store.provenance_for   (fold over t
 ScanPage._export_resolutions       -> review_store.sheet_resolutions -> scan_export
 ```
 
-Four decisions worth carrying forward:
+Five decisions worth carrying forward:
 
+- **Only an identity ambiguity is a conflict.** The candidate identifier, the
+  set code, and the sheet itself. An ambiguous or multiply-marked *answer* is a
+  recognition result: it is already in `ScanResult`, already in the CSV
+  (`B-D`, `?`, `B?`), already scored, and no human decision improves it.
+  `ConflictType.requires_resolution` and `FieldKind.is_record_identity` in
+  `domain/review.py` are the one definition; `conflict_policy` never looks at
+  `result.answers`, and `review_store._resolution_only` keeps a project written
+  by an earlier build behaving the same way without rewriting a row of it. The
+  distinction is enforced where conflicts are *created*, not filtered in the
+  GUI — a hidden-but-stored conflict would still inflate counts, block exports
+  and block scoring somewhere else.
 - **Detection reads the engine's own judgement.** `conflict_policy` maps each
-  group's `MarkStatus` and the `needs_review` flag `recognition/decide.py`
-  already computed — from **the template's own** `ambiguity_margin` and
+  identity group's `MarkStatus` and confidence — computed by
+  `recognition/decide.py` from **the template's own** `ambiguity_margin` and
   `min_confidence` — into conflict types. There is no threshold in the module
   and no second opinion about the pixels. Calibrating a template in Phase 4
   therefore moves the conflict queue with it, which is the same

@@ -281,12 +281,13 @@ class ResultsPage(WorkflowPage):
         layout.addWidget(self.detail_table, stretch=1)
 
         buttons = QHBoxLayout()
-        self.review_button = QPushButton(load_icon("list-checks"), "Review Answers...")
+        self.review_button = QPushButton(load_icon("list-checks"), "Review Sheet...")
         self.review_button.setObjectName("reviewAnswersButton")
         self.review_button.setToolTip(
-            "Open this candidate's sheet on the Resolve stage. A correction "
-            "there never overwrites what the machine read, and makes this "
-            "result stale until it is recalculated."
+            "Open this candidate's sheet on the Resolve stage, where the "
+            "student ID and set code are settled. A correction there never "
+            "overwrites what the machine read, and makes this result stale "
+            "until it is recalculated."
         )
         self.review_button.clicked.connect(self.review_selected)
         buttons.addWidget(self.review_button)
@@ -574,9 +575,10 @@ class ResultsPage(WorkflowPage):
             QMessageBox.information(
                 self,
                 "Open the Resolve stage",
-                "Open the Resolve stage to review this candidate's answers. "
-                "A correction there is recorded beside the machine's reading, "
-                "and makes this result stale until it is recalculated.",
+                "Open the Resolve stage to review this candidate's student ID "
+                "and set code. A correction there is recorded beside the "
+                "machine's reading, and makes this result stale until it is "
+                "recalculated.",
             )
 
     # ------------------------------------------------------------------

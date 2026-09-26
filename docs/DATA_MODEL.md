@@ -269,6 +269,12 @@ places.
 
 One thing on one sheet that a person needs to look at. Table `review_conflict`.
 
+**Only a record-identity ambiguity becomes one**: the candidate identifier, the
+set code, or the sheet itself. An ambiguous or multiply-marked *answer* is a
+recognition result and stays in `batch_scan.result_json`; it produces no row
+here. `ConflictType.requires_resolution` is the single definition, and
+`review_store._resolution_only` is the one SQL filter every active read applies.
+
 Fields: `conflict_id`, `batch_id`, `scan_id`, `conflict_type`, `scope`,
 `zone_id`, `group_key`, `field_kind`, `field_label`, `question_number`,
 `machine_value`, `machine_status`, `machine_confidence`, `machine_detail`,
@@ -283,6 +289,15 @@ sheet's own conflicts.
 
 `conflict_type` is one of 22 values (`omr_scanner.domain.review.ConflictType`),
 `state` one of `open` / `resolved` / `deferred` / `withdrawn`.
+
+Five of those 22 - the `answer_*` values, listed in
+`domain.review.LEGACY_ANSWER_TYPES` - are **never written by this build**. They
+remain nameable because a project scanned by an earlier one holds rows carrying
+them, and refusing to decode `"answer_multiple"` would make that project
+unreadable rather than merely out of date. Such rows are kept and their
+decisions still honoured, but they are excluded from every queue, count and
+block; a re-read of the sheet withdraws the untouched ones. No migration
+rewrites them.
 
 Invariants:
 - the `machine_*` columns are written at detection and changed **only** by a

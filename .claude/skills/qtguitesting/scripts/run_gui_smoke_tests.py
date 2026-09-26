@@ -964,7 +964,7 @@ def _check_conflict_review_records_a_named_decision() -> CheckResult:
 
     machine_value = conflict.observation.value
     harness.select(conflict.conflict_id)
-    ok_correct = harness.correct("A")
+    ok_correct = harness.correct("1")
 
     from omr_scanner.services import review_store
 
@@ -974,7 +974,7 @@ def _check_conflict_review_records_a_named_decision() -> CheckResult:
 
     ok = (
         ok_correct
-        and found.value == "A"
+        and found.value == "1"
         and found.source.value == "human"
         and found.reviewer == harness.reviewer
         # The machine's own reading is untouched by the correction.
@@ -987,6 +987,24 @@ def _check_conflict_review_records_a_named_decision() -> CheckResult:
     )
     harness.shutdown()
     return ok, detail
+
+
+def _check_the_queue_holds_no_answer_conflicts() -> CheckResult:
+    """Phase 6: an ambiguous answer is a reading, and never reaches the queue."""
+    from _harness import build_review_page
+
+    from omr_scanner.domain.review import FieldKind
+
+    harness = build_review_page()
+    rows = list(harness.page.state.conflicts)
+    kinds = {item.field.kind for item in rows}
+    types = sorted({item.conflict_type.value for item in rows})
+    harness.shutdown()
+
+    # The first prepared sheet carries a double-marked answer as well as its
+    # bad roll-number column. Only the roll number may be here.
+    ok = bool(rows) and FieldKind.QUESTION not in kinds
+    return ok, f"{len(rows)} conflict(s): {', '.join(types) or 'none'}"
 
 
 def _check_the_audit_ledger_cannot_be_rewritten() -> CheckResult:
@@ -1002,7 +1020,7 @@ def _check_the_audit_ledger_cannot_be_rewritten() -> CheckResult:
         harness.shutdown()
         return False, "the prepared batch produced no conflicts to review"
     harness.select(conflict.conflict_id)
-    harness.correct("A")
+    harness.correct("1")
 
     blocked = []
     for label, statement in (
@@ -1032,7 +1050,7 @@ def _check_a_correction_needs_a_named_reviewer() -> CheckResult:
         return False, "the prepared batch produced no conflicts to review"
     harness.select(conflict.conflict_id)
 
-    refused = not harness.correct("A", expect_failure=True)
+    refused = not harness.correct("1", expect_failure=True)
     state = review_store.get_conflict(harness.database, conflict.conflict_id).state.value
     harness.shutdown()
     return refused and state == "open", (
@@ -1782,6 +1800,10 @@ def main(argv: list[str] | None = None) -> int:
                 (
                     "conflict review records a named decision",
                     _check_conflict_review_records_a_named_decision,
+                ),
+                (
+                    "the conflict queue holds no answer conflicts",
+                    _check_the_queue_holds_no_answer_conflicts,
                 ),
                 (
                     "the audit ledger cannot be rewritten",

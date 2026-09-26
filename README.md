@@ -233,6 +233,64 @@ synthetically tested" to a qualified stable release.
 | Real-scan registration | 🟠 First real scanned cohort registered and calibrated — 8 sheets, one template. See below |
 | Calibration workspace | ✅ Reorganised around the scan preview — see below |
 | Project template | ✅ The template is now project state, chosen once and shared by Template, Calibrate and Scan — see below |
+| Conflict-resolution semantics | ✅ Updated — Resolve now covers student ID / roll and set code only; ambiguous answers stay in the recognition result. See below |
+
+#### Conflict resolution is for identity, not for answers
+
+Conflict Resolution used to receive every value recognition could not decide,
+including answers. An examination of a hundred questions could therefore stage
+a hundred conflicts per sheet, and the one or two that genuinely stopped a
+script being attributed were impossible to find in them. Worse, ambiguity no
+human decision could improve — a candidate who filled two bubbles filled two
+bubbles — blocked the batch from going on.
+
+The **Resolve** stage now holds only ambiguity that leaves the *record*
+unusable:
+
+```text
+recognition result
+     |
+     +-- student ID ambiguity ----> conflict
+     +-- set code ambiguity ------> conflict
+     +-- sheet unreadable --------> conflict
+     |
+     +-- answer ambiguity --------> answer result only
+```
+
+An ambiguous or multiply-marked **answer is not a conflict**. Everything the
+engine measured about it is kept — the status, the fill ratios, `needs_review`,
+the value — and it exports exactly as before: `B`, `B-D` for a double mark, `?`
+or `B?` for a read too faint or too close to call, empty for a blank. Nothing
+is discarded and no answer is resolved algorithmically.
+
+Consequences, all of which are covered by tests:
+
+- **Counts mean something again.** A batch with 100 ambiguous answers, 2
+  disputed student IDs and 1 disputed set code reports **3** unresolved
+  conflicts, not 103 — on the Scan page badge, in the Resolve summary, in the
+  export's `unresolved_conflicts` column and in the project health check.
+- **Answer ambiguity no longer blocks.** A batch whose only ambiguity is in its
+  answers passes the conflict-resolution step with zero items.
+- **Scoring does not silently gain an answer.** A question the engine could not
+  reduce to one option is marked as a multiple (`?`), never as the option it
+  nearly said and never as a blank, so removing the block did not turn a doubt
+  into a mark. An unresolved **set code** still blocks: marking a script against
+  the wrong paper's key is the worst available outcome.
+- **Older projects open unchanged.** A project scanned before this change keeps
+  its stored answer conflicts — they are evidence, and a decision somebody
+  recorded on one is still honoured in exports and scoring — but they no longer
+  appear in the queue or in any count, and a re-read withdraws the untouched
+  ones. Nothing is rewritten on load.
+
+The distinction is enforced where conflicts are *created*, not hidden in the
+GUI: `ConflictType.requires_resolution` and `FieldKind.is_record_identity` in
+`domain/review.py`, read by `services/conflict_policy.py` and by one SQL filter
+in `services/review_store.py`. See
+[Conflict detection and human review](docs/conflict_review.md).
+
+**Testing.** 39 Resolve-stage GUI tests, 35 end-to-end conflict-review tests and
+40 detection-policy tests, all run. Recognition, scoring, export, reporting and
+health checks were re-run unchanged. Real examination data remains Phase 11B.
 
 #### One template per project
 

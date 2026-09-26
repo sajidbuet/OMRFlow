@@ -1,10 +1,16 @@
 """The Resolve workflow stage: conflict queue and review workspace (Phase 6).
 
 Purpose:
-    Put a human in front of every value the machine could not decide, with
-    enough of what the machine saw to decide it properly - and record that
-    decision so the final value can always be traced back to a named person and
-    a reason.
+    Put a human in front of every value that decides **which record a sheet
+    is** - the student ID, the set code, and sheets that could not be read at
+    all - with enough of what the machine saw to decide it properly, and record
+    that decision so the final value can always be traced back to a named
+    person and a reason.
+
+    An ambiguous or multiply-marked *answer* is not listed here. It is a
+    recognition result, it appears in the results and the export as the sheet
+    was marked, and nobody has to decide it before the batch can go on. See
+    :attr:`~omr_scanner.domain.review.ConflictType.requires_resolution`.
 
 Responsibilities:
     * :class:`ResolvePage` - the queue, the workspace and the actions.
@@ -62,6 +68,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.domain.review import (
+    RESOLUTION_TYPES,
     ConflictState,
     ConflictType,
     FieldKind,
@@ -263,7 +270,10 @@ class ResolvePage(WorkflowPage):
         self.type_filter = QComboBox()
         self.type_filter.setObjectName("conflictTypeFilter")
         self.type_filter.addItem(ALL_TYPES, userData="")
-        for conflict_type in ConflictType:
+        # Only the types this stage can actually hold. Offering "Multiple
+        # answers marked" in a queue that never contains one would advertise a
+        # filter that always returns nothing.
+        for conflict_type in RESOLUTION_TYPES:
             self.type_filter.addItem(conflict_type.label, userData=conflict_type.value)
         self.type_filter.currentIndexChanged.connect(self.refresh_queue)
         filter_layout.addWidget(self.type_filter, stretch=1)

@@ -1125,14 +1125,20 @@ Still open, and why Phase 6 is not marked complete:
   10,000-conflict batch and reasoned from the SQL. No real examination-scale
   review has been timed, and the sheet re-read on selection has been measured
   only on the development machine
-- [ ] The conflict taxonomy's **defaults** (blank answers not flagged, assumed
-  orientation flagged, alignment warnings not flagged) are reasoned choices
-  documented as such in [`docs/conflict_review.md`](../../docs/conflict_review.md).
-  Which of them an examination office actually wants is not yet known
-- [ ] **Phase 6 makes what the machine was *unsure* about reviewable.** A
-  confidently wrong reading never reaches the queue, so this phase does not
-  bound the error rate — that remains Phase 3's open item, and Phase 4's
-  calibration is what narrows it
+- [ ] The conflict taxonomy's **defaults** (assumed orientation flagged,
+  alignment warnings not flagged) are reasoned choices documented as such in
+  [`docs/conflict_review.md`](../../docs/conflict_review.md). Which of them an
+  examination office actually wants is not yet known
+- [ ] **Conflict Resolution now covers the student ID / roll number, the set
+  code and unreadable sheets only.** An ambiguous or multiply-marked *answer*
+  stays in the recognition result and is scored as a multiple, so no reviewer
+  adjudicates it. Covered by automated tests; whether an examination office
+  ever wants to adjudicate a double mark by hand has not been established with
+  real operators
+- [ ] **Phase 6 makes what the machine was *unsure* about a record's identity
+  reviewable.** A confidently wrong reading never reaches the queue, so this
+  phase does not bound the error rate — that remains Phase 3's open item, and
+  Phase 4's calibration is what narrows it
 - [ ] The ledger is append-only, not tamper-*proof*. A database administrator
   with direct file access can still alter it; building cryptographically
   chained enterprise logging was explicitly out of scope

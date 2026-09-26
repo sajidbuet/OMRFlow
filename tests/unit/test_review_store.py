@@ -36,6 +36,8 @@ from omr_scanner.domain.review import (
 )
 from omr_scanner.services import batch_store, review_store
 from omr_scanner.services.recognition_models import (
+    CharacterView,
+    FieldView,
     RecognitionOutcome,
     RegistrationStatus,
 )
@@ -79,16 +81,70 @@ def batch(database, template, tmp_path: Path) -> tuple[str, list[int]]:
     return batch_id, ids
 
 
-def result_with_double_mark(path: Path = Path("sheet_0.png")):
-    """A result whose question 1 carries two marks."""
+def roll_field(second_digit: str = "3-8", status: str = "multiple"):
+    """The roll-number field with one disputed printed position."""
+    return FieldView(
+        zone_id="roll_number",
+        label="Roll",
+        field_type="numeric",
+        value="1" + ("3" if status == "resolved" else "?"),
+        status=status if status == "resolved" else "multiple",
+        needs_review=status != "resolved",
+        characters=(
+            CharacterView(
+                position=0,
+                value="1",
+                status="resolved",
+                top_fill=0.9,
+                margin=0.8,
+                confidence=1.0,
+            ),
+            CharacterView(
+                position=1,
+                value=second_digit,
+                status=status,
+                top_fill=0.8,
+                margin=0.02,
+                confidence=1.0 if status == "resolved" else 0.0,
+            ),
+        ),
+    )
+
+
+def result_with_disputed_digit(
+    path: Path = Path("sheet_0.png"), second_digit: str = "3-8"
+):
+    """A result whose second roll-number column carries two marks.
+
+    The identifier rather than a question, deliberately: an ambiguous answer is
+    no longer a conflict, so a store test built on one would be testing
+    machinery that nothing reaches any more.
+    """
     return make_result(
         source_path=path,
         outcome=RecognitionOutcome.REVIEW,
         registration=RegistrationStatus.REGISTERED,
         warnings=(),
         status_codes=("MULTIPLE_MARK",),
-        fields=(),
+        fields=(roll_field(second_digit),),
+        # A double-marked answer rides along on every one of these sheets and
+        # must never add a conflict of its own.
         answers=(make_answer(1, "B-D", "multiple"),),
+        bubbles=(),
+        identifier_zone_id="roll_number",
+        set_code_zone_id="set_code",
+    )
+
+
+def clean_identifier_result(path: Path = Path("sheet_0.png")):
+    """The same sheet read again with every roll-number column resolved."""
+    return make_result(
+        source_path=path,
+        outcome=RecognitionOutcome.COMPLETE,
+        registration=RegistrationStatus.REGISTERED,
+        warnings=(),
+        fields=(roll_field("3", "resolved"),),
+        answers=(make_answer(1, "B", "resolved", needs_review=False),),
         bubbles=(),
         identifier_zone_id="roll_number",
         set_code_zone_id="set_code",
@@ -97,13 +153,13 @@ def result_with_double_mark(path: Path = Path("sheet_0.png")):
 
 @pytest.fixture
 def conflict(database, template, batch) -> int:
-    """One stored ANSWER_MULTIPLE conflict, and its id."""
+    """One stored IDENTIFIER_MULTIPLE conflict, and its id."""
     batch_id, ids = batch
     review_store.sync_conflicts(
         database,
         batch_id=batch_id,
         scan_id=ids[0],
-        result=result_with_double_mark(),
+        result=result_with_disputed_digit(),
         template=template,
     )
     found = review_store.list_conflicts(database, batch_id)
@@ -117,7 +173,7 @@ class TestDetectionIsIdempotent:
             database,
             batch_id=batch_id,
             scan_id=ids[0],
-            result=result_with_double_mark(),
+            result=result_with_disputed_digit(),
             template=template,
         )
         assert count == 1
@@ -134,7 +190,7 @@ class TestDetectionIsIdempotent:
                 database,
                 batch_id=batch_id,
                 scan_id=ids[0],
-                result=result_with_double_mark(),
+                result=result_with_disputed_digit(),
                 template=template,
             )
         assert len(review_store.list_conflicts(database, batch_id)) == 1
@@ -147,7 +203,7 @@ class TestDetectionIsIdempotent:
             database,
             batch_id=batch[0],
             scan_id=batch[1][0],
-            result=result_with_double_mark(),
+            result=result_with_disputed_digit(),
             template=template,
         )
         assert len(review_store.history_for(database, conflict)) == before
@@ -156,46 +212,28 @@ class TestDetectionIsIdempotent:
         self, database, template, batch, conflict
     ):
         # Even the machine does not get to revise itself without a trace.
-        changed = make_result(
-            source_path=Path("sheet_0.png"),
-            outcome=RecognitionOutcome.REVIEW,
-            registration=RegistrationStatus.REGISTERED,
-            warnings=(),
-            fields=(),
-            answers=(make_answer(1, "B-C", "multiple"),),
-            bubbles=(),
-            identifier_zone_id="roll_number",
-            set_code_zone_id="set_code",
-        )
         review_store.sync_conflicts(
             database,
             batch_id=batch[0],
             scan_id=batch[1][0],
-            result=changed,
+            result=result_with_disputed_digit(second_digit="3-9"),
             template=template,
         )
         history = review_store.history_for(database, conflict)
         reread = [item for item in history if item.action is ReviewAction.RE_RECOGNISED]
         assert len(reread) == 1
-        assert reread[0].previous_value == "B-D"
-        assert reread[0].new_value == "B-C"
+        assert reread[0].previous_value == "3-8"
+        assert reread[0].new_value == "3-9"
 
     def test_a_conflict_the_machine_no_longer_reports_is_withdrawn_not_deleted(
         self, database, template, batch, conflict
     ):
-        clean = make_result(
-            source_path=Path("sheet_0.png"),
-            outcome=RecognitionOutcome.COMPLETE,
-            registration=RegistrationStatus.REGISTERED,
-            warnings=(),
-            fields=(),
-            answers=(make_answer(1, "B", "resolved", needs_review=False),),
-            bubbles=(),
-            identifier_zone_id="roll_number",
-            set_code_zone_id="set_code",
-        )
         review_store.sync_conflicts(
-            database, batch_id=batch[0], scan_id=batch[1][0], result=clean, template=template
+            database,
+            batch_id=batch[0],
+            scan_id=batch[1][0],
+            result=clean_identifier_result(),
+            template=template,
         )
         record = review_store.get_conflict(database, conflict)
         assert record.state is ConflictState.WITHDRAWN
@@ -210,23 +248,16 @@ class TestDetectionIsIdempotent:
         review_store.correct_value(
             database,
             conflict,
-            value="B",
+            value="3",
             reviewer=REVIEWER,
             reason=ReasonCode.DOMINANT_MARK,
         )
-        clean = make_result(
-            source_path=Path("sheet_0.png"),
-            outcome=RecognitionOutcome.COMPLETE,
-            registration=RegistrationStatus.REGISTERED,
-            warnings=(),
-            fields=(),
-            answers=(make_answer(1, "B", "resolved", needs_review=False),),
-            bubbles=(),
-            identifier_zone_id="roll_number",
-            set_code_zone_id="set_code",
-        )
         review_store.sync_conflicts(
-            database, batch_id=batch[0], scan_id=batch[1][0], result=clean, template=template
+            database,
+            batch_id=batch[0],
+            scan_id=batch[1][0],
+            result=clean_identifier_result(),
+            template=template,
         )
         record = review_store.get_conflict(database, conflict)
         assert record.state is ConflictState.RESOLVED
@@ -243,10 +274,10 @@ class TestMachineValueIsNeverOverwritten:
             reason=ReasonCode.DOMINANT_MARK,
         )
         record = review_store.get_conflict(database, conflict)
-        assert record.observation.value == "B-D"
+        assert record.observation.value == "3-8"
         found = review_store.provenance_for(database, conflict)
         assert found.value == "B"
-        assert found.machine_value == "B-D"
+        assert found.machine_value == "3-8"
         assert found.was_corrected is True
 
     def test_two_corrections_both_leave_it_alone(self, database, conflict):
@@ -262,7 +293,7 @@ class TestMachineValueIsNeverOverwritten:
             reason=ReasonCode.MISCLASSIFICATION,
         )
         record = review_store.get_conflict(database, conflict)
-        assert record.observation.value == "B-D"
+        assert record.observation.value == "3-8"
 
     def test_the_machine_columns_are_untouched_in_storage(self, database, conflict):
         review_store.correct_value(
@@ -270,7 +301,7 @@ class TestMachineValueIsNeverOverwritten:
         )
         with database.session() as session:
             row = session.get(ReviewConflict, conflict)
-            assert row.machine_value == "B-D"
+            assert row.machine_value == "3-8"
             assert row.machine_status == "multiple"
 
 
@@ -358,7 +389,7 @@ class TestAcceptingIsAReviewEvent:
         assert before.source is ValueSource.MACHINE
 
         after = review_store.accept_machine_value(database, conflict, reviewer=REVIEWER)
-        assert after.value == before.value == "B-D"
+        assert after.value == before.value == "3-8"
         assert after.source is ValueSource.HUMAN
         assert after.reviewer == REVIEWER
         assert after.was_corrected is False
@@ -374,7 +405,7 @@ class TestAuditHistory:
     def test_history_begins_with_what_the_machine_saw(self, database, conflict):
         history = review_store.history_for(database, conflict)
         assert history[0].action is ReviewAction.DETECTED
-        assert history[0].new_value == "B-D"
+        assert history[0].new_value == "3-8"
         assert history[0].reviewer == ""
 
     def test_every_action_appends_exactly_one_event(self, database, conflict):
@@ -465,7 +496,7 @@ class TestReopenAndSupersede:
         review_store.reopen(database, conflict, reviewer=OTHER_REVIEWER)
         found = review_store.provenance_for(database, conflict)
         assert found.source is ValueSource.MACHINE
-        assert found.value == "B-D"
+        assert found.value == "3-8"
         assert review_store.get_conflict(database, conflict).state is ConflictState.OPEN
 
     def test_the_second_correction_wins(self, database, conflict):
@@ -483,7 +514,7 @@ class TestReopenAndSupersede:
         found = review_store.provenance_for(database, conflict)
         assert found.value == "D"
         assert found.reviewer == OTHER_REVIEWER
-        assert found.machine_value == "B-D"
+        assert found.machine_value == "3-8"
 
     def test_deferring_decides_nothing(self, database, conflict):
         found = review_store.defer(database, conflict, reviewer=REVIEWER)
@@ -573,7 +604,7 @@ class TestQueueReads:
                 database,
                 batch_id=batch_id,
                 scan_id=scan_id,
-                result=result_with_double_mark(Path(f"sheet_{index}.png")),
+                result=result_with_disputed_digit(Path(f"sheet_{index}.png")),
                 template=template,
             )
         found = review_store.list_conflicts(database, batch_id)
@@ -672,7 +703,7 @@ class TestQueueReads:
             {
                 "batch_id": batch_id,
                 "scan_id": ids[path],
-                "conflict_type": ConflictType.ANSWER_MULTIPLE.value,
+                "conflict_type": ConflictType.IDENTIFIER_MULTIPLE.value,
                 "scope": "field",
                 "severity": 0,
                 # A tenth already decided, so the state filter has real work.
@@ -681,12 +712,12 @@ class TestQueueReads:
                     if question % 10 == 0
                     else ConflictState.OPEN.value
                 ),
-                "zone_id": "questions_0",
+                "zone_id": "roll_number",
                 "group_key": question,
-                "field_kind": "question",
-                "field_label": f"Q{question + 1}",
-                "question_number": question + 1,
-                "machine_value": "B-D",
+                "field_kind": "identifier",
+                "field_label": "Roll",
+                "question_number": None,
+                "machine_value": "3-8",
                 "machine_status": "multiple",
                 "machine_confidence": 0.4,
                 "machine_top_fill": 0.8,
@@ -748,7 +779,7 @@ class TestQueueReads:
         assert counts.total == total
         assert counts.open_count == total - total // 10
         assert counts.resolved == total // 10
-        assert counts.by_type[ConflictType.ANSWER_MULTIPLE] == total
+        assert counts.by_type[ConflictType.IDENTIFIER_MULTIPLE] == total
 
         # Coarse guard. Both are milliseconds in practice; the ceiling is set
         # high enough that only an O(n) regression could trip it.
@@ -762,7 +793,7 @@ class TestQueueReads:
                 database,
                 batch_id=batch_id,
                 scan_id=scan_id,
-                result=result_with_double_mark(Path(f"sheet_{index}.png")),
+                result=result_with_disputed_digit(Path(f"sheet_{index}.png")),
                 template=template,
             )
         first_page = review_store.list_conflicts(database, batch_id, limit=2, offset=0)
@@ -776,6 +807,143 @@ class TestQueueReads:
         counts = review_store.count_conflicts_for_scan(database, batch[0], batch[1][0])
         assert counts.total == 1
         assert counts.unresolved == 1
+
+
+class TestAnswersNeverBecomeConflicts:
+    """The store layer's half of the rule detection enforces.
+
+    Detection has already stopped producing answer conflicts; these assert that
+    the store agrees - both for a sheet this build read, and for the rows an
+    earlier build left behind.
+    """
+
+    def test_a_sheet_of_ambiguous_answers_stores_nothing(
+        self, database, template, batch
+    ):
+        batch_id, ids = batch
+        result = make_result(
+            source_path=Path("sheet_0.png"),
+            outcome=RecognitionOutcome.REVIEW,
+            registration=RegistrationStatus.REGISTERED,
+            warnings=(),
+            fields=(),
+            answers=tuple(
+                make_answer(n, "A-C", "multiple") for n in range(1, 21)
+            ),
+            bubbles=(),
+            identifier_zone_id="roll_number",
+            set_code_zone_id="set_code",
+        )
+        stored = review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[0],
+            result=result,
+            template=template,
+        )
+        assert stored == 0
+        assert review_store.list_conflicts(database, batch_id) == ()
+        assert review_store.count_conflicts(database, batch_id).unresolved == 0
+
+    def _insert_legacy(self, database, batch_id: str, scan_id: int, count: int) -> None:
+        """Write rows exactly as a build before this change stored them."""
+        from sqlalchemy import insert
+
+        moment = datetime.now(UTC)
+        with database.session() as session:
+            session.execute(
+                insert(ReviewConflict),
+                [
+                    {
+                        "batch_id": batch_id,
+                        "scan_id": scan_id,
+                        "conflict_type": ConflictType.ANSWER_MULTIPLE.value,
+                        "scope": "field",
+                        "severity": 0,
+                        "state": ConflictState.OPEN.value,
+                        "zone_id": "questions_0",
+                        "group_key": offset,
+                        "field_kind": "question",
+                        "field_label": "Questions",
+                        "question_number": offset + 1,
+                        "machine_value": "A-C",
+                        "machine_status": "multiple",
+                        "machine_confidence": 0.0,
+                        "machine_top_fill": 0.8,
+                        "machine_margin": 0.0,
+                        "machine_candidates": "",
+                        "machine_detail": "",
+                        "related_scan_ids": "",
+                        "created_at": moment,
+                        "updated_at": moment,
+                    }
+                    for offset in range(count)
+                ],
+            )
+
+    def test_legacy_rows_are_kept_but_never_queued(self, database, batch, conflict):
+        batch_id, ids = batch
+        self._insert_legacy(database, batch_id, ids[0], 7)
+
+        found = review_store.list_conflicts(database, batch_id)
+        assert [item.conflict_type for item in found] == [
+            ConflictType.IDENTIFIER_MULTIPLE
+        ]
+        # Even asking for every state, including withdrawn, shows none of them.
+        everything = review_store.list_conflicts(
+            database,
+            batch_id,
+            filters=review_store.ConflictFilter(include_withdrawn=True),
+        )
+        assert len(everything) == 1
+
+    def test_legacy_rows_do_not_inflate_the_counts(self, database, batch, conflict):
+        batch_id, ids = batch
+        self._insert_legacy(database, batch_id, ids[0], 100)
+
+        counts = review_store.count_conflicts(database, batch_id)
+        assert counts.total == 1
+        assert counts.unresolved == 1
+        assert ConflictType.ANSWER_MULTIPLE.value not in counts.by_type
+
+        per_sheet = review_store.count_conflicts_for_scan(database, batch_id, ids[0])
+        assert per_sheet.unresolved == 1
+
+    def test_legacy_rows_are_still_in_the_table(self, database, batch, conflict):
+        from sqlalchemy import func, select
+
+        batch_id, ids = batch
+        self._insert_legacy(database, batch_id, ids[0], 7)
+        with database.session() as session:
+            kept = session.scalar(
+                select(func.count())
+                .select_from(ReviewConflict)
+                .where(ReviewConflict.batch_id == batch_id)
+            )
+        assert kept == 8, "nothing is deleted; they are excluded, not destroyed"
+
+    def test_a_re_read_withdraws_them(self, database, template, batch, conflict):
+        from sqlalchemy import select
+
+        batch_id, ids = batch
+        self._insert_legacy(database, batch_id, ids[0], 7)
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[0],
+            result=result_with_disputed_digit(),
+            template=template,
+        )
+        with database.session() as session:
+            states = set(
+                session.scalars(
+                    select(ReviewConflict.state).where(
+                        ReviewConflict.conflict_type
+                        == ConflictType.ANSWER_MULTIPLE.value
+                    )
+                ).all()
+            )
+        assert states == {ConflictState.WITHDRAWN.value}
 
 
 class TestPersistenceRoundTrip:
@@ -795,7 +963,7 @@ class TestPersistenceRoundTrip:
             first,
             batch_id=batch_id,
             scan_id=scan_id,
-            result=result_with_double_mark(scan),
+            result=result_with_disputed_digit(scan),
             template=template,
         )
         conflict_id = review_store.list_conflicts(first, batch_id)[0].conflict_id
@@ -813,13 +981,13 @@ class TestPersistenceRoundTrip:
         try:
             record = review_store.get_conflict(second, conflict_id)
             assert record.state is ConflictState.RESOLVED
-            assert record.observation.value == "B-D"
+            assert record.observation.value == "3-8"
 
             found = review_store.provenance_for(second, conflict_id)
             assert found.value == "B"
             assert found.reviewer == REVIEWER
             assert found.reason_text == "Bubble B visibly darker"
-            assert found.machine_value == "B-D"
+            assert found.machine_value == "3-8"
 
             history = review_store.history_for(second, conflict_id)
             assert [item.action for item in history] == [
@@ -830,34 +998,38 @@ class TestPersistenceRoundTrip:
             second.close()
 
     def test_candidate_evidence_round_trips(self, database, template, batch):
+        from omr_scanner.services.conflict_policy import group_cells, group_labels
         from omr_scanner.services.recognition_models import BubbleView
 
         batch_id, ids = batch
+        # The cells and labels recognition itself used for the disputed
+        # column, so the evidence lines up with the group it belongs to.
+        cells = group_cells(template, "roll_number", 1)
+        labels = group_labels(template, "roll_number", 1)
+        fills = {"3": 0.71, "8": 0.68, "0": 0.12, "1": 0.08}
         bubbles = tuple(
             BubbleView(
-                zone_id="questions_0",
-                row=0,
-                column=index,
+                zone_id="roll_number",
+                row=row,
+                column=column,
                 label=label,
                 x=10.0,
                 y=10.0,
                 width=20.0,
                 height=20.0,
-                fill_ratio=fill,
-                selected=fill > 0.5,
-                leading=index == 1,
+                fill_ratio=fills.get(label, 0.02),
+                selected=fills.get(label, 0.02) > 0.5,
+                leading=label == "3",
                 group_status="multiple",
             )
-            for index, (label, fill) in enumerate(
-                [("A", 0.12), ("B", 0.71), ("C", 0.08), ("D", 0.68)]
-            )
+            for (row, column), label in zip(cells, labels, strict=True)
         )
         result = make_result(
             source_path=Path("sheet_0.png"),
             outcome=RecognitionOutcome.REVIEW,
             registration=RegistrationStatus.REGISTERED,
             warnings=(),
-            fields=(),
+            fields=(roll_field(),),
             answers=(make_answer(1, "B-D", "multiple"),),
             bubbles=bubbles,
             identifier_zone_id="roll_number",
@@ -868,9 +1040,14 @@ class TestPersistenceRoundTrip:
         )
         record = review_store.list_conflicts(database, batch_id)[0]
         # Ranked best first, so a reviewer reads the leader and its runner-up.
-        assert [item.label for item in record.observation.candidates] == ["B", "D", "A", "C"]
+        assert [item.label for item in record.observation.candidates[:4]] == [
+            "3",
+            "8",
+            "0",
+            "1",
+        ]
         assert record.observation.candidates[0].fill_ratio == pytest.approx(0.71)
-        assert record.observation.runner_up.label == "D"
+        assert record.observation.runner_up.label == "8"
 
     def test_a_legacy_result_without_evidence_is_handled_not_crashed(
         self, database, conflict

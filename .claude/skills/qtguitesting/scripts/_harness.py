@@ -590,9 +590,15 @@ def build_review_page(
 ) -> ReviewHarness:
     """Build a Resolve page on a batch that really does contain conflicts.
 
-    Renders three sheets - one with a double-marked question, two sharing a
-    roll number - processes them through the real pipeline, detects the
-    conflicts the way the Scan page does, and hands back a page showing them.
+    Renders three sheets - one whose first roll-number column carries two
+    digits, and two sharing a roll number - processes them through the real
+    pipeline, detects the conflicts the way the Scan page does, and hands back
+    a page showing them.
+
+    The first sheet also carries a **double-marked answer**, which must not
+    appear in the queue: an ambiguous answer is a recognition result, not a
+    conflict. Staging one here means the smoke check would catch it coming
+    back.
 
     Args:
         reviewer: The name decisions are recorded against. Pass ``""`` to
@@ -632,11 +638,16 @@ def build_review_page(
             "questions_1": dict.fromkeys(range(10), "C"),
         }
 
-    double = marks("170501")
-    double["questions_0"] = {**double["questions_0"], 0: ["B", "D"]}
+    ambiguous = marks("170503")
+    ambiguous["roll_number"] = {**ambiguous["roll_number"], 0: ["1", "7"]}
+    ambiguous["questions_0"] = {**ambiguous["questions_0"], 0: ["B", "D"]}
 
     paths = []
-    for name, sheet in (("double.png", double), ("dup.png", marks("170501"))):
+    for name, sheet in (
+        ("ambiguous_id.png", ambiguous),
+        ("dup_a.png", marks("170501")),
+        ("dup_b.png", marks("170501")),
+    ):
         path = scans / name
         cv2.imwrite(str(path), render_marked_sheet(template, sheet))
         paths.append(path)

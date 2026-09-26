@@ -118,12 +118,13 @@ WORKFLOW_PAGES: tuple[WorkflowPageSpec, ...] = (
     WorkflowPageSpec(
         key="resolve",
         title="Resolve",
-        summary="Review and correct sheets that recognition could not decide.",
+        summary="Resolve identification conflicts: student ID, set code and unreadable sheets.",
         phase=6,
         icon="triangle-alert",
         implemented=True,
         details=(
-            "Queue of missing marks, multiple marks and low-confidence values.",
+            "Queue of student ID and set code values recognition could not decide.",
+            "Ambiguous answers are not listed here - they stay in the results.",
             "Original sheet, normalised sheet and a zoomed view of the field.",
             "Manual correction that preserves the machine value in an audit trail.",
             "Every decision named, reasoned and recorded append-only.",

@@ -563,19 +563,25 @@ asserted against that. The limitation is recorded in
 
 | Level | Where | Asserts |
 |---|---|---|
-| Detection | `tests/unit/test_conflict_policy.py` (40 tests) | The taxonomy, the policy defaults, determinism and identity, and that every label comes from the template - against hand-built results, so the *rules* are tested without the engine that ordinarily drives them. |
-| The ledger | `tests/unit/test_review_store.py` (48 tests) | The machine value is never overwritten, a reviewer and reason are required, the ledger is append-only, reopening supersedes without erasing, the cached state equals the fold, a decision is one transaction, and the queue is paged and counted in SQL at 10,000 conflicts. |
-| The pipeline | `tests/integration/test_conflict_review.py` (24 tests) | The real engine, real rendered sheets and a real project database: scenarios A-E, every conflict kind raised from marks on a page, migration onto an existing Phase 5 project, a 1-vs-4-worker comparison, and source-file integrity. |
-| The GUI | `tests/gui/test_resolve_page.py` (36 tests) | The real page, a real project and a real `QThread`: queue filtering and navigation, all three views, the evidence panel, every decision, history, reopening, and survival across a fresh page. |
+| Detection | `tests/unit/test_conflict_policy.py` (40 tests) | The taxonomy, the policy defaults, determinism and identity, that every label comes from the template, and that **no answer status produces a conflict** - against hand-built results, so the *rules* are tested without the engine that ordinarily drives them. |
+| The ledger | `tests/unit/test_review_store.py` (53 tests) | The machine value is never overwritten, a reviewer and reason are required, the ledger is append-only, reopening supersedes without erasing, the cached state equals the fold, a decision is one transaction, the queue is paged and counted in SQL at 10,000 conflicts, and a legacy `answer_*` row is kept but never queued or counted. |
+| Scoring's guard | `tests/unit/test_scoring_answers.py` (12 tests) | An undecided answer is marked as a multiple, never as the option it nearly said and never as a blank - the thing that used to be guaranteed by a scoring block. |
+| The pipeline | `tests/integration/test_conflict_review.py` (35 tests) | The real engine, real rendered sheets and a real project database: scenarios A-F, every conflict kind raised from marks on a page, a mixed batch counted correctly, a project carrying legacy answer conflicts, migration onto an existing Phase 5 project, a 1-vs-4-worker comparison, and source-file integrity. |
+| The GUI | `tests/gui/test_resolve_page.py` (39 tests) | The real page, a real project and a real `QThread`: queue filtering and navigation, all three views, the evidence panel, every decision, history, reopening, survival across a fresh page, and that a sheet's double-marked answer never appears in the queue. |
 
 **Assert both halves of the invariant, every time.** A page that overwrote the
 machine value passes the first line and fails the entire phase:
 
 ```python
-assert provenance.value == "B"              # what the reviewer decided
-assert provenance.machine_value == "B-D"    # what the machine saw, intact
+assert provenance.value == "1"              # what the reviewer decided
+assert provenance.machine_value == "1-7"    # what the machine saw, intact
 assert provenance.reviewer == "Dr. Rahman"  # who is answerable for it
 ```
+
+**Stage an identity ambiguity, not an answer one.** A conflict test built on a
+double-marked *question* now asserts nothing - detection never produces one.
+Give the sheet a roll-number column with two digits marked, or a set code with
+two, and the queue has something in it.
 
 **Render the sheets; do not hand-build the conflicts.** The integration tests
 start from marks on a page and run real recognition, so the conflicts under test

@@ -16,9 +16,15 @@ The rule the whole module is arranged around:
 
     **A mark is only ever produced from inputs somebody has settled.** Every
     uncertainty - an unreconciled candidate, an unresolved set, a duplicate
-    script, an answer still in the review queue, a key nobody has verified -
-    is a :class:`~omr_scanner.domain.scoring.ScoringBlock`, never a guess and
-    never a zero.
+    script, a key nobody has verified - is a
+    :class:`~omr_scanner.domain.scoring.ScoringBlock`, never a guess and never
+    a zero.
+
+    An *ambiguous answer* is the one uncertainty that is not a block, because
+    it is not unsettled: the sheet says what it says. A question the engine
+    could not reduce to one option is marked as
+    :data:`~omr_scanner.domain.scoring.MULTIPLE` - never as the option it
+    nearly said, and never as a blank. See :func:`_scorable_answer`.
 
 Determinism:
     :func:`score_candidate` is a function of its arguments. Feed it the stored
@@ -38,6 +44,7 @@ from omr_scanner.domain.reconciliation import (
     ReconciliationStatus,
 )
 from omr_scanner.domain.scoring import (
+    MULTIPLE,
     RESERVED_SYMBOLS,
     AnswerKey,
     BlockReason,
@@ -49,12 +56,13 @@ from omr_scanner.domain.scoring import (
     canonical_answer_string,
     score_answers,
 )
+from omr_scanner.recognition.models import MarkStatus
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from omr_scanner.services.answer_key import QuestionPlan
-    from omr_scanner.services.recognition_models import ScanResult
+    from omr_scanner.services.recognition_models import AnswerView, ScanResult
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -86,8 +94,11 @@ class CandidateAnswers:
             so nothing here can be mistaken for a licence to overwrite the
             machine's reading.
         corrected: Printed question numbers a named reviewer decided.
-        unresolved: Printed question numbers whose conflict is still open.
-            Non-empty blocks scoring: an unread answer is not a blank.
+        unresolved: Printed question numbers whose conflict is still open and
+            still requires resolution. Non-empty blocks scoring. Empty in
+            practice since an ambiguous answer stopped being a conflict - what
+            keeps such an answer from being marked as a clean one is
+            :func:`_scorable_answer`, not this.
         unnameable: Printed question numbers whose stored value is not one of
             the template's current answer choices. Non-empty blocks scoring;
             see :func:`unnameable_responses`.
@@ -147,7 +158,7 @@ def build_candidate_answers(
     untouched, and :attr:`CandidateAnswers.machine_answers` preserves what it
     said.
     """
-    machine = {item.number: item.value for item in result.answers}
+    machine = {item.number: _scorable_answer(item) for item in result.answers}
     effective = dict(machine)
     if decided:
         effective.update(decided)
@@ -162,6 +173,37 @@ def build_candidate_answers(
         set_code=usable_set_code(set_code or result.set_code_value),
         machine_set_code=usable_set_code(result.set_code_value),
     )
+
+
+_UNDECIDED_STATUSES = frozenset(
+    {MarkStatus.UNCERTAIN.value, MarkStatus.UNREADABLE.value}
+)
+"""Answer statuses that name no single option, however the value reads."""
+
+
+def _scorable_answer(answer: AnswerView) -> str:
+    """What one recognised answer is worth marking as.
+
+    The guard that keeps ambiguity honest once an ambiguous answer is no longer
+    a conflict. A group the engine could not decide still *has* a value - an
+    ``UNCERTAIN`` question with one faint mark reads ``"B"`` - and marking that
+    as a clean ``B`` would silently award or deny credit on evidence the engine
+    itself refused to stand behind. It is rendered as
+    :data:`~omr_scanner.domain.scoring.MULTIPLE` instead: the existing symbol
+    for "this is not one determinable answer", which the display value
+    (``"B?"``, ``"?"``) and the CSV have always shown it as.
+
+    :attr:`~omr_scanner.recognition.models.MarkStatus.MULTIPLE` needs no
+    special case - its value is already ``"B-D"``, which
+    :func:`~omr_scanner.domain.scoring.canonical_answer_string` maps to the
+    same symbol. ``RESOLVED`` and ``BLANK`` pass through untouched, so a
+    confidently read answer and an unanswered question mark exactly as before.
+
+    The recognition result is not modified; this is a projection of it.
+    """
+    if answer.status in _UNDECIDED_STATUSES:
+        return MULTIPLE
+    return answer.value
 
 
 def unnameable_responses(
@@ -185,10 +227,13 @@ def unnameable_responses(
     found: list[int] = []
     for number in plan.numbers:
         raw = (responses.get(number) or "").strip().upper()
-        # Blank, a known choice, and the engine's "B-D" are all nameable. The
-        # test mirrors canonical_answer_string exactly, so the two cannot
-        # disagree about what a value means.
-        if not raw or raw in known or "-" in raw or len(raw) > 1:
+        # Blank, a known choice, a reserved symbol and the engine's "B-D" are
+        # all nameable. The test mirrors canonical_answer_string exactly, so
+        # the two cannot disagree about what a value means - and a "?" this
+        # module itself produced for an undecided answer (see
+        # `_scorable_answer`) must not then be reported as a value the
+        # template cannot name.
+        if not raw or raw in known or raw == MULTIPLE or "-" in raw or len(raw) > 1:
             continue
         found.append(number)
     return tuple(found)

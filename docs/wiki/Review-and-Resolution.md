@@ -1,6 +1,7 @@
 # Review and Resolution
 
-The **Resolve** stage is where a person decides what recognition would not.
+The **Resolve** stage is where a person settles **who a sheet belongs to and
+which paper it answers**, when recognition could not.
 
 The principle: **a value OMRFlow is not confident about is never quietly
 settled.** It is queued, shown with the evidence, and decided by a named
@@ -12,11 +13,23 @@ alongside the decision rather than replaced by it.
 
 ## What reaches the queue
 
-- **Missing marks** where an answer was expected
-- **Multiple marks** — two or more bubbles filled
-- **Low-confidence reads**, where the darkest mark was too close to the next
-  darkest, or sat between the blank and marked thresholds
-- Fields that could not be measured at all
+Only ambiguity in a field that identifies the record:
+
+- **Student ID / roll number** — blank, incomplete, a column with two marks, a
+  low-confidence or unmeasurable column, or an ID two sheets share
+- **Set code** — the same states, at any number of printed positions
+- **The sheet itself** — it would not register, or the file would not decode
+
+## What does *not* reach the queue
+
+**Answers.** A question with two bubbles filled, a mark too faint to accept, a
+group that could not be measured, or no mark at all is a *recognition result*,
+not a conflict. It stays in the results and the export exactly as the sheet was
+marked — `B`, `B-D`, `?`, `B?`, or empty — and it does not wait for anybody.
+
+A batch whose only ambiguity is in its answers shows **zero conflicts** here
+and proceeds normally. Nothing about those answers is lost; see
+[Recognition Symbols](Recognition-Symbols) for what each value means.
 
 ## Before you can save a correction
 
@@ -55,8 +68,13 @@ This is also true of reprocessing: a sheet read twice keeps both readings.
 ## Resolve before scoring
 
 The **Results** stage's **Check Before Scoring** reports unresolved
-conflicts. You *can* score with conflicts outstanding, but the marks will
-reflect whatever the unresolved fields currently hold. Clear the queue first.
+conflicts. A script whose set code is still unresolved **cannot** be marked —
+marking it against another set's key would produce a plausible mark against the
+wrong paper. Clear the queue first.
+
+An ambiguous answer does not stop a script being marked. It is scored as a
+multiple, which is what the marking rules say a question answered twice is
+worth — never as the option it nearly said, and never as a blank.
 
 ## Related
 

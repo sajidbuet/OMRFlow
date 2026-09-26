@@ -427,21 +427,33 @@ multiprocessing has not silently fallen back to sequential.
 - `domain.review` holds the vocabulary — 22 conflict types, four states, seven
   actions, nine reason codes, `FieldRef`, `MachineObservation`, `Provenance` —
   with no Qt, no SQLAlchemy and no OpenCV in it. The enums carry their own rules
-  as properties (`is_processing_failure`, `allows_value_correction`,
-  `sets_effective_value`, `requires_text`), which is what lets the GUI build a
-  type filter and the exporter read a provenance without either importing the
-  other.
+  as properties (`requires_resolution`, `is_record_identity`,
+  `is_processing_failure`, `allows_value_correction`, `sets_effective_value`,
+  `requires_text`), which is what lets the GUI build a type filter and the
+  exporter read a provenance without either importing the other.
+- **Only an identity ambiguity is a conflict** — the student ID / roll number,
+  the set code, or the sheet itself. An ambiguous or multiply-marked *answer* is
+  a recognition result: it stays in `ScanResult`, exports unchanged (`B-D`,
+  `?`, `B?`, blank), is scored as a multiple, and never enters the queue.
+  `ConflictType.requires_resolution` is the one definition;
+  `conflict_policy` never reads `result.answers`, and
+  `review_store._resolution_only` keeps a project written by an earlier build
+  behaving the same way without rewriting a row of it (the five `answer_*`
+  types stay nameable, in `domain.review.LEGACY_ANSWER_TYPES`). Enforced where
+  conflicts are created, never filtered in the GUI.
 - `services.conflict_policy` is the single deterministic place a result becomes
-  conflicts. **It contains no thresholds.** It reads the `needs_review` flag
-  `recognition/decide.py` already computed from the template's own
+  conflicts. **It contains no thresholds.** It reads the statuses and
+  confidences `recognition/decide.py` already computed from the template's own
   `ambiguity_margin` and `min_confidence`, so calibrating a template in Phase 4
   moves the conflict queue with it.
-- Blank answers are **not** flagged by default (a candidate may leave a question
-  blank, and one row per unanswered question would bury the real conflicts);
-  alignment warnings are **not** (the repository's own sample raises one on every
-  sheet); an assumed orientation **is** (an inverted sheet read as upright
-  produces a full set of confidently wrong answers). All three are policy flags,
-  not constants.
+- Alignment warnings are **not** flagged by default (the repository's own sample
+  raises one on every sheet); an assumed orientation **is** (an inverted sheet
+  read as upright produces a full set of confidently wrong answers). Both are
+  policy flags, not constants.
+- Scoring still refuses to invent an answer: `services.scoring._scorable_answer`
+  renders an `UNCERTAIN` or `UNREADABLE` question as the canonical multiple
+  (`?`) rather than as the option it nearly said or as a blank. An unresolved
+  **set code** still blocks a mark.
 - `services.review_store` has **one write path for events** and no update or
   delete for them. Every human action is one transaction: the audit event and
   the state change commit together or neither does.
