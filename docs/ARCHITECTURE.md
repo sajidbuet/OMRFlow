@@ -588,11 +588,16 @@ ResolvePage._load_sheet_for        -> gui.review.worker.SheetWorker  (a QThread)
                                         -> services.recognition_service.RecognitionEngine.process
 ResolvePage.accept / correct       -> review_store.accept_machine_value / correct_value
    / defer / reopen                     -> one transaction: audit event + state
+ResolvePage.undo_last_decision     -> review_store.last_decision -> undo_decision
+ResolvePage.undo_last_resolved_sheet  -> review_store.undo_resolved_sheet  (one txn)
+ResolvePage.redo_last_decision     -> the ordinary decision path, re-issued
 ResolvePage._refresh_provenance    -> review_store.provenance_for   (fold over the ledger)
+ResolvePage._lanes_for             -> gui.review.lanes.build_lanes  (pure geometry)
+                                        -> gui.scan.preview.FieldLane -> OverlayItem
 ScanPage._export_resolutions       -> review_store.sheet_resolutions -> scan_export
 ```
 
-Five decisions worth carrying forward:
+Six decisions worth carrying forward:
 
 - **Only an identity ambiguity is a conflict.** The candidate identifier, the
   set code, and the sheet itself. An ambiguous or multiply-marked *answer* is a
@@ -625,12 +630,29 @@ Five decisions worth carrying forward:
   future contributor remembering. `audit_event` carries no foreign key, so a
   decision outlives the row it was about and Phases 7-9 can audit into the same
   table without a migration.
+- **Undo is an event, folded as a stack.** The ledger cannot be edited, so
+  taking a decision back appends `ReviewAction.UNDONE`.
+  `review_store.standing_commands` folds a history into the commands still in
+  effect — a decision pushes, an `UNDONE` pops — and the effective value, the
+  cached state, the queue's "Reopened" label and what the next `Ctrl+Z` would
+  reverse are *all* derived from that one function, so none of them can
+  disagree with the ledger or with each other. A sheet's resolution session is
+  read from the ledger too: the maximal run of consecutive decisions on that
+  sheet, which is what makes `undo_resolved_sheet` survive a restart and leave
+  an earlier sitting's decisions alone. Redo has no event of its own —
+  re-deciding goes through the ordinary decision path, because a ledger entry
+  claiming a value had been *restored* would describe something nobody did.
 - **Highlighting the original scan uses the engine's own inverse homography.**
   `ScanResult.source_transform` carries it, and
   `recognition_service.map_canonical_to_source()` is the one place it is
   applied. The GUI may not import OpenCV or NumPy, and a second implementation
   of the engine's geometry is a second thing to drift — the failure Phase 4's
-  audit named as the most serious possible.
+  audit named as the most serious possible. The Resolve stage's lane overlay
+  follows the same rule from the other direction: `gui/review/lanes.py` derives
+  every rectangle from the bubbles recognition measured — the template's
+  normalised geometry already projected onto the canonical page — rather than
+  re-projecting anything itself, so a lane sits exactly where the engine
+  looked and a conflict with no place on the paper honestly gets no rectangle.
 
 Detection runs **in the coordinator after the batch finishes**, never in a
 worker: a worker process must not open the single-writer project database, and a

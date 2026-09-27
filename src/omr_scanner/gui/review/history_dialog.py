@@ -44,6 +44,7 @@ _ACTION_HEADINGS: dict[ReviewAction, str] = {
     ReviewAction.CORRECTED: "Corrected",
     ReviewAction.DEFERRED: "Deferred",
     ReviewAction.REOPENED: "Reopened",
+    ReviewAction.UNDONE: "Undone",
     ReviewAction.WITHDRAWN: "Withdrawn by the machine",
 }
 
@@ -80,7 +81,13 @@ def render_history(conflict: ConflictRecord, events: Sequence[AuditRecord]) -> s
         lines.append(f"<p><b>{event.occurred_at}</b> &mdash; {heading}")
         if event.reviewer:
             lines.append(f"<br>Reviewer: <b>{event.reviewer}</b>")
-        if event.action.sets_effective_value or event.action is ReviewAction.RE_RECOGNISED:
+        if (
+            event.action.sets_effective_value
+            or event.action in (ReviewAction.RE_RECOGNISED, ReviewAction.UNDONE)
+        ):
+            # An undo moves the value as surely as a correction does - back to
+            # whatever stood before - so it says so, rather than leaving a
+            # reader to work out what a reversal did from the entries round it.
             lines.append(
                 f"<br>Value: {event.previous_value or '(blank)'} "
                 f"&rarr; <b>{event.new_value or '(blank)'}</b>"

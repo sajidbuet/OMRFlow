@@ -47,21 +47,85 @@ Under **Your decision**:
 | Button | Use it when |
 |---|---|
 | **Accept machine value** | Recognition was right after all |
-| **Save value** | You are entering the correct value yourself |
+| a **value button** | You are choosing one of the symbols this sheet prints |
+| **Save value** | You are typing the correct value yourself |
 | **Defer** | You want to come back to it — it stays in the queue |
 | **Reopen** | Re-opens something already decided |
 
-A **reason** must be chosen. **History…** shows every decision recorded
-against the sheet.
+A **reason** must be chosen. The panel then states all three values, so there
+is never any doubt about which one is in force:
 
-Use **next unresolved** to work through the queue without revisiting decided
-items.
+```text
+Machine result:   (blank)
+Manual decision:  1
+Effective result: 1
+```
+
+**History…** shows every decision recorded against the sheet.
+
+## Reading the preview
+
+| Outline | Meaning |
+|---|---|
+| **Amber, dashed**, around a whole 0–9 bubble column | this printed position is waiting for you |
+| **Red, solid**, around the same column | you supplied or overrode the value here |
+| **Heavy red ring** on one bubble | the value you chose |
+| **`BLANK`** beside a red outline | you decided the position carries no mark |
+
+The outline is the **printed position**, not one bubble: a roll number column
+is a stack of ten, and the question is "what is in this column". Every doubtful
+position on the sheet is outlined, with the one you are deciding drawn more
+heavily — so you can see how much of the identifier is in question before
+deciding any of it.
+
+Red means *a person decided this*, not *this is wrong*. The outline is drawn on
+the preview only; your scan file is never modified.
+
+## Keyboard
+
+| Key | Action |
+|---|---|
+| `0`–`9` | Choose the value that digit prints |
+| `B` | Choose blank |
+| `Enter` | Accept the machine value |
+| `D` | Defer |
+| ← / → | Previous / next conflict |
+| `Shift+Enter` / `Ctrl+Enter` | Previous / next **unresolved** conflict |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo the last decision |
+| `Ctrl+Shift+Z` | Undo the last sheet you finished |
+
+None of these fire while you are typing in **Search**, **Reason** or a value
+box, so searching for a roll number cannot record a digit as somebody's ID. A
+digit key does nothing unless the active position actually prints that symbol.
+
+With **auto-advance** on (the tick in the toolbar, remembered between
+sessions), deciding a conflict selects the next undecided one by itself, and
+finishing a sheet carries you on to the next sheet that needs work. Deferring
+never advances — deferring means "come back to this".
+
+## Changing your mind
+
+| Control | What it takes back |
+|---|---|
+| **Undo decision** (`Ctrl+Z`) | the last decision you made, wherever you made it |
+| **Redo** (`Ctrl+Y`) | makes that decision again |
+| **Undo resolved sheet** (`Ctrl+Shift+Z`) | every decision on the last sheet you finished, and takes you back to it |
+
+Undo steps back **one** decision. If two people have decided the same position,
+undoing the second restores the first, not the machine's reading; **Reopen**
+is what discards every decision at once.
+
+An undo changes the stored record, not just the screen: the counters, the
+queue and the preview update at once, the results downstream follow, and
+closing and reopening the project shows the undone state.
 
 ## The audit trail
 
 Every decision is appended, never overwritten: what the machine read, what
-the reviewer chose, who they were, when, and why. A value can always be
-traced back to the person who decided it — and to what it was before.
+the reviewer chose, who they were, when, and why. **Undoing is appended too** —
+it never erases the decision it reverses, so a history reads *machine value →
+decision → undone → decision*, and a value can always be traced back to the
+person who decided it and to what it was before.
 
 This is also true of reprocessing: a sheet read twice keeps both readings.
 

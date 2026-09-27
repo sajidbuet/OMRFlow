@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 4,659 tests passing (3 skipped: no LibreOffice, no desktop window manager), plus `ruff` and `mypy` |
+| Automated suite | 5,229 tests passing (14 skipped: no LibreOffice, no desktop window manager, no local real-scan fixtures), plus `ruff` and `mypy` |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -238,7 +238,94 @@ synthetically tested" to a qualified stable release.
 | Calibration workspace | ✅ Reorganised around the scan preview — see below |
 | Project template | ✅ The template is now project state, chosen once and shared by Template, Calibrate and Scan — see below |
 | Conflict-resolution semantics | ✅ Updated — Resolve now covers student ID / roll and set code only; ambiguous answers stay in the recognition result. See below |
+| Resolve stage UX & reversible decisions | 🟠 **Implemented — automated tests passing, not yet exercised by a real reviewer.** Whole-position lane overlay, keyboard-first operation, auto-advance, and undo / redo / undo-a-whole-sheet as persisted audit events. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+
+#### Resolving a conflict is now reversible, and faster to read
+
+The Resolve stage was correct but slow to work: it marked an uncertain position
+with a `?` beside the single bubble the engine nearly chose, which pointed at
+where the *machine's* doubt landed rather than at where the reviewer's
+attention had to go — and a correction, once saved, could only be undone by
+reopening it, which discarded every decision on it at once.
+
+**What the preview says now.** The unit of review is the printed **position** —
+a roll-number column is a stack of ten bubbles, and the question is "what is in
+this column".
+
+| Outline | Meaning |
+|---|---|
+| **Amber, dashed**, around the whole 0–9 stack | waiting for a decision |
+| **Red, solid**, around the same stack | a person supplied or overrode the value |
+| **Heavy red ring** on one bubble | the value they chose |
+| **`BLANK`** caption | they decided the position carries no mark |
+
+Every doubtful position on the sheet is outlined, not only the selected one,
+with the active one drawn more heavily. State is carried by **line style as
+well as colour**, so it survives a colour-vision deficiency and a grey
+printout. The geometry comes from the bubbles recognition measured — the
+template's own normalised coordinates projected onto the canonical page — so it
+sits where the engine looked, at any zoom, and nothing is drawn onto the scan.
+A conflict that is *not* a position on the paper (a page that would not
+rectify, a corrupt file, a curled corner) gets no rectangle, because inventing
+one would put a confident outline somewhere arbitrary. The `?` glyph is gone
+from this stage and unchanged on the Scan page, where skimming a sheet for what
+went wrong is the actual task.
+
+**Undo is an event, not an edit.** The ledger is append-only and stays that
+way. `review_store.standing_commands` folds a conflict's history into the
+commands still *in effect* — a decision pushes, an `UNDONE` event pops — and
+the effective value, the cached state and the queue's label are all derived
+from that one fold. So:
+
+- **`Ctrl+Z` steps back one decision**, not to the machine's value. A position
+  corrected by X and then by Y returns to X's value and stays resolved; only
+  when nothing is left standing does it return to the machine's reading and to
+  *Open*. **Reopen** remains the "discard every decision" command.
+- **`Ctrl+Shift+Z` takes back a whole sheet.** A sheet's resolution session is
+  the maximal run of consecutive decisions on it in the ledger — the run ends
+  exactly where the reviewer moved on — so nothing extra is stored to know it,
+  it survives closing the project, and decisions from an earlier sitting are
+  left alone. All of it reverses in one transaction, or none of it does.
+- **`Ctrl+Y` re-issues the decision** through the ordinary path, recorded as a
+  decision by whoever is reviewing now. There is no "redo" ledger entry,
+  because a history claiming a value was *restored* would describe something
+  nobody did. The redo stack is therefore session-only.
+- **Nothing is a screen gesture.** Counters, queue, overlay and downstream
+  results follow immediately, and reopening the project shows the undone state.
+
+**Keyboard-first.** `0`–`9` choose the value that digit prints, `B` blank,
+`Enter` accepts, `D` defers, `Shift+Enter` / `Ctrl+Enter` walk the unresolved
+conflicts. A key and its button are the same command — the digit keys call
+exactly what the value buttons call — so a typed correction carries the same
+reviewer, reason and audit event as a clicked one. A digit acts only when the
+active position genuinely prints that symbol, and every keyboard action refuses
+while the focus is in a text box, so searching for roll number `170501` cannot
+record `1` as somebody's student ID. Auto-advance (remembered per user) selects
+the next undecided conflict after a decision; deferring never advances.
+
+Also: the header reads `Conflict 3 of 8 · 5 unresolved` rather than a count
+that did not move as the reviewer worked; the decision panel always states
+**Machine result / Manual decision / Effective result**; and every queue row
+names its state in words with a glyph, including **Reopened** for a conflict
+that is open because somebody put it back.
+
+**The two curved-arrow buttons that existed before this work were *not* undo
+and redo.** They were bound to "previous conflict" and "next conflict", so the
+one control an operator would reach for to take a mistaken correction back
+moved the selection instead. They now mean what they look like; navigation
+wears chevrons.
+
+**Testing.** 45 new Resolve-stage GUI tests and 28 new review-store tests, all
+run, alongside the 39 existing GUI tests and 53 existing store tests. Assertions
+are against **what ended up in the database** — an undo that only repainted the
+screen would pass a test that read back the label. Two defects the new tests
+found were fixed: deferring auto-advanced past the conflict the reviewer had
+just asked to come back to, and the sheet-level undo target was wrong when the
+operator had also decided something on the sheet they moved to. No migration:
+`UNDONE` is a new value in an existing column, and a project written before
+this build opens unchanged. **No real reviewer has yet worked a sitting on
+it** — that remains Phase 11B.
 
 #### Conflict resolution is for identity, not for answers
 

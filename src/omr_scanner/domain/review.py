@@ -342,6 +342,49 @@ class ConflictState(StrEnum):
         """
         return self in (ConflictState.RESOLVED, ConflictState.DEFERRED)
 
+    @property
+    def label(self) -> str:
+        """The wording a queue cell uses for this state."""
+        return _STATE_LABELS[self]
+
+    @property
+    def marker(self) -> str:
+        """A one-character glyph carrying the same distinction as the colour.
+
+        The queue tints a row by state, and a tint alone is unreadable to a
+        colour-blind reviewer and invisible in a printed screenshot. Every row
+        therefore carries the state as a **word** and this glyph beside it, so
+        the colour is the third way of saying it rather than the only one.
+        """
+        return _STATE_MARKERS[self]
+
+
+_STATE_LABELS: dict[ConflictState, str] = {
+    ConflictState.OPEN: "Open",
+    ConflictState.RESOLVED: "Resolved",
+    ConflictState.DEFERRED: "Deferred",
+    ConflictState.WITHDRAWN: "Withdrawn",
+}
+
+_STATE_MARKERS: dict[ConflictState, str] = {
+    ConflictState.OPEN: "●",  # filled circle - still to do
+    ConflictState.RESOLVED: "✓",  # tick
+    ConflictState.DEFERRED: "⏸",  # pause
+    ConflictState.WITHDRAWN: "⊘",  # circled slash
+}
+
+REOPENED_LABEL = "Reopened"
+"""What a conflict that is open *because somebody put it back* is called.
+
+Not a :class:`ConflictState` member: reopening returns a conflict to ``OPEN``,
+and inventing a sixth state would mean every count, filter and SQL predicate in
+the application had to learn about it. It is a presentation distinction, drawn
+from the audit ledger - see
+:attr:`~omr_scanner.services.review_store.ConflictRecord.reversed_before`."""
+
+REOPENED_MARKER = "↺"
+"""The anticlockwise-arrow glyph for :data:`REOPENED_LABEL`."""
+
 
 class ValueSource(StrEnum):
     """Where an effective value came from."""
@@ -360,6 +403,14 @@ class ReviewAction(StrEnum):
     Every state change appends exactly one of these. A correction that also
     changes state appends one event, not two, so the history reads as a
     sequence of human decisions rather than of internal bookkeeping.
+
+    The ledger is append-only, so *undo is itself an event*. A human command
+    (:attr:`ACCEPTED`, :attr:`CORRECTED`, :attr:`DEFERRED`, :attr:`REOPENED`)
+    is pushed onto a stack as the history is folded, and :attr:`UNDONE` pops
+    the top of that stack. Nothing is erased: the undone decision keeps its own
+    reviewer, reason and timestamp, and the reversal is attributed to whoever
+    performed it. See
+    :func:`~omr_scanner.services.review_store.standing_commands`.
     """
 
     DETECTED = "detected"
@@ -379,6 +430,21 @@ class ReviewAction(StrEnum):
 
     DEFERRED = "deferred"
     REOPENED = "reopened"
+
+    UNDONE = "undone"
+    """A reviewer took back their own most recent command on this conflict.
+
+    **Not a deletion.** The command it reverses stays in the ledger exactly as
+    it was recorded, and this event names who reversed it and when, so a
+    history reads ``machine -> decision -> undo -> decision`` rather than
+    pretending the first decision never happened.
+
+    Distinct from :attr:`REOPENED`, which discards *every* standing decision
+    and returns the conflict to the machine's own value. An undo steps back one
+    command: a conflict corrected by X and then corrected again by Y returns to
+    X's value, not to the machine's.
+    """
+
     WITHDRAWN = "withdrawn"
     """The machine no longer reports this conflict."""
 
@@ -395,6 +461,24 @@ class ReviewAction(StrEnum):
             ReviewAction.CORRECTED,
             ReviewAction.DEFERRED,
             ReviewAction.REOPENED,
+            ReviewAction.UNDONE,
+        )
+
+    @property
+    def is_command(self) -> bool:
+        """Whether this action pushes a command onto the standing stack.
+
+        Every action that *changes where the conflict stands* - a decision, a
+        deferral, a reopening, a machine withdrawal - rather than merely
+        recording something (``DETECTED``, ``RE_RECOGNISED``) or reversing an
+        earlier command (:attr:`UNDONE`, which pops instead of pushing).
+        """
+        return self in (
+            ReviewAction.ACCEPTED,
+            ReviewAction.CORRECTED,
+            ReviewAction.DEFERRED,
+            ReviewAction.REOPENED,
+            ReviewAction.WITHDRAWN,
         )
 
     @property
@@ -408,6 +492,16 @@ class ReviewAction(StrEnum):
         left-fold over the history.
         """
         return self in (ReviewAction.ACCEPTED, ReviewAction.CORRECTED)
+
+    @property
+    def is_reversal(self) -> bool:
+        """Whether this action took back a decision somebody had made.
+
+        Read by the queue so that a conflict which is open *because a person
+        put it back* can say so, rather than looking identical to one nobody
+        has ever touched.
+        """
+        return self in (ReviewAction.REOPENED, ReviewAction.UNDONE)
 
 
 class ReasonCode(StrEnum):
@@ -689,6 +783,8 @@ class ReviewCounts:
 
 __all__ = [
     "LEGACY_ANSWER_TYPES",
+    "REOPENED_LABEL",
+    "REOPENED_MARKER",
     "RESOLUTION_TYPES",
     "WHOLE_FIELD",
     "Candidate",

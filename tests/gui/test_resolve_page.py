@@ -36,7 +36,9 @@ from omr_scanner.domain.review import (
 from omr_scanner.gui.main_window import MainWindow
 from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.gui.review.history_dialog import render_history
+from omr_scanner.gui.review.lanes import BLANK_NOTE
 from omr_scanner.gui.review.page import BLANK_CHOICE, FILTER_ALL, FILTER_RESOLVED, ResolvePage
+from omr_scanner.gui.scan.preview import LaneState
 from omr_scanner.services import batch_store, review_store, save_template
 from omr_scanner.services.batch_processor import process_batch
 
@@ -260,6 +262,36 @@ class TestQueue:
         landed = page.current_conflict()
         assert landed.state is ConflictState.OPEN
 
+    def test_previous_unresolved_walks_back(self, qtbot, page: ResolvePage):
+        page.state_filter.setCurrentText(FILTER_ALL)
+        select_first(qtbot, page)
+        page.queue_table.selectRow(len(page.state.conflicts) - 1)
+        assert page.select_previous_unresolved() is True
+        assert page.current_conflict().state is ConflictState.OPEN
+
+    def test_every_row_says_its_state_in_words_and_a_glyph(self, page: ResolvePage):
+        # Not by colour alone: the row tint is unreadable to a colour-blind
+        # reviewer and gone in a printed screenshot.
+        assert page.queue_table.rowCount()
+        for row, conflict in enumerate(page.state.conflicts):
+            cell = page.queue_table.item(row, 4)
+            assert conflict.state_label in cell.text()
+            assert conflict.state_marker in cell.text()
+            assert cell.toolTip()
+
+    def test_a_reopened_row_is_named_as_reopened(self, qtbot, page: ResolvePage):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        page.undo_last_decision()
+
+        page.state_filter.setCurrentText(FILTER_ALL)
+        record = next(
+            item for item in page.state.conflicts if item.conflict_id == conflict_id
+        )
+        assert record.state is ConflictState.OPEN
+        assert record.state_label == "Reopened"
+
 
 # ----------------------------------------------------------------------
 # The review workspace
@@ -329,11 +361,16 @@ class TestWorkspace:
         # Labelled as what it is. The engine measures coverage, not likelihood.
         assert "probability" not in text.lower()
 
-    def test_the_sheet_progress_label_counts_this_sheets_conflicts(
+    def test_the_sheet_progress_label_says_where_in_the_sheet_we_are(
         self, qtbot, page: ResolvePage
     ):
+        # "Conflict 1 of 2 - 2 unresolved", not "this sheet has 2 conflicts":
+        # a reviewer part-way through a sheet needs a figure that moves as they
+        # work, and the old wording did not move at all.
         select_first(qtbot, page)
-        assert "This sheet" in page.sheet_progress_label.text()
+        text = page.sheet_progress_label.text()
+        assert text.startswith("Conflict 1 of ")
+        assert "unresolved" in text
 
     def test_the_choice_buttons_come_from_the_template(
         self, qtbot, page: ResolvePage, template
@@ -544,6 +581,461 @@ class TestDecisions:
 
 
 # ----------------------------------------------------------------------
+# Machine / manual / effective
+# ----------------------------------------------------------------------
+class TestEffectiveValueIsSpelledOut:
+    def test_an_untouched_conflict_names_all_three(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        text = page.provenance_label.text()
+        assert "Machine result:" in text
+        assert "Manual decision:" in text
+        assert "Effective result:" in text
+
+    def test_an_override_shows_the_machine_value_beside_the_decision(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        machine = page.current_conflict().observation.value
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+
+        # Auto-advance has moved on, so come back to what was decided.
+        page.state_filter.setCurrentText(FILTER_ALL)
+        assert page.select_conflict_by_id(conflict_id) is True
+        text = page.provenance_label.text()
+        assert f"Machine result: <b>{machine}</b>" in text
+        assert "Manual decision: <b>1</b>" in text
+        assert "Effective result: <b>1</b>" in text
+
+    def test_a_manual_blank_reads_as_blank_and_not_as_absent(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.ERASED_RESPONSE.label)
+        page.correct("")
+
+        page.state_filter.setCurrentText(FILTER_ALL)
+        assert page.select_conflict_by_id(conflict_id) is True
+        text = page.provenance_label.text()
+        assert "Manual decision: <b>(blank)</b>" in text
+        assert "Effective result: <b>(blank)</b>" in text
+
+
+# ----------------------------------------------------------------------
+# Undo, redo and taking a sheet back
+# ----------------------------------------------------------------------
+class TestUndoThroughThePage:
+    def test_the_curved_arrows_are_undo_and_redo(self, page: ResolvePage):
+        # They were "previous conflict" and "next conflict" before this work,
+        # which is why navigation now wears chevrons.
+        assert page.undo_action.objectName() == "undoDecisionButton"
+        assert page.redo_action.objectName() == "redoDecisionButton"
+        assert page.undo_sheet_action.objectName() == "undoResolvedSheetButton"
+
+    def test_undo_is_disabled_until_something_has_been_decided(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.undo_action.isEnabled() is False
+        assert page.redo_action.isEnabled() is False
+        assert page.undo_last_decision() is False
+
+    def test_undo_reverses_the_persisted_decision(self, qtbot, page: ResolvePage):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        machine = page.current_conflict().observation.value
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        assert review_store.provenance_for(page.database, conflict_id).value == "1"
+
+        assert page.undo_last_decision() is True
+
+        # The database, not the label: an undo that only repainted the screen
+        # would lose the correction on the next refresh and keep it in the
+        # exported results.
+        found = review_store.provenance_for(page.database, conflict_id)
+        assert found.value == machine
+        assert found.source is ValueSource.MACHINE
+        assert review_store.get_conflict(page.database, conflict_id).state is (
+            ConflictState.OPEN
+        )
+
+    def test_undo_restores_the_counters_immediately(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        before = page.summary_label.text()
+        page.correct("1")
+        assert page.summary_label.text() != before
+
+        page.undo_last_decision()
+        assert page.summary_label.text() == before
+
+    def test_undo_follows_the_decision_wherever_it_was_made(
+        self, qtbot, page: ResolvePage
+    ):
+        # With auto-advance on, the conflict just decided is not the one on
+        # screen any more. Undo must still take back what was decided, and
+        # show the reviewer where it happened.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        assert page.current_conflict().conflict_id != conflict_id
+
+        assert page.undo_last_decision() is True
+        assert page.current_conflict().conflict_id == conflict_id
+
+    def test_undo_keeps_the_reversed_decision_in_the_history(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        page.undo_last_decision()
+        page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
+        page.select_conflict_by_id(conflict_id)
+        page.correct("7")
+
+        assert [
+            item.action for item in review_store.history_for(page.database, conflict_id)
+        ] == [
+            ReviewAction.DETECTED,
+            ReviewAction.CORRECTED,
+            ReviewAction.UNDONE,
+            ReviewAction.CORRECTED,
+        ]
+
+    def test_undo_survives_a_fresh_page_on_the_same_project(
+        self, qtbot, project_session, template, prepared, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        page.undo_last_decision()
+        page.close()
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        reopened = ResolvePage(spec)
+        qtbot.addWidget(reopened)
+        reopened.on_project_changed(project_session)
+        reopened.set_reviewer(REVIEWER)
+        reopened.load_batch(prepared, template)
+
+        record = next(
+            item for item in reopened.state.conflicts if item.conflict_id == conflict_id
+        )
+        assert record.state is ConflictState.OPEN
+        assert record.state_label == "Reopened"
+        reopened.close()
+
+    def test_redo_makes_the_decision_again(self, qtbot, page: ResolvePage):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        page.undo_last_decision()
+        assert page.redo_action.isEnabled() is True
+
+        assert page.redo_last_decision() is True
+
+        found = review_store.provenance_for(page.database, conflict_id)
+        assert found.value == "1"
+        assert found.source is ValueSource.HUMAN
+        assert found.reason == ReasonCode.DOMINANT_MARK.value
+        assert page.redo_action.isEnabled() is False
+
+    def test_a_new_decision_clears_what_could_be_redone(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        page.undo_last_decision()
+        assert page.state.redo
+
+        page.correct("7")
+        assert page.state.redo == []
+        assert page.redo_action.isEnabled() is False
+
+
+class TestSheetUndoThroughThePage:
+    def resolve_a_whole_sheet(self, qtbot, page: ResolvePage) -> tuple[int, list[int]]:
+        """Decide every conflict on the busiest sheet, then move on from it.
+
+        The shape the feature exists for: an operator works one sheet to the
+        end, the application carries them on to the next, and only then do they
+        realise they were reading the wrong column.
+        """
+        counts: dict[int, int] = {}
+        for item in page.state.conflicts:
+            counts[item.scan_id] = counts.get(item.scan_id, 0) + 1
+        scan_id = max(counts, key=lambda key: counts[key])
+        decided: list[int] = []
+
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        while True:
+            row = next(
+                (
+                    index
+                    for index, item in enumerate(page.state.conflicts)
+                    if item.scan_id == scan_id
+                ),
+                None,
+            )
+            if row is None:
+                break
+            if page.state.conflicts[row].scan_id == page._loaded_scan_id:
+                page.queue_table.selectRow(row)
+            else:
+                with qtbot.waitSignal(page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+                    page.queue_table.selectRow(row)
+            decided.append(page.current_conflict().conflict_id)
+            assert page.correct("1") is True
+
+        # Moving on is enough to end the session; nothing is decided on the
+        # next sheet, because then *it* would be the last one finished.
+        assert page.current_conflict() is not None
+        assert page.current_conflict().scan_id != scan_id
+        return scan_id, decided
+
+    def test_a_finished_sheet_can_be_taken_back_whole(self, qtbot, page: ResolvePage):
+        scan_id, decided = self.resolve_a_whole_sheet(qtbot, page)
+        assert len(decided) >= 2, "this fixture should give one busy sheet"
+        counts = review_store.count_conflicts_for_scan(
+            page.database, page.state.batch_id, scan_id
+        )
+        assert counts.unresolved == 0
+
+        assert page.undo_last_resolved_sheet() is True
+
+        after = review_store.count_conflicts_for_scan(
+            page.database, page.state.batch_id, scan_id
+        )
+        assert after.unresolved == len(decided)
+        for conflict_id in decided:
+            found = review_store.provenance_for(page.database, conflict_id)
+            assert found.source is ValueSource.MACHINE
+            assert review_store.get_conflict(page.database, conflict_id).state is (
+                ConflictState.OPEN
+            )
+
+    def test_the_page_returns_to_the_sheet_it_restored(self, qtbot, page: ResolvePage):
+        scan_id, _ = self.resolve_a_whole_sheet(qtbot, page)
+        assert page.undo_last_resolved_sheet() is True
+        assert page.current_conflict() is not None
+        assert page.current_conflict().scan_id == scan_id
+
+    def test_the_restored_sheets_history_records_every_reversal(
+        self, qtbot, page: ResolvePage
+    ):
+        _, decided = self.resolve_a_whole_sheet(qtbot, page)
+        page.undo_last_resolved_sheet()
+        for conflict_id in decided:
+            actions = [
+                item.action
+                for item in review_store.history_for(page.database, conflict_id)
+            ]
+            assert actions.count(ReviewAction.CORRECTED) == 1
+            assert actions.count(ReviewAction.UNDONE) == 1
+
+    def test_sheet_undo_is_disabled_when_no_sheet_has_been_finished(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.undo_sheet_action.isEnabled() is False
+        assert page.undo_last_resolved_sheet() is False
+
+
+# ----------------------------------------------------------------------
+# Auto-advance
+# ----------------------------------------------------------------------
+class TestAutoAdvance:
+    def test_deciding_moves_to_the_next_unresolved_conflict(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+
+        assert page.correct("1") is True
+
+        landed = page.current_conflict()
+        assert landed is not None
+        assert landed.conflict_id != conflict_id
+        assert landed.state is ConflictState.OPEN
+
+    def test_turning_it_off_leaves_the_selection_alone(self, qtbot, page: ResolvePage):
+        page.set_auto_advance(False)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+
+        # The decided conflict has left the "Unresolved" queue, so what matters
+        # is that nothing deliberately jumped past the next row.
+        landed = page.current_conflict()
+        page.set_auto_advance(True)
+        assert landed is None or landed.state is not ConflictState.RESOLVED
+
+    def test_deferring_does_not_skip_past_the_deferred_conflict(
+        self, qtbot, page: ResolvePage
+    ):
+        # Deferring is "come back to this", so advancing past it would make the
+        # thing the reviewer asked to see again the thing they cannot find.
+        page.state_filter.setCurrentText(FILTER_ALL)
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.defer_conflict() is True
+        assert page.current_conflict().conflict_id == conflict_id
+
+    def test_advancing_does_not_record_a_second_event(
+        self, qtbot, page: ResolvePage
+    ):
+        # Auto-advance selects a row; selecting is not deciding. A second
+        # `resolution_recorded` here would double-count the decision in every
+        # listener, and a second *audit* event would invent a decision nobody
+        # made.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        seen: list[int] = []
+        page.resolution_recorded.connect(seen.append)
+
+        page.correct("1")
+
+        assert seen == [conflict_id]
+        actions = [
+            item.action for item in review_store.history_for(page.database, conflict_id)
+        ]
+        assert actions.count(ReviewAction.CORRECTED) == 1
+
+    def test_the_toggle_reports_the_change_for_the_window_to_remember(
+        self, qtbot, page: ResolvePage
+    ):
+        with qtbot.waitSignal(page.auto_advance_changed) as blocker:
+            page.auto_advance_action.setChecked(False)
+        assert blocker.args == [False]
+        assert page.state.auto_advance is False
+        page.auto_advance_action.setChecked(True)
+
+    def test_adopting_the_stored_preference_does_not_echo_it_back(
+        self, qtbot, page: ResolvePage
+    ):
+        seen: list[bool] = []
+        page.auto_advance_changed.connect(seen.append)
+        page.set_auto_advance(False)
+        page.set_auto_advance(True)
+        assert seen == [], "the page must not tell the window what the window told it"
+
+
+# ----------------------------------------------------------------------
+# Keyboard-first operation
+# ----------------------------------------------------------------------
+class TestKeyboard:
+    def bound(self, page: ResolvePage) -> set[str]:
+        return {item.key().toString() for item in page._shortcuts}
+
+    def test_every_promised_shortcut_is_bound(self, page: ResolvePage):
+        keys = self.bound(page)
+        for expected in (
+            "0", "1", "5", "9", "B", "D", "Return",
+            "Ctrl+Z", "Ctrl+Y", "Ctrl+Shift+Z",
+            "Shift+Return", "Ctrl+Return", "Left", "Right",
+        ):
+            assert expected in keys, expected
+
+    def test_redo_and_sheet_undo_do_not_share_a_shortcut(self, page: ResolvePage):
+        # Qt resolves an ambiguous shortcut by firing neither, so Ctrl+Shift+Z
+        # must not also be Redo - which is what QKeySequence.StandardKey.Redo
+        # would have made it on Windows.
+        keys = [item.key().toString() for item in page._shortcuts]
+        assert len(keys) == len(set(keys))
+
+    def test_a_digit_records_the_value_it_prints(self, qtbot, page: ResolvePage):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+
+        assert page.choose_label("1") is True
+
+        found = review_store.provenance_for(page.database, conflict_id)
+        assert found.value == "1"
+        assert found.reviewer == REVIEWER
+        assert found.reason == ReasonCode.DOMINANT_MARK.value
+
+    def test_the_blank_key_records_a_blank(self, qtbot, page: ResolvePage):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.ERASED_RESPONSE.label)
+
+        assert page.choose_label(BLANK_CHOICE) is True
+
+        found = review_store.provenance_for(page.database, conflict_id)
+        assert found.value == ""
+        assert found.source is ValueSource.HUMAN
+
+    def test_a_symbol_this_sheet_does_not_print_does_nothing(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        labels = page._offered_labels(page.current_conflict())
+        missing = next(str(digit) for digit in range(10) if str(digit) not in labels) \
+            if len(labels) < 10 else None
+        if missing is None:
+            pytest.skip("this template prints every digit")
+        assert page.choose_label(missing) is False
+        assert review_store.get_conflict(page.database, conflict_id).state is (
+            ConflictState.OPEN
+        )
+
+    def test_typing_in_the_search_box_decides_nothing(self, qtbot, page: ResolvePage):
+        # The defect this exists for: a reviewer searching for roll number
+        # 170501 silently recording 1, 7, 0, 5, 0 and 1 as somebody's corrected
+        # student ID.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.show()
+        page.search_box.setFocus()
+        # `focusWidget`, not `hasFocus`: the latter is false whenever the window
+        # is inactive, which it is under a headless platform plugin - and the
+        # guard itself reads `focusWidget`, so this asserts the real condition.
+        assert page.focusWidget() is page.search_box
+
+        assert page.choose_label("1") is False
+        assert page.accept_machine() is False
+        assert page.defer_conflict() is False
+        assert page.undo_last_decision() is False
+        assert page.undo_last_resolved_sheet() is False
+        assert review_store.get_conflict(page.database, conflict_id).state is (
+            ConflictState.OPEN
+        )
+
+    def test_typing_in_the_reason_box_decides_nothing(self, qtbot, page: ResolvePage):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.show()
+        page.reason_text.setFocus()
+        assert page.focusWidget() is page.reason_text
+        assert page.choose_label("1") is False
+        assert review_store.get_conflict(page.database, conflict_id).state is (
+            ConflictState.OPEN
+        )
+
+    def test_a_real_keypress_reaches_the_decision(self, qtbot, page: ResolvePage):
+        # The binding table above says what is bound; this says a real key
+        # event actually gets through the queue table - which eats digits for
+        # its own type-ahead search unless the shortcut takes them first.
+        #
+        # Skipped where the platform plugin never activates a window, because
+        # Qt does not deliver shortcuts to an inactive one and the test would
+        # then be asserting the platform rather than the page.
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.show()
+        page.activateWindow()
+        page.raise_()
+        page.queue_table.setFocus()
+        QApplication.processEvents()
+        if not page.isActiveWindow():
+            pytest.skip("this Qt platform plugin never activates a window")
+
+        QTest.keyClick(page.queue_table, Qt.Key.Key_1)
+
+        assert review_store.provenance_for(page.database, conflict_id).value == "1"
+
+
+# ----------------------------------------------------------------------
 # History
 # ----------------------------------------------------------------------
 class TestHistory:
@@ -676,6 +1168,263 @@ class TestWindowIntegration:
         assert page._loaded_scan_id == loaded
 
 
+# ----------------------------------------------------------------------
+# The lane overlay
+# ----------------------------------------------------------------------
+def lanes_of(page: ResolvePage):
+    """The lane rectangles the zoomed view is currently drawing."""
+    return page.zoom_view._overlay._lanes
+
+
+class TestLaneOverlay:
+    def test_an_unresolved_position_is_outlined_as_a_whole_lane(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        drawn = lanes_of(page)
+        assert drawn
+        assert any(item.active for item in drawn)
+        assert all(item.state is LaneState.UNRESOLVED for item in drawn)
+
+    def test_the_lane_spans_the_whole_bubble_stack(self, qtbot, page: ResolvePage):
+        # The rectangle is the *position*, not the bubble the engine nearly
+        # chose: every bubble of the disputed group has to fall inside it.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        conflict = page.current_conflict()
+        bubbles = page._conflict_bubbles(conflict)
+        lane = next(item for item in lanes_of(page) if item.active)
+
+        assert len(bubbles) >= 10, "a roll-number column is a stack of digits"
+        for bubble in bubbles:
+            assert lane.x <= bubble.x <= lane.x + lane.width
+            assert lane.y <= bubble.y <= lane.y + lane.height
+        # Taller than it is wide - it is a column of ten, drawn as one.
+        assert lane.height > lane.width
+
+    def test_the_question_mark_glyph_is_gone(self, qtbot, page: ResolvePage):
+        # The `?` said where the machine's doubt landed. The lane says which
+        # part of the field a person has to look at, which is the question the
+        # reviewer is actually answering.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        for view in (page.zoom_view, page.normalised_view):
+            assert view._overlay.show_status_symbols is False
+
+    def test_the_scan_page_keeps_its_status_glyphs(self, qtbot):
+        # Turning the glyphs off is a Resolve-stage decision, not a change to
+        # the overlay everything else shares.
+        from omr_scanner.gui.scan.preview import ScanPreviewView
+
+        view = ScanPreviewView()
+        qtbot.addWidget(view)
+        assert view._overlay.show_status_symbols is True
+
+    def test_every_unresolved_position_on_the_sheet_gets_a_lane(
+        self, qtbot, page: ResolvePage
+    ):
+        # The prepared sheet has two bad roll-number columns. A reviewer
+        # deciding the first has to be able to see that the second is waiting.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        conflict = page.current_conflict()
+        on_sheet = [
+            item
+            for item in page.state.sheet_conflicts
+            if item.scan_id == conflict.scan_id
+        ]
+        assert len(on_sheet) >= 2
+        drawn = lanes_of(page)
+        assert len(drawn) == len(on_sheet)
+        # Distinct rectangles, not two copies of the same one.
+        assert len({(item.x, item.y) for item in drawn}) == len(drawn)
+        assert sum(1 for item in drawn if item.active) == 1
+
+    def test_a_manual_decision_turns_its_lane_red_and_rings_the_choice(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        before = next(item for item in lanes_of(page) if item.active)
+
+        assert page.correct("1") is True
+
+        manual = [item for item in lanes_of(page) if item.state is LaneState.MANUAL]
+        assert len(manual) == 1
+        lane = manual[0]
+        # The same rectangle, restated - not a new one somewhere else.
+        assert (lane.x, lane.y) == (before.x, before.y)
+        # ...and the chosen bubble is identifiable inside it.
+        assert lane.has_choice is True
+        assert lane.x <= lane.choice_x <= lane.x + lane.width
+        assert lane.y <= lane.choice_y <= lane.y + lane.height
+        assert lane.note == ""
+
+    def test_the_overlay_updates_without_reloading_the_sheet(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        loaded = page._loaded_scan_id
+
+        page.correct("1")
+
+        assert page._loaded_scan_id == loaded, "the sheet was decoded again"
+        assert any(item.state is LaneState.MANUAL for item in lanes_of(page))
+
+    def test_a_manual_blank_is_captioned_rather_than_ringed(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.ERASED_RESPONSE.label)
+
+        assert page.correct("") is True
+
+        lane = next(item for item in lanes_of(page) if item.state is LaneState.MANUAL)
+        # No bubble stands for "blank", so the caption is what distinguishes
+        # "I checked; it is empty" from "nobody has checked".
+        assert lane.has_choice is False
+        assert lane.note == BLANK_NOTE
+
+    def test_undoing_returns_the_lane_to_unresolved(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        assert any(item.state is LaneState.MANUAL for item in lanes_of(page))
+
+        assert page.undo_last_decision() is True
+
+        drawn = lanes_of(page)
+        assert drawn
+        assert all(item.state is LaneState.UNRESOLVED for item in drawn)
+        assert all(item.has_choice is False for item in drawn)
+        assert all(item.note == "" for item in drawn)
+
+    def test_the_lane_geometry_does_not_move_when_the_view_zooms(
+        self, qtbot, page: ResolvePage
+    ):
+        # Lanes are canonical-page coordinates, so zooming re-renders them and
+        # never re-computes them. A lane that drifted with the zoom would be
+        # pointing at a different position every time the reviewer looked.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        before = lanes_of(page)
+        page.zoom_view.set_zoom(page.zoom_view.zoom * 3.0)
+        page.zoom_view.zoom_out()
+        assert lanes_of(page) == before
+
+    def test_both_overlay_views_show_the_same_lanes(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.normalised_view._overlay._lanes == page.zoom_view._overlay._lanes
+
+    def test_switching_preview_mode_keeps_the_conflict_and_its_overlay(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.correct("1")
+        page.state_filter.setCurrentText(FILTER_ALL)
+        chosen = page.current_conflict().conflict_id
+
+        for index in (1, 2, 0):
+            page.view_tabs.setCurrentIndex(index)
+            assert page.current_conflict().conflict_id == chosen
+
+        assert any(item.state is LaneState.MANUAL for item in lanes_of(page))
+        assert any(
+            item.state is LaneState.MANUAL
+            for item in page.normalised_view._overlay._lanes
+        )
+
+    def test_a_sheet_level_conflict_gets_no_rectangle(
+        self, qtbot, project_session, template, tmp_path
+    ):
+        # "This JPEG will not decode" is not a place on a page. Drawing a
+        # confident outline somewhere for it would be an invention.
+        from omr_scanner.gui.review.lanes import lane_for
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+
+        corrupt = tmp_path / "corrupt.png"
+        corrupt.write_bytes(b"not an image")
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [corrupt], identity=batch_store.BatchIdentity.of(template)
+        )
+        report = process_batch([corrupt], template, workers=1)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[corrupt],
+            result=report.processed[0].result,
+            template=template,
+        )
+        review_page.load_batch(batch_id, template)
+        review_page.queue_table.selectRow(0)
+
+        conflict = review_page.current_conflict()
+        assert conflict.conflict_type.scope.value == "sheet"
+        assert lane_for(report.processed[0].result, template, conflict, None) is None
+        assert lanes_of(review_page) == ()
+        review_page.close()
+
+
+class TestLaneRendering:
+    def test_an_unresolved_lane_paints_its_amber_outline(self, qtbot):
+        # Rendered, not merely configured: the overlay is the one part of this
+        # stage whose whole job is to be looked at.
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QImage, QPainter
+        from PySide6.QtWidgets import QStyleOptionGraphicsItem
+
+        from omr_scanner.gui.scan.preview import (
+            LANE_MANUAL_COLOR,
+            LANE_UNRESOLVED_COLOR,
+            FieldLane,
+            LaneState,
+            OverlayItem,
+        )
+
+        def render(state: LaneState) -> set[tuple[int, int, int]]:
+            image = QImage(120, 200, QImage.Format.Format_RGB32)
+            image.fill(0xFFFFFFFF)
+            overlay = OverlayItem()
+            overlay.set_page_size(120, 200)
+            overlay.set_lanes(
+                [FieldLane(x=20, y=20, width=60, height=150, state=state, active=True)]
+            )
+            painter = QPainter(image)
+            overlay.paint(painter, QStyleOptionGraphicsItem(), None)
+            painter.end()
+            assert QRectF(0, 0, 120, 200) == overlay.boundingRect()
+            return {
+                (
+                    image.pixelColor(x, y).red(),
+                    image.pixelColor(x, y).green(),
+                    image.pixelColor(x, y).blue(),
+                )
+                for x in range(120)
+                for y in range(200)
+            }
+
+        unresolved = render(LaneState.UNRESOLVED)
+        manual = render(LaneState.MANUAL)
+        amber = (
+            LANE_UNRESOLVED_COLOR.red(),
+            LANE_UNRESOLVED_COLOR.green(),
+            LANE_UNRESOLVED_COLOR.blue(),
+        )
+        red = (
+            LANE_MANUAL_COLOR.red(),
+            LANE_MANUAL_COLOR.green(),
+            LANE_MANUAL_COLOR.blue(),
+        )
+        assert amber in unresolved
+        assert red in manual
+        assert red not in unresolved
+
+
 class TestStableObjectNames:
     def test_the_review_widgets_can_be_found_by_name(self, page: ResolvePage):
         from PySide6.QtCore import QObject
@@ -699,6 +1448,7 @@ class TestStableObjectNames:
             "conflictProvenanceLabel",
             "reviewSummaryLabel",
             "reviewerNameLabel",
+            "sheetConflictProgressLabel",
         ]
         missing = [name for name in required if page.findChild(QObject, name) is None]
         assert not missing, missing

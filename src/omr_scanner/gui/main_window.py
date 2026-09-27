@@ -360,7 +360,9 @@ class MainWindow(QMainWindow):
                 scan_page.processing_changed.connect(self._on_processing_changed)
                 page = scan_page
             elif spec.key == "resolve":
-                page = ResolvePage(spec)
+                resolve_page = ResolvePage(spec)
+                resolve_page.auto_advance_changed.connect(self._on_auto_advance_changed)
+                page = resolve_page
             elif spec.key == "attendance":
                 page = AttendancePage(spec)
             elif spec.key == "answer_key":
@@ -952,6 +954,17 @@ class MainWindow(QMainWindow):
         """Adopt the reviewer identity conflict decisions are recorded against."""
         self.apply_config(self._config.with_reviewer_name(name))
 
+    def _on_auto_advance_changed(self, enabled: bool) -> None:
+        """Remember the Resolve stage's auto-advance toggle for next time.
+
+        Persisted here rather than by the page, for the same reason the
+        reviewer's name is: a workflow page never writes a configuration file,
+        so there is one place that decides when settings reach the disk.
+        """
+        if self._config.resolve_auto_advance == enabled:
+            return
+        self.apply_config(self._config.with_resolve_auto_advance(enabled))
+
     def _resolve_page(self) -> ResolvePage | None:
         """The Resolve page, when this window built a real one."""
         page = self._pages.get("resolve")
@@ -1396,6 +1409,7 @@ class MainWindow(QMainWindow):
         resolve_page = self._resolve_page()
         if resolve_page is not None:
             resolve_page.set_reviewer(self._config.reviewer_name)
+            resolve_page.set_auto_advance(self._config.resolve_auto_advance)
         attendance_page = self._attendance_page()
         if attendance_page is not None:
             # The same name: the person reconciling a script against a roster

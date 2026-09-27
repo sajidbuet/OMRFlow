@@ -11,6 +11,9 @@ Responsibilities:
     * :class:`OverlayItem` - one graphics item that paints every zone rectangle,
       every bubble and, optionally, the registration markers, rather than
       several hundred separate items.
+    * :class:`FieldLane` - one response group outlined as a whole, for the
+      Resolve stage's "this position needs a person / a person decided this"
+      display. See :mod:`omr_scanner.gui.review.lanes`, which builds them.
 
 What does NOT belong here:
     * Any recognition logic. This widget is handed plain
@@ -33,6 +36,8 @@ Coordinates:
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
@@ -59,6 +64,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.domain.scan_quality import ScanQualityStatus
+from omr_scanner.gui.theme.tokens import Color
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -146,6 +152,56 @@ DETECTED_MARKER_FAR_COLOR = QColor(200, 30, 40)
 """Red: the detected marker landed a noticeable distance from where it was
 expected, which is worth a look even though registration itself succeeded."""
 
+LANE_UNRESOLVED_COLOR = QColor(230, 145, 0)
+"""Amber: this response position is waiting for a person to decide it.
+
+The same amber an uncertain group already wears, so the two readings of "the
+machine could not settle this" do not need two colours between them."""
+
+LANE_MANUAL_COLOR = QColor(Color.PRIMARY)
+"""The application accent, red: a person supplied or overrode this value.
+
+Taken from the design system rather than written out again, because the accent
+already means "this is the thing you are acting on" everywhere else in the
+application, and a second hand-typed red would be a second thing to keep in
+step.
+
+Deliberately *not* :data:`MULTIPLE_COLOR`. That red means "the paper carries
+more than one mark"; this one means "a human decided", which is the opposite
+kind of statement - and the lane it outlines is drawn in a different style, so
+the distinction survives a monochrome print and a colour-blind reader."""
+
+LANE_PADDING_RATIO = 0.35
+"""Clearance around a lane, as a fraction of the group's mean bubble width.
+
+Proportional rather than a pixel constant: the same overlay has to sit
+correctly on a 100-question sheet's small bubbles and on a wide identifier
+grid's large ones, and a fixed padding would crowd one and float around the
+other. The bubble geometry itself comes from the template, projected onto the
+canonical page by recognition - nothing here measures a printed bubble."""
+
+LANE_BORDER_PX = 1.6
+LANE_ACTIVE_BORDER_PX = 3.0
+"""Lane outline widths, cosmetic - constant on screen at any zoom, so a lane
+stays visible when the reviewer zooms out and does not swallow the bubbles when
+they zoom in. The active lane is the wider one, which is the second way (after
+the dash pattern) that state is carried other than by colour."""
+
+LANE_CHOICE_RING_PX = 3.2
+"""The ring drawn round the bubble a reviewer chose. Heavier than every
+template outline on the page on purpose: the whole point of the manual overlay
+is that "which value did they pick" is answerable by looking, not by reading
+the decision panel."""
+
+LANE_CHOICE_RING_RATIO = 0.72
+"""How much larger than the printed bubble the choice ring is drawn, so it
+reads as an annotation around the mark rather than as another bubble."""
+
+LANE_TINT_ALPHA = 28
+"""Alpha of a lane's translucent fill. Faint on purpose - the reviewer is
+judging graphite against paper underneath it, and a wash heavy enough to be
+obvious is heavy enough to change that judgement."""
+
 MARKER_MISMATCH_PX = 3.0
 """How far a detected marker's canonical position may sit from its expected
 one, in canonical pixels, before the calibration overlay calls it out in
@@ -158,6 +214,66 @@ is typically a small fraction of a pixel), so any visible gap here is a
 property of the fit being *forced* through markers that do not sit quite where
 printed - not of measurement noise. A few pixels is generous against that
 baseline and still catches a genuinely displaced marker."""
+
+
+class LaneState(StrEnum):
+    """What a highlighted response group is saying."""
+
+    UNRESOLVED = "unresolved"
+    """Nobody has decided this position yet."""
+
+    MANUAL = "manual"
+    """A named reviewer supplied or overrode the value here."""
+
+
+@dataclass(frozen=True, slots=True)
+class FieldLane:
+    """One response group outlined as a whole, in canonical page pixels.
+
+    The unit a reviewer actually works in. A conflict is about a *printed
+    position* - one column of a roll number, one position of a set code - and
+    that position is a vertical stack of ten bubbles, not one of them. An
+    earlier build marked the single bubble the engine nearly chose with a ``?``,
+    which told a reviewer where the machine's doubt landed rather than which
+    part of the field needed their attention; every rectangle here is the whole
+    group.
+
+    Attributes:
+        x / y / width / height: The group's extent on the canonical page,
+            including :data:`LANE_PADDING_RATIO` clearance. Derived from the
+            bubbles recognition measured, which are the template's own geometry
+            projected onto the page - never a pixel constant.
+        state: Unresolved, or decided by a person.
+        active: Whether this is the conflict currently being reviewed. Drawn
+            more heavily; the others stay visible so that a field with three
+            doubtful positions shows three.
+        choice_x / choice_y / choice_width / choice_height: The bubble a
+            reviewer chose, when they chose one. Ringed inside the lane, so the
+            preview answers both "which position was edited" and "what value
+            was put there".
+        note: A short caption drawn beside the lane - ``"BLANK"`` for a
+            reviewer who decided the position carries no mark, or the value
+            itself where no single bubble stands for it (a whole identifier
+            typed into the free-text box). Never the only signal that a lane is
+            manual; the outline already says that.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+    state: LaneState = LaneState.UNRESOLVED
+    active: bool = False
+    choice_x: float = 0.0
+    choice_y: float = 0.0
+    choice_width: float = 0.0
+    choice_height: float = 0.0
+    note: str = ""
+
+    @property
+    def has_choice(self) -> bool:
+        """Whether a specific bubble inside this lane was chosen."""
+        return self.choice_width > 0.0 and self.choice_height > 0.0
 
 
 class OverlayItem(QGraphicsItem):
@@ -178,6 +294,7 @@ class OverlayItem(QGraphicsItem):
         self._zones: tuple[ZoneView, ...] = ()
         self._bubbles: tuple[BubbleView, ...] = ()
         self._markers: tuple[MarkerView, ...] = ()
+        self._lanes: tuple[FieldLane, ...] = ()
         self._doubtful_zone_ids: frozenset[str] = frozenset()
         self._doubtful_is_severe = False
         self.show_zones = True
@@ -187,6 +304,8 @@ class OverlayItem(QGraphicsItem):
         self.show_sample_windows = False
         self.show_centers = False
         self.show_scan_quality = True
+        self.show_status_symbols = True
+        self.show_lanes = True
         self.setZValue(10)
 
     def set_page_size(self, width: float, height: float) -> None:
@@ -215,6 +334,16 @@ class OverlayItem(QGraphicsItem):
         self._zones = tuple(zones)
         self._bubbles = tuple(bubbles)
         self._markers = tuple(markers)
+        self.update()
+
+    def set_lanes(self, lanes: Sequence[FieldLane]) -> None:
+        """Replace the highlighted response groups.
+
+        Empty for every page outside conflict review, which is why the Scan
+        page is unaffected by this layer existing: nothing draws a lane it was
+        not given one for.
+        """
+        self._lanes = tuple(lanes)
         self.update()
 
     def set_scan_quality(self, assessment: ScanQualityAssessment | None) -> None:
@@ -258,6 +387,82 @@ class OverlayItem(QGraphicsItem):
             self._paint_markers(painter)
         if self.show_scan_quality:
             self._paint_scan_quality(painter)
+        if self.show_lanes:
+            self._paint_lanes(painter)
+
+    def _paint_lanes(self, painter: QPainter) -> None:
+        """Outline each highlighted response group, and any chosen bubble in it.
+
+        Drawn last, over everything else: a lane is the one thing on this
+        overlay that says *a person has to act*, and a zone rectangle crossing
+        it would be the thing a reviewer noticed first.
+
+        The inactive lanes are drawn before the active one so that overlapping
+        neighbours - two doubtful columns of the same roll number are adjacent
+        by construction - cannot hide the one being decided.
+        """
+        for lane in sorted(self._lanes, key=lambda item: item.active):
+            self._paint_lane(painter, lane)
+
+    def _paint_lane(self, painter: QPainter, lane: FieldLane) -> None:
+        """Draw one lane: its outline, its tint, its choice and its caption."""
+        manual = lane.state is LaneState.MANUAL
+        colour = QColor(LANE_MANUAL_COLOR if manual else LANE_UNRESOLVED_COLOR)
+        pen = QPen(colour, LANE_ACTIVE_BORDER_PX if lane.active else LANE_BORDER_PX)
+        pen.setCosmetic(True)
+        # Solid for a decision, dashed for a question still open. The state is
+        # therefore legible without colour at all, which is what makes the
+        # overlay usable for a colour-blind reviewer and in a grey printout.
+        pen.setStyle(Qt.PenStyle.SolidLine if manual else Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+
+        tint = QColor(colour)
+        tint.setAlpha(LANE_TINT_ALPHA)
+        painter.setBrush(QBrush(tint))
+        painter.drawRect(QRectF(lane.x, lane.y, lane.width, lane.height))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if lane.has_choice:
+            self._paint_lane_choice(painter, lane, colour)
+        if lane.note:
+            self._paint_lane_note(painter, lane, colour)
+
+    @staticmethod
+    def _paint_lane_choice(painter: QPainter, lane: FieldLane, colour: QColor) -> None:
+        """Ring the bubble a reviewer chose, inside its lane."""
+        grow_x = lane.choice_width * LANE_CHOICE_RING_RATIO / 2.0
+        grow_y = lane.choice_height * LANE_CHOICE_RING_RATIO / 2.0
+        ring = QPen(colour, LANE_CHOICE_RING_PX)
+        ring.setCosmetic(True)
+        painter.setPen(ring)
+        fill = QColor(colour)
+        fill.setAlpha(LANE_TINT_ALPHA * 2)
+        painter.setBrush(QBrush(fill))
+        painter.drawEllipse(
+            QRectF(
+                lane.choice_x - lane.choice_width / 2.0 - grow_x,
+                lane.choice_y - lane.choice_height / 2.0 - grow_y,
+                lane.choice_width + grow_x * 2.0,
+                lane.choice_height + grow_y * 2.0,
+            )
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+    @staticmethod
+    def _paint_lane_note(painter: QPainter, lane: FieldLane, colour: QColor) -> None:
+        """Write a lane's caption beside it - ``BLANK``, or a typed value.
+
+        Beside rather than across: a reviewer deciding that a position carries
+        no mark still has to be able to see that it carries no mark.
+        """
+        font = QFont(painter.font())
+        font.setBold(True)
+        font.setPointSizeF(max(lane.width * 0.45, 9.0))
+        painter.setFont(font)
+        painter.setPen(QPen(colour))
+        painter.drawText(
+            QPointF(lane.x, lane.y - max(lane.width * 0.12, 3.0)), lane.note
+        )
 
     def _paint_scan_quality(self, painter: QPainter) -> None:
         """Outline the regions whose template-to-paper mapping is in doubt.
@@ -293,7 +498,7 @@ class OverlayItem(QGraphicsItem):
             painter.drawRect(QRectF(zone.x, zone.y, zone.width, zone.height))
 
             label = zone.label
-            symbol = _STATUS_SYMBOLS.get(zone.status, "")
+            symbol = _STATUS_SYMBOLS.get(zone.status, "") if self.show_status_symbols else ""
             if symbol:
                 label = f"{label}  {symbol}"
             font = QFont(painter.font())
@@ -325,7 +530,11 @@ class OverlayItem(QGraphicsItem):
                 painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawEllipse(rect)
 
-            symbol = _STATUS_SYMBOLS.get(bubble.group_status, "")
+            symbol = (
+                _STATUS_SYMBOLS.get(bubble.group_status, "")
+                if self.show_status_symbols
+                else ""
+            )
             if symbol and bubble.leading:
                 # One glyph per group, anchored to its darkest bubble, so a row
                 # of four options is not decorated four times over - and so the
@@ -476,6 +685,7 @@ class ScanPreviewView(QGraphicsView):
             self._scene.removeItem(self._background)
             self._background = None
         self._overlay.set_content((), ())
+        self._overlay.set_lanes(())
         self._overlay.set_scan_quality(None)
         self._page_size = (0, 0)
         self._scene.setSceneRect(QRectF(0, 0, 1, 1))
@@ -539,6 +749,10 @@ class ScanPreviewView(QGraphicsView):
         """Replace the overlay content."""
         self._overlay.set_content(zones, bubbles, markers)
 
+    def set_lanes(self, lanes: Sequence[FieldLane]) -> None:
+        """Highlight whole response groups needing, or carrying, a decision."""
+        self._overlay.set_lanes(lanes)
+
     def set_scan_quality(self, assessment: ScanQualityAssessment | None) -> None:
         """Show which regions the page-geometry check could not vouch for."""
         self._overlay.set_scan_quality(assessment)
@@ -553,8 +767,17 @@ class ScanPreviewView(QGraphicsView):
         sample_windows: bool = False,
         centers: bool = False,
         scan_quality: bool = True,
+        status_symbols: bool = True,
+        lanes: bool = True,
     ) -> None:
-        """Choose which overlay layers are drawn."""
+        """Choose which overlay layers are drawn.
+
+        ``status_symbols`` turns off the ``?``/``!``/``x`` glyphs. The Scan page
+        keeps them - they are how an operator skimming a whole sheet sees what
+        was wrong with it - while conflict review turns them off, because there
+        the same fact is carried by a lane outline around the entire group
+        rather than by a mark beside one bubble.
+        """
         self._overlay.show_zones = zones
         self._overlay.show_bubbles = bubbles
         self._overlay.show_empty_bubbles = empty
@@ -562,6 +785,8 @@ class ScanPreviewView(QGraphicsView):
         self._overlay.show_sample_windows = sample_windows
         self._overlay.show_centers = centers
         self._overlay.show_scan_quality = scan_quality
+        self._overlay.show_status_symbols = status_symbols
+        self._overlay.show_lanes = lanes
         self._overlay.update()
 
     @property
@@ -718,12 +943,17 @@ __all__ = [
     "DETECTED_MARKER_FAR_COLOR",
     "EMPTY_COLOR",
     "EXPECTED_MARKER_COLOR",
+    "LANE_MANUAL_COLOR",
+    "LANE_PADDING_RATIO",
+    "LANE_UNRESOLVED_COLOR",
     "MARKER_MISMATCH_PX",
     "MULTIPLE_COLOR",
     "SAMPLE_WINDOW_COLOR",
     "SELECTED_COLOR",
     "UNCERTAIN_COLOR",
     "UNREADABLE_COLOR",
+    "FieldLane",
+    "LaneState",
     "OverlayItem",
     "ScanPreviewView",
 ]

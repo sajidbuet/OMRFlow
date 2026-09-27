@@ -85,6 +85,13 @@ class AppConfig(BaseModel):
             nobody has said who they are yet, and
             :func:`~omr_scanner.services.review_store.validate_reviewer`
             refuses corrections until somebody does.
+        resolve_auto_advance: Whether the Resolve stage moves to the next
+            unresolved conflict as soon as the current one is decided. A
+            working habit rather than an examination rule - some reviewers want
+            to look at what they just did before moving on - so it follows the
+            person, like :attr:`reviewer_name`, and no project file gains a
+            field. A project written before this existed opens unchanged and
+            gets the default.
         ribbon_density: How much room the workflow ribbon's steps take, 0
             (tightest) to 4 (roomiest). A display preference and nothing more:
             it changes padding, not which stages exist or what they do, so it
@@ -103,6 +110,7 @@ class AppConfig(BaseModel):
     max_recent_projects: int = Field(default=DEFAULT_MAX_RECENT_PROJECTS, ge=1, le=50)
     processing: ProcessingSettings = ProcessingSettings()
     reviewer_name: str = ""
+    resolve_auto_advance: bool = True
     ribbon_density: int = Field(
         default=DEFAULT_RIBBON_DENSITY, ge=MIN_RIBBON_DENSITY, le=MAX_RIBBON_DENSITY
     )
@@ -162,6 +170,10 @@ class AppConfig(BaseModel):
         non-empty check while naming nobody.
         """
         return self.model_copy(update={"reviewer_name": name.strip()})
+
+    def with_resolve_auto_advance(self, enabled: bool) -> AppConfig:
+        """Return a copy remembering the Resolve stage's auto-advance setting."""
+        return self.model_copy(update={"resolve_auto_advance": enabled})
 
 
 def load_app_config(path: Path | None = None, *, strict: bool = False) -> AppConfig:

@@ -195,28 +195,119 @@ and there is exactly one place where "how sure is sure enough" is configured.
    labelled as such.
 6. Decide:
    - **Accept machine value** - you inspected it and the machine was right.
-   - a **value button** (or the free-text box, for a whole identifier) - a
-     correction.
+   - a **value button**, the matching **number key**, or the free-text box for
+     a whole identifier - a correction.
    - **Defer** - postpone it.
    - **Reopen** - change a decision already made.
 7. Give a **reason**. Accepting records *"Machine result visually confirmed"*
    automatically; a correction asks you to pick one, and "Other" requires an
    explanation.
-8. **History...** shows the complete provenance at any time.
-9. **Next unresolved** skips to the next thing nobody has decided.
+8. The panel states all three values, always:
+
+   ```text
+   Machine result:   (blank)
+   Manual decision:  1
+   Effective result: 1
+   ```
+
+9. **History...** shows the complete provenance at any time.
+10. With **auto-advance** on (the toolbar's tick, remembered in your own
+    settings), resolving the current conflict selects the next undecided one by
+    itself. Deferring does not advance - deferring is "come back to this".
+
+### What the preview shows
+
+The overlay answers two questions by inspection:
+
+| Outline | Meaning |
+| --- | --- |
+| **Amber, dashed**, round the whole 0-9 bubble stack | this printed position is waiting for a decision |
+| **Red, solid**, round the same stack | a person supplied or overrode the value here |
+| **Heavy red ring** on one bubble inside a red lane | the value they chose |
+| **`BLANK`** caption beside a red lane | they decided the position carries no mark |
+
+The rectangle is the **printed position**, not a bubble: a roll-number column
+is a stack of ten, and the question a reviewer is answering is "what is in this
+column". A field with three doubtful positions shows three lanes, the one being
+decided drawn more heavily than the rest, so you can see how much of the
+identifier is in question before deciding any of it.
+
+Red means *a human decided this*, not *this is wrong*.
+
+The `?` glyph beside the bubble the engine nearly chose is **gone** from this
+stage. It pointed at where the machine's doubt landed rather than at where your
+attention has to go, and it is still on the Scan page, where skimming a whole
+sheet for what went wrong is the actual task.
+
+The lane's geometry comes from the bubbles recognition measured - the
+template's own normalised coordinates projected onto the canonical page - so it
+sits exactly where the engine looked, at any zoom, and follows a template that
+is later edited. Nothing is drawn onto the scan; the original file is never
+touched. A conflict that is **not** a position on the paper - a page that would
+not rectify, a corrupt file, a curled corner - gets no rectangle, because
+inventing one would put a confident outline somewhere arbitrary.
 
 ### Keyboard
 
+The stage is usable without the mouse, because a sitting is hundreds of sheets.
+
 | Key | Action |
 | --- | --- |
+| `0`-`9` | Choose the value that digit prints |
+| `B` | Choose blank |
+| `Enter` | Accept the machine value |
+| `D` | Defer |
 | Left / Right | Previous / next conflict |
-| Enter | Accept the machine value |
-| D | Defer |
+| `Shift+Enter` | Previous unresolved conflict |
+| `Ctrl+Enter` | Next unresolved conflict |
+| `Ctrl+Z` | Undo the last decision |
+| `Ctrl+Y` | Redo it |
+| `Ctrl+Shift+Z` | Undo the last resolved sheet |
 
-Choosing a *value* deliberately has no shortcut: a stray keypress that silently
-corrected an answer is precisely the accidental destructive edit this stage
-exists to prevent, and every correction must carry a reason anyway. Typing in
-the reason box consumes the keys before any shortcut sees them.
+A key and its button are the same command: the digit keys call exactly what the
+value buttons call, so a typed correction carries the same reviewer, the same
+reason and the same audit event as a clicked one. There is no separate keyboard
+state to drift.
+
+Two things keep that from being the accidental destructive edit this stage
+exists to prevent:
+
+- a digit acts only when the active conflict genuinely prints that symbol - the
+  labels come from the template, so a key this sheet has no answer to does
+  nothing at all;
+- every keyboard action refuses while the focus is in a text box, so searching
+  for roll number `170501` cannot record `1` as somebody's student ID.
+
+### Undo
+
+| Command | What it takes back |
+| --- | --- |
+| **Undo decision** (`Ctrl+Z`) | the most recent decision anywhere in this batch |
+| **Redo** (`Ctrl+Y`) | makes that decision again |
+| **Undo resolved sheet** (`Ctrl+Shift+Z`) | every decision of the last sheet you finished |
+
+Undo is batch-wide rather than "whatever is selected", because with
+auto-advance on the conflict you have just decided is no longer the one on
+screen. The page follows the undo to wherever it landed, so you see what
+changed rather than being told that something did.
+
+**Undo steps back one command; it is not a reset.** A position corrected by one
+reviewer and then corrected by another returns to the first reviewer's value
+and stays resolved. Only when no decision is left standing does it return to
+the machine's value and to *Open*. That is the difference between **Undo** and
+**Reopen**, which discards every standing decision at once.
+
+None of it is a gesture on screen. A reversal is a persisted, attributed audit
+event; the effective value and the conflict's state are re-derived from the
+ledger; the counters, the queue and the overlay update immediately; downstream
+results see the restored value; and closing and reopening the project shows the
+undone state, not the decision. See [§6](#6-provenance-undo-and-what-reopen-means).
+
+> **The two curved-arrow buttons in the previous build were *not* undo and
+> redo.** They were bound to "previous conflict" and "next conflict", so the
+> one control an operator would reach for to take a mistaken correction back
+> moved the selection instead. They now mean what they look like, and
+> navigation wears chevrons.
 
 ### Your name
 
@@ -232,7 +323,7 @@ It is a name, not an account. Phase 6 needs attribution, not authentication.
 ## 5. Conflict states
 
 ```text
-        OPEN ──accept/correct──▶ RESOLVED ──reopen──▶ OPEN
+        OPEN ──accept/correct──▶ RESOLVED ──reopen/undo──▶ OPEN
           │                          ▲
           ├──────defer──────▶ DEFERRED
           │
@@ -246,6 +337,15 @@ It is a name, not an account. Phase 6 needs attribution, not authentication.
 | **Deferred** | A named reviewer deliberately postponed it. Still counts as unresolved. |
 | **Withdrawn** | Re-reading the sheet no longer produces this conflict. |
 
+The queue names the state **in words with a glyph beside it**, and tints the
+row as well - so the state survives a colour-vision deficiency and a grey
+printout, where the tint alone would not. A conflict that is open *because
+somebody put it back* reads **Reopened**: still `OPEN` in storage and in every
+count, because inventing a sixth state would mean teaching every filter,
+predicate and count about it, but a distinction a reviewer working a queue
+needs to see. It is drawn from the ledger -
+`review_store.ConflictRecord.reversed_before`.
+
 Conflicts are **never deleted**. A withdrawn conflict is kept because the fact
 that the machine once disputed this value is itself evidence.
 
@@ -255,7 +355,7 @@ whatever a later re-read says.
 
 ---
 
-## 6. Provenance, and what "reopen" means
+## 6. Provenance, undo, and what "reopen" means
 
 Reopening withdraws the *decision*, not the record of it. The effective value
 falls back to the machine's until somebody decides again, and the original
@@ -271,6 +371,58 @@ correction stays in the ledger with its own reviewer, reason and timestamp:
 Effective value: `C`. Machine value: still `A-C`. Dr. X's decision is still
 recorded as Dr. X's, for `A` - never rewritten to look as though they had
 chosen `C` all along.
+
+### One command model, folded as a stack
+
+Undo is an **event**, not an edit, because the ledger cannot be edited
+([§7](#7-why-the-ledger-cannot-be-rewritten)). `review_store.standing_commands`
+folds a conflict's history into the commands still in effect: a decision, a
+deferral or a reopening **pushes**; an `UNDONE` event **pops**. Everything else
+is derived from that single fold - the effective value
+(`_standing_decision`), the cached state (`recompute_state`), what the next
+`Ctrl+Z` would take back, and what the queue calls the row.
+
+That is what makes undo step back one command rather than reset:
+
+```text
+14:32:10  Machine recognition          Value: A-C
+14:35:22  Corrected by Dr. X           A-C → A
+15:13:17  Corrected by Dr. Y           A   → C
+15:14:02  Undone    by Dr. Y           C   → A     (Dr. X's decision stands again)
+```
+
+Effective value: `A`, by Dr. X, and the conflict is still *Resolved*. A second
+`Ctrl+Z` would leave nothing standing and return it to `A-C` and *Open*.
+
+**Redo has no event of its own.** Making a decision again is a decision, so it
+is re-issued through the ordinary path and recorded as one, by whoever is
+reviewing now, at the time they did it - rather than as a ledger entry claiming
+a value had been "restored". The redo stack is therefore session-only: it is
+discarded when the project closes, when a different project is opened, and as
+soon as a new decision is made, which is what stops a stale redo putting a
+value back onto a conflict somebody has since decided differently.
+
+### Undoing a whole sheet
+
+**A sheet's resolution session is a run in the ledger, and nothing extra is
+stored to know it.** A reviewer works one sheet to the end and moves on, so the
+session is the maximal run of consecutive human events in the batch that belong
+to that sheet - the run ends exactly where they moved on. `Ctrl+Shift+Z` finds
+the most recent such run whose sheet is *finished* (at least one conflict
+resolved, none left unresolved), reverses every decision still standing in it
+**in one transaction**, and navigates back to the sheet.
+
+Two consequences that matter:
+
+- **Decisions from an earlier sitting are left alone.** Undoing a sheet somebody
+  finished this morning does not discard what was decided on it last week,
+  because the session is a run rather than "everything on this sheet".
+- **It is all or nothing.** A half-restored sheet is worse than one not restored
+  at all - the counters would be right, the queue would look finished, and one
+  conflict would silently still carry a decision nobody meant to keep.
+
+Because the run is derived from the ledger, it survives closing the project,
+and a second operator opening the same project sees the same answer.
 
 ---
 

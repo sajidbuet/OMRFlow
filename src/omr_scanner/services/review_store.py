@@ -9,6 +9,9 @@ Responsibilities:
       detection into storage.
     * :func:`accept_machine_value`, :func:`correct_value`, :func:`defer`,
       :func:`reopen` - the four human actions, each one transaction.
+    * :func:`undo_decision` / :func:`undo_resolved_sheet` - taking a decision,
+      or a whole sheet's worth of them, back again. Also one transaction each,
+      and also append-only.
     * :func:`provenance_for` / :func:`effective_values_for_scan` - the single
       answer to "what is this value, and where did it come from".
     * :func:`history_for` - the ledger, oldest first.
@@ -45,6 +48,16 @@ Why the effective value is a projection:
     editing it, and there is no way for a cached value to drift from the
     history that justifies it. ``ReviewConflict.state`` is cached for queue
     speed, and :func:`recompute_state` exists so a test can prove the two agree.
+
+How undo works without rewriting anything:
+    :func:`standing_commands` folds the ledger into the stack of human commands
+    currently *in effect*: a decision pushes, an ``UNDONE`` event pops. Undo is
+    therefore a new event like any other - the reversed decision keeps its own
+    reviewer, reason and timestamp - and both the effective value and the
+    cached state are still derived from the same single fold. Redo has no event
+    of its own on purpose: re-deciding is a decision, and recording it as one
+    keeps the ledger a record of what people chose rather than of which buttons
+    they pressed.
 """
 
 from __future__ import annotations
@@ -60,6 +73,8 @@ from sqlalchemy import func, select
 
 from omr_scanner.database.models import AuditEvent, BatchScan, ReviewConflict
 from omr_scanner.domain.review import (
+    REOPENED_LABEL,
+    REOPENED_MARKER,
     RESOLUTION_TYPES,
     WHOLE_FIELD,
     Candidate,
@@ -224,6 +239,11 @@ class ConflictRecord:
         observation: What the machine saw, verbatim.
         related_scan_ids: Other sheets a batch-scope conflict concerns.
         created_at / updated_at: ISO-8601 UTC.
+        reversed_before: Whether anybody has ever reopened or undone a decision
+            on this conflict. Presentation only - it lets the queue distinguish
+            "nobody has looked at this" from "somebody decided and then took it
+            back", which :class:`~omr_scanner.domain.review.ConflictState`
+            cannot, because both are ``OPEN``.
     """
 
     conflict_id: int
@@ -239,11 +259,33 @@ class ConflictRecord:
     related_scan_ids: tuple[int, ...] = ()
     created_at: str = ""
     updated_at: str = ""
+    reversed_before: bool = False
 
     @property
     def allows_value_correction(self) -> bool:
         """Whether a reviewer may supply a replacement value here."""
         return self.conflict_type.allows_value_correction
+
+    @property
+    def state_label(self) -> str:
+        """The state as a queue cell should name it.
+
+        ``"Reopened"`` for a conflict that is open *because somebody put it
+        back*. It is still :attr:`~omr_scanner.domain.review.ConflictState.OPEN`
+        in storage and in every count - reopening does not invent a sixth
+        state - but a reviewer working a queue needs to see that this one has
+        already been through somebody's hands.
+        """
+        if self.state is ConflictState.OPEN and self.reversed_before:
+            return REOPENED_LABEL
+        return self.state.label
+
+    @property
+    def state_marker(self) -> str:
+        """The glyph that carries :attr:`state_label` without relying on colour."""
+        if self.state is ConflictState.OPEN and self.reversed_before:
+            return REOPENED_MARKER
+        return self.state.marker
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,7 +327,9 @@ class AuditRecord:
         return f"{label} - {self.reason_text}" if self.reason_text else label
 
 
-def _to_record(row: ReviewConflict, scan: BatchScan | None) -> ConflictRecord:
+def _to_record(
+    row: ReviewConflict, scan: BatchScan | None, *, reversed_before: bool = False
+) -> ConflictRecord:
     """Project one ORM row (and its sheet) into a detached value object."""
     return ConflictRecord(
         conflict_id=row.conflict_id,
@@ -315,6 +359,7 @@ def _to_record(row: ReviewConflict, scan: BatchScan | None) -> ConflictRecord:
         related_scan_ids=_load_related(row.related_scan_ids),
         created_at=row.created_at.isoformat(timespec="seconds"),
         updated_at=row.updated_at.isoformat(timespec="seconds"),
+        reversed_before=reversed_before,
     )
 
 
@@ -877,8 +922,443 @@ def _require_conflict(session: Session, conflict_id: int) -> ReviewConflict:
 
 
 # ----------------------------------------------------------------------
+# Undo
+# ----------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class UndoTarget:
+    """The decision an undo would take back, before it is taken back.
+
+    Attributes:
+        conflict_id: The conflict it was made on.
+        scan_id: That conflict's sheet, so a reviewer can be shown what they
+            are about to change rather than having it happen off screen.
+        action: Which command it was.
+        reviewer: Who made it.
+        value: The effective value it established, ``""`` for blank.
+        reason: Its reason code's stored value.
+        reason_text: The free text that accompanied it.
+        describe: One short phrase naming it, for a tooltip or a menu item.
+
+    Carries everything needed to *re-issue* the command, which is how redo is
+    built: repeating a decision is a decision, recorded as one, rather than a
+    third kind of ledger event that means "put the earlier one back".
+    """
+
+    conflict_id: int
+    scan_id: int
+    action: ReviewAction
+    reviewer: str
+    value: str
+    reason: str = ""
+    reason_text: str = ""
+    describe: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SheetUndo:
+    """One sheet's completed resolution session, as undo sees it.
+
+    Attributes:
+        scan_id: The sheet.
+        scan_name: Its file name, for a message.
+        conflict_ids: Every conflict the session decided, in the order the
+            decisions were made.
+        decisions: How many standing decisions the session left behind, which
+            is how many reversals undoing it appends. Never fewer than
+            ``len(conflict_ids)`` and more when one conflict was decided twice.
+        reversed_commands: What was taken back, oldest first. Empty until the
+            undo has actually happened - :func:`last_resolved_sheet` describes
+            what *would* be undone, and filling this in would mean doing the
+            work twice to answer a tooltip.
+    """
+
+    scan_id: int
+    scan_name: str
+    conflict_ids: tuple[int, ...]
+    decisions: int
+    reversed_commands: tuple[UndoTarget, ...] = ()
+
+
+_HUMAN_ACTIONS: tuple[str, ...] = tuple(
+    item.value for item in ReviewAction if item.is_human
+)
+"""The stored ``action`` values a person can author. Derived from the enum, so
+a new human action cannot be added and forgotten here."""
+
+UNDO_SEARCH_LIMIT = 500
+"""How far back through a batch's ledger :func:`last_decision` looks.
+
+A bound, not a policy: the answer is almost always the newest event or the one
+behind it, and a batch that has been reviewed for a week should not read its
+entire history to answer a keystroke. Beyond this, undo reports that there is
+nothing to take back rather than pretending to have searched."""
+
+SHEET_UNDO_RUN_LIMIT = 20
+"""How many sheet-resolution sessions :func:`last_resolved_sheet` looks back
+through.
+
+Each candidate run costs a query to ask whether its sheet is finished, and
+"the last sheet you finished" is by construction one of the last few. Without
+a bound, a reviewer who had worked five hundred single-conflict sheets would
+pay five hundred queries for a toolbar's tooltip."""
+
+
+def _human_events(session: Session, batch_id: str, *, limit: int) -> list[AuditEvent]:
+    """Return a batch's most recent human events, newest first."""
+    return list(
+        session.scalars(
+            select(AuditEvent)
+            .where(AuditEvent.batch_id == batch_id)
+            .where(AuditEvent.action.in_(_HUMAN_ACTIONS))
+            .order_by(AuditEvent.event_id.desc())
+            .limit(limit)
+        ).all()
+    )
+
+
+def _walk_back_to_standing(events: Sequence[AuditEvent]) -> list[AuditEvent]:
+    """Filter a newest-first run of human events down to the ones still standing.
+
+    Walking *backwards* is what makes this cheap. An ``UNDONE`` event cancels
+    exactly one earlier command on the same conflict, so counting undos as they
+    are passed and spending them against the commands below is the same answer
+    :func:`standing_commands` gives, without having to load every conflict's
+    full history to get it.
+    """
+    pending: dict[int, int] = {}
+    standing: list[AuditEvent] = []
+    for event in events:
+        if event.action == ReviewAction.UNDONE.value:
+            pending[event.conflict_id] = pending.get(event.conflict_id, 0) + 1
+            continue
+        if pending.get(event.conflict_id):
+            pending[event.conflict_id] -= 1
+            continue
+        standing.append(event)
+    return standing
+
+
+def last_decision(database: ProjectDatabase, batch_id: str) -> UndoTarget | None:
+    """Return the most recent human command in a batch that still stands.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch being reviewed.
+
+    Returns:
+        What an undo would take back, or ``None`` when nothing in the last
+        :data:`UNDO_SEARCH_LIMIT` events is still standing.
+
+    Deliberately batch-wide rather than "whatever is selected". With
+    auto-advance on, the conflict a reviewer has just decided is no longer the
+    one on screen, and an undo that acted on the *new* selection would either
+    do nothing or - worse - take back a decision the reviewer was not thinking
+    about.
+    """
+    with database.session() as session:
+        standing = _walk_back_to_standing(
+            _human_events(session, batch_id, limit=UNDO_SEARCH_LIMIT)
+        )
+        if not standing:
+            return None
+        event = standing[0]
+        conflict = session.get(ReviewConflict, event.conflict_id)
+        return _to_target(event, conflict)
+
+
+def _to_target(event: AuditEvent, conflict: ReviewConflict | None) -> UndoTarget:
+    """Project one human command into the value an undo reports."""
+    action = ReviewAction(event.action)
+    return UndoTarget(
+        conflict_id=event.conflict_id,
+        scan_id=event.scan_id,
+        action=action,
+        reviewer=event.reviewer,
+        value=event.new_value,
+        reason=event.reason_code,
+        reason_text=event.reason_text,
+        describe=_describe_command(action, event.new_value, conflict),
+    )
+
+
+def _describe_command(
+    action: ReviewAction, value: str, conflict: ReviewConflict | None
+) -> str:
+    """One short phrase naming a command, for a tooltip."""
+    where = ""
+    if conflict is not None:
+        where = FieldRef(
+            zone_id=conflict.zone_id,
+            group_key=conflict.group_key,
+            kind=FieldKind(conflict.field_kind),
+            label=conflict.field_label,
+            question_number=conflict.question_number,
+        ).describe()
+    what = {
+        ReviewAction.ACCEPTED: f"accepting '{value or '(blank)'}'",
+        ReviewAction.CORRECTED: f"correcting to '{value or '(blank)'}'",
+        ReviewAction.DEFERRED: "deferring",
+        ReviewAction.REOPENED: "reopening",
+    }.get(action, action.value)
+    return f"{what} on {where}" if where else what
+
+
+def undo_decision(
+    database: ProjectDatabase,
+    conflict_id: int,
+    *,
+    reviewer: str,
+    reason_text: str = "",
+) -> UndoTarget:
+    """Take back the most recent human command standing on one conflict.
+
+    Args:
+        database: The open project database.
+        conflict_id: The conflict to step back on.
+        reviewer: Who is undoing. Required, and recorded - an undo changes what
+            a script is worth just as a correction does.
+        reason_text: Optional free text.
+
+    Returns:
+        What was taken back - enough to put it back again, which is what makes
+        redo a re-issued decision rather than a third kind of ledger event.
+
+    Raises:
+        ReviewError: No reviewer, or nothing standing to take back.
+
+    **One step, not a reset.** A conflict corrected by X and then corrected
+    again by Y returns to X's value and stays resolved; only when the last
+    standing command is gone does it return to the machine's value and to
+    ``OPEN``. That is the difference between this and :func:`reopen`, and it is
+    why the ledger is folded as a stack rather than scanned for the latest
+    decision.
+    """
+    name = validate_reviewer(reviewer)
+
+    with database.session() as session:
+        row = _require_conflict(session, conflict_id)
+        undone = _undo_one(session, row, reviewer=name, reason_text=reason_text)
+        row.updated_at = _now()
+        session.flush()
+        _LOGGER.info("Conflict %d: decision undone by %s", conflict_id, name)
+        return undone
+
+
+def _undo_one(
+    session: Session, row: ReviewConflict, *, reviewer: str, reason_text: str
+) -> UndoTarget:
+    """Append one reversal to a conflict, inside an open transaction."""
+    events = [_to_audit(item) for item in _ordered_events(session, row.conflict_id)]
+    stack = standing_commands(events)
+    if not stack or not stack[-1].action.is_human:
+        raise ReviewError(
+            f"Conflict {row.conflict_id} has no decision to undo",
+            user_message="There is nothing to undo on this conflict.",
+        )
+
+    undone = stack[-1]
+    before = _fold_events(row, events)
+    remaining = stack[:-1]
+    restored = _standing_decision(remaining)
+    restored_value = restored.new_value if restored is not None else row.machine_value
+
+    _append_event(
+        session,
+        conflict=row,
+        action=ReviewAction.UNDONE,
+        reviewer=reviewer,
+        previous_value=before.value,
+        new_value=restored_value,
+        reason_text=reason_text.strip(),
+        detail=(
+            f"The {undone.action.value} decision recorded by "
+            f"{undone.reviewer or 'an unnamed reviewer'} at {undone.occurred_at} "
+            "was undone. It remains in this history."
+        ),
+    )
+    row.state = _state_of(remaining).value
+    session.flush()
+    return UndoTarget(
+        conflict_id=row.conflict_id,
+        scan_id=row.scan_id,
+        action=undone.action,
+        reviewer=undone.reviewer,
+        value=undone.new_value,
+        reason=undone.reason_code,
+        reason_text=undone.reason_text,
+        describe=_describe_command(undone.action, undone.new_value, row),
+    )
+
+
+def last_resolved_sheet(database: ProjectDatabase, batch_id: str) -> SheetUndo | None:
+    """Return the sheet whose resolution session finished most recently.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch being reviewed.
+
+    Returns:
+        What :func:`undo_resolved_sheet` would take back, or ``None``.
+
+    **A session is a run, and the ledger already records it.** A reviewer works
+    one sheet until it is finished and then moves to the next, so a sheet's
+    session is the maximal run of consecutive human events in this batch that
+    belong to it - the run ends exactly where the reviewer moved on. Nothing
+    extra is stored to know this, so it survives closing the project, and a
+    second operator on the same project sees the same answer.
+
+    Only a run whose sheet is *finished* qualifies: at least one conflict
+    resolved and none left unresolved. A half-worked sheet has not been
+    completed, so there is no completion to undo.
+    """
+    with database.session() as session:
+        return _find_resolved_sheet(session, batch_id)
+
+
+def _find_resolved_sheet(session: Session, batch_id: str) -> SheetUndo | None:
+    """Locate the most recent completed sheet-resolution run."""
+    events = _human_events(session, batch_id, limit=UNDO_SEARCH_LIMIT)
+    for run in _runs_by_scan(events)[:SHEET_UNDO_RUN_LIMIT]:
+        scan_id = run[0].scan_id
+        if not _sheet_is_resolved(session, batch_id, scan_id):
+            continue
+        standing = _walk_back_to_standing(run)
+        if not standing:
+            continue
+        scan = session.get(BatchScan, scan_id)
+        # `standing` is newest-first inside the run; the session reads forwards.
+        ordered = list(reversed(standing))
+        return SheetUndo(
+            scan_id=scan_id,
+            scan_name=scan.filename if scan is not None else "",
+            conflict_ids=tuple(dict.fromkeys(item.conflict_id for item in ordered)),
+            decisions=len(ordered),
+        )
+    return None
+
+
+def _runs_by_scan(events: Sequence[AuditEvent]) -> list[list[AuditEvent]]:
+    """Split a newest-first event list into maximal same-sheet runs."""
+    runs: list[list[AuditEvent]] = []
+    for event in events:
+        if runs and runs[-1][0].scan_id == event.scan_id:
+            runs[-1].append(event)
+        else:
+            runs.append([event])
+    return runs
+
+
+def _sheet_is_resolved(session: Session, batch_id: str, scan_id: int) -> bool:
+    """Whether every conflict on one sheet has been decided, and some were."""
+    by_state = {
+        str(state): int(count)
+        for state, count in session.execute(
+            _resolution_only(
+                select(ReviewConflict.state, func.count())
+                .where(ReviewConflict.batch_id == batch_id)
+                .where(ReviewConflict.scan_id == scan_id)
+                .group_by(ReviewConflict.state)
+            )
+        ).all()
+    }
+    unresolved = by_state.get(ConflictState.OPEN.value, 0) + by_state.get(
+        ConflictState.DEFERRED.value, 0
+    )
+    return unresolved == 0 and by_state.get(ConflictState.RESOLVED.value, 0) > 0
+
+
+def undo_resolved_sheet(
+    database: ProjectDatabase,
+    batch_id: str,
+    *,
+    reviewer: str,
+    reason_text: str = "",
+) -> SheetUndo | None:
+    """Take back every decision of the most recently completed sheet.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch being reviewed.
+        reviewer: Who is undoing. Required.
+        reason_text: Optional free text, recorded against every reversal.
+
+    Returns:
+        What was undone, or ``None`` when no completed sheet was found.
+
+    Raises:
+        ReviewError: No reviewer name.
+
+    **One transaction for the whole sheet.** A sheet half-restored is worse
+    than one not restored at all: the counters would be right, the queue would
+    look finished, and one conflict would silently still carry a decision
+    nobody meant to keep. Either every reversal in the session commits or none
+    of them does.
+
+    Decisions made *before* that session are left alone. Undoing a sheet the
+    operator finished this morning must not also discard what somebody decided
+    on it last week, and because a session is a run in the ledger rather than
+    "everything on this sheet", it does not.
+    """
+    name = validate_reviewer(reviewer)
+
+    with database.session() as session:
+        found = _find_resolved_sheet(session, batch_id)
+        if found is None:
+            return None
+        moment = _now()
+        reversed_commands: list[UndoTarget] = []
+        # Newest first: each reversal pops the top of its conflict's stack, so
+        # a conflict decided twice in the session is stepped back twice, in the
+        # order those decisions were made.
+        for conflict_id in _reversal_order(session, batch_id, found):
+            row = _require_conflict(session, conflict_id)
+            reversed_commands.append(
+                _undo_one(session, row, reviewer=name, reason_text=reason_text)
+            )
+            row.updated_at = moment
+        session.flush()
+        found = replace(found, reversed_commands=tuple(reversed(reversed_commands)))
+    _LOGGER.info(
+        "Sheet %d: %d decision(s) undone by %s", found.scan_id, found.decisions, name
+    )
+    return found
+
+
+def _reversal_order(
+    session: Session, batch_id: str, found: SheetUndo
+) -> tuple[int, ...]:
+    """Return the conflict ids to reverse, newest decision first, with repeats.
+
+    One entry per standing decision rather than per conflict: a position
+    corrected and then corrected again during the same session needs two
+    reversals, and returning the conflict twice is what makes
+    :func:`_undo_one`'s single pop enough.
+    """
+    events = _human_events(session, batch_id, limit=UNDO_SEARCH_LIMIT)
+    for run in _runs_by_scan(events):
+        if run[0].scan_id != found.scan_id:
+            continue
+        return tuple(item.conflict_id for item in _walk_back_to_standing(run))
+    return ()
+
+
+# ----------------------------------------------------------------------
 # Provenance: the projection
 # ----------------------------------------------------------------------
+def _ordered_events(session: Session, conflict_id: int) -> Sequence[AuditEvent]:
+    """Return one conflict's events, oldest first.
+
+    Ordered by ``event_id`` rather than by ``occurred_at``: two events written
+    in the same transaction can share a timestamp to the second, and the fold
+    that derives the effective value depends on knowing which came first.
+    """
+    return session.scalars(
+        select(AuditEvent)
+        .where(AuditEvent.conflict_id == conflict_id)
+        .order_by(AuditEvent.event_id)
+    ).all()
+
+
 def _project_provenance(session: Session, row: ReviewConflict) -> Provenance:
     """Fold a conflict's ordered events into its current provenance.
 
@@ -888,22 +1368,61 @@ def _project_provenance(session: Session, row: ReviewConflict) -> Provenance:
     is what makes "reopen then decide again" behave correctly without a special
     case anywhere.
     """
-    events = session.scalars(
-        select(AuditEvent)
-        .where(AuditEvent.conflict_id == row.conflict_id)
-        .order_by(AuditEvent.event_id)
-    ).all()
+    events = _ordered_events(session, row.conflict_id)
     return _fold_events(row, [_to_audit(item) for item in events])
+
+
+def standing_commands(events: Sequence[AuditRecord]) -> tuple[AuditRecord, ...]:
+    """Fold an ordered history into the commands still in effect, oldest first.
+
+    Args:
+        events: One conflict's events, oldest first.
+
+    Returns:
+        The stack of commands that have not been taken back, oldest at index
+        ``0``.
+
+    The single definition of "what has actually happened to this conflict", and
+    the reason undo needs neither a mutable column nor a second history table.
+    A command (:attr:`~omr_scanner.domain.review.ReviewAction.is_command`) is
+    pushed; an ``UNDONE`` event pops the top, and only when the top is a human
+    command - a machine withdrawal is not somebody's decision to take back.
+
+    Everything else about a conflict is derived from this one function:
+    :func:`_fold_events` reads the effective value off the stack and
+    :func:`recompute_state` reads the state off its top, so the two can no more
+    disagree with each other than either can with the ledger.
+    """
+    stack: list[AuditRecord] = []
+    for event in events:
+        if event.action is ReviewAction.UNDONE:
+            if stack and stack[-1].action.is_human:
+                stack.pop()
+            continue
+        if event.action.is_command:
+            stack.append(event)
+    return tuple(stack)
+
+
+def _standing_decision(stack: Sequence[AuditRecord]) -> AuditRecord | None:
+    """Return the command that currently decides the value, if any.
+
+    Read from the top down. ``DEFERRED`` and ``WITHDRAWN`` are transparent -
+    postponing a conflict, or the machine retracting it, does not undo a
+    correction somebody already made - while ``REOPENED`` stops the search,
+    because reopening is precisely the statement that no decision stands.
+    """
+    for event in reversed(stack):
+        if event.action.sets_effective_value:
+            return event
+        if event.action is ReviewAction.REOPENED:
+            return None
+    return None
 
 
 def _fold_events(row: ReviewConflict, events: Sequence[AuditRecord]) -> Provenance:
     """Reduce an ordered history to one :class:`Provenance`."""
-    decided: AuditRecord | None = None
-    for event in events:
-        if event.action.sets_effective_value:
-            decided = event
-        elif event.action is ReviewAction.REOPENED:
-            decided = None
+    decided = _standing_decision(standing_commands(events))
 
     if decided is None:
         return Provenance(
@@ -929,25 +1448,36 @@ def _fold_events(row: ReviewConflict, events: Sequence[AuditRecord]) -> Provenan
     )
 
 
+_STATE_AFTER: dict[ReviewAction, ConflictState] = {
+    ReviewAction.ACCEPTED: ConflictState.RESOLVED,
+    ReviewAction.CORRECTED: ConflictState.RESOLVED,
+    ReviewAction.DEFERRED: ConflictState.DEFERRED,
+    ReviewAction.REOPENED: ConflictState.OPEN,
+    ReviewAction.WITHDRAWN: ConflictState.WITHDRAWN,
+}
+"""Where each command leaves a conflict. One entry per
+:attr:`~omr_scanner.domain.review.ReviewAction.is_command` action, so a new
+command cannot be added without deciding what it means for the state."""
+
+
 def recompute_state(events: Sequence[AuditRecord]) -> ConflictState:
     """Derive a conflict's state from its history alone.
 
     Exists so a test can prove the cached
     :attr:`~omr_scanner.database.models.ReviewConflict.state` never drifts from
-    the ledger that justifies it. Nothing in the application reads this at
-    runtime - the cached column is there to make a ten-thousand-row queue fast.
+    the ledger that justifies it - and, since undo is an event rather than a
+    rewrite, so that an undone decision's state falls out of the same fold as
+    everything else. Nothing in the application reads this on the hot path; the
+    cached column is there to make a ten-thousand-row queue fast.
     """
-    state = ConflictState.OPEN
-    for event in events:
-        if event.action in (ReviewAction.ACCEPTED, ReviewAction.CORRECTED):
-            state = ConflictState.RESOLVED
-        elif event.action is ReviewAction.DEFERRED:
-            state = ConflictState.DEFERRED
-        elif event.action is ReviewAction.REOPENED:
-            state = ConflictState.OPEN
-        elif event.action is ReviewAction.WITHDRAWN:
-            state = ConflictState.WITHDRAWN
-    return state
+    return _state_of(standing_commands(events))
+
+
+def _state_of(stack: Sequence[AuditRecord]) -> ConflictState:
+    """Return the state the topmost standing command leaves a conflict in."""
+    if not stack:
+        return ConflictState.OPEN
+    return _STATE_AFTER.get(stack[-1].action, ConflictState.OPEN)
 
 
 def provenance_for(database: ProjectDatabase, conflict_id: int) -> Provenance:
@@ -956,15 +1486,43 @@ def provenance_for(database: ProjectDatabase, conflict_id: int) -> Provenance:
         return _project_provenance(session, _require_conflict(session, conflict_id))
 
 
+def provenance_for_scan(
+    database: ProjectDatabase, batch_id: str, scan_id: int
+) -> dict[int, Provenance]:
+    """Return where every conflict on one sheet gets its value from.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch the sheet belongs to.
+        scan_id: The sheet.
+
+    Returns:
+        One :class:`~omr_scanner.domain.review.Provenance` per conflict on that
+        sheet, keyed by conflict id - including the ones nobody has decided,
+        which resolve to the machine's own reading.
+
+    Unlike :func:`effective_values_for_scan`, which answers "what did a person
+    change here" for a downstream consumer, this answers "where does each of
+    these values stand" for the reviewer looking at the sheet. The review
+    overlay needs the undecided ones too: a position nobody has touched is
+    exactly what it has to draw in amber.
+
+    One transaction for the sheet rather than one per conflict, so selecting a
+    conflict on a sheet with a dozen of them opens one.
+    """
+    with database.session() as session:
+        rows = session.scalars(
+            select(ReviewConflict)
+            .where(ReviewConflict.batch_id == batch_id)
+            .where(ReviewConflict.scan_id == scan_id)
+        ).all()
+        return {row.conflict_id: _project_provenance(session, row) for row in rows}
+
+
 def history_for(database: ProjectDatabase, conflict_id: int) -> tuple[AuditRecord, ...]:
     """Return one conflict's complete history, oldest first."""
     with database.session() as session:
-        events = session.scalars(
-            select(AuditEvent)
-            .where(AuditEvent.conflict_id == conflict_id)
-            .order_by(AuditEvent.event_id)
-        ).all()
-        return tuple(_to_audit(item) for item in events)
+        return tuple(_to_audit(item) for item in _ordered_events(session, conflict_id))
 
 
 def effective_values_for_scan(
@@ -1054,7 +1612,7 @@ def list_conflicts(
     rules = filters if filters is not None else ConflictFilter()
     with database.session() as session:
         statement = (
-            select(ReviewConflict, BatchScan)
+            select(ReviewConflict, BatchScan, _reversed_before_column())
             .join(BatchScan, BatchScan.scan_id == ReviewConflict.scan_id, isouter=True)
             .where(ReviewConflict.batch_id == batch_id)
         )
@@ -1069,8 +1627,31 @@ def list_conflicts(
         if limit is not None:
             statement = statement.limit(limit).offset(offset)
         return tuple(
-            _to_record(conflict, scan) for conflict, scan in session.execute(statement).all()
+            _to_record(conflict, scan, reversed_before=bool(reversed_before))
+            for conflict, scan, reversed_before in session.execute(statement).all()
         )
+
+
+_REVERSAL_ACTIONS: tuple[str, ...] = tuple(
+    item.value for item in ReviewAction if item.is_reversal
+)
+
+
+def _reversed_before_column() -> Any:
+    """A correlated count of this conflict's reversals, for the queue.
+
+    A subquery rather than a second round trip: the queue reads five hundred
+    rows at a time, and asking the ledger once per row is how a page that opens
+    instantly becomes one that does not. ``ix_audit_event_conflict`` is what
+    makes it cheap.
+    """
+    return (
+        select(func.count())
+        .select_from(AuditEvent)
+        .where(AuditEvent.conflict_id == ReviewConflict.conflict_id)
+        .where(AuditEvent.action.in_(_REVERSAL_ACTIONS))
+        .scalar_subquery()
+    )
 
 
 def _apply_filters(statement: Any, rules: ConflictFilter) -> Any:
@@ -1175,7 +1756,17 @@ def get_conflict(database: ProjectDatabase, conflict_id: int) -> ConflictRecord 
         row = session.get(ReviewConflict, conflict_id)
         if row is None:
             return None
-        return _to_record(row, session.get(BatchScan, row.scan_id))
+        reversals = session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.conflict_id == conflict_id)
+            .where(AuditEvent.action.in_(_REVERSAL_ACTIONS))
+        )
+        return _to_record(
+            row,
+            session.get(BatchScan, row.scan_id),
+            reversed_before=bool(reversals),
+        )
 
 
 def sheet_resolutions(
@@ -1628,10 +2219,13 @@ def scan_source_path(database: ProjectDatabase, scan_id: int) -> str:
 
 
 __all__ = [
+    "UNDO_SEARCH_LIMIT",
     "AuditRecord",
     "ConflictFilter",
     "ConflictRecord",
     "ReviewError",
+    "SheetUndo",
+    "UndoTarget",
     "accept_machine_value",
     "correct_value",
     "count_conflicts",
@@ -1640,14 +2234,20 @@ __all__ = [
     "effective_values_for_scan",
     "get_conflict",
     "history_for",
+    "last_decision",
+    "last_resolved_sheet",
     "list_conflicts",
     "provenance_for",
+    "provenance_for_scan",
     "recompute_state",
     "reopen",
     "scan_source_path",
     "sheet_resolutions",
+    "standing_commands",
     "sync_conflicts",
     "sync_duplicate_identifiers",
+    "undo_decision",
+    "undo_resolved_sheet",
     "validate_reason",
     "validate_reviewer",
 ]
