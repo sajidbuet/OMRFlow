@@ -101,13 +101,39 @@ to the composited image.
 
 ### Validating it against a genuine blank scan
 
-**Status: not yet done.** The automated tests exercise this mode against
+**Status: run once, passed.** The automated tests exercise this mode against
 *rendered* stand-in blank pages, because a committed test cannot depend on a
-scan nobody has. Registration accuracy is measured there against known
-homographies (worst case 0.33 px at the bubble centres), but no real sheet of
-paper has been through it. Until someone runs the procedure below, treat the
-mode as implemented and automatically tested, **not** as validated on real
-paper.
+scan nobody has; registration accuracy is measured there against known
+homographies (worst case 0.33 px at the bubble centres).
+
+It has since been run once against a real 2526×3417 scan of a 100-question
+form, and passed:
+
+| Check | Result |
+|---|---|
+| Registration | 0.0 px reprojection error, weakest marker 0.88, orientation confidence 1.0, no warnings |
+| No duplicated artwork | One mark changed 0.0057 % of the page; all four registration markers and the orientation mark byte-identical |
+| Ink placement | Per-option delta on a sheet answering D: `A +0.0, B +0.0, C +0.0, D +56.5` |
+| Recognition | 5 sheets, 500 answers: **0 wrong**, 2 correctly flagged, rolls and set codes 5/5 |
+| Colour | Grayscale and colour 100/100; black-and-white lost 4 faint marks, as intended |
+| Folds | No-marker folds read 100/100; a quarter-covered marker registered with a warning; both fully covered markers were refused, matching `expect_failure` |
+
+That is **one form, one operator, one scanner**. It is a smoke test, not a
+corpus, and it is not evidence that a threshold is right in general. Run it
+again whenever a new form or a new scanner enters the picture.
+
+#### What it is good at surfacing
+
+The run above turned up a calibration observation that no synthetic page could
+have produced: on that form the printed option letter inside an *empty* bubble
+already occupied a mean of 0.187 of the measured area, with 3 % of bubbles at
+or above the template's `blank_ratio_threshold` of 0.25 **before anything was
+written in them**. The two flagged answers were exactly that — the engine
+correctly declining to call a bubble blank when the printing alone is near the
+threshold.
+
+If your run produces flagged answers on bubbles that should be plainly empty,
+measure the blank sheet's own ink before suspecting the generator.
 
 The smoke test, in full:
 
