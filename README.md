@@ -316,16 +316,26 @@ one control an operator would reach for to take a mistaken correction back
 moved the selection instead. They now mean what they look like; navigation
 wears chevrons.
 
-**Testing.** 45 new Resolve-stage GUI tests and 28 new review-store tests, all
+**Four layout defects found by running the real application** on a 1,875-sheet
+batch, three of them older than this pass and one introduced by it:
+
+| Defect | Cause | Fix |
+|---|---|---|
+| The decision panel filled with dozens of slivers reading *"This is not a"* | `_clear_choices` removed the value buttons and nothing else, so the "not a correctable value" note **and** a trailing stretch were appended on every refresh and removed on none. Thirty registration failures meant thirty notes and thirty spacers, which also squeezed the next conflict's value buttons to nothing | The layout is drained rather than a list of known widget kinds being removed, so there is nothing to forget to extend |
+| The **State** column was off-screen behind a horizontal scrollbar | Five columns at Qt's default equal width need 638 px in a 484 px panel. The state cue added by this pass was therefore invisible | Only the identifier and the state take their own width; file name, field and conflict type share what is left and elide. Measured: 484 px of 484 |
+| The Normalised sheet and Zoomed field tabs were unexplained grey rectangles for a sheet that failed registration | Such a sheet has no rectified page *by definition* — that is the finding — but nothing said so | `ScanPreviewView.set_placeholder`, with a message naming which of the three situations it is: undecodable file, unalignable page, or no preview produced |
+| The evidence panel stopped mid-sentence | Its height is fixed by the splitter; its content is not | The evidence is scrolled |
+
+**Testing.** 51 new Resolve-stage GUI tests and 28 new review-store tests, all
 run, alongside the 39 existing GUI tests and 53 existing store tests. Assertions
 are against **what ended up in the database** — an undo that only repainted the
-screen would pass a test that read back the label. Two defects the new tests
-found were fixed: deferring auto-advanced past the conflict the reviewer had
-just asked to come back to, and the sheet-level undo target was wrong when the
-operator had also decided something on the sheet they moved to. No migration:
-`UNDONE` is a new value in an existing column, and a project written before
-this build opens unchanged. **No real reviewer has yet worked a sitting on
-it** — that remains Phase 11B.
+screen would pass a test that read back the label. Two behavioural defects the
+new tests found were fixed: deferring auto-advanced past the conflict the
+reviewer had just asked to come back to, and the sheet-level undo target was
+wrong when the operator had also decided something on the sheet they moved to.
+No migration: `UNDONE` is a new value in an existing column, and a project
+written before this build opens unchanged. **No real reviewer has yet worked a
+sitting on it** — that remains Phase 11B.
 
 #### Conflict resolution is for identity, not for answers
 

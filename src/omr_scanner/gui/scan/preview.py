@@ -51,6 +51,7 @@ from PySide6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QResizeEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -59,6 +60,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QLabel,
     QStyleOptionGraphicsItem,
     QWidget,
 )
@@ -676,6 +678,18 @@ class ScanPreviewView(QGraphicsView):
         self._right_press: QPoint | None = None
         self._space_panning = False
 
+        # Shown only when there is no page *and* the caller has said why. A
+        # view with nothing in it is otherwise an unexplained grey rectangle,
+        # which on the Resolve stage is exactly the wrong thing to hand
+        # somebody: a sheet that would not register has no rectified page by
+        # definition, and the reviewer needs to be told that rather than left
+        # to wonder whether the application is still loading.
+        self._placeholder = QLabel("", self)
+        self._placeholder.setObjectName("previewPlaceholder")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setWordWrap(True)
+        self._placeholder.setVisible(False)
+
     # ------------------------------------------------------------------
     # Content
     # ------------------------------------------------------------------
@@ -689,6 +703,7 @@ class ScanPreviewView(QGraphicsView):
         self._overlay.set_scan_quality(None)
         self._page_size = (0, 0)
         self._scene.setSceneRect(QRectF(0, 0, 1, 1))
+        self._update_placeholder()
         self.viewport().update()
 
     def set_page(
@@ -738,6 +753,7 @@ class ScanPreviewView(QGraphicsView):
             self._scene.addItem(item)
             self._background = item
 
+        self._update_placeholder()
         self.viewport().update()
 
     def set_overlay(
@@ -788,6 +804,30 @@ class ScanPreviewView(QGraphicsView):
         self._overlay.show_status_symbols = status_symbols
         self._overlay.show_lanes = lanes
         self._overlay.update()
+
+    def set_placeholder(self, message: str) -> None:
+        """Say why this view is empty, or clear the explanation.
+
+        Args:
+            message: What to show while there is no page; ``""`` to show
+                nothing.
+
+        Never covers an image: the moment a page is set the message is hidden
+        again, so a caller can leave one in place without having to remember to
+        take it down.
+        """
+        self._placeholder.setText(message)
+        self._update_placeholder()
+
+    def _update_placeholder(self) -> None:
+        """Position the placeholder over the viewport and show or hide it."""
+        self._placeholder.setGeometry(self.viewport().geometry())
+        self._placeholder.setVisible(bool(self._placeholder.text()) and not self.has_page)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Keep the placeholder centred on the viewport."""
+        super().resizeEvent(event)
+        self._update_placeholder()
 
     @property
     def has_page(self) -> bool:

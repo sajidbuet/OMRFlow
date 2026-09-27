@@ -37,7 +37,13 @@ from omr_scanner.gui.main_window import MainWindow
 from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.gui.review.history_dialog import render_history
 from omr_scanner.gui.review.lanes import BLANK_NOTE
-from omr_scanner.gui.review.page import BLANK_CHOICE, FILTER_ALL, FILTER_RESOLVED, ResolvePage
+from omr_scanner.gui.review.page import (
+    BLANK_CHOICE,
+    FILTER_ALL,
+    FILTER_RESOLVED,
+    QUEUE_PANEL_WIDTH,
+    ResolvePage,
+)
 from omr_scanner.gui.scan.preview import LaneState
 from omr_scanner.services import batch_store, review_store, save_template
 from omr_scanner.services.batch_processor import process_batch
@@ -269,6 +275,22 @@ class TestQueue:
         assert page.select_previous_unresolved() is True
         assert page.current_conflict().state is ConflictState.OPEN
 
+    def test_the_state_column_is_visible_without_scrolling(self, page: ResolvePage):
+        # The defect: five equal default columns ran past the panel's edge and
+        # put **State** off-screen behind a horizontal scrollbar. A state cue a
+        # reviewer has to scroll to find is not a state cue.
+        from PySide6.QtWidgets import QHeaderView
+
+        table = page.queue_table
+        table.resize(QUEUE_PANEL_WIDTH, 400)
+        header = table.horizontalHeader()
+        assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.ResizeToContents
+
+        total = sum(table.columnWidth(column) for column in range(table.columnCount()))
+        assert total <= table.viewport().width() + 1, (
+            f"the columns need {total}px in a {table.viewport().width()}px viewport"
+        )
+
     def test_every_row_says_its_state_in_words_and_a_glyph(self, page: ResolvePage):
         # Not by colour alone: the row tint is unreadable to a colour-blind
         # reviewer and gone in a printed screenshot.
@@ -402,6 +424,60 @@ class TestWorkspace:
         assert found.value == "170503"
         assert found.machine_value == "170501"
         assert found.reviewer == REVIEWER
+
+    def test_the_choice_row_never_accumulates_widgets(
+        self, qtbot, page: ResolvePage
+    ):
+        # The defect: the "not a value that can be corrected" note and the
+        # trailing stretch were added on every refresh and removed on none, so
+        # a reviewer walking thirty registration failures ended up with thirty
+        # slivers of wrapped text reading "This is not a" across the panel, and
+        # the value buttons of the next conflict squeezed to nothing.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        first = page.choice_layout.count()
+        for _ in range(5):
+            page._refresh_choices(page.current_conflict())
+        assert page.choice_layout.count() == first
+
+    def test_revisiting_a_sheet_conflict_leaves_one_note(
+        self, qtbot, project_session, template, tmp_path
+    ):
+        from PySide6.QtWidgets import QLabel
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+
+        corrupt = tmp_path / "corrupt.png"
+        corrupt.write_bytes(b"not an image")
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [corrupt], identity=batch_store.BatchIdentity.of(template)
+        )
+        report = process_batch([corrupt], template, workers=1)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[corrupt],
+            result=report.processed[0].result,
+            template=template,
+        )
+        review_page.load_batch(batch_id, template)
+
+        for _ in range(6):
+            review_page.queue_table.clearSelection()
+            review_page.queue_table.selectRow(0)
+
+        notes = [
+            index
+            for index in range(review_page.choice_layout.count())
+            if isinstance(review_page.choice_layout.itemAt(index).widget(), QLabel)
+        ]
+        assert len(notes) == 1
+        review_page.close()
 
     def test_a_sheet_level_conflict_offers_no_value_buttons(
         self, qtbot, project_session, template, tmp_path, prepared
@@ -1368,6 +1444,52 @@ class TestLaneOverlay:
         assert lane_for(report.processed[0].result, template, conflict, None) is None
         assert lanes_of(review_page) == ()
         review_page.close()
+
+
+class TestEmptyViewsExplainThemselves:
+    def test_a_sheet_that_never_registered_says_so_in_the_view(
+        self, qtbot, project_session, template, tmp_path
+    ):
+        # The defect: a registration failure left the Normalised sheet and
+        # Zoomed field tabs as unexplained grey rectangles. There is no
+        # rectified page for such a sheet *by definition* - that is the finding
+        # itself - and a reviewer must be told that rather than left wondering
+        # whether the application is still loading.
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+
+        corrupt = tmp_path / "corrupt.png"
+        corrupt.write_bytes(b"not an image")
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [corrupt], identity=batch_store.BatchIdentity.of(template)
+        )
+        report = process_batch([corrupt], template, workers=1)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[corrupt],
+            result=report.processed[0].result,
+            template=template,
+        )
+        review_page.load_batch(batch_id, template)
+        with qtbot.waitSignal(review_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            review_page.queue_table.selectRow(0)
+
+        for view in (review_page.normalised_view, review_page.zoom_view):
+            assert view.has_page is False
+            assert view._placeholder.text()
+        review_page.close()
+
+    def test_a_placeholder_never_covers_a_page(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.normalised_view.set_placeholder("should not be shown")
+        assert page.normalised_view.has_page is True
+        assert page.normalised_view._placeholder.isVisible() is False
 
 
 class TestLaneRendering:

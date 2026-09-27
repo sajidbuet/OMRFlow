@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTableWidget,
@@ -332,9 +333,33 @@ class ResolvePage(WorkflowPage):
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.queue_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.queue_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.queue_table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch
+        self.queue_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.queue_table.setWordWrap(False)
+        self.queue_table.setHorizontalScrollMode(
+            QAbstractItemView.ScrollMode.ScrollPerPixel
         )
+        # Every column is given a mode, because Qt's default - an equal fixed
+        # width for each - put the five of them past the panel's edge and left
+        # the **State** column off-screen behind a horizontal scrollbar. A
+        # reviewer cannot use a state cue they have to scroll to find.
+        #
+        # Only the two short columns take their own width: the identifier,
+        # which is what a reviewer searches by, and the state, which is the
+        # cue this column exists for. The file name, the field and the
+        # conflict type share what is left and elide - all three are long, all
+        # three repeat down the column, and all three are shown in full in the
+        # workspace the moment a row is selected. Sizing any of them to content
+        # is what pushed the state off the edge.
+        header = self.queue_table.horizontalHeader()
+        for column, mode in (
+            (0, QHeaderView.ResizeMode.Stretch),
+            (1, QHeaderView.ResizeMode.ResizeToContents),
+            (2, QHeaderView.ResizeMode.Stretch),
+            (3, QHeaderView.ResizeMode.Stretch),
+            (4, QHeaderView.ResizeMode.ResizeToContents),
+        ):
+            header.setSectionResizeMode(column, mode)
+        header.setStretchLastSection(False)
         self.queue_table.itemSelectionChanged.connect(self._on_queue_selection_changed)
         layout.addWidget(self.queue_table, stretch=1)
 
@@ -525,7 +550,21 @@ class ResolvePage(WorkflowPage):
         self.evidence_label.setWordWrap(True)
         self.evidence_label.setTextFormat(Qt.TextFormat.RichText)
         self.evidence_label.setAlignment(Qt.AlignmentFlag.AlignTop)
-        evidence_layout.addWidget(self.evidence_label, stretch=1)
+
+        # Scrolled, because this panel's height is fixed by the splitter and
+        # its content is not: a scan-quality finding lists every displaced
+        # region, and a group with per-bubble evidence lists a fill score per
+        # option. Without this the panel simply stopped mid-sentence - the
+        # evidence a reviewer is being asked to decide from, silently cut off.
+        self.evidence_scroll = QScrollArea()
+        self.evidence_scroll.setObjectName("machineEvidenceScroll")
+        self.evidence_scroll.setWidgetResizable(True)
+        self.evidence_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.evidence_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.evidence_scroll.setWidget(self.evidence_label)
+        evidence_layout.addWidget(self.evidence_scroll, stretch=1)
         layout.addWidget(evidence_box, stretch=1)
 
         layout.addWidget(self._build_action_box(), stretch=1)
@@ -1076,10 +1115,18 @@ class ResolvePage(WorkflowPage):
             self.normalised_view.fit_to_window()
             self._focus_zoom_on_conflict()
         else:
-            self.normalised_view.clear()
-            self.zoom_view.clear()
+            # There is no rectified page, which for a registration failure is
+            # not a fault but the finding itself. Say so in the view: an
+            # unexplained grey rectangle is the one thing this stage must never
+            # hand a reviewer, and the original scan - which does exist - is a
+            # tab away.
+            message = _no_rectified_page_message(bundle)
+            for view in (self.normalised_view, self.zoom_view):
+                view.clear()
+                view.set_placeholder(message)
 
         if bundle.original is not None:
+            self.original_view.set_placeholder("")
             self.original_view.set_page(
                 bundle.original,
                 canonical_width=bundle.original.width,
@@ -1092,9 +1139,9 @@ class ResolvePage(WorkflowPage):
             self._describe_original_location(conflict)
         else:
             self.original_view.clear()
-            self.original_note.setText(
-                bundle.error or "The original scan could not be decoded."
-            )
+            reason = bundle.error or "The original scan could not be decoded."
+            self.original_view.set_placeholder(reason)
+            self.original_note.setText(reason)
 
         if bundle.error:
             self.evidence_label.setText(
@@ -1292,10 +1339,25 @@ class ResolvePage(WorkflowPage):
         )
 
     def _clear_choices(self) -> None:
-        """Remove the value buttons."""
-        for button in self._choice_buttons:
-            self.choice_layout.removeWidget(button)
-            button.deleteLater()
+        """Empty the choice row completely, whatever is in it.
+
+        **Every item, not just the buttons.** The row also holds the "this is
+        not a value that can be corrected" note and a trailing stretch, and an
+        earlier version of this method removed neither - so each visit to a
+        sheet-scope conflict appended another copy of the note, and each visit
+        to any conflict appended another spacer. After a reviewer had walked
+        thirty registration failures the decision panel was thirty slivers of
+        wrapped text reading "This is not a", and the value buttons of the next
+        conflict were squeezed to nothing by the accumulated stretches.
+
+        Draining the layout is what makes that impossible to reintroduce: there
+        is no list of widget kinds to remember to extend.
+        """
+        while (item := self.choice_layout.takeAt(0)) is not None:
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
         self._choice_buttons = []
 
     def _refresh_choices(self, conflict: ConflictRecord) -> None:
@@ -1316,9 +1378,9 @@ class ResolvePage(WorkflowPage):
                 "This is not a value that can be corrected. Acknowledge it or "
                 "defer it."
             )
+            note.setObjectName("choiceUnavailableNote")
             note.setWordWrap(True)
-            self.choice_layout.addWidget(note)
-            self._choice_buttons = []
+            self.choice_layout.addWidget(note, stretch=1)
             return
         if self.state.template is None:
             return
@@ -1854,6 +1916,30 @@ class ResolvePage(WorkflowPage):
         """Stop the sheet loader before the page disappears."""
         self.shutdown()
         super().closeEvent(event)  # type: ignore[arg-type]
+
+
+def _no_rectified_page_message(bundle: SheetBundle) -> str:
+    """Say why a sheet has no normalised page to show.
+
+    Three genuinely different situations, and a reviewer decides differently in
+    each: a file that would not decode is a scanning problem, a page that would
+    not register is a geometry problem, and a page that registered but produced
+    no preview is a limitation of how it was read. Collapsing them into "no
+    image" would hide the one thing this stage exists to surface.
+    """
+    if bundle.result is None:
+        return (
+            "This sheet could not be read.\n\n"
+            + (bundle.error or "The file could not be decoded.")
+        )
+    if not bundle.registered:
+        return (
+            "This sheet has no normalised page, because it could not be "
+            "aligned to the template.\n\n"
+            "That is the conflict, not a display problem. Use the "
+            "Original scan tab to see the page as it arrived."
+        )
+    return "No preview was produced for this sheet."
 
 
 def _reason_or_other(stored: str) -> ReasonCode:
