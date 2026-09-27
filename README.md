@@ -326,7 +326,7 @@ batch, three of them older than this pass and one introduced by it:
 | The Normalised sheet and Zoomed field tabs were unexplained grey rectangles for a sheet that failed registration | Such a sheet has no rectified page *by definition* — that is the finding — but nothing said so | `ScanPreviewView.set_placeholder`, with a message naming which of the three situations it is: undecodable file, unalignable page, or no preview produced |
 | The evidence panel stopped mid-sentence | Its height is fixed by the splitter; its content is not | The evidence is scrolled |
 
-**Testing.** 51 new Resolve-stage GUI tests and 28 new review-store tests, all
+**Testing.** 52 new Resolve-stage GUI tests and 28 new review-store tests, all
 run, alongside the 39 existing GUI tests and 53 existing store tests. Assertions
 are against **what ended up in the database** — an undo that only repainted the
 screen would pass a test that read back the label. Two behavioural defects the
