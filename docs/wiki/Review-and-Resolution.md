@@ -44,39 +44,67 @@ controls.
 
 Under **Your decision**:
 
-| Button | Use it when |
-|---|---|
-| **Accept machine value** | Recognition was right after all |
-| a **value button** | You are choosing one of the symbols this sheet prints |
-| **Save value** | You are typing the correct value yourself |
-| **Defer** | You want to come back to it — it stays in the queue |
-| **Reopen** | Re-opens something already decided |
+1. **Pick** the value — a value button, its number key, `B` for blank, or type
+   it in for a whole identifier. Nothing is saved yet: the ring lands on the
+   bubble you chose so you can see it landed where you meant.
+2. Choose a **reason**.
+3. **Confirm** — or press `Enter`. The button tells you what it will record:
 
-A **reason** must be chosen. The panel then states all three values, so there
-is never any doubt about which one is in force:
+| Button | Meaning |
+|---|---|
+| **Confirm '5'** | Record the value you picked |
+| **Confirm machine reading** | Recognition was right; record that you checked |
+| **Choose a value first** *(greyed)* | The machine read two marks, which is not one value this position can hold — see below |
+| **Defer** | Come back to it; it stays in the queue |
+| **Reopen** | Appears once something has been decided |
+| **Save value** | For a whole identifier you typed yourself |
+
+The strip beneath states all three values, and says **Pending** until you
+confirm, so a pick is never shown as if it had been saved:
 
 ```text
-Machine result:   (blank)
-Manual decision:  1
-Effective result: 1
+MACHINE      MANUAL      EFFECTIVE
+1-7          1           Pending
 ```
 
 **History…** shows every decision recorded against the sheet.
 
+### When the machine's reading is not offered
+
+If recognition found **two marks** in one position — `0-5` — that is not a
+value a single digit can hold. Recording it would put `0-5` into the student
+ID and produce a number no candidate list will match. So the confirm button is
+greyed and says *Choose a value first*: pick one of the values, pick **Blank**,
+or **Defer**.
+
 ## Reading the preview
 
-| Outline | Meaning |
+**Amber means the machine read it. Red means a person decided it.** That is
+true of the sheet and of the value buttons alike.
+
+| On the sheet | Meaning |
 |---|---|
-| **Amber, dashed**, around a whole 0–9 bubble column | this printed position is waiting for you |
-| **Red, solid**, around the same column | you supplied or overrode the value here |
-| **Heavy red ring** on one bubble | the value you chose |
+| **Amber dashed outline** around a whole 0–9 column | this position is waiting for you |
+| **Amber dashed ring** on a bubble | recognition read this mark |
+| **Red dashed outline** + heavy red ring | you have picked this — not saved yet |
+| **Red solid outline** + heavy red ring | saved |
 | **`BLANK`** beside a red outline | you decided the position carries no mark |
+
+| On the buttons | Meaning |
+|---|---|
+| **Amber** | recognition read this symbol |
+| **Red** | the value you have picked |
 
 The outline is the **printed position**, not one bubble: a roll number column
 is a stack of ten, and the question is "what is in this column". Every doubtful
 position on the sheet is outlined, with the one you are deciding drawn more
 heavily — so you can see how much of the identifier is in question before
 deciding any of it.
+
+The zoomed view frames the disputed column **together with its neighbours**, so
+you can compare an uncertain mark against the ones the same candidate made with
+the same pencil. Zoom or pan takes the view over; **Re-centre** frames it
+again.
 
 Red means *a person decided this*, not *this is wrong*. The outline is drawn on
 the preview only; your scan file is never modified.
@@ -85,9 +113,9 @@ the preview only; your scan file is never modified.
 
 | Key | Action |
 |---|---|
-| `0`–`9` | Choose the value that digit prints |
-| `B` | Choose blank |
-| `Enter` | Accept the machine value |
+| `0`–`9` | **Pick** the value that digit prints |
+| `B` | Pick blank |
+| `Enter` | **Confirm** — records what the strip says |
 | `D` | Defer |
 | ← / → | Previous / next conflict |
 | `Shift+Enter` / `Ctrl+Enter` | Previous / next **unresolved** conflict |

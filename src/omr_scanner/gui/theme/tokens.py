@@ -153,6 +153,20 @@ class Color:
 
     WINDOW_CLOSE_HOVER_GLYPH: Final = "#FFFFFF"
 
+    ATTENTION: Final = "#E69100"
+    """Amber: something the machine could not settle and a person must.
+
+    One token for both the Resolve stage's lane outlines and the value buttons
+    of the symbols the engine actually read, so the overlay on the sheet and
+    the control beside it cannot drift apart. Never used on its own to carry
+    meaning - every place it appears also says the same thing in words or in
+    line style."""
+
+    ATTENTION_SOFT: Final = "#FFF6E2"
+    """A pale wash of :data:`ATTENTION`, light enough for charcoal text."""
+
+    ATTENTION_HOVER: Final = "#FFEFCC"
+
     DESTRUCTIVE: Final = "#B3261E"
     """For a genuinely destructive confirmation, distinguished from
     :data:`PRIMARY` so that "delete" and "proceed" are not the same colour."""

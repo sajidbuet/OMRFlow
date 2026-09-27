@@ -52,6 +52,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QResizeEvent,
+    QShowEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
@@ -154,11 +155,12 @@ DETECTED_MARKER_FAR_COLOR = QColor(200, 30, 40)
 """Red: the detected marker landed a noticeable distance from where it was
 expected, which is worth a look even though registration itself succeeded."""
 
-LANE_UNRESOLVED_COLOR = QColor(230, 145, 0)
+LANE_UNRESOLVED_COLOR = QColor(Color.ATTENTION)
 """Amber: this response position is waiting for a person to decide it.
 
-The same amber an uncertain group already wears, so the two readings of "the
-machine could not settle this" do not need two colours between them."""
+From the design system, so that the outline on the sheet and the value buttons
+for the symbols the engine read are the same amber by construction rather than
+by two people having typed the same hex twice."""
 
 LANE_MANUAL_COLOR = QColor(Color.PRIMARY)
 """The application accent, red: a person supplied or overrode this value.
@@ -195,9 +197,39 @@ template outline on the page on purpose: the whole point of the manual overlay
 is that "which value did they pick" is answerable by looking, not by reading
 the decision panel."""
 
+LANE_MACHINE_RING_PX = 2.0
+"""The ring drawn round a bubble the *engine* read as marked.
+
+Deliberately lighter than :data:`LANE_CHOICE_RING_PX` and dashed rather than
+solid. Both facts are on the page at once for a disputed position - what the
+machine read, and what the person decided - and the heavier, solid, accented
+one has to be the person's, because that is the value the script will carry."""
+
 LANE_CHOICE_RING_RATIO = 0.72
 """How much larger than the printed bubble the choice ring is drawn, so it
 reads as an annotation around the mark rather than as another bubble."""
+
+NEUTRAL_OUTLINE = Color.BORDER_STRONG
+"""The colour zones and bubbles wear when status colouring is turned off.
+
+The Scan page colours every zone and bubble by what recognition made of it -
+green for resolved, red for a multiple, amber for uncertain - which is exactly
+right when the question is *what happened to this sheet*. On the Resolve stage
+it is not: there, red means "a person decided this" and amber means "the
+machine read this mark", and a zone outlined red because its status is
+``multiple`` puts a third meaning on the same colour in the same rectangle.
+
+Turning the status palette off leaves the geometry visible - a reviewer still
+sees the field boundary and every printed bubble - while the only coloured
+things on the page are the two the decision is about."""
+
+FOCUS_MARGIN_RATIO = 0.22
+"""Breathing room around a framed region, as a fraction of its longest side.
+
+Enough that the reviewer sees what the disputed position is *next to* - a
+roll-number column is judged against its neighbours, not in isolation - and
+little enough that the bubbles stay large. Proportional rather than a pixel
+constant for the same reason as :data:`LANE_PADDING_RATIO`."""
 
 LANE_TINT_ALPHA = 28
 """Alpha of a lane's translucent fill. Faint on purpose - the reviewer is
@@ -224,8 +256,38 @@ class LaneState(StrEnum):
     UNRESOLVED = "unresolved"
     """Nobody has decided this position yet."""
 
+    PENDING = "pending"
+    """A reviewer has picked a value but has not committed it.
+
+    Drawn in the manual colour so the preview answers "what did I just choose",
+    and in the *unresolved* line style so it cannot be mistaken for a decision
+    that has been recorded. Nothing has been written to the ledger while a lane
+    is in this state."""
+
     MANUAL = "manual"
-    """A named reviewer supplied or overrode the value here."""
+    """A named reviewer supplied or overrode the value here, and it is stored."""
+
+    @property
+    def is_manual(self) -> bool:
+        """Whether a person, rather than the machine, decided this value."""
+        return self in (LaneState.PENDING, LaneState.MANUAL)
+
+
+@dataclass(frozen=True, slots=True)
+class LaneMark:
+    """One bubble called out inside a lane, in canonical pixels.
+
+    Attributes:
+        x / y: The bubble's measured centre.
+        width / height: Its printed size.
+        label: The symbol it stands for, for an accessible description.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+    label: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,14 +307,18 @@ class FieldLane:
             including :data:`LANE_PADDING_RATIO` clearance. Derived from the
             bubbles recognition measured, which are the template's own geometry
             projected onto the page - never a pixel constant.
-        state: Unresolved, or decided by a person.
+        state: Unresolved, chosen but not committed, or decided by a person.
         active: Whether this is the conflict currently being reviewed. Drawn
             more heavily; the others stay visible so that a field with three
             doubtful positions shows three.
-        choice_x / choice_y / choice_width / choice_height: The bubble a
-            reviewer chose, when they chose one. Ringed inside the lane, so the
-            preview answers both "which position was edited" and "what value
-            was put there".
+        machine_marks: The bubbles the engine actually read as marked in this
+            group. Ringed in the unresolved colour, so a reviewer can see *what
+            the machine saw* on the paper rather than only being told about it
+            in a panel - and so a double mark shows as two rings rather than as
+            the string ``"0-5"``.
+        choice: The bubble a reviewer chose, when they chose one. Ringed more
+            heavily and in the manual colour, so the preview answers both
+            "which position was edited" and "what value was put there".
         note: A short caption drawn beside the lane - ``"BLANK"`` for a
             reviewer who decided the position carries no mark, or the value
             itself where no single bubble stands for it (a whole identifier
@@ -266,16 +332,14 @@ class FieldLane:
     height: float
     state: LaneState = LaneState.UNRESOLVED
     active: bool = False
-    choice_x: float = 0.0
-    choice_y: float = 0.0
-    choice_width: float = 0.0
-    choice_height: float = 0.0
+    machine_marks: tuple[LaneMark, ...] = ()
+    choice: LaneMark | None = None
     note: str = ""
 
     @property
     def has_choice(self) -> bool:
         """Whether a specific bubble inside this lane was chosen."""
-        return self.choice_width > 0.0 and self.choice_height > 0.0
+        return self.choice is not None
 
 
 class OverlayItem(QGraphicsItem):
@@ -307,6 +371,7 @@ class OverlayItem(QGraphicsItem):
         self.show_centers = False
         self.show_scan_quality = True
         self.show_status_symbols = True
+        self.show_status_colors = True
         self.show_lanes = True
         self.setZValue(10)
 
@@ -407,15 +472,34 @@ class OverlayItem(QGraphicsItem):
             self._paint_lane(painter, lane)
 
     def _paint_lane(self, painter: QPainter, lane: FieldLane) -> None:
-        """Draw one lane: its outline, its tint, its choice and its caption."""
-        manual = lane.state is LaneState.MANUAL
+        """Draw one lane: its outline, its tint, what was read, what was chosen.
+
+        Three things are said, and each is said twice - once in colour and once
+        in line style - so none of them depends on a reviewer distinguishing
+        amber from red:
+
+        ====================== ============== ================================
+        what                   colour         style
+        ====================== ============== ================================
+        position needs a human amber          dashed lane outline
+        machine read this mark amber          medium dashed ring on the bubble
+        the operator chose it  accent red     heavy solid ring on the bubble
+        chosen, not yet saved  accent red     dashed lane outline
+        ====================== ============== ================================
+        """
+        manual = lane.state.is_manual
         colour = QColor(LANE_MANUAL_COLOR if manual else LANE_UNRESOLVED_COLOR)
         pen = QPen(colour, LANE_ACTIVE_BORDER_PX if lane.active else LANE_BORDER_PX)
         pen.setCosmetic(True)
-        # Solid for a decision, dashed for a question still open. The state is
-        # therefore legible without colour at all, which is what makes the
-        # overlay usable for a colour-blind reviewer and in a grey printout.
-        pen.setStyle(Qt.PenStyle.SolidLine if manual else Qt.PenStyle.DashLine)
+        # Solid only for a decision that has been **recorded**. A pending
+        # choice is drawn in the manual colour but the unresolved line style,
+        # so the preview can show what the reviewer has picked without claiming
+        # it has been saved.
+        pen.setStyle(
+            Qt.PenStyle.SolidLine
+            if lane.state is LaneState.MANUAL
+            else Qt.PenStyle.DashLine
+        )
         painter.setPen(pen)
 
         tint = QColor(colour)
@@ -424,28 +508,58 @@ class OverlayItem(QGraphicsItem):
         painter.drawRect(QRectF(lane.x, lane.y, lane.width, lane.height))
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
-        if lane.has_choice:
-            self._paint_lane_choice(painter, lane, colour)
+        for mark in lane.machine_marks:
+            self._paint_lane_mark(
+                painter,
+                mark,
+                QColor(LANE_UNRESOLVED_COLOR),
+                width=LANE_MACHINE_RING_PX,
+                style=Qt.PenStyle.DashLine,
+            )
+        if lane.choice is not None:
+            self._paint_lane_mark(
+                painter,
+                lane.choice,
+                colour,
+                width=LANE_CHOICE_RING_PX,
+                style=Qt.PenStyle.SolidLine,
+                fill=True,
+            )
         if lane.note:
             self._paint_lane_note(painter, lane, colour)
 
     @staticmethod
-    def _paint_lane_choice(painter: QPainter, lane: FieldLane, colour: QColor) -> None:
-        """Ring the bubble a reviewer chose, inside its lane."""
-        grow_x = lane.choice_width * LANE_CHOICE_RING_RATIO / 2.0
-        grow_y = lane.choice_height * LANE_CHOICE_RING_RATIO / 2.0
-        ring = QPen(colour, LANE_CHOICE_RING_PX)
-        ring.setCosmetic(True)
-        painter.setPen(ring)
-        fill = QColor(colour)
-        fill.setAlpha(LANE_TINT_ALPHA * 2)
-        painter.setBrush(QBrush(fill))
+    def _paint_lane_mark(
+        painter: QPainter,
+        mark: LaneMark,
+        colour: QColor,
+        *,
+        width: float,
+        style: Qt.PenStyle,
+        fill: bool = False,
+    ) -> None:
+        """Ring one bubble, larger than the bubble itself.
+
+        Larger on purpose: the ring has to read as an annotation *about* the
+        mark rather than as another printed bubble, and it must not cover the
+        graphite the reviewer is judging.
+        """
+        grow_x = mark.width * LANE_CHOICE_RING_RATIO / 2.0
+        grow_y = mark.height * LANE_CHOICE_RING_RATIO / 2.0
+        pen = QPen(colour, width)
+        pen.setCosmetic(True)
+        pen.setStyle(style)
+        painter.setPen(pen)
+        if fill:
+            tint = QColor(colour)
+            tint.setAlpha(LANE_TINT_ALPHA * 2)
+            painter.setBrush(QBrush(tint))
         painter.drawEllipse(
             QRectF(
-                lane.choice_x - lane.choice_width / 2.0 - grow_x,
-                lane.choice_y - lane.choice_height / 2.0 - grow_y,
-                lane.choice_width + grow_x * 2.0,
-                lane.choice_height + grow_y * 2.0,
+                mark.x - mark.width / 2.0 - grow_x,
+                mark.y - mark.height / 2.0 - grow_y,
+                mark.width + grow_x * 2.0,
+                mark.height + grow_y * 2.0,
             )
         )
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -491,8 +605,10 @@ class OverlayItem(QGraphicsItem):
     def _paint_zones(self, painter: QPainter) -> None:
         """Outline each zone in its template colour, tinted by its status."""
         for zone in self._zones:
-            status_color = _STATUS_COLORS.get(zone.status)
-            base = QColor(zone.color)
+            status_color = (
+                _STATUS_COLORS.get(zone.status) if self.show_status_colors else None
+            )
+            base = QColor(zone.color if self.show_status_colors else NEUTRAL_OUTLINE)
             pen = QPen(status_color if status_color is not None else base, 3.0)
             pen.setStyle(Qt.PenStyle.DashLine)
             painter.setPen(pen)
@@ -515,7 +631,11 @@ class OverlayItem(QGraphicsItem):
             if not interesting and not self.show_empty_bubbles:
                 continue
 
-            color = _STATUS_COLORS.get(bubble.group_status, EMPTY_COLOR)
+            color = (
+                _STATUS_COLORS.get(bubble.group_status, EMPTY_COLOR)
+                if self.show_status_colors
+                else QColor(NEUTRAL_OUTLINE)
+            )
             rect = QRectF(
                 bubble.x - bubble.width / 2.0,
                 bubble.y - bubble.height / 2.0,
@@ -671,6 +791,7 @@ class ScanPreviewView(QGraphicsView):
         self._scene.addItem(self._overlay)
         self._page_size = (0, 0)
         self._zoom = 1.0
+        self._focus_rect: QRectF | None = None
 
         self._pan_active = False
         self._pan_last: QPoint | None = None
@@ -784,6 +905,7 @@ class ScanPreviewView(QGraphicsView):
         centers: bool = False,
         scan_quality: bool = True,
         status_symbols: bool = True,
+        status_colors: bool = True,
         lanes: bool = True,
     ) -> None:
         """Choose which overlay layers are drawn.
@@ -802,6 +924,7 @@ class ScanPreviewView(QGraphicsView):
         self._overlay.show_centers = centers
         self._overlay.show_scan_quality = scan_quality
         self._overlay.show_status_symbols = status_symbols
+        self._overlay.show_status_colors = status_colors
         self._overlay.show_lanes = lanes
         self._overlay.update()
 
@@ -825,9 +948,21 @@ class ScanPreviewView(QGraphicsView):
         self._placeholder.setVisible(bool(self._placeholder.text()) and not self.has_page)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """Keep the placeholder centred on the viewport."""
+        """Keep the placeholder centred and the framed region framed."""
         super().resizeEvent(event)
         self._update_placeholder()
+        self._apply_focus()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """Re-frame on becoming visible.
+
+        A view on a tab that has never been shown has no meaningful viewport
+        size, so the framing computed while it was hidden was arithmetic
+        against a placeholder rectangle. This is where it becomes real.
+        """
+        super().showEvent(event)
+        self._update_placeholder()
+        self._apply_focus()
 
     @property
     def has_page(self) -> bool:
@@ -844,28 +979,36 @@ class ScanPreviewView(QGraphicsView):
 
     def zoom_in(self) -> None:
         """Zoom in one step."""
+        self.clear_focus()
         self._apply_zoom(self._zoom * ZOOM_STEP)
 
     def zoom_out(self) -> None:
         """Zoom out one step."""
+        self.clear_focus()
         self._apply_zoom(self._zoom / ZOOM_STEP)
 
     def zoom_to_actual_size(self) -> None:
         """Show the page at 100 per cent."""
+        self.clear_focus()
         self._apply_zoom(1.0)
 
     def set_zoom(self, factor: float) -> None:
         """Zoom to ``factor``, clamped to the view's own limits.
 
         The public form of an absolute zoom, for a caller that has computed the
-        magnification it wants - the conflict review workspace fitting one
-        disputed group to the viewport, for instance. Clamping happens here, so
-        a caller never has to know :data:`MIN_ZOOM` and :data:`MAX_ZOOM`.
+        magnification it wants. Clamping happens here, so a caller never has to
+        know :data:`MIN_ZOOM` and :data:`MAX_ZOOM`.
         """
+        self.clear_focus()
         self._apply_zoom(factor)
 
     def fit_to_window(self) -> None:
         """Zoom so the whole page fits the viewport."""
+        self.clear_focus()
+        self._fit_page()
+
+    def _fit_page(self) -> None:
+        """Fit the whole page without disturbing the focus rectangle."""
         width, height = self._page_size
         if width <= 0 or height <= 0:
             return
@@ -873,6 +1016,95 @@ class ScanPreviewView(QGraphicsView):
         factor = min(viewport.width() / width, viewport.height() / height)
         self._apply_zoom(max(MIN_ZOOM, min(MAX_ZOOM, factor)))
         self.centerOn(width / 2.0, height / 2.0)
+
+    # ------------------------------------------------------------------
+    # Framing one region
+    # ------------------------------------------------------------------
+    def focus_on(self, rect: QRectF, *, margin_ratio: float = FOCUS_MARGIN_RATIO) -> None:
+        """Frame one region of the page, and keep it framed.
+
+        Args:
+            rect: The region of interest, in canonical page pixels.
+            margin_ratio: Breathing room around it, as a fraction of its
+                longest side.
+
+        **Sticky, which is the point.** An earlier version computed the
+        magnification once, at the moment the sheet finished loading - before
+        the tab had been shown and therefore before the viewport had its real
+        size. The arithmetic was correct and the result was a small image
+        pinned to a corner of a large empty canvas. The rectangle is now
+        remembered and re-fitted whenever the view is shown or resized, so the
+        framing is computed against the viewport the reviewer is actually
+        looking at.
+
+        Any manual zoom or pan clears it: once a reviewer has moved the view,
+        it is theirs, and a resize must not snatch it back.
+        """
+        if rect.isEmpty() or not self.has_page:
+            self._focus_rect = None
+            self._fit_page()
+            return
+        # Per axis, not a single margin from the longest side: a roll-number
+        # column is four times as tall as it is wide, and one margin would
+        # double its width while barely touching its height.
+        self._focus_rect = rect.adjusted(
+            -rect.width() * margin_ratio,
+            -rect.height() * margin_ratio,
+            rect.width() * margin_ratio,
+            rect.height() * margin_ratio,
+        )
+        self._apply_focus()
+
+    def clear_focus(self) -> None:
+        """Stop re-framing a region; the view keeps whatever it shows now."""
+        self._focus_rect = None
+
+    @property
+    def focus_rect(self) -> QRectF | None:
+        """The region being kept in frame, or ``None``."""
+        return self._focus_rect
+
+    def _apply_focus(self) -> None:
+        """Fit the remembered region to the viewport, centred and filling it."""
+        rect = self._focus_rect
+        if rect is None or not self.has_page:
+            return
+        viewport = self.viewport().size()
+        if viewport.width() <= 0 or viewport.height() <= 0:
+            return
+        shown = self._widened_to_viewport(rect, viewport.width(), viewport.height())
+        factor = min(
+            viewport.width() / max(shown.width(), 1.0),
+            viewport.height() / max(shown.height(), 1.0),
+        )
+        self._apply_zoom(factor)
+        self.centerOn(shown.center())
+
+    @staticmethod
+    def _widened_to_viewport(
+        rect: QRectF, view_width: int, view_height: int
+    ) -> QRectF:
+        """Grow ``rect`` to the viewport's shape, without ever shrinking it.
+
+        The reason the zoomed field used to sit in a sea of empty canvas. A
+        roll-number position is a tall, narrow region; the pane it is shown in
+        is wide and short. Fitting one inside the other preserving aspect - the
+        obvious thing, and what the previous code did - fills the height and
+        leaves two thirds of the width blank.
+
+        Growing the region to the pane's proportions first means the same
+        magnification is reached and the spare width is spent on *more of the
+        sheet*: the neighbouring columns a reviewer compares against. The
+        region is only ever enlarged, so nothing that had to be visible stops
+        being visible.
+        """
+        wanted = view_width / max(view_height, 1)
+        have = rect.width() / max(rect.height(), 1.0)
+        if have < wanted:
+            grow = rect.height() * wanted - rect.width()
+            return rect.adjusted(-grow / 2.0, 0.0, grow / 2.0, 0.0)
+        grow = rect.width() / wanted - rect.height()
+        return rect.adjusted(0.0, -grow / 2.0, 0.0, grow / 2.0)
 
     def _apply_zoom(self, factor: float) -> None:
         factor = max(MIN_ZOOM, min(MAX_ZOOM, factor))
@@ -983,6 +1215,7 @@ __all__ = [
     "DETECTED_MARKER_FAR_COLOR",
     "EMPTY_COLOR",
     "EXPECTED_MARKER_COLOR",
+    "FOCUS_MARGIN_RATIO",
     "LANE_MANUAL_COLOR",
     "LANE_PADDING_RATIO",
     "LANE_UNRESOLVED_COLOR",
@@ -993,6 +1226,7 @@ __all__ = [
     "UNCERTAIN_COLOR",
     "UNREADABLE_COLOR",
     "FieldLane",
+    "LaneMark",
     "LaneState",
     "OverlayItem",
     "ScanPreviewView",

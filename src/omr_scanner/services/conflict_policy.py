@@ -75,7 +75,11 @@ from omr_scanner.domain.template import (
     QuestionBlockFieldDefinition,
 )
 from omr_scanner.recognition.fields import zone_groups
-from omr_scanner.recognition.models import FieldStatus, MarkStatus
+from omr_scanner.recognition.models import (
+    MULTIPLE_MARK_SEPARATOR,
+    FieldStatus,
+    MarkStatus,
+)
 from omr_scanner.services.recognition_models import RegistrationStatus, StatusCode
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -239,6 +243,30 @@ def group_labels(template: OmrTemplate, zone_id: str, group_key: int) -> tuple[s
         if group.key == group_key:
             return group.labels
     return ()
+
+
+def split_marks(value: str) -> tuple[str, ...]:
+    """Return the individual symbols one group's value string carries.
+
+    Args:
+        value: A group value as recognition writes it - ``""``, ``"B"``, or
+            ``"B-D"`` for a group carrying two marks.
+
+    Returns:
+        The symbols, in the order the engine listed them. ``()`` for a blank.
+
+    Exists so that a reviewer can be shown *"Detected: 0 and 5"* instead of
+    ``0-5``, without the interface inventing its own idea of how a multiple
+    mark is written down.
+    :data:`~omr_scanner.recognition.models.MULTIPLE_MARK_SEPARATOR` is the one
+    definition, and it lives with the code that produces the string.
+
+    Presentation only. The stored value is never rewritten - ``"0-5"`` remains
+    what the machine read, and stays that way in the ledger and the export.
+    """
+    if not value:
+        return ()
+    return tuple(part for part in value.split(MULTIPLE_MARK_SEPARATOR) if part)
 
 
 def group_cells(
@@ -645,4 +673,5 @@ __all__ = [
     "detect_duplicate_identifiers",
     "group_cells",
     "group_labels",
+    "split_marks",
 ]

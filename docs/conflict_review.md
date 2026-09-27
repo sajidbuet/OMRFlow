@@ -193,22 +193,51 @@ and there is exactly one place where "how sure is sure enough" is configured.
    and - when per-bubble evidence is available - every option's measured
    **fill score**. These are coverage measurements, not probabilities, and are
    labelled as such.
-6. Decide:
-   - **Accept machine value** - you inspected it and the machine was right.
-   - a **value button**, the matching **number key**, or the free-text box for
-     a whole identifier - a correction.
-   - **Defer** - postpone it.
-   - **Reopen** - change a decision already made.
-7. Give a **reason**. Accepting records *"Machine result visually confirmed"*
-   automatically; a correction asks you to pick one, and "Other" requires an
-   explanation.
-8. The panel states all three values, always:
+6. **Pick** a value - a value button, its number key, `B` for blank, or the
+   free-text box for a whole identifier. Picking does not record anything: the
+   ring lands on the bubble you chose and the comparison strip fills in, so you
+   can see that it landed where you meant before it becomes the value.
+7. Give a **reason**. Confirming the machine's reading records *"Machine result
+   visually confirmed"* automatically; a correction asks you to pick one, and
+   "Other" requires an explanation.
+8. **Confirm** (or `Enter`) records it. The button says which of three things
+   it will do:
+
+   | Button | When |
+   | --- | --- |
+   | **Confirm '5'** | you have picked a value |
+   | **Confirm machine reading** | the machine's reading is a value this field can hold, and you have inspected it and agree |
+   | **Choose a value first** (disabled) | the machine's reading is not one value this position can hold - see below |
+
+   **Defer** postpones it; **Reopen** appears once something has been decided.
+9. The comparison strip states all three values, always, and says **Pending**
+   for a pick that has not been committed:
 
    ```text
-   Machine result:   (blank)
-   Manual decision:  1
-   Effective result: 1
+   MACHINE      MANUAL      EFFECTIVE
+   1-7          1           Pending
    ```
+
+### Why the machine's reading is not always offered
+
+A roll-number position the engine read as `0-5` carries **two marks**. That is
+not a value one printed digit can hold, and recording it as the human-decided
+value of that position substitutes `0-5` into the identifier - producing a
+candidate ID no roster will ever match, from a button that said the machine was
+right.
+
+So the interface does not offer it. The primary action is disabled, says
+*Choose a value first*, and its tooltip explains that the normal resolution is
+to choose one value, choose blank, or defer.
+
+**Nothing in the backend changed.** `accept_machine_value` can still store any
+reading, and a project that recorded one before this build is unaffected. What
+changed is that the *interface* no longer presents an ambiguous reading as a
+resolution. A reading is offered for confirmation when it is one of the symbols
+the template prints for that group, or a blank - confirming "this position
+really is empty" is a legitimate decision - or where the group has no fixed
+alphabet at all, as for a duplicate student ID, whose value is a whole
+identifier and is perfectly legible.
 
 9. **History...** shows the complete provenance at any time.
 10. With **auto-advance** on (the toolbar's tick, remembered in your own
@@ -217,14 +246,28 @@ and there is exactly one place where "how sure is sure enough" is configured.
 
 ### What the preview shows
 
-The overlay answers two questions by inspection:
+On this stage **amber means "the machine read this"** and **red means "a person
+decided this"** - on the sheet and on the value buttons alike. The recognition
+status palette the Scan page uses is turned off here, so a zone outlined red
+because its status is `multiple` cannot put a third meaning on the same colour
+inside the same rectangle. Every distinction is carried by line weight or style
+as well, so none of it depends on telling amber from red.
 
 | Outline | Meaning |
 | --- | --- |
 | **Amber, dashed**, round the whole 0-9 bubble stack | this printed position is waiting for a decision |
+| **Amber, dashed ring** on a bubble | the engine read this mark on the paper |
+| **Red, dashed** lane + heavy solid red ring | a value has been picked and **not yet recorded** |
 | **Red, solid**, round the same stack | a person supplied or overrode the value here |
 | **Heavy red ring** on one bubble inside a red lane | the value they chose |
 | **`BLANK`** caption beside a red lane | they decided the position carries no mark |
+
+The zoomed field frames the disputed position **with its neighbouring printed
+positions**, because a faint mark is judged against the columns beside it -
+filled by the same candidate, in the same pencil. The region is grown to the
+pane's proportions before it is fitted, so a wide pane showing a tall column
+spends its spare width on more of the sheet rather than on blank canvas. Any
+manual zoom or pan takes the framing over; **Re-centre** hands it back.
 
 The rectangle is the **printed position**, not a bubble: a roll-number column
 is a stack of ten, and the question a reviewer is answering is "what is in this
@@ -253,9 +296,9 @@ The stage is usable without the mouse, because a sitting is hundreds of sheets.
 
 | Key | Action |
 | --- | --- |
-| `0`-`9` | Choose the value that digit prints |
-| `B` | Choose blank |
-| `Enter` | Accept the machine value |
+| `0`-`9` | **Pick** the value that digit prints |
+| `B` | Pick blank |
+| `Enter` | **Confirm** what the strip says the effective value would be |
 | `D` | Defer |
 | Left / Right | Previous / next conflict |
 | `Shift+Enter` | Previous unresolved conflict |
@@ -267,7 +310,8 @@ The stage is usable without the mouse, because a sitting is hundreds of sheets.
 A key and its button are the same command: the digit keys call exactly what the
 value buttons call, so a typed correction carries the same reviewer, the same
 reason and the same audit event as a clicked one. There is no separate keyboard
-state to drift.
+state to drift. A pick is discarded whenever the selected conflict changes, so
+it can never follow you onto another sheet.
 
 Two things keep that from being the accidental destructive edit this stage
 exists to prevent:

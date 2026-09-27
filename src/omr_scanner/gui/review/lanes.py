@@ -44,7 +44,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from omr_scanner.domain.review import ConflictState, FieldKind, ValueSource
-from omr_scanner.gui.scan.preview import LANE_PADDING_RATIO, FieldLane, LaneState
+from omr_scanner.gui.scan.preview import (
+    LANE_PADDING_RATIO,
+    FieldLane,
+    LaneMark,
+    LaneState,
+)
 from omr_scanner.services import group_cells
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -108,6 +113,94 @@ def _zone_for_kind(result: ScanResult, kind: FieldKind) -> str:
     return ""
 
 
+NEIGHBOURING_GROUPS = 2
+"""How many printed positions either side of the disputed one to keep in view.
+
+A reviewer does not read an ambiguous roll-number column on its own; they read
+it against the columns beside it, which the same candidate filled in the same
+hand with the same pencil. Framing the disputed column alone removes the only
+comparison available and makes a faint mark much harder to call.
+
+Two rather than one because a position at the edge of a field then still has
+two neighbours on the side that has them."""
+
+
+def context_bubbles(
+    result: ScanResult,
+    template: OmrTemplate,
+    conflict: ConflictRecord,
+    *,
+    neighbours: int = NEIGHBOURING_GROUPS,
+) -> tuple[BubbleView, ...]:
+    """Return the bubbles the zoomed view should frame for one conflict.
+
+    Args:
+        result: The fresh reading of the sheet.
+        template: The template it was read with.
+        conflict: The conflict being reviewed.
+        neighbours: How many printed positions either side to include.
+
+    Returns:
+        The disputed group's bubbles plus its neighbours', or ``()`` when the
+        conflict names no place on the paper.
+
+    Deliberately wider than :func:`group_bubbles`, which is what gets
+    *highlighted*. The highlight says "this position"; the framing says "and
+    here is what it sits next to". Asking the template for the neighbouring
+    groups rather than growing a rectangle by a guessed number of pixels means
+    the context is a whole number of printed columns on any sheet design.
+
+    A whole-field conflict already spans its field, so it gets no extra.
+    """
+    own = group_bubbles(result, template, conflict)
+    if not own or conflict.field.is_whole_field or neighbours <= 0:
+        return own
+
+    zone_id = conflict.field.zone_id or _zone_for_kind(result, conflict.field.kind)
+    wanted: set[tuple[int, int]] = set()
+    for offset in range(-neighbours, neighbours + 1):
+        key = conflict.field.group_key + offset
+        if key < 0:
+            continue
+        wanted.update(group_cells(template, zone_id, key))
+    if not wanted:
+        return own
+    return tuple(
+        item
+        for item in result.bubbles
+        if item.zone_id == zone_id and (item.row, item.column) in wanted
+    )
+
+
+def bounds_of(bubbles: Sequence[BubbleView]) -> tuple[float, float, float, float]:
+    """Return ``(left, top, right, bottom)`` of a set of bubbles."""
+    return (
+        min(item.x - item.width / 2.0 for item in bubbles),
+        min(item.y - item.height / 2.0 for item in bubbles),
+        max(item.x + item.width / 2.0 for item in bubbles),
+        max(item.y + item.height / 2.0 for item in bubbles),
+    )
+
+
+def _machine_marks(bubbles: Sequence[BubbleView]) -> tuple[LaneMark, ...]:
+    """Return the bubbles the engine read as marked in one group.
+
+    Falls back to the group's darkest bubble when the engine selected none, so
+    a position rejected as too faint still shows the reviewer *what* was nearly
+    accepted. That is the whole question for an uncertain mark, and a lane with
+    nothing ringed inside it would leave them hunting for it.
+    """
+    selected = [item for item in bubbles if item.selected]
+    if not selected:
+        selected = [item for item in bubbles if item.leading]
+    return tuple(
+        LaneMark(
+            x=item.x, y=item.y, width=item.width, height=item.height, label=item.label
+        )
+        for item in selected
+    )
+
+
 def lane_for(
     result: ScanResult,
     template: OmrTemplate,
@@ -115,6 +208,7 @@ def lane_for(
     found: Provenance | None,
     *,
     active: bool = False,
+    pending: str | None = None,
 ) -> FieldLane | None:
     """Return the rectangle one conflict occupies, or ``None``.
 
@@ -127,6 +221,9 @@ def lane_for(
             never the conflict's cached state, which says a person acted but
             not what they decided.
         active: Whether this is the conflict being reviewed.
+        pending: A value the reviewer has picked but not committed, or ``None``.
+            ``""`` is a real pending choice - "this position is blank" - and is
+            why this is not simply a falsy check.
 
     Returns:
         A lane, or ``None`` when the conflict corresponds to no single
@@ -142,34 +239,40 @@ def lane_for(
     if not bubbles:
         return None
 
-    left = min(item.x - item.width / 2.0 for item in bubbles)
-    right = max(item.x + item.width / 2.0 for item in bubbles)
-    top = min(item.y - item.height / 2.0 for item in bubbles)
-    bottom = max(item.y + item.height / 2.0 for item in bubbles)
+    left, top, right, bottom = bounds_of(bubbles)
     padding = (
         sum(item.width for item in bubbles) / len(bubbles)
     ) * LANE_PADDING_RATIO
 
-    manual = found is not None and found.source is ValueSource.HUMAN
-    chosen = _chosen_bubble(bubbles, found) if manual else None
+    stored = found is not None and found.source is ValueSource.HUMAN
+    # A pending choice wins the *display*, because it is what the reviewer is
+    # looking at and about to commit. It never wins the record: nothing has
+    # been written, and `LaneState.PENDING` is drawn so that it cannot be
+    # mistaken for something that has.
+    if pending is not None:
+        value, state = pending, LaneState.PENDING
+    elif stored and found is not None:
+        value, state = found.value, LaneState.MANUAL
+    else:
+        value, state = "", LaneState.UNRESOLVED
+
+    chosen = _chosen_bubble(bubbles, value) if state.is_manual else None
     return FieldLane(
         x=left - padding,
         y=top - padding,
         width=(right - left) + padding * 2.0,
         height=(bottom - top) + padding * 2.0,
-        state=LaneState.MANUAL if manual else LaneState.UNRESOLVED,
+        state=state,
         active=active,
-        choice_x=chosen.x if chosen is not None else 0.0,
-        choice_y=chosen.y if chosen is not None else 0.0,
-        choice_width=chosen.width if chosen is not None else 0.0,
-        choice_height=chosen.height if chosen is not None else 0.0,
-        note=_note_for(found, chosen) if manual else "",
+        machine_marks=_machine_marks(bubbles),
+        choice=chosen,
+        note=_note_for(value, chosen) if state.is_manual else "",
     )
 
 
 def _chosen_bubble(
-    bubbles: Sequence[BubbleView], found: Provenance | None
-) -> BubbleView | None:
+    bubbles: Sequence[BubbleView], value: str
+) -> LaneMark | None:
     """Return the bubble standing for a reviewer's decision, if one does.
 
     Matched on the **label** the template prints, not on a position in the
@@ -177,12 +280,21 @@ def _chosen_bubble(
     bubbles whose labels are two characters each, and indexing into the value
     would ring the wrong one while looking perfectly convincing.
     """
-    if found is None or not found.value:
+    if not value:
         return None
-    return next((item for item in bubbles if item.label == found.value), None)
+    found = next((item for item in bubbles if item.label == value), None)
+    if found is None:
+        return None
+    return LaneMark(
+        x=found.x,
+        y=found.y,
+        width=found.width,
+        height=found.height,
+        label=found.label,
+    )
 
 
-def _note_for(found: Provenance | None, chosen: BubbleView | None) -> str:
+def _note_for(value: str, chosen: LaneMark | None) -> str:
     """Return the caption a manual lane carries, or ``""``.
 
     A lane whose chosen bubble is ringed needs no caption - the ring already
@@ -192,9 +304,7 @@ def _note_for(found: Provenance | None, chosen: BubbleView | None) -> str:
     """
     if chosen is not None:
         return ""
-    if found is None:
-        return ""
-    return found.value or BLANK_NOTE
+    return value or BLANK_NOTE
 
 
 def build_lanes(
@@ -204,6 +314,7 @@ def build_lanes(
     provenance: Mapping[int, Provenance],
     *,
     active_conflict_id: int | None = None,
+    pending: str | None = None,
 ) -> tuple[FieldLane, ...]:
     """Return every lane one sheet should show.
 
@@ -214,6 +325,9 @@ def build_lanes(
         provenance: Where each conflict's current value came from, keyed by
             conflict id. A conflict absent from it is drawn as unresolved.
         active_conflict_id: The conflict being reviewed, drawn more heavily.
+        pending: A value picked but not yet committed on the active conflict.
+            Applied to that lane only - an uncommitted choice belongs to the
+            position the reviewer is looking at and nowhere else.
 
     Returns:
         The lanes, in the order the conflicts were given.
@@ -233,16 +347,26 @@ def build_lanes(
         manual = found is not None and found.source is ValueSource.HUMAN
         if conflict.state is ConflictState.WITHDRAWN and not manual:
             continue
+        active = conflict.conflict_id == active_conflict_id
         lane = lane_for(
             result,
             template,
             conflict,
             found,
-            active=conflict.conflict_id == active_conflict_id,
+            active=active,
+            pending=pending if active else None,
         )
         if lane is not None:
             lanes.append(lane)
     return tuple(lanes)
 
 
-__all__ = ["BLANK_NOTE", "build_lanes", "group_bubbles", "lane_for"]
+__all__ = [
+    "BLANK_NOTE",
+    "NEIGHBOURING_GROUPS",
+    "bounds_of",
+    "build_lanes",
+    "context_bubbles",
+    "group_bubbles",
+    "lane_for",
+]

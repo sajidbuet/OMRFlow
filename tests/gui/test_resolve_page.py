@@ -38,13 +38,22 @@ from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.gui.review.history_dialog import render_history
 from omr_scanner.gui.review.lanes import BLANK_NOTE
 from omr_scanner.gui.review.page import (
+    BLANK_BUTTON_TEXT,
     BLANK_CHOICE,
+    CHOICE_BUTTON_MIN_WIDTH,
     FILTER_ALL,
     FILTER_RESOLVED,
+    ORIGINAL_TAB_INDEX,
     QUEUE_PANEL_WIDTH,
+    ZOOM_TAB_INDEX,
     ResolvePage,
 )
 from omr_scanner.gui.scan.preview import LaneState
+from omr_scanner.gui.theme import (
+    CANDIDATE_CHOSEN,
+    CANDIDATE_MACHINE,
+    CANDIDATE_STATE_PROPERTY,
+)
 from omr_scanner.services import batch_store, review_store, save_template
 from omr_scanner.services.batch_processor import process_batch
 
@@ -58,6 +67,10 @@ pytestmark = pytest.mark.gui
 
 SHEET_TIMEOUT_MS = 120_000
 REVIEWER = "Dr. Rahman"
+
+ISSUE_COLUMN = 2
+STATE_COLUMN = 3
+"""Queue columns, named so an assertion does not read as a bare index."""
 
 
 def _accept_warning(*_args: object, **_kwargs: object) -> object:
@@ -199,9 +212,14 @@ class TestQueue:
         assert page.queue_table.rowCount() == len(page.state.conflicts)
 
     def test_the_summary_reports_the_batch_counts(self, page: ResolvePage):
+        # One compact line of counters, with the per-type breakdown beneath it
+        # in smaller type - a workstation, not a dashboard.
         text = page.summary_label.text()
-        assert "Total conflicts" in text
-        assert "Unresolved" in text
+        assert "total" in text
+        assert "unresolved" in text
+        assert "resolved" in text
+        assert page.summary_label.toolTip()
+        assert page.summary_breakdown.text()
 
     def test_selecting_a_row_shows_that_conflict(self, qtbot, page: ResolvePage):
         conflict_id = select_first(qtbot, page)
@@ -284,19 +302,43 @@ class TestQueue:
         table = page.queue_table
         table.resize(QUEUE_PANEL_WIDTH, 400)
         header = table.horizontalHeader()
-        assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.ResizeToContents
+        assert header.sectionResizeMode(STATE_COLUMN) == (
+            QHeaderView.ResizeMode.ResizeToContents
+        )
 
         total = sum(table.columnWidth(column) for column in range(table.columnCount()))
         assert total <= table.viewport().width() + 1, (
             f"the columns need {total}px in a {table.viewport().width()}px viewport"
         )
 
+    def test_the_issue_column_reads_as_one_phrase(self, page: ResolvePage):
+        # Two narrow columns each eliding half of "Student ID - position 5 /
+        # Student ID multiple marks" told a reviewer neither half.
+        assert page.queue_table.rowCount()
+        conflict = next(
+            item
+            for item in page.state.conflicts
+            if item.conflict_type is ConflictType.IDENTIFIER_MULTIPLE
+        )
+        row = page.state.conflicts.index(conflict)
+        text = page.queue_table.item(row, ISSUE_COLUMN).text()
+        assert conflict.field.describe() in text
+        assert "·" in text
+        # And the whole value is reachable where it is elided.
+        assert page.queue_table.item(row, ISSUE_COLUMN).toolTip() == text
+
+    def test_every_cell_carries_its_full_value_in_a_tooltip(self, page: ResolvePage):
+        assert page.queue_table.rowCount()
+        for row in range(page.queue_table.rowCount()):
+            for column in range(page.queue_table.columnCount()):
+                assert page.queue_table.item(row, column).toolTip()
+
     def test_every_row_says_its_state_in_words_and_a_glyph(self, page: ResolvePage):
         # Not by colour alone: the row tint is unreadable to a colour-blind
         # reviewer and gone in a printed screenshot.
         assert page.queue_table.rowCount()
         for row, conflict in enumerate(page.state.conflicts):
-            cell = page.queue_table.item(row, 4)
+            cell = page.queue_table.item(row, STATE_COLUMN)
             assert conflict.state_label in cell.text()
             assert conflict.state_marker in cell.text()
             assert cell.toolTip()
@@ -391,8 +433,12 @@ class TestWorkspace:
         # work, and the old wording did not move at all.
         select_first(qtbot, page)
         text = page.sheet_progress_label.text()
-        assert text.startswith("Conflict 1 of ")
-        assert "unresolved" in text
+        # Every number says what it counts, so the header and the batch summary
+        # cannot read as contradicting each other.
+        assert "on sheet" in text
+        assert "left here" in text
+        assert "in batch" in text
+        assert page.sheet_progress_label.toolTip()
 
     def test_the_choice_buttons_come_from_the_template(
         self, qtbot, page: ResolvePage, template
@@ -400,7 +446,9 @@ class TestWorkspace:
         select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         labels = [button.text() for button in page._choice_buttons]
         zone = next(item for item in template.zones if item.id == "roll_number")
-        assert labels == [*zone.field.symbols, BLANK_CHOICE]
+        # "Blank" reads as a choice among digits; "(blank)" reads as the
+        # absence of one. The stored value is still the empty string.
+        assert labels == [*zone.field.symbols, BLANK_BUTTON_TEXT]
 
     def test_a_duplicate_identifier_offers_free_text_not_buttons(
         self, qtbot, page: ResolvePage
@@ -652,8 +700,8 @@ class TestDecisions:
             page.accept_machine()
 
         assert page.current_conflict() is None
-        assert page.accept_button.isEnabled() is False
-        assert "Select a conflict" in page.evidence_label.text()
+        assert page.confirm_button.isEnabled() is False
+        assert "Select a conflict" in page.machine_summary_label.text()
 
 
 # ----------------------------------------------------------------------
@@ -662,26 +710,38 @@ class TestDecisions:
 class TestEffectiveValueIsSpelledOut:
     def test_an_untouched_conflict_names_all_three(self, qtbot, page: ResolvePage):
         select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
-        text = page.provenance_label.text()
-        assert "Machine result:" in text
-        assert "Manual decision:" in text
-        assert "Effective result:" in text
+        machine, manual, effective = page.provenance_summary()
+        assert machine == page.current_conflict().observation.value
+        assert manual == "—"
+        assert effective == machine
+
+    def test_a_pending_choice_is_not_shown_as_a_result(
+        self, qtbot, page: ResolvePage
+    ):
+        # The distinction §15 exists for: a value has been picked, nothing has
+        # been written, and the strip must not claim otherwise.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.choose_label("1") is True
+
+        _, manual, effective = page.provenance_summary()
+        assert manual == "1"
+        assert effective == "Pending"
+        assert review_store.get_conflict(page.database, conflict_id).state is (
+            ConflictState.OPEN
+        )
 
     def test_an_override_shows_the_machine_value_beside_the_decision(
         self, qtbot, page: ResolvePage
     ):
         conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
-        machine = page.current_conflict().observation.value
+        machine_value = page.current_conflict().observation.value
         page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
         page.correct("1")
 
         # Auto-advance has moved on, so come back to what was decided.
         page.state_filter.setCurrentText(FILTER_ALL)
         assert page.select_conflict_by_id(conflict_id) is True
-        text = page.provenance_label.text()
-        assert f"Machine result: <b>{machine}</b>" in text
-        assert "Manual decision: <b>1</b>" in text
-        assert "Effective result: <b>1</b>" in text
+        assert page.provenance_summary() == (machine_value, "1", "1")
 
     def test_a_manual_blank_reads_as_blank_and_not_as_absent(
         self, qtbot, page: ResolvePage
@@ -692,9 +752,9 @@ class TestEffectiveValueIsSpelledOut:
 
         page.state_filter.setCurrentText(FILTER_ALL)
         assert page.select_conflict_by_id(conflict_id) is True
-        text = page.provenance_label.text()
-        assert "Manual decision: <b>(blank)</b>" in text
-        assert "Effective result: <b>(blank)</b>" in text
+        _, manual, effective = page.provenance_summary()
+        assert manual == "(blank)"
+        assert effective == "(blank)"
 
 
 # ----------------------------------------------------------------------
@@ -1018,11 +1078,20 @@ class TestKeyboard:
         keys = [item.key().toString() for item in page._shortcuts]
         assert len(keys) == len(set(keys))
 
-    def test_a_digit_records_the_value_it_prints(self, qtbot, page: ResolvePage):
+    def test_a_digit_picks_the_value_it_prints_and_enter_records_it(
+        self, qtbot, page: ResolvePage
+    ):
         conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
 
         assert page.choose_label("1") is True
+        # Picked, not written: the reviewer still has to see the ring land on
+        # the bubble they meant before it becomes the value.
+        assert review_store.provenance_for(page.database, conflict_id).source is (
+            ValueSource.MACHINE
+        )
+
+        assert page.confirm_resolution() is True
 
         found = review_store.provenance_for(page.database, conflict_id)
         assert found.value == "1"
@@ -1034,6 +1103,7 @@ class TestKeyboard:
         page.reason_combo.setCurrentText(ReasonCode.ERASED_RESPONSE.label)
 
         assert page.choose_label(BLANK_CHOICE) is True
+        assert page.confirm_resolution() is True
 
         found = review_store.provenance_for(page.database, conflict_id)
         assert found.value == ""
@@ -1107,6 +1177,8 @@ class TestKeyboard:
             pytest.skip("this Qt platform plugin never activates a window")
 
         QTest.keyClick(page.queue_table, Qt.Key.Key_1)
+        assert page.state.pending == "1"
+        QTest.keyClick(page.queue_table, Qt.Key.Key_Return)
 
         assert review_store.provenance_for(page.database, conflict_id).value == "1"
 
@@ -1329,8 +1401,10 @@ class TestLaneOverlay:
         assert (lane.x, lane.y) == (before.x, before.y)
         # ...and the chosen bubble is identifiable inside it.
         assert lane.has_choice is True
-        assert lane.x <= lane.choice_x <= lane.x + lane.width
-        assert lane.y <= lane.choice_y <= lane.y + lane.height
+        assert lane.choice is not None
+        assert lane.x <= lane.choice.x <= lane.x + lane.width
+        assert lane.y <= lane.choice.y <= lane.y + lane.height
+        assert lane.choice.label == "1"
         assert lane.note == ""
 
     def test_the_overlay_updates_without_reloading_the_sheet(
@@ -1483,13 +1557,447 @@ class TestEmptyViewsExplainThemselves:
         for view in (review_page.normalised_view, review_page.zoom_view):
             assert view.has_page is False
             assert view._placeholder.text()
+
+        # The only tab with anything on it is selected, and the two that are
+        # empty by definition of the conflict say so rather than inviting a
+        # click through two blank panes.
+        assert review_page.view_tabs.currentIndex() == ORIGINAL_TAB_INDEX
+        assert review_page.view_tabs.isTabEnabled(ZOOM_TAB_INDEX) is False
+        assert review_page.view_tabs.tabToolTip(ZOOM_TAB_INDEX)
+        # ...and there is no digit selector for a page that was never measured.
+        assert review_page._choice_buttons == []
         review_page.close()
+
+    def test_a_registration_failure_does_not_pin_later_sheets_to_it(
+        self, qtbot, project_session, template, tmp_path, prepared, page: ResolvePage
+    ):
+        # The defect: forcing the tab without restoring it meant one bad sheet
+        # in a queue moved every later sheet to the original scan, so the
+        # zoomed field - the view this stage is built around - was never seen
+        # again.
+        page.view_tabs.setCurrentIndex(ORIGINAL_TAB_INDEX)
+        page._offer_the_useful_tab(registered=False)
+        assert page.view_tabs.currentIndex() == ORIGINAL_TAB_INDEX
+
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+
+        assert page.view_tabs.isTabEnabled(ZOOM_TAB_INDEX) is True
+        assert page.view_tabs.currentIndex() == ORIGINAL_TAB_INDEX, (
+            "a tab the reviewer chose should be kept"
+        )
+
+    def test_a_forced_tab_is_given_back(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.view_tabs.currentIndex() == ZOOM_TAB_INDEX
+
+        page._offer_the_useful_tab(registered=False)
+        assert page.view_tabs.currentIndex() == ORIGINAL_TAB_INDEX
+
+        page._offer_the_useful_tab(registered=True)
+        assert page.view_tabs.currentIndex() == ZOOM_TAB_INDEX
 
     def test_a_placeholder_never_covers_a_page(self, qtbot, page: ResolvePage):
         select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.normalised_view.set_placeholder("should not be shown")
         assert page.normalised_view.has_page is True
         assert page.normalised_view._placeholder.isVisible() is False
+
+
+class TestFraming:
+    def test_the_zoomed_field_frames_the_disputed_position(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        conflict = page.current_conflict()
+        rect = page.zoom_view.focus_rect
+        assert rect is not None
+        # Every bubble of the disputed group is inside the framed region...
+        for bubble in page._conflict_bubbles(conflict):
+            assert rect.left() <= bubble.x <= rect.right()
+            assert rect.top() <= bubble.y <= rect.bottom()
+        # ...and so is the whole page nowhere near it: this is a region, not a
+        # fit-to-window in disguise.
+        assert rect.width() < page.state.bundle.result.canonical_width
+
+    def test_the_framing_keeps_neighbouring_positions_in_view(
+        self, qtbot, page: ResolvePage
+    ):
+        # A faint mark is judged against the columns beside it, filled by the
+        # same candidate in the same pencil.
+        from omr_scanner.gui.review.lanes import context_bubbles, group_bubbles
+
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        conflict = page.current_conflict()
+        result = page.state.bundle.result
+        own = group_bubbles(result, page.state.template, conflict)
+        context = context_bubbles(result, page.state.template, conflict)
+        assert len(context) > len(own)
+        assert set(own).issubset(set(context))
+
+    def test_switching_conflict_reframes(self, qtbot, page: ResolvePage):
+        # No pan or zoom may survive from the position before.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        first = page.zoom_view.focus_rect
+        rows = [
+            index
+            for index, item in enumerate(page.state.conflicts)
+            if item.conflict_type is ConflictType.IDENTIFIER_MULTIPLE
+        ]
+        if len(rows) < 2:
+            pytest.skip("this batch has one disputed position per sheet")
+        page.queue_table.selectRow(rows[1])
+        second = page.zoom_view.focus_rect
+        assert second is not None
+        assert second != first
+
+    def test_a_manual_zoom_takes_the_framing_over(self, qtbot, page: ResolvePage):
+        # Once the reviewer has moved the view it is theirs; a resize must not
+        # snatch it back.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.zoom_view.focus_rect is not None
+        before = page.zoom_view.zoom
+
+        page.zoom_view.zoom_in()
+
+        assert page.zoom_view.focus_rect is None
+        assert page.zoom_view.zoom > before
+        page.zoom_view.resize(page.zoom_view.width() + 40, page.zoom_view.height())
+        assert page.zoom_view.focus_rect is None
+
+    def test_a_tall_region_is_widened_to_fill_the_pane(self, qtbot):
+        # The reason the zoomed field used to sit in a sea of blank canvas: a
+        # roll-number position is tall and narrow, the pane is wide and short,
+        # and fitting one inside the other leaves two thirds of the width
+        # empty. The region is grown to the pane's shape instead, and the spare
+        # width is spent on more of the sheet.
+        from PySide6.QtCore import QRectF
+
+        from omr_scanner.gui.scan.preview import ScanPreviewView
+
+        tall = QRectF(100, 100, 50, 400)
+        widened = ScanPreviewView._widened_to_viewport(tall, 800, 400)
+        assert widened.height() == tall.height()
+        assert widened.width() > tall.width()
+        assert widened.center() == tall.center()
+        assert widened.width() / widened.height() == pytest.approx(800 / 400)
+
+    def test_widening_never_shrinks_the_region(self):
+        from PySide6.QtCore import QRectF
+
+        from omr_scanner.gui.scan.preview import ScanPreviewView
+
+        wide = QRectF(0, 0, 400, 50)
+        widened = ScanPreviewView._widened_to_viewport(wide, 400, 400)
+        assert widened.width() >= wide.width()
+        assert widened.height() >= wide.height()
+
+
+class TestCandidateButtonStates:
+    def machine_buttons(self, page: ResolvePage) -> list[str]:
+        return [
+            item.text()
+            for item in page._choice_buttons
+            if item.property(CANDIDATE_STATE_PROPERTY) == CANDIDATE_MACHINE
+        ]
+
+    def chosen_buttons(self, page: ResolvePage) -> list[str]:
+        return [
+            item.text()
+            for item in page._choice_buttons
+            if item.property(CANDIDATE_STATE_PROPERTY) == CANDIDATE_CHOSEN
+        ]
+
+    def test_the_symbols_the_machine_read_are_marked(self, qtbot, page: ResolvePage):
+        # Eleven identical buttons made the reviewer carry "it was 1 and 7" in
+        # their head from the panel beside them.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        conflict = page.current_conflict()
+        expected = sorted(conflict.observation.value.split("-"))
+        assert len(expected) == 2, "this fixture stages a double mark"
+        assert sorted(self.machine_buttons(page)) == expected
+        assert self.chosen_buttons(page) == []
+
+    def test_a_pick_is_marked_differently_from_a_machine_reading(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        machine = sorted(self.machine_buttons(page))
+
+        page.choose_label("3")
+
+        assert self.chosen_buttons(page) == ["3"]
+        # Choosing something else leaves the machine's own readings marked.
+        assert sorted(self.machine_buttons(page)) == machine
+
+    def test_picking_a_machine_reading_becomes_the_pick(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        first = sorted(self.machine_buttons(page))[0]
+
+        page.choose_label(first)
+
+        assert self.chosen_buttons(page) == [first]
+        assert first not in self.machine_buttons(page)
+
+    def test_no_pick_survives_a_change_of_conflict(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.choose_label("3")
+        assert page.state.pending == "3"
+
+        page.select_next()
+
+        assert page.state.pending is None
+        assert self.chosen_buttons(page) == []
+
+    def test_a_pick_shows_on_the_sheet_before_it_is_committed(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.choose_label("3")
+
+        lane = next(item for item in lanes_of(page) if item.active)
+        # Manual colour, unresolved line style: what was picked, without
+        # claiming it has been stored.
+        assert lane.state is LaneState.PENDING
+        assert lane.choice is not None
+        assert lane.choice.label == "3"
+
+    def test_the_machine_marks_are_ringed_on_the_sheet(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        conflict = page.current_conflict()
+        lane = next(item for item in lanes_of(page) if item.active)
+        assert {mark.label for mark in lane.machine_marks} == set(
+            conflict.observation.value.split("-")
+        )
+
+
+class TestTheMachineReadingIsNotOfferedWhenItIsNotAValue:
+    def test_a_double_mark_cannot_be_confirmed_as_a_digit(
+        self, qtbot, page: ResolvePage
+    ):
+        # "0-5" is not a value one printed roll-number position can hold, and
+        # storing it would substitute into the identifier and produce a
+        # candidate ID no roster will match - from a button that said the
+        # machine was right.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert "-" in page.current_conflict().observation.value
+
+        assert page.confirm_button.isEnabled() is False
+        assert "Choose a value" in page.confirm_button.text()
+        assert page.confirm_resolution() is False
+        assert review_store.get_conflict(page.database, conflict_id).state is (
+            ConflictState.OPEN
+        )
+
+    def test_choosing_a_value_makes_the_action_available(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.choose_label("3")
+        assert page.confirm_button.isEnabled() is True
+        assert "3" in page.confirm_button.text()
+
+    def test_a_reading_the_field_can_hold_is_still_confirmable(
+        self, qtbot, page: ResolvePage
+    ):
+        # A duplicate student ID is a perfectly legible ID that two sheets
+        # share, so the machine's reading *is* a value and confirming it is a
+        # real decision.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_DUPLICATE)
+        assert page.confirm_button.isEnabled() is True
+        assert "machine" in page.confirm_button.text().lower()
+
+        assert page.confirm_resolution() is True
+        found = review_store.provenance_for(page.database, conflict_id)
+        assert found.source is ValueSource.HUMAN
+
+    def test_a_decided_conflict_offers_reopen_instead_of_confirm(
+        self, qtbot, page: ResolvePage
+    ):
+        # Nothing to confirm once it is decided, and a button reading "Choose a
+        # value first" there tells the operator to fix something not broken.
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.choose_label("1")
+        page.confirm_resolution()
+
+        page.state_filter.setCurrentText(FILTER_ALL)
+        assert page.select_conflict_by_id(conflict_id) is True
+        assert page.confirm_button.isVisibleTo(page) is False
+        assert page.reopen_button.isVisibleTo(page) is True
+
+    def test_picking_again_on_a_decided_conflict_offers_to_commit(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        page.choose_label("1")
+        page.confirm_resolution()
+        page.state_filter.setCurrentText(FILTER_ALL)
+        page.select_conflict_by_id(conflict_id)
+
+        assert page.choose_label("3") is True
+
+        assert page.confirm_button.isVisibleTo(page) is True
+        assert "3" in page.confirm_button.text()
+        assert page.confirm_resolution() is True
+        assert review_store.provenance_for(page.database, conflict_id).value == "3"
+
+    def test_a_sheet_level_conflict_is_acknowledged_not_confirmed(
+        self, qtbot, project_session, template, tmp_path
+    ):
+        # A file that will not decode is not a value, so "confirm the machine
+        # reading" would be confirming nothing.
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+
+        corrupt = tmp_path / "corrupt.png"
+        corrupt.write_bytes(b"not an image")
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [corrupt], identity=batch_store.BatchIdentity.of(template)
+        )
+        report = process_batch([corrupt], template, workers=1)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[corrupt],
+            result=report.processed[0].result,
+            template=template,
+        )
+        review_page.load_batch(batch_id, template)
+        review_page.queue_table.selectRow(0)
+
+        assert review_page.confirm_button.text() == "Acknowledge"
+        assert review_page.confirm_button.isEnabled() is True
+        review_page.close()
+
+    def test_a_duplicate_is_not_given_digit_buttons(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_DUPLICATE)
+        assert page._choice_buttons == []
+        assert page.free_value_row.isVisibleTo(page) is True
+        # And the panel says how many other sheets are involved.
+        assert "Also on" in page.machine_summary_label.text()
+
+
+class TestMachineObservationIsCompact:
+    def test_it_states_the_position_the_issue_and_the_marks(
+        self, qtbot, page: ResolvePage
+    ):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        text = page.machine_summary_label.text()
+        conflict = page.current_conflict()
+        assert conflict.field.describe() in text
+        assert "Issue" in text and "Detected" in text and "Sheet" in text
+        # "1 and 7", not "1-7": at a glance a hyphen is as easily a range or a
+        # minus sign.
+        assert " and " in text
+
+    def test_the_long_diagnostics_are_behind_details(self, qtbot, page: ResolvePage):
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        assert page.evidence_scroll.isVisibleTo(page) is False
+        assert page.details_button.isChecked() is False
+
+        page.details_button.setChecked(True)
+
+        assert page.evidence_scroll.isVisibleTo(page) is True
+        assert "fill score" in page.evidence_label.text().lower()
+
+    def test_the_stored_value_is_not_rewritten_for_display(
+        self, qtbot, page: ResolvePage
+    ):
+        conflict_id = select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        record = review_store.get_conflict(page.database, conflict_id)
+        assert "-" in record.observation.value
+        # The strip shows the machine value exactly as it is stored.
+        assert page.provenance_summary()[0] == record.observation.value
+
+
+class TestSpaceDistribution:
+    def ratios(self, splitter) -> list[int]:
+        sizes = splitter.sizes()
+        return [round(100 * size / sum(sizes)) for size in sizes]
+
+    @pytest.mark.parametrize(
+        ("width", "height"), [(1366, 768), (1600, 900), (1920, 1080)]
+    )
+    def test_the_designed_proportions_hold_at_every_size(
+        self, qtbot, page: ResolvePage, width: int, height: int
+    ):
+        page.resize(width, height)
+        page.show()
+        qtbot.waitExposed(page)
+
+        queue, workspace = self.ratios(page.main_splitter)
+        assert 27 <= queue <= 32, f"queue is {queue}% at {width}x{height}"
+        assert 68 <= workspace <= 73
+
+        preview, resolution = self.ratios(page.workspace_splitter)
+        assert 67 <= preview <= 73, f"preview is {preview}% at {width}x{height}"
+        assert 27 <= resolution <= 33
+
+    def test_the_operators_own_split_is_not_overridden(
+        self, qtbot, page: ResolvePage
+    ):
+        # Once a reviewer has dragged a splitter the sizes are theirs, and a
+        # window resize must not take them back.
+        page.resize(1600, 900)
+        page.show()
+        qtbot.waitExposed(page)
+        assert page._splitters_adjusted is False
+
+        page.main_splitter.setSizes([900, 700])
+        page.main_splitter.splitterMoved.emit(900, 1)
+        assert page._splitters_adjusted is True
+        theirs = page.main_splitter.sizes()
+
+        page._apply_split_ratios()
+
+        assert page.main_splitter.sizes() == theirs
+
+    def test_neither_pane_can_be_collapsed(self, page: ResolvePage):
+        assert page.main_splitter.childrenCollapsible() is False
+        assert page.workspace_splitter.childrenCollapsible() is False
+
+    def test_the_machine_panel_is_the_smaller_half(self, qtbot, page: ResolvePage):
+        # 37/63, not 50/50: four facts against eleven buttons, a reason, a
+        # note, a comparison strip and the commit.
+        page.resize(1600, 900)
+        page.show()
+        qtbot.waitExposed(page)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+        machine = page.machine_summary_label.parentWidget().width()
+        decision = page.choice_row.parentWidget().width()
+        assert machine < decision
+
+    @pytest.mark.parametrize(
+        ("width", "height"), [(1366, 768), (1920, 1080)]
+    )
+    def test_nothing_is_clipped_at_a_supported_size(
+        self, qtbot, page: ResolvePage, width: int, height: int
+    ):
+        page.resize(width, height)
+        page.show()
+        qtbot.waitExposed(page)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+
+        for widget in (page.confirm_button, page.defer_button, page.reason_combo):
+            assert widget.width() >= widget.minimumSizeHint().width(), widget
+            assert widget.height() >= widget.minimumSizeHint().height(), widget
+        # Every value button is reachable, not squeezed to nothing.
+        for button in page._choice_buttons:
+            assert button.width() >= CHOICE_BUTTON_MIN_WIDTH - 1
+        # And the queue never needs a horizontal scrollbar.
+        table = page.queue_table
+        total = sum(table.columnWidth(column) for column in range(table.columnCount()))
+        assert total <= table.viewport().width() + 1
 
 
 class TestLaneRendering:
@@ -1547,6 +2055,46 @@ class TestLaneRendering:
         assert red not in unresolved
 
 
+class TestToolbar:
+    def test_every_icon_explains_itself(self, page: ResolvePage):
+        # The toolbar is icon-only; an icon whose meaning has to be guessed is
+        # an icon an operator finds out about by pressing it, on a stage where
+        # pressing things changes what a script is worth.
+        from PySide6.QtWidgets import QToolBar
+
+        toolbar = page.findChild(QToolBar, "reviewToolbar")
+        # Actions carrying an icon are the icon-only buttons; the rest are the
+        # embedded widgets (the History button, the spacer, the counter), which
+        # carry their own text.
+        actions = [
+            item
+            for item in toolbar.actions()
+            if not item.isSeparator() and not item.icon().isNull()
+        ]
+        assert len(actions) >= 10
+        missing = [item.text() for item in actions if not item.toolTip()]
+        assert not missing, missing
+        assert page.history_button.toolTip()
+
+    def test_the_groups_are_separated(self, page: ResolvePage):
+        # Reversal / navigation / view are three different kinds of thing.
+        from PySide6.QtWidgets import QToolBar
+
+        toolbar = page.findChild(QToolBar, "reviewToolbar")
+        assert sum(item.isSeparator() for item in toolbar.actions()) >= 3
+
+    def test_the_undo_arrows_are_undo_and_redo(self, page: ResolvePage):
+        from PySide6.QtWidgets import QToolBar
+
+        toolbar = page.findChild(QToolBar, "reviewToolbar")
+        names = [item.objectName() for item in toolbar.actions() if not item.isSeparator()]
+        assert names[:3] == [
+            "undoDecisionButton",
+            "redoDecisionButton",
+            "undoResolvedSheetButton",
+        ]
+
+
 class TestStableObjectNames:
     def test_the_review_widgets_can_be_found_by_name(self, page: ResolvePage):
         from PySide6.QtCore import QObject
@@ -1561,15 +2109,22 @@ class TestStableObjectNames:
             "normalisedSheetView",
             "originalSheetView",
             "machineEvidenceLabel",
-            "acceptMachineValueButton",
             "deferConflictButton",
             "reopenConflictButton",
             "correctionReasonCombo",
             "correctionReasonText",
             "conflictHistoryButton",
-            "conflictProvenanceLabel",
+            "conflictProvenanceStrip",
+            "provenanceMachineValue",
+            "provenanceManualValue",
+            "provenanceEffectiveValue",
+            "machineSummaryLabel",
+            "machineDetailsToggle",
+            "confirmResolutionButton",
             "reviewSummaryLabel",
-            "reviewerNameLabel",
+            "resolveOperatorBadge",
+            "resolveMainSplitter",
+            "resolveWorkspaceSplitter",
             "sheetConflictProgressLabel",
         ]
         missing = [name for name in required if page.findChild(QObject, name) is None]

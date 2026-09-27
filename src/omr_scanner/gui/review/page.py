@@ -45,13 +45,19 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QKeySequence, QShortcut
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QKeySequence,
+    QResizeEvent,
+    QShortcut,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -65,12 +71,14 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTextEdit,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from omr_scanner.domain.review import (
     RESOLUTION_TYPES,
+    ConflictScope,
     ConflictState,
     ConflictType,
     FieldKind,
@@ -84,10 +92,25 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.review.history_dialog import HistoryDialog
-from omr_scanner.gui.review.lanes import build_lanes, group_bubbles
+from omr_scanner.gui.review.lanes import (
+    bounds_of,
+    build_lanes,
+    context_bubbles,
+    group_bubbles,
+)
 from omr_scanner.gui.review.worker import SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
-from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
+from omr_scanner.gui.theme import (
+    CANDIDATE_CHOSEN,
+    CANDIDATE_MACHINE,
+    CANDIDATE_STATE_PROPERTY,
+    RESOLVE_STAGE_STYLESHEET,
+    TEMPLATE_DESIGNER_STYLESHEET,
+    VARIANT_PRIMARY,
+    VARIANT_PROPERTY,
+    Color,
+    Spacing,
+)
 from omr_scanner.services import (
     ConflictFilter,
     ConflictRecord,
@@ -109,12 +132,13 @@ from omr_scanner.services import (
     provenance_for_scan,
     reopen,
     scan_source_path,
+    split_marks,
     undo_decision,
     undo_resolved_sheet,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection, Sequence
 
     from omr_scanner.domain.review import Provenance
     from omr_scanner.domain.scan_quality import ScanQualityAssessment
@@ -129,8 +153,58 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _LOGGER = logging.getLogger(__name__)
 
+QUEUE_STRETCH = 29
+WORKSPACE_STRETCH = 71
+"""How the window's width is divided between the queue and the workspace.
+
+Stretch factors, not pixels: the operator resizes the splitter, and the ratio
+has to hold at 1366 and at 2560 alike. Just under a third for the queue is
+what makes its five columns readable without eliding the conflict type, and
+the workspace is where the evidence and the decision live."""
+
+PREVIEW_STRETCH = 70
+RESOLUTION_STRETCH = 30
+"""How the workspace's height is divided between the sheet and the decision.
+
+The image is what a reviewer decides *from*, so it gets the larger share and
+keeps it: the resolution panel is a fixed set of controls, and letting a long
+diagnostic paragraph push the preview upward is how the evidence ends up
+smaller than the prose about it."""
+
+MACHINE_PANEL_STRETCH = 37
+DECISION_PANEL_STRETCH = 63
+"""How the resolution row is divided. See :meth:`ResolvePage._build_decision_panel`."""
+
+QUEUE_MIN_WIDTH = 320
+WORKSPACE_MIN_WIDTH = 520
+PREVIEW_MIN_HEIGHT = 220
+RESOLUTION_MIN_HEIGHT = 190
+"""Floors, so that dragging a splitter cannot collapse a pane into a sliver.
+
+``RESOLUTION_MIN_HEIGHT`` is measured rather than guessed: the heading, the
+value buttons, the reason row, the comparison strip and the action row, at the
+spacing this page uses."""
+
+ZOOM_TAB_INDEX = 0
+NORMALISED_TAB_INDEX = 1
+ORIGINAL_TAB_INDEX = 2
+"""The three preview tabs, in the order :meth:`ResolvePage._build_views` adds
+them. Named so that "switch to the original scan" does not read as ``2``."""
+
+QUEUE_MIN_SECTION_PX = 56
+"""How narrow a queue column may get before it stops being readable at all."""
+
+NOTE_HEIGHT_PX = 30
+ACTION_BUTTON_HEIGHT_PX = 32
+CHOICE_BUTTON_MIN_WIDTH = 38
+CHOICE_BUTTON_HEIGHT = 34
+"""Value-button metrics. Large enough to hit repeatedly at speed, small enough
+that eleven of them fit a 1366-pixel display beside everything else."""
+
 QUEUE_PANEL_WIDTH = 460
-EVIDENCE_PANEL_HEIGHT = 250
+"""The queue's resting width, used only as the ceiling below. The split itself
+is a ratio - see :data:`QUEUE_STRETCH`."""
+
 QUEUE_PAGE_SIZE = 500
 """How many conflicts the queue holds at once.
 
@@ -141,13 +215,6 @@ the narrowing in SQL; this bounds what reaches Qt."""
 
 WORKER_SHUTDOWN_TIMEOUT_MS = 30_000
 """How long the page waits for the sheet loader when it closes."""
-
-ZOOM_PADDING_PX = 55.0
-"""Canonical pixels of context around a disputed group in the zoomed view.
-
-Enough that the neighbouring bubbles are visible - a reviewer judging "is this
-the darker mark" needs to see what it is being compared against - without
-zooming out so far that the marks stop being legible."""
 
 FILTER_ALL = "All"
 FILTER_OPEN = "Unresolved"
@@ -172,6 +239,14 @@ _STATE_COLORS: dict[ConflictState, QColor] = {
     ConflictState.DEFERRED: QColor(226, 236, 250),
     ConflictState.WITHDRAWN: QColor(238, 238, 238),
 }
+
+BLANK_BUTTON_TEXT = "Blank"
+"""What the "no mark here" button says.
+
+The word, not ``(blank)``: the parenthesised form reads as an absence of a
+choice in a row of digits, and it is a choice. The stored value is still the
+empty string and :data:`BLANK_CHOICE` is still the internal name, so nothing
+downstream is affected by the wording."""
 
 BLANK_CHOICE = "(blank)"
 """The label for "this position carries no mark".
@@ -213,6 +288,16 @@ class ResolvePageState:
             would offer to repeat commands whose context nobody remembers.
         auto_advance: Whether resolving the active conflict moves to the next
             unresolved one by itself.
+        pending: The value the reviewer has picked for the active conflict and
+            not yet committed, or ``None`` for "nothing picked". ``""`` is a
+            real choice - *this position is blank* - which is why it is not a
+            falsy check anywhere.
+
+            Nothing is written while this is set. It exists so that choosing a
+            value and committing it are two separate acts: the reviewer picks,
+            sees the ring land on the bubble they meant, and then commits. It
+            is discarded whenever the selected conflict changes, so a choice
+            cannot follow the reviewer onto a different sheet.
     """
 
     session: ProjectSession | None = None
@@ -225,6 +310,7 @@ class ResolvePageState:
     sheet_provenance: dict[int, Provenance] = field(default_factory=dict)
     redo: list[UndoTarget] = field(default_factory=list)
     auto_advance: bool = True
+    pending: str | None = None
 
 
 class ResolvePage(WorkflowPage):
@@ -254,21 +340,35 @@ class ResolvePage(WorkflowPage):
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setObjectName("resolvePage")
-        self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET)
+        self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET + RESOLVE_STAGE_STYLESHEET)
 
         self.state = ResolvePageState()
         self._worker: SheetWorker | None = None
         self._workers: list[SheetWorker] = []
         self._loaded_scan_id: int | None = None
         self._suppress_selection = False
+        self._batch_unresolved = 0
+        self._preferred_tab = ZOOM_TAB_INDEX
+        self._suppress_tab_memory = False
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._build_queue_panel())
-        splitter.addWidget(self._build_workspace())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([QUEUE_PANEL_WIDTH, 1000])
-        self.body.addWidget(splitter, stretch=1)
+        # Ratios rather than pixel sizes, and floors rather than nothing: the
+        # proportion has to survive a 1366-pixel laptop and a 2560-pixel
+        # desktop, and neither pane may be dragged into a sliver the operator
+        # then has to fish back out.
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setObjectName("resolveMainSplitter")
+        self.main_splitter.setChildrenCollapsible(False)
+        queue_panel = self._build_queue_panel()
+        queue_panel.setMinimumWidth(QUEUE_MIN_WIDTH)
+        workspace = self._build_workspace()
+        workspace.setMinimumWidth(WORKSPACE_MIN_WIDTH)
+        self.main_splitter.addWidget(queue_panel)
+        self.main_splitter.addWidget(workspace)
+        self.main_splitter.setStretchFactor(0, QUEUE_STRETCH)
+        self.main_splitter.setStretchFactor(1, WORKSPACE_STRETCH)
+        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
+        self.body.addWidget(self.main_splitter, stretch=1)
+        self._splitters_adjusted = False
 
         self._install_shortcuts()
         self._refresh_controls()
@@ -293,15 +393,22 @@ class ResolvePage(WorkflowPage):
         filters = QWidget()
         filter_layout = QHBoxLayout(filters)
         filter_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.setSpacing(Spacing.XS)
 
+        # Labelled, on one row. Two bare combo boxes reading "Unresolved" and
+        # "All types" look like values of something unnamed; an operator should
+        # not have to open one to find out what it filters.
+        filter_layout.addWidget(QLabel("Status"))
         self.state_filter = QComboBox()
         self.state_filter.setObjectName("conflictStateFilter")
         self.state_filter.addItems(
             [FILTER_OPEN, FILTER_ALL, FILTER_RESOLVED, FILTER_DEFERRED, FILTER_WITHDRAWN]
         )
+        self.state_filter.setToolTip("Show conflicts in this review state")
         self.state_filter.currentIndexChanged.connect(self.refresh_queue)
         filter_layout.addWidget(self.state_filter, stretch=1)
 
+        filter_layout.addWidget(QLabel("Type"))
         self.type_filter = QComboBox()
         self.type_filter.setObjectName("conflictTypeFilter")
         self.type_filter.addItem(ALL_TYPES, userData="")
@@ -310,6 +417,7 @@ class ResolvePage(WorkflowPage):
         # filter that always returns nothing.
         for conflict_type in RESOLUTION_TYPES:
             self.type_filter.addItem(conflict_type.label, userData=conflict_type.value)
+        self.type_filter.setToolTip("Show only one kind of conflict")
         self.type_filter.currentIndexChanged.connect(self.refresh_queue)
         filter_layout.addWidget(self.type_filter, stretch=1)
         layout.addWidget(filters)
@@ -324,10 +432,15 @@ class ResolvePage(WorkflowPage):
         self.search_box.returnPressed.connect(self.refresh_queue)
         layout.addWidget(self.search_box)
 
-        self.queue_table = QTableWidget(0, 5)
+        # Four columns, not five. "Field" and "Conflict" were two narrow
+        # columns whose text was elided in both - "Student ID - ..." beside
+        # "Student ID ..." - which is two truncations of one fact. Joined, the
+        # row reads as a sentence: *Student ID - position 5 - More than one
+        # mark*, and there is room for it.
+        self.queue_table = QTableWidget(0, 4)
         self.queue_table.setObjectName("conflictQueueTable")
         self.queue_table.setHorizontalHeaderLabels(
-            ["Sheet", "Student ID", "Field", "Conflict", "State"]
+            ["Sheet", "Student ID", "Issue", "State"]
         )
         self.queue_table.verticalHeader().setVisible(False)
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -355,19 +468,28 @@ class ResolvePage(WorkflowPage):
             (0, QHeaderView.ResizeMode.Stretch),
             (1, QHeaderView.ResizeMode.ResizeToContents),
             (2, QHeaderView.ResizeMode.Stretch),
-            (3, QHeaderView.ResizeMode.Stretch),
-            (4, QHeaderView.ResizeMode.ResizeToContents),
+            (3, QHeaderView.ResizeMode.ResizeToContents),
         ):
             header.setSectionResizeMode(column, mode)
         header.setStretchLastSection(False)
+        header.setMinimumSectionSize(QUEUE_MIN_SECTION_PX)
         self.queue_table.itemSelectionChanged.connect(self._on_queue_selection_changed)
         layout.addWidget(self.queue_table, stretch=1)
 
+        # Two lines, not six. The counters an operator watches go on the first;
+        # the per-type breakdown, which is a report rather than a control, goes
+        # on the second in smaller type. This is a workstation, not a
+        # dashboard - the queue above is what the space belongs to.
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("reviewSummaryLabel")
-        self.summary_label.setWordWrap(True)
         self.summary_label.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.summary_label)
+
+        self.summary_breakdown = QLabel("")
+        self.summary_breakdown.setObjectName("reviewSummaryBreakdown")
+        self.summary_breakdown.setWordWrap(True)
+        self.summary_breakdown.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.summary_breakdown)
         return panel
 
     def _build_workspace(self) -> QWidget:
@@ -379,14 +501,64 @@ class ResolvePage(WorkflowPage):
 
         layout.addWidget(self._build_toolbar())
 
-        vertical = QSplitter(Qt.Orientation.Vertical)
-        vertical.addWidget(self._build_views())
-        vertical.addWidget(self._build_decision_panel())
-        vertical.setStretchFactor(0, 1)
-        vertical.setStretchFactor(1, 0)
-        vertical.setSizes([700, EVIDENCE_PANEL_HEIGHT])
-        layout.addWidget(vertical, stretch=1)
+        self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.workspace_splitter.setObjectName("resolveWorkspaceSplitter")
+        self.workspace_splitter.setChildrenCollapsible(False)
+        views = self._build_views()
+        views.setMinimumHeight(PREVIEW_MIN_HEIGHT)
+        decisions = self._build_decision_panel()
+        decisions.setMinimumHeight(RESOLUTION_MIN_HEIGHT)
+        self.workspace_splitter.addWidget(views)
+        self.workspace_splitter.addWidget(decisions)
+        self.workspace_splitter.setStretchFactor(0, PREVIEW_STRETCH)
+        self.workspace_splitter.setStretchFactor(1, RESOLUTION_STRETCH)
+        self.workspace_splitter.splitterMoved.connect(self._on_splitter_moved)
+        layout.addWidget(self.workspace_splitter, stretch=1)
         return container
+
+    def _on_splitter_moved(self, *_args: int) -> None:
+        """Stop imposing the default proportions once the operator sets their own."""
+        self._splitters_adjusted = True
+
+    def _apply_split_ratios(self) -> None:
+        """Divide the window in the proportions this stage is designed around.
+
+        Applied on every resize **until the operator drags a splitter**, after
+        which their sizes are theirs and a window resize must not take them
+        back.
+
+        Done here rather than left to ``setStretchFactor`` alone because a
+        stretch factor governs how *extra* space is shared, not what the panes
+        start at - and the starting point came from size hints, which handed
+        the queue a third more width than the design calls for. Setting the
+        sizes against a viewport that exists is the difference between a ratio
+        that is documented and one that is true.
+        """
+        if self._splitters_adjusted:
+            return
+        for splitter, ratios in (
+            (self.main_splitter, (QUEUE_STRETCH, WORKSPACE_STRETCH)),
+            (self.workspace_splitter, (PREVIEW_STRETCH, RESOLUTION_STRETCH)),
+        ):
+            extent = (
+                splitter.width()
+                if splitter.orientation() is Qt.Orientation.Horizontal
+                else splitter.height()
+            )
+            if extent <= 0:
+                continue
+            total = sum(ratios)
+            splitter.setSizes([round(extent * share / total) for share in ratios])
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Keep the designed proportions as the window changes size."""
+        super().resizeEvent(event)
+        self._apply_split_ratios()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """Apply the proportions once the page has a real size."""
+        super().showEvent(event)
+        self._apply_split_ratios()
 
     def _build_toolbar(self) -> QToolBar:
         """Build the undo, navigation and zoom toolbar above the views.
@@ -464,22 +636,28 @@ class ResolvePage(WorkflowPage):
 
         self.zoom_out_action = QAction(load_icon("zoom-out"), "Zoom Out", self)
         self.zoom_out_action.setObjectName("reviewZoomOutButton")
+        self.zoom_out_action.setToolTip("Zoom the visible view out")
         self.zoom_out_action.triggered.connect(lambda: self._current_view().zoom_out())
         toolbar.addAction(self.zoom_out_action)
 
         self.zoom_in_action = QAction(load_icon("zoom-in"), "Zoom In", self)
         self.zoom_in_action.setObjectName("reviewZoomInButton")
+        self.zoom_in_action.setToolTip("Zoom the visible view in")
         self.zoom_in_action.triggered.connect(lambda: self._current_view().zoom_in())
         toolbar.addAction(self.zoom_in_action)
 
         self.fit_action = QAction(load_icon("maximize"), "Fit", self)
         self.fit_action.setObjectName("reviewFitButton")
+        self.fit_action.setToolTip("Fit the whole sheet in the visible view")
         self.fit_action.triggered.connect(lambda: self._current_view().fit_to_window())
         toolbar.addAction(self.fit_action)
 
         self.recentre_action = QAction(load_icon("scan"), "Re-centre", self)
         self.recentre_action.setObjectName("reviewRecentreButton")
         self.recentre_action.setToolTip("Return the zoomed view to the disputed field")
+        self.recentre_action.setToolTip(
+            "Frame the disputed position again, with its neighbouring columns"
+        )
         self.recentre_action.triggered.connect(self._focus_zoom_on_conflict)
         toolbar.addAction(self.recentre_action)
         toolbar.addSeparator()
@@ -533,19 +711,73 @@ class ResolvePage(WorkflowPage):
         original_layout.addWidget(self.original_note)
         self.view_tabs.addTab(original_tab, "Original scan")
 
+        self.view_tabs.currentChanged.connect(self._on_view_tab_changed)
         return self.view_tabs
 
     def _build_decision_panel(self) -> QWidget:
-        """Build the evidence display and the action controls."""
+        """Build the evidence display and the action controls.
+
+        Two logical sections on one surface rather than two boxed panels, and
+        split **37/63** rather than evenly. What the machine saw is four short
+        facts; what the reviewer does is eleven buttons, a reason, a note, a
+        comparison strip and the commit. Giving them half the width each left
+        the decision cramped beside a mostly empty box.
+        """
         panel = QWidget()
         panel.setObjectName("conflictDecisionPanel")
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
+        layout.setSpacing(Spacing.MD)
 
-        evidence_box = QGroupBox("What the machine saw")
-        evidence_layout = QVBoxLayout(evidence_box)
-        self.evidence_label = QLabel("Select a conflict from the queue.")
+        layout.addWidget(self._build_machine_panel(), stretch=MACHINE_PANEL_STRETCH)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.VLine)
+        divider.setFrameShadow(QFrame.Shadow.Plain)
+        layout.addWidget(divider)
+
+        layout.addWidget(self._build_action_box(), stretch=DECISION_PANEL_STRETCH)
+        return panel
+
+    def _build_machine_panel(self) -> QWidget:
+        """Build the compact statement of what recognition read.
+
+        Four lines a reviewer reads at a glance, and everything else behind
+        **Details**. The long paragraph explaining that per-bubble fill scores
+        were not kept for this batch is true, is worth having, and is not what
+        somebody deciding a digit needs in front of them on every sheet.
+        """
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.XXS)
+
+        heading = QLabel("MACHINE OBSERVATION")
+        heading.setObjectName("resolveSectionHeading")
+        layout.addWidget(heading)
+
+        self.machine_summary_label = QLabel("Select a conflict from the queue.")
+        self.machine_summary_label.setObjectName("machineSummaryLabel")
+        self.machine_summary_label.setWordWrap(True)
+        self.machine_summary_label.setTextFormat(Qt.TextFormat.RichText)
+        self.machine_summary_label.setAlignment(Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self.machine_summary_label)
+
+        self.details_button = QToolButton()
+        self.details_button.setObjectName("machineDetailsToggle")
+        self.details_button.setText("Details")
+        self.details_button.setCheckable(True)
+        self.details_button.setArrowType(Qt.ArrowType.DownArrow)
+        self.details_button.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.details_button.setToolTip(
+            "Per-bubble fill scores, decision scores and scan-quality findings"
+        )
+        self.details_button.toggled.connect(self._on_details_toggled)
+        layout.addWidget(self.details_button, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self.evidence_label = QLabel("")
         self.evidence_label.setObjectName("machineEvidenceLabel")
         self.evidence_label.setWordWrap(True)
         self.evidence_label.setTextFormat(Qt.TextFormat.RichText)
@@ -564,27 +796,46 @@ class ResolvePage(WorkflowPage):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.evidence_scroll.setWidget(self.evidence_label)
-        evidence_layout.addWidget(self.evidence_scroll, stretch=1)
-        layout.addWidget(evidence_box, stretch=1)
-
-        layout.addWidget(self._build_action_box(), stretch=1)
+        self.evidence_scroll.setVisible(False)
+        layout.addWidget(self.evidence_scroll, stretch=1)
+        layout.addStretch(0)
         return panel
 
-    def _build_action_box(self) -> QGroupBox:
-        """Build the resolution controls."""
-        box = QGroupBox("Your decision")
-        layout = QVBoxLayout(box)
-        layout.setSpacing(4)
+    def _on_details_toggled(self, shown: bool) -> None:
+        """Show or hide the full machine evidence."""
+        self.evidence_scroll.setVisible(shown)
+        self.details_button.setArrowType(
+            Qt.ArrowType.UpArrow if shown else Qt.ArrowType.DownArrow
+        )
 
+    def _build_action_box(self) -> QWidget:
+        """Build the resolution controls - the thing the stage exists for."""
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.XS)
+
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        self.choice_heading = QLabel("YOUR DECISION")
+        self.choice_heading.setObjectName("resolveSectionHeading")
+        self.choice_heading.setWordWrap(False)
+        header_layout.addWidget(self.choice_heading, stretch=1)
+        # The operator's name is audit metadata, not a decision control. It has
+        # to be visible - a reviewer must never record a decision believing
+        # somebody else's name is on it - but it does not need a full row of
+        # the panel, which is what it had.
         self.reviewer_label = QLabel("")
-        self.reviewer_label.setObjectName("reviewerNameLabel")
-        self.reviewer_label.setWordWrap(True)
-        layout.addWidget(self.reviewer_label)
+        self.reviewer_label.setObjectName("resolveOperatorBadge")
+        self.reviewer_label.setTextFormat(Qt.TextFormat.RichText)
+        header_layout.addWidget(self.reviewer_label, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(header)
 
         self.choice_row = QWidget()
         self.choice_layout = QHBoxLayout(self.choice_row)
         self.choice_layout.setContentsMargins(0, 0, 0, 0)
-        self.choice_layout.setSpacing(3)
+        self.choice_layout.setSpacing(Spacing.XS)
         layout.addWidget(self.choice_row)
         self._choice_buttons: list[QPushButton] = []
 
@@ -609,64 +860,117 @@ class ResolvePage(WorkflowPage):
         layout.addWidget(self.free_value_row)
         self.free_value_row.setVisible(False)
 
-        reason_row = QWidget()
-        reason_layout = QHBoxLayout(reason_row)
-        reason_layout.setContentsMargins(0, 0, 0, 0)
-        reason_layout.addWidget(QLabel("Reason:"))
+        layout.addWidget(self._build_reason_row())
+        # Slack goes here, between the controls and the commit, so a taller
+        # panel gives the reviewer room rather than stretching the buttons.
+        layout.addStretch(1)
+        layout.addWidget(self._build_provenance_strip())
+        layout.addWidget(self._build_button_row())
+        return box
+
+    def _build_reason_row(self) -> QWidget:
+        """Build the reason and note controls, on one row.
+
+        Both are secondary - they qualify a decision rather than make one - so
+        they share a row instead of taking one each. The validation is
+        untouched: 'Other' still refuses to commit without an explanation.
+        """
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.SM)
+
+        layout.addWidget(QLabel("Reason"))
         self.reason_combo = QComboBox()
         self.reason_combo.setObjectName("correctionReasonCombo")
         for code in ReasonCode:
             if code is ReasonCode.MACHINE_CONFIRMED:
                 continue  # Recorded automatically when accepting; never chosen.
             self.reason_combo.addItem(code.label, userData=code.value)
-        reason_layout.addWidget(self.reason_combo, stretch=1)
-        layout.addWidget(reason_row)
+        layout.addWidget(self.reason_combo, stretch=3)
 
+        layout.addWidget(QLabel("Note"))
         self.reason_text = QTextEdit()
         self.reason_text.setObjectName("correctionReasonText")
-        self.reason_text.setPlaceholderText("Optional note; required for 'Other'.")
-        self.reason_text.setMaximumHeight(52)
-        layout.addWidget(self.reason_text)
-
-        buttons = QWidget()
-        button_layout = QHBoxLayout(buttons)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-
-        self.accept_button = QPushButton(load_icon("circle-check"), "Accept machine value")
-        self.accept_button.setObjectName("acceptMachineValueButton")
-        self.accept_button.setToolTip(
-            "Record that you inspected this and the machine was right (Enter)"
+        self.reason_text.setPlaceholderText("Optional; required for 'Other'")
+        # One line high. A note is a sentence, not a paragraph, and the three
+        # rows this control used to take were three rows the preview did not
+        # get. It is still a QTextEdit, so nothing that reads or writes it
+        # changes.
+        self.reason_text.setFixedHeight(NOTE_HEIGHT_PX)
+        self.reason_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self.reason_text.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
-        self.accept_button.clicked.connect(self.accept_machine)
-        button_layout.addWidget(self.accept_button)
+        layout.addWidget(self.reason_text, stretch=4)
+        return row
+
+    def _build_provenance_strip(self) -> QWidget:
+        """Build the machine / manual / effective comparison strip.
+
+        Three columns, always all three, because the question a reviewer is
+        answering - *is the value this script will carry the machine's or
+        mine?* - has to be answerable by looking at one place. The effective
+        column says **Pending** while a choice has been made and not committed,
+        so an uncommitted selection is never displayed as a stored result.
+        """
+        strip = QFrame()
+        strip.setObjectName("conflictProvenanceStrip")
+        layout = QHBoxLayout(strip)
+        layout.setContentsMargins(Spacing.SM, Spacing.XXS, Spacing.SM, Spacing.XXS)
+        layout.setSpacing(Spacing.MD)
+
+        self.summary_machine = QLabel("")
+        self.summary_machine.setObjectName("provenanceMachineValue")
+        self.summary_manual = QLabel("")
+        self.summary_manual.setObjectName("provenanceManualValue")
+        self.summary_effective = QLabel("")
+        self.summary_effective.setObjectName("provenanceEffectiveValue")
+        for label in (self.summary_machine, self.summary_manual, self.summary_effective):
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(False)
+            layout.addWidget(label, stretch=1)
+        return strip
+
+    def _build_button_row(self) -> QWidget:
+        """Build the primary and secondary actions.
+
+        State-aware, and only ever showing what can be done now. An unresolved
+        conflict offers a commit and a deferral; a decided one offers to reopen
+        it. A permanently disabled third button taught an operator to ignore a
+        third of the action area.
+        """
+        buttons = QWidget()
+        layout = QHBoxLayout(buttons)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.SM)
+
+        self.confirm_button = QPushButton(load_icon("circle-check"), "Confirm resolution")
+        self.confirm_button.setObjectName("confirmResolutionButton")
+        self.confirm_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
+        self.confirm_button.setMinimumHeight(ACTION_BUTTON_HEIGHT_PX)
+        self.confirm_button.setDefault(True)
+        self.confirm_button.clicked.connect(self.confirm_resolution)
+        layout.addWidget(self.confirm_button, stretch=3)
 
         self.defer_button = QPushButton("Defer")
         self.defer_button.setObjectName("deferConflictButton")
         self.defer_button.setToolTip("Postpone this decision (D)")
+        self.defer_button.setMinimumHeight(ACTION_BUTTON_HEIGHT_PX)
         self.defer_button.clicked.connect(self.defer_conflict)
-        button_layout.addWidget(self.defer_button)
+        layout.addWidget(self.defer_button, stretch=1)
 
         self.reopen_button = QPushButton(load_icon("rotate-ccw"), "Reopen")
         self.reopen_button.setObjectName("reopenConflictButton")
+        self.reopen_button.setMinimumHeight(ACTION_BUTTON_HEIGHT_PX)
         self.reopen_button.setToolTip(
             "Discard every decision on this conflict and put it back in the queue. "
             "Nothing is erased - the earlier corrections stay in the history. "
             "To step back one decision instead, use Undo (Ctrl+Z)."
         )
         self.reopen_button.clicked.connect(self.reopen_conflict)
-        button_layout.addWidget(self.reopen_button)
-        layout.addWidget(buttons)
-
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        layout.addWidget(separator)
-
-        self.provenance_label = QLabel("")
-        self.provenance_label.setObjectName("conflictProvenanceLabel")
-        self.provenance_label.setWordWrap(True)
-        self.provenance_label.setTextFormat(Qt.TextFormat.RichText)
-        layout.addWidget(self.provenance_label)
-        return box
+        layout.addWidget(self.reopen_button, stretch=1)
+        return buttons
 
     def _install_shortcuts(self) -> None:
         """Bind the keys a reviewer working through hundreds of conflicts needs.
@@ -691,8 +995,11 @@ class ResolvePage(WorkflowPage):
         bindings: list[tuple[QKeySequence, Callable[[], object]]] = [
             (QKeySequence(Qt.Key.Key_Left), self.select_previous),
             (QKeySequence(Qt.Key.Key_Right), self.select_next),
-            (QKeySequence(Qt.Key.Key_Return), self.accept_machine),
-            (QKeySequence(Qt.Key.Key_Enter), self.accept_machine),
+            # Enter confirms whatever the comparison strip says the effective
+            # value would be - a picked value, or the machine's reading when
+            # that is one this field could carry. One key for one idea.
+            (QKeySequence(Qt.Key.Key_Return), self.confirm_resolution),
+            (QKeySequence(Qt.Key.Key_Enter), self.confirm_resolution),
             (QKeySequence(Qt.Key.Key_D), self.defer_conflict),
             (QKeySequence(BLANK_KEY), lambda: self.choose_label(BLANK_CHOICE)),
             (
@@ -913,15 +1220,17 @@ class ResolvePage(WorkflowPage):
                 values = (
                     conflict.scan_name,
                     conflict.identifier_value,
-                    conflict.field.describe(),
-                    conflict.conflict_type.label,
+                    _issue_text(conflict),
                     f"{conflict.state_marker} {conflict.state_label}",
                 )
                 for column, text in enumerate(values):
                     item = QTableWidgetItem(text)
                     item.setBackground(_STATE_COLORS[conflict.state])
-                    if column == 4:
-                        item.setToolTip(_state_tooltip(conflict))
+                    # Every cell can elide, so every cell carries its full
+                    # value where the operator can reach it.
+                    item.setToolTip(
+                        _state_tooltip(conflict) if column == 3 else text
+                    )
                     self.queue_table.setItem(row, column, item)
         finally:
             self.queue_table.setUpdatesEnabled(True)
@@ -932,18 +1241,29 @@ class ResolvePage(WorkflowPage):
         database = self.database
         if database is None or self.state.batch_id is None:
             self.summary_label.setText("")
+            self.summary_breakdown.setText("")
+            self._batch_unresolved = 0
             return
         counts = count_conflicts(database, self.state.batch_id)
+        self._batch_unresolved = counts.unresolved
+        self.summary_label.setText(
+            f"<b>{counts.total}</b> total &nbsp; "
+            f"<b>{counts.unresolved}</b> unresolved &nbsp; "
+            f"<b>{counts.resolved}</b> resolved"
+        )
+        self.summary_label.setToolTip(
+            f"{counts.open_count} never looked at, {counts.deferred} deferred, "
+            f"{counts.resolved} decided, {counts.withdrawn} withdrawn by a re-read."
+        )
         biggest = sorted(counts.by_type.items(), key=lambda item: -item[1])[:3]
-        breakdown = ", ".join(
+        breakdown = " &middot; ".join(
             f"{ConflictType(kind).label}: {count}" for kind, count in biggest
         )
-        self.summary_label.setText(
-            f"Total conflicts: <b>{counts.total}</b><br>"
-            f"Unresolved: <b>{counts.unresolved}</b> "
-            f"(open {counts.open_count}, deferred {counts.deferred})<br>"
-            f"Resolved: {counts.resolved} &middot; Withdrawn: {counts.withdrawn}"
-            + (f"<br><i>{breakdown}</i>" if breakdown else "")
+        self.summary_breakdown.setText(
+            f"<span style='color:{Color.TEXT_TERTIARY};font-size:9pt;'>"
+            f"{breakdown}</span>"
+            if breakdown
+            else ""
         )
 
     def current_conflict(self) -> ConflictRecord | None:
@@ -1027,6 +1347,10 @@ class ResolvePage(WorkflowPage):
     # ------------------------------------------------------------------
     def _show_conflict(self, conflict: ConflictRecord) -> None:
         """Display one conflict: its evidence, its actions and its sheet."""
+        # A choice belongs to the position it was made on. Carrying one across
+        # a selection change would leave a ring on a bubble of a sheet the
+        # reviewer has left, and arm the confirm button with it.
+        self.clear_pending()
         self._reload_sheet_conflicts(conflict.scan_id)
         self._refresh_evidence(conflict)
         self._refresh_choices(conflict)
@@ -1111,6 +1435,12 @@ class ResolvePage(WorkflowPage):
                     empty=True,
                     centers=True,
                     status_symbols=False,
+                    # See NEUTRAL_OUTLINE: on this stage amber means "the
+                    # machine read this mark" and red means "a person decided
+                    # this", and a zone outlined red because its status is
+                    # `multiple` would be a third meaning for the same colour
+                    # inside the same rectangle.
+                    status_colors=False,
                 )
             self.normalised_view.fit_to_window()
             self._focus_zoom_on_conflict()
@@ -1124,6 +1454,7 @@ class ResolvePage(WorkflowPage):
             for view in (self.normalised_view, self.zoom_view):
                 view.clear()
                 view.set_placeholder(message)
+        self._offer_the_useful_tab(registered=result is not None and result.preview is not None)
 
         if bundle.original is not None:
             self.original_view.set_placeholder("")
@@ -1148,6 +1479,50 @@ class ResolvePage(WorkflowPage):
                 f"{self.evidence_label.text()}<br><br><b>This sheet could not be "
                 f"read for review:</b> {bundle.error}"
             )
+
+    def _offer_the_useful_tab(self, *, registered: bool) -> None:
+        """Show the tab that has something on it, and disable the ones that do not.
+
+        A sheet that would not align has no rectified page and no field to zoom
+        into - those two tabs are empty *by definition of the conflict* - while
+        the original scan is exactly what the reviewer has to look at to decide
+        whether to re-scan it. Leaving all three enabled invites them to click
+        through two blank panes to reach the only one that helps.
+
+        **And it switches back.** Forcing the tab without restoring it means
+        one registration failure in a queue silently moves every later sheet to
+        the original scan, so the zoomed field - the view the stage is built
+        around - is never seen again. What is restored is the reviewer's own
+        last deliberate choice, tracked in :attr:`_preferred_tab`, so somebody
+        who prefers the whole normalised sheet keeps it.
+        """
+        # The whole method is guarded, not just the explicit switch: disabling
+        # the tab that is currently shown makes Qt move to another one and emit
+        # `currentChanged` itself, and that move is this page's doing rather
+        # than the reviewer's. Guarding only `setCurrentIndex` let Qt's own
+        # switch be recorded as a preference, which is how one registration
+        # failure came to pin every later sheet to the original scan.
+        self._suppress_tab_memory = True
+        try:
+            for index in (ZOOM_TAB_INDEX, NORMALISED_TAB_INDEX):
+                self.view_tabs.setTabEnabled(index, registered)
+                self.view_tabs.setTabToolTip(
+                    index,
+                    ""
+                    if registered
+                    else "This sheet could not be aligned, so there is no "
+                    "rectified page.",
+                )
+            wanted = self._preferred_tab if registered else ORIGINAL_TAB_INDEX
+            if self.view_tabs.currentIndex() != wanted:
+                self.view_tabs.setCurrentIndex(wanted)
+        finally:
+            self._suppress_tab_memory = False
+
+    def _on_view_tab_changed(self, index: int) -> None:
+        """Remember a tab the *reviewer* chose, ignoring one this page forced."""
+        if not self._suppress_tab_memory and self.view_tabs.isTabEnabled(index):
+            self._preferred_tab = index
 
     def _conflict_bubbles(self, conflict: ConflictRecord) -> tuple[BubbleView, ...]:
         """Return just the bubbles belonging to the disputed group.
@@ -1199,6 +1574,7 @@ class ResolvePage(WorkflowPage):
             self.state.sheet_conflicts,
             self.state.sheet_provenance,
             active_conflict_id=conflict.conflict_id,
+            pending=self.state.pending,
         )
 
     def _refresh_lanes(self) -> None:
@@ -1215,23 +1591,35 @@ class ResolvePage(WorkflowPage):
             view.set_lanes(lanes)
 
     def _focus_zoom_on_conflict(self) -> None:
-        """Centre and magnify the zoomed view on the disputed group."""
+        """Frame the disputed group, with its neighbours, in the zoomed view.
+
+        Two changes from the arithmetic this replaces, both of which the
+        operator sees. The region now includes the neighbouring printed
+        positions (:func:`~omr_scanner.gui.review.lanes.context_bubbles`),
+        because a faint mark is judged against the columns beside it, filled by
+        the same candidate in the same pencil - framing the disputed column
+        alone removes the only comparison available. And the framing is handed
+        to the view as a *rectangle to keep in frame* rather than as a
+        magnification computed once: the old version ran before the tab had
+        been shown, so it sized the image against a viewport that did not exist
+        yet and left a small page pinned to the corner of a large empty canvas.
+        """
         conflict = self.current_conflict()
-        bubbles = self._conflict_bubbles(conflict) if conflict is not None else ()
+        bundle = self.state.bundle
+        if (
+            conflict is None
+            or bundle is None
+            or bundle.result is None
+            or self.state.template is None
+        ):
+            self.zoom_view.fit_to_window()
+            return
+        bubbles = context_bubbles(bundle.result, self.state.template, conflict)
         if not bubbles:
             self.zoom_view.fit_to_window()
             return
-        left = min(item.x - item.width / 2.0 for item in bubbles) - ZOOM_PADDING_PX
-        right = max(item.x + item.width / 2.0 for item in bubbles) + ZOOM_PADDING_PX
-        top = min(item.y - item.height / 2.0 for item in bubbles) - ZOOM_PADDING_PX
-        bottom = max(item.y + item.height / 2.0 for item in bubbles) + ZOOM_PADDING_PX
-
-        viewport = self.zoom_view.viewport().size()
-        width = max(right - left, 1.0)
-        height = max(bottom - top, 1.0)
-        factor = min(viewport.width() / width, viewport.height() / height)
-        self.zoom_view.set_zoom(factor)
-        self.zoom_view.centerOn((left + right) / 2.0, (top + bottom) / 2.0)
+        left, top, right, bottom = bounds_of(bubbles)
+        self.zoom_view.focus_on(QRectF(left, top, right - left, bottom - top))
 
     def _describe_original_location(self, conflict: ConflictRecord) -> None:
         """Say where on the *original* scan the disputed field sits.
@@ -1274,17 +1662,20 @@ class ResolvePage(WorkflowPage):
         for view in (self.zoom_view, self.normalised_view, self.original_view):
             view.clear()
         self.original_note.setText("")
-        self.evidence_label.setText("Select a conflict from the queue.")
-        self.provenance_label.setText("")
+        self.machine_summary_label.setText("Select a conflict from the queue.")
+        self.evidence_label.setText("")
+        self.choice_heading.setText("YOUR DECISION")
+        self._set_provenance_strip("", "", "")
         self.sheet_progress_label.setText("")
+        self.clear_pending()
         self._clear_choices()
 
     def _current_view(self) -> ScanPreviewView:
         """The image view the visible tab is showing."""
         index = self.view_tabs.currentIndex()
-        if index == 1:
+        if index == NORMALISED_TAB_INDEX:
             return self.normalised_view
-        if index == 2:
+        if index == ORIGINAL_TAB_INDEX:
             return self.original_view
         return self.zoom_view
 
@@ -1292,10 +1683,13 @@ class ResolvePage(WorkflowPage):
     # Evidence, choices, provenance
     # ------------------------------------------------------------------
     def _refresh_evidence(self, conflict: ConflictRecord) -> None:
-        """Render what the machine saw."""
+        """Render what the machine saw, in summary and in full."""
         bundle = self.state.bundle
         result = bundle.result if bundle is not None else None
         assessment = result.scan_quality if result is not None else None
+        self.machine_summary_label.setText(
+            _machine_summary_html(conflict, self._machine_marks(conflict))
+        )
         self.evidence_label.setText(_evidence_html(conflict, assessment))
 
     def _refresh_sheet_progress(self, conflict: ConflictRecord) -> None:
@@ -1328,14 +1722,20 @@ class ResolvePage(WorkflowPage):
             ),
             0,
         )
+        # Every number says what it counts. The header used to read
+        # "1 of 1 - 1 unresolved" beside a summary reading "157 unresolved",
+        # which are both true of different things and read as a contradiction.
         self.sheet_progress_label.setText(
-            f"Conflict {position} of {len(on_sheet)} &middot; "
-            f"<b>{counts.unresolved}</b> unresolved"
+            f"<b>{position}</b>/{len(on_sheet)} on sheet &middot; "
+            f"<b>{counts.unresolved}</b> left here &middot; "
+            f"<b>{self._batch_unresolved}</b> in batch"
         )
         self.sheet_progress_label.setToolTip(
-            f"This sheet has {counts.total} conflict(s): {counts.open_count} open, "
-            f"{counts.deferred} deferred, {counts.resolved} resolved, "
-            f"{counts.withdrawn} withdrawn."
+            f"Conflict {position} of {len(on_sheet)} shown for this sheet. "
+            f"The sheet has {counts.total} conflict(s) in total: "
+            f"{counts.open_count} open, {counts.deferred} deferred, "
+            f"{counts.resolved} resolved, {counts.withdrawn} withdrawn. "
+            f"The batch has {self._batch_unresolved} unresolved."
         )
 
     def _clear_choices(self) -> None:
@@ -1372,6 +1772,14 @@ class ResolvePage(WorkflowPage):
         self._clear_choices()
         self.free_value_row.setVisible(False)
         self.free_value_edit.clear()
+        # Names the position being edited, so a reviewer choosing a digit does
+        # not have to look back at the machine panel to remember which of six
+        # roll-number columns they are deciding.
+        self.choice_heading.setText(
+            f"CHOOSE VALUE FOR {conflict.field.describe().upper()}"
+            if conflict.allows_value_correction
+            else "YOUR DECISION"
+        )
 
         if not conflict.allows_value_correction:
             note = QLabel(
@@ -1396,23 +1804,66 @@ class ResolvePage(WorkflowPage):
             return
 
         for label in (*labels, BLANK_CHOICE):
-            button = QPushButton(label)
+            button = QPushButton(BLANK_BUTTON_TEXT if label == BLANK_CHOICE else label)
             button.setObjectName(f"choiceButton_{label}")
             # The key is named on the button that does the same thing, because
             # the two are one command - `choose_label` - and a reviewer who
             # never reads the documentation still learns the shortcut.
             key = "B" if label == BLANK_CHOICE else label
             button.setToolTip(
-                f"Record '{label}' as the corrected value"
+                f"Choose '{label}' for this position"
                 + (f" (press {key})" if len(key) == 1 else "")
             )
-            button.setAccessibleName(f"Record {label}")
+            button.setAccessibleName(f"Choose {label}")
+            button.setFixedHeight(CHOICE_BUTTON_HEIGHT)
+            button.setMinimumWidth(CHOICE_BUTTON_MIN_WIDTH)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+            )
             button.clicked.connect(
                 lambda _checked=False, item=label: self.choose_label(item)
             )
-            self.choice_layout.addWidget(button)
+            # "Blank" is a word among symbols, so it is allowed the width one
+            # needs; the rest stay a uniform numeric row.
+            self.choice_layout.addWidget(button, stretch=2 if label == BLANK_CHOICE else 1)
             self._choice_buttons.append(button)
-        self.choice_layout.addStretch(1)
+        self._refresh_choice_states()
+
+    def _refresh_choice_states(self) -> None:
+        """Repaint the value buttons in the three states they can be in.
+
+        ============================ =====================================
+        state                        what it means
+        ============================ =====================================
+        plain                        a symbol nobody has said anything about
+        amber, outlined              the engine read *this* mark on the paper
+        accent, filled               the reviewer has picked it
+        ============================ =====================================
+
+        Without the middle one, a position the machine read as ``0-5`` showed
+        eleven identical buttons and made the reviewer carry "it was 0 and 5"
+        in their head from the panel beside it. The state is set as a dynamic
+        property and the appearance comes from the stage's stylesheet, so
+        eleven buttons rebuilt on every selection do not each carry a palette.
+        """
+        conflict = self.current_conflict()
+        machine = self._machine_marks(conflict) if conflict is not None else frozenset()
+        pending = self.state.pending
+        for button in self._choice_buttons:
+            label = button.objectName().removeprefix("choiceButton_")
+            value = "" if label == BLANK_CHOICE else label
+            if pending is not None and value == pending:
+                state = CANDIDATE_CHOSEN
+            elif label != BLANK_CHOICE and label in machine:
+                state = CANDIDATE_MACHINE
+            else:
+                state = ""
+            if button.property(CANDIDATE_STATE_PROPERTY) == state:
+                continue
+            button.setProperty(CANDIDATE_STATE_PROPERTY, state)
+            # Qt does not re-evaluate a property selector on its own.
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def _refresh_provenance(self, conflict: ConflictRecord) -> None:
         """Say where this conflict's current value comes from.
@@ -1433,24 +1884,81 @@ class ResolvePage(WorkflowPage):
         """
         database = self.database
         if database is None:
-            self.provenance_label.setText("")
+            self._set_provenance_strip("", "", "")
             return
-        self.provenance_label.setText(
-            _provenance_html(provenance_for(database, conflict.conflict_id))
+        found = provenance_for(database, conflict.conflict_id)
+        machine = found.machine_value or "(blank)"
+        if self.state.pending is not None:
+            manual = self.state.pending or "(blank)"
+            # "Pending", not the value: nothing has been written, and a strip
+            # that showed the chosen value as the effective result would be
+            # claiming a decision the ledger does not carry.
+            effective = "Pending"
+            self.summary_effective.setToolTip(
+                "Chosen but not recorded. Confirm to make this the effective value."
+            )
+        elif found.source is ValueSource.HUMAN:
+            manual = found.value or "(blank)"
+            effective = found.value or "(blank)"
+            self.summary_effective.setToolTip(
+                f"Recorded by {found.reviewer} at {found.decided_at}."
+            )
+        else:
+            manual = "—"
+            effective = found.value or "(blank)"
+            self.summary_effective.setToolTip("The machine's reading; not yet reviewed.")
+        self._set_provenance_strip(machine, manual, effective)
+
+    def _set_provenance_strip(self, machine: str, manual: str, effective: str) -> None:
+        """Write the three columns of the comparison strip."""
+        for label, caption, value in (
+            (self.summary_machine, "MACHINE", machine),
+            (self.summary_manual, "MANUAL", manual),
+            (self.summary_effective, "EFFECTIVE", effective),
+        ):
+            label.setText(
+                f"<span style='color:{Color.TEXT_TERTIARY};font-size:9pt;'>"
+                f"{caption}</span><br><b>{value or '&mdash;'}</b>"
+            )
+
+    def provenance_summary(self) -> tuple[str, str, str]:
+        """The strip's three values as plain text, for a test or a reader.
+
+        The strip is rich text in three widgets; this is the one place that
+        says what it currently claims, so an assertion does not have to parse
+        markup to find out.
+        """
+        return tuple(  # type: ignore[return-value]
+            label.text().split("<br>")[-1].removeprefix("<b>").removesuffix("</b>")
+            for label in (
+                self.summary_machine,
+                self.summary_manual,
+                self.summary_effective,
+            )
         )
 
     def _refresh_reviewer_label(self) -> None:
-        """Show who decisions will be recorded against."""
+        """Show who decisions will be recorded against.
+
+        A badge rather than a sentence with a row to itself. It still has to be
+        visible - nobody may record a decision believing somebody else's name
+        is on it - but it is audit metadata, not a control, and it was taking
+        prime space in the panel the reviewer works in.
+        """
         if self.state.reviewer:
-            self.reviewer_label.setText(
-                f"Decisions are recorded as: <b>{self.state.reviewer}</b>"
+            self.reviewer_label.setText(f"Operator: <b>{self.state.reviewer}</b>")
+            self.reviewer_label.setToolTip(
+                f"Every decision here is recorded against {self.state.reviewer}. "
+                "Change it in File > Settings."
             )
         else:
             self.reviewer_label.setText(
-                "<span style='color:#B3261E;'>Set your reviewer name in "
-                "File &gt; Settings before resolving anything.</span>"
+                f"<span style='color:{Color.DESTRUCTIVE};'>No operator set</span>"
             )
-        self.reviewer_label.setTextFormat(Qt.TextFormat.RichText)
+            self.reviewer_label.setToolTip(
+                "Set your reviewer name in File > Settings. A correction cannot "
+                "be saved without one."
+            )
 
     # ------------------------------------------------------------------
     # Actions
@@ -1476,25 +1984,29 @@ class ResolvePage(WorkflowPage):
         )
 
     def choose_label(self, label: str) -> bool:
-        """Record the value one of the offered symbols stands for.
+        """Pick the value one of the offered symbols stands for.
 
         Args:
             label: A symbol the template prints for this group, or
                 :data:`BLANK_CHOICE`.
 
         Returns:
-            Whether a decision was recorded.
+            Whether the choice was accepted.
+
+        **Picks; does not commit.** The ring lands on the bubble, the
+        comparison strip shows what the effective value *would* become, and
+        nothing is written until :meth:`confirm_resolution`. A correction
+        changes what a script is worth, and a single mis-click deciding it -
+        with no moment in between to see that the ring landed on the bubble the
+        reviewer meant - is the accidental edit this stage exists to prevent.
 
         **The one path a value takes, whether it arrived from a button or a
         key.** The buttons call this, the digit keys call this, and there is no
-        second implementation for either to drift from - so a keyboard
-        correction cannot end up with a different reviewer, a different reason
-        or a different audit event from a clicked one.
+        second implementation for either to drift from.
 
         Refuses silently when the active conflict does not offer ``label``. A
         reviewer pressing ``7`` on a set-code position printed ``A``-``D`` has
-        typed something this sheet has no answer to, and inventing one would be
-        the accidental edit every guard on this page exists to prevent.
+        typed something this sheet has no answer to.
         """
         if self._editing_text():
             return False
@@ -1503,7 +2015,70 @@ class ResolvePage(WorkflowPage):
             return False
         if label != BLANK_CHOICE and label not in self._offered_labels(conflict):
             return False
-        return self.correct("" if label == BLANK_CHOICE else label)
+        self.state.pending = "" if label == BLANK_CHOICE else label
+        self._refresh_choice_states()
+        self._refresh_lanes()
+        self._refresh_provenance(conflict)
+        self._refresh_controls()
+        return True
+
+    def clear_pending(self) -> None:
+        """Forget an uncommitted choice."""
+        self.state.pending = None
+
+    def confirm_resolution(self) -> bool:
+        """Commit whatever the comparison strip says the effective value is.
+
+        One button for the two things a reviewer can be confirming, because
+        from their side it is one act - *this is the value, record it*:
+
+        * a value they picked, which is recorded as a correction;
+        * the machine's own reading, when it is a value this field could
+          carry and they have inspected it and agree.
+
+        Returns ``False`` without writing anything when neither applies - which
+        is exactly the multiply-marked case §10 is about, where there is no
+        machine reading to confirm and no choice has been made yet.
+        """
+        if self._editing_text():
+            return False
+        conflict = self.current_conflict()
+        if conflict is None:
+            return False
+        if self.state.pending is not None:
+            return self.correct(self.state.pending)
+        if self._machine_value_is_confirmable(conflict):
+            return self.accept_machine()
+        return False
+
+    def _machine_value_is_confirmable(self, conflict: ConflictRecord) -> bool:
+        """Whether the machine's reading is a value this field could carry.
+
+        **The distinction the old wording hid.** "Accept machine value" was
+        offered for every conflict, including a roll-number position the engine
+        read as ``0-5``. Accepting that recorded ``0-5`` as the human-decided
+        value of one printed digit, which
+        :func:`~omr_scanner.services.review_store._substitute_position` then
+        substitutes into the identifier - producing a candidate ID no roster
+        will ever match, from a button that said the machine was right.
+
+        The backend is unchanged and still able to store it; what changes is
+        that the interface no longer offers it as a resolution. A reading is
+        confirmable when it is one of the symbols the template prints for this
+        group, or a blank - a reviewer confirming "this position really is
+        empty" is making a legitimate decision. Where the group has no fixed
+        alphabet at all (a whole identifier, a duplicate roll number) the
+        machine's value is a whole field value and is confirmable as it stands.
+        """
+        if not conflict.allows_value_correction:
+            # A sheet-scope conflict has no value; acknowledging it is what
+            # "confirm" means there, and that is what the backend records.
+            return True
+        value = conflict.observation.value
+        labels = self._offered_labels(conflict)
+        if not labels:
+            return True
+        return value == "" or value in labels
 
     def _offered_labels(self, conflict: ConflictRecord) -> tuple[str, ...]:
         """The symbols the template prints for this conflict's group."""
@@ -1512,6 +2087,15 @@ class ResolvePage(WorkflowPage):
         return group_labels(
             self.state.template, conflict.field.zone_id, conflict.field.group_key
         )
+
+    def _machine_marks(self, conflict: ConflictRecord) -> frozenset[str]:
+        """The symbols the engine read as marked in this group.
+
+        Read from the stored observation through
+        :func:`~omr_scanner.services.conflict_policy.split_marks`, so the
+        interface does not have its own idea of how ``"0-5"`` is written down.
+        """
+        return frozenset(split_marks(conflict.observation.value))
 
     def _correct_from_text(self) -> bool:
         """Record the free-text field's value as the correction."""
@@ -1827,11 +2411,13 @@ class ResolvePage(WorkflowPage):
         named = bool(self.state.reviewer)
         can_decide = has_conflict and named
 
-        self.accept_button.setEnabled(can_decide)
+        self._refresh_primary_action(conflict, can_decide=can_decide)
         self.defer_button.setEnabled(can_decide)
-        self.reopen_button.setEnabled(
-            can_decide and conflict is not None and conflict.state.is_human_touched
-        )
+        decided = conflict is not None and conflict.state.is_human_touched
+        # Shown only when there is something to reopen. A permanently disabled
+        # button teaches an operator to stop seeing a third of the action area.
+        self.reopen_button.setVisible(decided)
+        self.reopen_button.setEnabled(can_decide and decided)
         for button in self._choice_buttons:
             button.setEnabled(can_decide)
         self.free_value_edit.setEnabled(can_decide)
@@ -1846,6 +2432,82 @@ class ResolvePage(WorkflowPage):
             action.setEnabled(bool(self.state.conflicts))
         self._refresh_undo_controls(named=named)
         self._refresh_reviewer_label()
+
+    def _refresh_primary_action(
+        self, conflict: ConflictRecord | None, *, can_decide: bool
+    ) -> None:
+        """Say what the primary button would do, and whether it can do it.
+
+        Three different sentences, because they are three different acts and
+        an operator working at speed reads the button rather than reasoning
+        about the state behind it:
+
+        * **Confirm 5** - a value has been picked and will be recorded;
+        * **Confirm machine reading** - the engine's value is one this field
+          could carry, and confirming it says a person checked;
+        * **Choose a value first** - disabled, for the multiply-marked case
+          where there is nothing to confirm yet. See
+          :meth:`_machine_value_is_confirmable`.
+        """
+        if conflict is None:
+            self.confirm_button.setVisible(True)
+            self.confirm_button.setEnabled(False)
+            self.confirm_button.setText("Confirm resolution")
+            self.confirm_button.setToolTip("")
+            return
+
+        if self.state.pending is not None:
+            shown = self.state.pending or BLANK_BUTTON_TEXT.lower()
+            self.confirm_button.setVisible(True)
+            self.confirm_button.setText(f"Confirm '{shown}'")
+            self.confirm_button.setToolTip(
+                f"Record '{shown}' as this position's value, against your name "
+                "and the reason below (Enter)"
+            )
+            self.confirm_button.setEnabled(can_decide)
+            return
+
+        # Already decided, and nothing new picked. There is nothing to confirm,
+        # and Reopen - which is now visible - is the action that applies. A
+        # button reading "Choose a value first" here would be telling the
+        # operator to fix something that is not broken.
+        if conflict.state.is_human_touched:
+            self.confirm_button.setVisible(False)
+            self.confirm_button.setEnabled(False)
+            return
+        self.confirm_button.setVisible(True)
+
+        if not conflict.allows_value_correction:
+            # A page that would not rectify or a file that would not decode is
+            # not a value, so "confirm the machine reading" would be confirming
+            # nothing. Acknowledging is what the backend records here, and it
+            # is what the button should say.
+            self.confirm_button.setText("Acknowledge")
+            self.confirm_button.setToolTip(
+                "Record that you have seen this. It settles the conflict "
+                "without changing any value (Enter)"
+            )
+            self.confirm_button.setEnabled(can_decide)
+            return
+
+        if self._machine_value_is_confirmable(conflict):
+            self.confirm_button.setText("Confirm machine reading")
+            self.confirm_button.setToolTip(
+                "Record that you inspected this and the machine was right (Enter)"
+            )
+            self.confirm_button.setEnabled(can_decide)
+            return
+
+        # The multiply-marked case. There is no single value to confirm, so the
+        # button says what is missing rather than offering to store a reading
+        # the field cannot carry.
+        self.confirm_button.setText("Choose a value first")
+        self.confirm_button.setToolTip(
+            f"The machine read '{conflict.observation.value}', which is not one "
+            "value this position can hold. Choose one of the values above, "
+            "choose Blank, or defer."
+        )
+        self.confirm_button.setEnabled(False)
 
     def _refresh_undo_controls(self, *, named: bool) -> None:
         """Enable and describe the three reversal controls.
@@ -1918,6 +2580,73 @@ class ResolvePage(WorkflowPage):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
+def _describe_marks(marks: Sequence[str]) -> str:
+    """Render the symbols a group carries the way a person would say them.
+
+    ``0-5`` is how recognition writes a doubly-marked position down, and it is
+    what the ledger and the export keep. It is not what an operator reads: at
+    a glance it is as easily a range, a hyphenated code or a minus sign. This
+    says *0 and 5*, and changes nothing that is stored.
+    """
+    if not marks:
+        return "nothing"
+    if len(marks) == 1:
+        return marks[0]
+    return f"{', '.join(marks[:-1])} and {marks[-1]}"
+
+
+_ISSUE_WORDING: dict[ConflictType, str] = {
+    ConflictType.IDENTIFIER_BLANK: "No mark anywhere in this field",
+    ConflictType.IDENTIFIER_INCOMPLETE: "This position is blank",
+    ConflictType.IDENTIFIER_MULTIPLE: "More than one mark",
+    ConflictType.IDENTIFIER_UNCERTAIN: "Too faint, or too close to call",
+    ConflictType.IDENTIFIER_UNREADABLE: "Could not be measured",
+    ConflictType.IDENTIFIER_LOW_CONFIDENCE: "Below the template's confidence floor",
+    ConflictType.IDENTIFIER_DUPLICATE: "Another sheet has this student ID",
+    ConflictType.SET_CODE_BLANK: "This position is blank",
+    ConflictType.SET_CODE_MULTIPLE: "More than one mark",
+    ConflictType.SET_CODE_UNCERTAIN: "Too faint, or too close to call",
+    ConflictType.SET_CODE_UNREADABLE: "Could not be measured",
+    ConflictType.SET_CODE_LOW_CONFIDENCE: "Below the template's confidence floor",
+}
+"""What each conflict means, in a reviewer's words rather than the taxonomy's.
+
+The type's own :attr:`~omr_scanner.domain.review.ConflictType.label` names the
+*category* - "Student ID multiple marks" - which is right for a queue column
+and repeats the field name in a panel that has just said it. Anything not
+listed falls back to the label, so a type added later is described rather than
+blank."""
+
+
+def _machine_summary_html(conflict: ConflictRecord, marks: Collection[str]) -> str:
+    """Render the four facts a reviewer needs before choosing.
+
+    What position, what is wrong with it, what was on the paper, and which
+    sheet. Everything else recognition recorded - the decision score, the
+    per-bubble fill scores, the scan-quality measurements - is behind
+    **Details**, because it answers a question nobody asks on most sheets and
+    it was taking more of the panel than all four of these together.
+    """
+    rows: list[tuple[str, str]] = [
+        ("Issue", _ISSUE_WORDING.get(conflict.conflict_type, conflict.conflict_type.label))
+    ]
+    if conflict.conflict_type.allows_value_correction:
+        rows.append(("Detected", _describe_marks(sorted(marks))))
+    rows.append(("Sheet", conflict.scan_name or "(unknown)"))
+    if conflict.related_scan_ids:
+        rows.append(("Also on", f"{len(conflict.related_scan_ids)} other sheet(s)"))
+
+    body = "".join(
+        f"<tr><td style='color:{Color.TEXT_TERTIARY};padding-right:10px;'>{name}</td>"
+        f"<td><b>{value}</b></td></tr>"
+        for name, value in rows
+    )
+    return (
+        f"<div style='font-size:11pt;'><b>{conflict.field.describe()}</b></div>"
+        f"<table style='margin-top:2px;'>{body}</table>"
+    )
+
+
 def _no_rectified_page_message(bundle: SheetBundle) -> str:
     """Say why a sheet has no normalised page to show.
 
@@ -1952,6 +2681,23 @@ def _reason_or_other(stored: str) -> ReasonCode:
         return ReasonCode(stored)
     except ValueError:
         return ReasonCode.OTHER
+
+
+def _issue_text(conflict: ConflictRecord) -> str:
+    """Render one queue row's problem as a phrase rather than two fragments.
+
+    ``Student ID - position 5 . More than one mark``. The field and the
+    conflict type used to be two narrow columns, each eliding its own half of
+    that sentence; joined, they fit and they read.
+
+    A sheet-scope conflict is about the page rather than a position on it, so
+    it is named by its type alone - "Registration failed" - without a "Sheet"
+    prefix that would repeat the column beside it.
+    """
+    wording = _ISSUE_WORDING.get(conflict.conflict_type, conflict.conflict_type.label)
+    if conflict.conflict_type.scope is ConflictScope.SHEET:
+        return conflict.conflict_type.label
+    return f"{conflict.field.describe()} · {wording}"
 
 
 def _state_tooltip(conflict: ConflictRecord) -> str:

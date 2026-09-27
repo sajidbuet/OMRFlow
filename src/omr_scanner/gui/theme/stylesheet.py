@@ -40,6 +40,7 @@ from typing import Final
 
 from omr_scanner.gui.theme.tokens import (
     Color,
+    FontWeight,
     Radius,
     Spacing,
     Stroke,
@@ -735,7 +736,87 @@ communicated by colour alone - each toggle's tooltip names its state, and the
 Grid toggle's own overlay is visible on the canvas."""
 
 
+CANDIDATE_STATE_PROPERTY: Final = "candidateState"
+"""Dynamic property naming what one value button on the Resolve stage means.
+
+A property plus a stylesheet rule rather than per-button ``setStyleSheet``
+calls: there are eleven of these buttons on a roll-number position, they are
+rebuilt on every selection, and colouring them one at a time is how a palette
+ends up written out in a page module."""
+
+CANDIDATE_MACHINE: Final = "machine"
+"""This symbol is one the engine read on the paper."""
+
+CANDIDATE_CHOSEN: Final = "chosen"
+"""The reviewer has picked this symbol but has not committed it."""
+
+RESOLVE_STAGE_STYLESHEET: Final = f"""
+QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_MACHINE}"] {{
+    background: {Color.ATTENTION_SOFT};
+    border: {Stroke.BORDER}px solid {Color.ATTENTION};
+    font-weight: {FontWeight.SEMIBOLD};
+}}
+
+QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_MACHINE}"]:hover {{
+    background: {Color.ATTENTION_HOVER};
+}}
+
+QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_CHOSEN}"] {{
+    color: {Color.TEXT_ON_PRIMARY};
+    background: {Color.PRIMARY};
+    border: {Stroke.FOCUS_RING}px solid {Color.PRIMARY_PRESSED};
+    font-weight: {FontWeight.BOLD};
+}}
+
+QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_CHOSEN}"]:hover {{
+    background: {Color.PRIMARY_HOVER};
+}}
+
+QLabel#resolveSectionHeading {{
+    color: {Color.TEXT_TERTIARY};
+    font-weight: {FontWeight.SEMIBOLD};
+}}
+
+QLabel#resolveOperatorBadge {{
+    color: {Color.TEXT_SECONDARY};
+    background: {Color.SURFACE_MUTED};
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-radius: {Radius.SM}px;
+    padding: 1px {Spacing.SM}px;
+}}
+
+QFrame#conflictProvenanceStrip {{
+    background: {Color.SURFACE_SUNKEN};
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-radius: {Radius.SM}px;
+}}
+
+QTableWidget#conflictQueueTable::item:selected {{
+    color: {Color.TEXT_PRIMARY};
+    background: {Color.PRIMARY_SOFT};
+    border-top: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border-bottom: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+}}
+"""
+"""Appended to :data:`TEMPLATE_DESIGNER_STYLESHEET` by the Resolve stage.
+
+Only the things that stage invents: the three states a value button can be in,
+the small section headings, the operator badge, the machine/manual/effective
+strip, and the queue's selected row.
+
+The last of those is a *narrowing*. The application's selection fill is the
+accent at full strength, which on a queue whose rows are already tinted by
+state made the selected row a solid dark red block - the one colour that means
+the brand, the selection, and a warning all at once. Here it is the accent tint
+with accent rules above and below, so the selection reads as a selection and
+red is left to mean something."""
+
+
 __all__ = [
+    "CANDIDATE_CHOSEN",
+    "CANDIDATE_MACHINE",
+    "CANDIDATE_STATE_PROPERTY",
+    "RESOLVE_STAGE_STYLESHEET",
     "TEMPLATE_DESIGNER_STYLESHEET",
     "VARIANT_DESTRUCTIVE",
     "VARIANT_PRIMARY",

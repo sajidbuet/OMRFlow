@@ -142,6 +142,7 @@ from omr_scanner.services.conflict_policy import (
     detect_duplicate_identifiers,
     group_cells,
     group_labels,
+    split_marks,
 )
 from omr_scanner.services.filename_manager import (
     FilenameAllocator,
@@ -442,6 +443,7 @@ __all__ = [
     "set_attendance",
     "set_batch_status",
     "sheet_resolutions",
+    "split_marks",
     "standing_commands",
     "sync_conflicts",
     "sync_duplicate_identifiers",

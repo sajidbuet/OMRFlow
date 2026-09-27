@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 5,229 tests passing (14 skipped: no LibreOffice, no desktop window manager, no local real-scan fixtures), plus `ruff` and `mypy` |
+| Automated suite | 5,273 tests passing (14 skipped: no LibreOffice, no desktop window manager, no local real-scan fixtures), plus `ruff` and `mypy` |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -239,7 +239,112 @@ synthetically tested" to a qualified stable release.
 | Project template | ✅ The template is now project state, chosen once and shared by Template, Calibrate and Scan — see below |
 | Conflict-resolution semantics | ✅ Updated — Resolve now covers student ID / roll and set code only; ambiguous answers stay in the recognition result. See below |
 | Resolve stage UX & reversible decisions | 🟠 **Implemented — automated tests passing, not yet exercised by a real reviewer.** Whole-position lane overlay, keyboard-first operation, auto-advance, and undo / redo / undo-a-whole-sheet as persisted audit events. See below |
+| Resolve stage layout & workflow (2nd pass) | 🟠 **Implemented — automated tests passing; inspected in rendered screenshots, not yet worked by a real operator.** Space redistributed 29/71 and 70/30, ROI framing, machine-vs-operator colour semantics, pick-then-confirm, and an action that no longer offers to store an invalid reading. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+
+#### The Resolve stage, laid out for the work it is actually used for
+
+A second pass over the same screen, driven by watching it carry a 1,875-sheet
+batch. Nothing about detection, scoring, persistence or the audit ledger
+changed; what changed is where the space goes and what the controls say.
+
+**Space.** The window is now divided **29 / 71** between the queue and the
+workspace, and the workspace **70 / 30** between the sheet and the decision —
+by ratio, re-applied on every resize, with floors so neither pane can be
+dragged into a sliver, and abandoned the moment the operator drags a splitter
+themselves. Stretch factors alone did not hold it: a stretch factor governs how
+*extra* space is shared, not what the panes start at, and the starting point
+came from size hints that handed the queue a third more width than the design
+calls for. Within the decision row, the machine's four facts take **37%** and
+the operator's controls **63%**, where they used to take half each.
+
+**Framing.** The zoomed field was sized once, when the sheet finished loading —
+before the tab had been shown, so against a viewport that did not exist yet,
+which is why it appeared as a small image pinned to the corner of a large empty
+canvas. The view is now given a *region to keep in frame* and re-fits it on
+show and on resize. Two further changes come with that: the region includes the
+**neighbouring printed positions**, because a faint mark is judged against the
+columns beside it, filled by the same candidate in the same pencil; and the
+region is grown to the pane's proportions before fitting, so the spare width of
+a wide pane showing a tall column is spent on *more of the sheet* instead of on
+blank canvas.
+
+**Colour means one thing each.** On this stage **amber** is "the machine read
+this mark" and **red** is "a person decided this" — on the sheet and on the
+buttons alike, from one design token. The recognition status palette is turned
+off here, so a zone is no longer outlined red merely because its status is
+`multiple`, which put a third meaning on the same colour inside the same
+rectangle. Every distinction is also carried by line weight or style, so none
+of it depends on telling amber from red.
+
+| On the sheet | |
+|---|---|
+| dashed amber lane | this position is waiting for a person |
+| dashed amber ring on a bubble | the engine read this mark |
+| dashed **red** lane + heavy solid red ring | picked, not yet recorded |
+| solid red lane + heavy solid red ring | recorded |
+
+**Pick, then commit.** Clicking a value — or pressing its digit — now *picks*
+it: the ring lands on the bubble, the comparison strip fills in, and nothing is
+written until **Confirm** (or `Enter`). A correction changes what a script is
+worth, and a single mis-click deciding it, with no moment in between to see
+that the ring landed where the reviewer meant, is the accidental edit this
+stage exists to prevent. The strip reads `MACHINE 1-7 · MANUAL 1 · EFFECTIVE
+Pending` until it is committed, so an uncommitted choice is never displayed as
+a stored result.
+
+**"Accept machine value" was offered for readings that are not values.** For a
+roll-number position the engine read as `0-5`, that button recorded `0-5` as
+the human-decided value of one printed digit — which
+`review_store._substitute_position` then substitutes into the identifier,
+producing a candidate ID no roster will ever match, from a button that said the
+machine was right. **The backend is unchanged and can still store it**; what
+changed is that the interface no longer offers it as a resolution. The primary
+action is now conflict-aware and says which of three things it would do:
+*Confirm '5'*, *Confirm machine reading* when the reading is a symbol the field
+can hold (or a blank, or a whole identifier for a duplicate), or a disabled
+*Choose a value first* with a tooltip explaining why. **Reopen** is hidden
+rather than permanently disabled.
+
+Also: the queue's "Field" and "Conflict" columns — two narrow columns each
+eliding half of one sentence — became a single **Issue** column reading
+`Student ID - position 5 · More than one mark`, with every cell's full value in
+a tooltip; the selected row is an accent *tint* with accent rules rather than a
+solid dark red block; the batch summary is one line of counters with the
+breakdown beneath in smaller type; the filters are labelled *Status* and
+*Type*; the header counter names what each number counts
+(`3/8 on sheet · 5 left here · 157 in batch`) so it cannot read as
+contradicting the summary; the operator's name is a badge rather than a row;
+`(blank)` reads as **Blank**; `0-5` is described as **0 and 5**; and the long
+per-batch diagnostics sit behind **Details**.
+
+**Registration failures stay special** — and now stay usable. The two tabs that
+are empty by definition of that conflict are disabled and explain themselves,
+the original scan is selected, and — the defect this pass found — the tab is
+**given back** afterwards. Forcing it without restoring it meant one bad sheet
+in a queue pinned every later sheet to the original scan, so the zoomed field
+was never seen again. Qt's own tab switch, triggered by disabling the visible
+tab, was being recorded as the reviewer's preference.
+
+**Testing.** 129 Resolve-stage GUI tests (38 new in this pass), covering the
+proportions at 1366×768 / 1600×900 / 1920×1080, ROI framing and re-framing,
+manual zoom taking framing over, the three candidate-button states, pending vs
+committed, the invalid-multi-mark action, the decided-conflict action, the
+duplicate-ID and registration-failure paths, queue tooltips, toolbar tooltips
+and counter scope. The whole suite (5,273 tests), `ruff` and `mypy` are green.
+
+The screen was rendered and inspected at each stage, and swept through the
+conflict types — identifier multiple mark, set-code multiple mark,
+registration/undecodable sheet, resolved and deferred — at 1366×768 and
+1900×980, checking the candidate states, the confirm wording, the tab handling
+and the comparison strip in each. Two wording defects that sweep found were
+fixed: a decided conflict offered a disabled *Choose a value first* instead of
+*Reopen*, and an undecodable file offered *Confirm machine reading* where there
+is no reading to confirm (it now says *Acknowledge*). The duplicate-student-ID
+case is covered by the automated tests but was not reachable in the rendering
+harness, which does not write the identifier column a duplicate is detected
+from. **No operator has yet worked a sitting on it**, and the manual
+walkthrough on real examination data remains Phase 11B.
 
 #### Resolving a conflict is now reversible, and faster to read
 
