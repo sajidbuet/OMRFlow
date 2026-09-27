@@ -122,18 +122,41 @@ That is **one form, one operator, one scanner**. It is a smoke test, not a
 corpus, and it is not evidence that a threshold is right in general. Run it
 again whenever a new form or a new scanner enters the picture.
 
-#### What it is good at surfacing
+#### Check your reference scan against a real batch scan first
 
-The run above turned up a calibration observation that no synthetic page could
-have produced: on that form the printed option letter inside an *empty* bubble
-already occupied a mean of 0.187 of the measured area, with 3 % of bubbles at
-or above the template's `blank_ratio_threshold` of 0.25 **before anything was
-written in them**. The two flagged answers were exactly that — the engine
-correctly declining to call a bubble blank when the printing alone is near the
-threshold.
+The run above produced two flagged answers on bubbles that should have been
+plainly empty. Measured with the engine's own metric, that reference scan's
+*empty* bubbles read a mean fill ratio of **0.22** — above the template's
+`blank_ratio_threshold` of 0.25 on a third of them.
 
-If your run produces flagged answers on bubbles that should be plainly empty,
-measure the blank sheet's own ink before suspecting the generator.
+That looks like a calibration problem with the template, and it is not.
+Measuring the **same form's real, human-filled batch scans** through the same
+pipeline gives a completely different picture:
+
+| Measured on | Empty bubbles | Marked bubbles | Ink threshold |
+|---|---|---|---|
+| The reference scan | mean 0.22, max 0.32 | — | 79 |
+| Real batch scans | ~0.00 | 0.95 – 1.00 | 12 – 27 |
+
+Across 4,000 bubbles on eight real sheets the separation is total: 3,274 read
+blank, 725 read marked, and **one** lands in between. The template's
+thresholds are well placed; nothing needs changing.
+
+The difference is the reference image itself. Bubble measurement adapts its ink
+threshold to the page it is given, and that reference scan's darkest content is
+grey 114 — it contains no true blacks at all, where the batch scans reach 56.
+So the adaptive threshold lands at 79 instead of ~20, and the printed option
+letters start counting as ink.
+
+**The practical rule:** a reference scan should come off the same scanner at the
+same settings as the batch it will stand in for. One number tells you whether
+it does — the 1st-percentile darkness of the aligned page, which should be
+close to a real scan's. A lighter reference is not useless; it produces a
+*harder* dataset than reality, which is worth knowing before reading a
+benchmark result off it.
+
+If your run flags answers on bubbles that should be empty, measure a real batch
+scan before adjusting a threshold.
 
 The smoke test, in full:
 
