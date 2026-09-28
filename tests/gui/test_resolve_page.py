@@ -2561,6 +2561,129 @@ class TestApplyingAFullField:
         ]
 
 
+class TestFieldEditorsBelongToTheSheet:
+    """``Edit full Student ID`` / ``Edit full Set Code`` are sheet actions."""
+
+    @staticmethod
+    def buttons(page: ResolvePage) -> tuple:
+        return (
+            page.field_edit_buttons[FieldKind.IDENTIFIER],
+            page.field_edit_buttons[FieldKind.SET_CODE],
+        )
+
+    def test_a_student_id_conflict_offers_both(self, busy_page: ResolvePage):
+        assert busy_page.current_conflict().field.kind is FieldKind.IDENTIFIER
+        identifier, set_code = self.buttons(busy_page)
+        assert identifier.isVisibleTo(busy_page) and identifier.isEnabled()
+        assert set_code.isVisibleTo(busy_page) and set_code.isEnabled()
+        assert "Roll number" in identifier.text()
+        assert "Set code" in set_code.text()
+
+    def test_a_set_code_conflict_offers_both_and_e_opens_the_set_code(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        row = next(
+            index
+            for index, item in enumerate(busy_page.state.conflicts)
+            if item.field.kind is FieldKind.SET_CODE
+        )
+        busy_page.queue_table.selectRow(row)
+        identifier, set_code = self.buttons(busy_page)
+        assert identifier.isVisibleTo(busy_page) and identifier.isEnabled()
+        assert set_code.isVisibleTo(busy_page) and set_code.isEnabled()
+        assert busy_page.open_field_editor() is True
+        assert busy_page.state.editing_field.zone_id == "set_code"
+
+    def test_after_every_student_id_conflict_is_resolved(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        busy_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100029")
+        assert busy_page.apply_field_edit() is True
+
+        # Still on the default filter, on the set-code conflict.
+        landed = busy_page.current_conflict()
+        assert landed.scan_id == scan_id
+        assert landed.field.kind is FieldKind.SET_CODE
+        identifier = busy_page.field_edit_buttons[FieldKind.IDENTIFIER]
+        assert identifier.isVisibleTo(busy_page) and identifier.isEnabled()
+        assert busy_page.open_field_editor(FieldKind.IDENTIFIER) is True
+        assert busy_page.field_edit_input.text() == "100029"
+
+    def test_a_student_id_with_no_conflict_at_all_can_be_overridden(
+        self, qtbot, monkeypatch, busy_page: ResolvePage
+    ):
+        # SYN_000002 reads 170502 confidently in every position; it is in the
+        # queue only because its set code is double-marked.
+        row = next(
+            index
+            for index, item in enumerate(busy_page.state.conflicts)
+            if item.scan_name == "SYN_000002.png"
+        )
+        with qtbot.waitSignal(busy_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            busy_page.queue_table.selectRow(row)
+        conflict = busy_page.current_conflict()
+        scan_id = conflict.scan_id
+        before = [
+            item
+            for item in busy_page.state.sheet_conflicts
+            if item.field.kind is FieldKind.IDENTIFIER
+        ]
+        assert before == [], "this sheet should have no Student ID record at all"
+
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            busy_page,
+            "_confirm_override",
+            lambda _shape, overrides: seen.append(dict(overrides)) or True,
+        )
+        identifier = busy_page.field_edit_buttons[FieldKind.IDENTIFIER]
+        assert identifier.isVisibleTo(busy_page) and identifier.isEnabled()
+        busy_page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
+        assert busy_page.open_field_editor(FieldKind.IDENTIFIER) is True
+        assert busy_page.field_edit_input.text() == "170502"
+        busy_page.field_edit_input.setText("170503")
+        assert busy_page.apply_field_edit() is True
+
+        assert seen == [{5: ("2", "3")}]
+        records = [
+            item
+            for item in review_store.list_conflicts(
+                busy_page.database,
+                busy_page.state.batch_id,
+                filters=review_store.ConflictFilter(
+                    scan_id=scan_id, include_withdrawn=True
+                ),
+            )
+            if item.field.kind is FieldKind.IDENTIFIER
+        ]
+        # One operator override, and no fabricated detection.
+        assert [item.conflict_type for item in records] == [
+            ConflictType.MANUAL_OVERRIDE
+        ]
+        found = review_store.effective_identifiers(
+            busy_page.database, busy_page.state.batch_id
+        )[scan_id]
+        assert (found.machine_value, found.value) == ("170502", "170503")
+
+    def test_moving_to_another_sheet_closes_the_editor(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        busy_page.open_field_editor(FieldKind.IDENTIFIER)
+        busy_page.field_edit_input.setText("100029")
+        row = next(
+            index
+            for index, item in enumerate(busy_page.state.conflicts)
+            if item.scan_name == "SYN_000002.png"
+        )
+        with qtbot.waitSignal(busy_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            busy_page.queue_table.selectRow(row)
+        assert busy_page.state.editing_field is None
+        assert busy_page.field_edit_row.isVisibleTo(busy_page) is False
+
+
 class TestOverridingAConfidentReading:
     """The reported case: ``100029`` read cleanly as 9 where the paper says 8.
 
@@ -2753,18 +2876,13 @@ class TestOverridingAConfidentReading:
         landed = busy_page.current_conflict()
         assert landed.scan_id == scan_id, "left the sheet with its set code open"
 
-        # Same sheet, now reading 100029; the operator sees the 9 is an 8 and
-        # goes back to the (now resolved) Student ID to edit it again.
-        busy_page.state_filter.setCurrentText(FILTER_ALL)
-        # Same sheet: already loaded, so no reload and no sheet_ready.
-        busy_page.queue_table.selectRow(
-            next(
-                index
-                for index, item in enumerate(busy_page.state.conflicts)
-                if item.scan_id == scan_id and item.field.kind is FieldKind.IDENTIFIER
-            )
-        )
-        self.type_value(busy_page, "100028")
+        # Same sheet, now reading 100029; the operator sees the 9 is an 8. The
+        # set-code conflict is selected and every Student ID record is
+        # resolved - the Student ID editor is still right there.
+        assert busy_page.state_filter.currentText() != FILTER_ALL
+        busy_page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
+        assert busy_page.open_field_editor(FieldKind.IDENTIFIER) is True
+        busy_page.field_edit_input.setText("100028")
         assert "Changed positions: <b>6</b>" in busy_page.field_edit_status.text()
         assert busy_page.apply_field_edit() is True
         assert asked == [{5: ("9", "8")}]
@@ -2959,12 +3077,230 @@ class TestOverridingAMultiPositionSetCode:
             coded_page.database, coded_page.state.batch_id
         )[scan_id]
         assert found.source is ValueSource.HUMAN
+        # Reassembled from whole symbols: ["11", "12"], not "10?" patched by index.
+        assert found.value == "1112"
 
         assert coded_page.undo_last_decision() is True
         found = review_store.effective_set_codes(
             coded_page.database, coded_page.state.batch_id
         )[scan_id]
         assert found.source is ValueSource.MACHINE
+
+
+class TestAWhollyBlankStudentId:
+    """A Student ID with nothing marked is one whole-field record.
+
+    Typing the number settles that record; it is not six overrides of
+    "confident" readings, because the machine read nothing confidently.
+    """
+
+    @pytest.fixture
+    def blank_page(self, qtbot, project_session: ProjectSession, template, tmp_path):
+        scans = tmp_path / "blank"
+        scans.mkdir(parents=True, exist_ok=True)
+        path = scans / "SYN_000001.png"
+        cv2.imwrite(str(path), render_marked_sheet(template, sheet_marks("")))
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [path], identity=batch_store.BatchIdentity.of(template)
+        )
+        recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+        report = process_batch([path], template, on_result=recorder.record, workers=1)
+        recorder.flush()
+        batch_store.finalise_batch(database, batch_id)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        for item in report.processed:
+            review_store.sync_conflicts(
+                database,
+                batch_id=batch_id,
+                scan_id=ids[item.source_path],
+                result=item.result,
+                template=template,
+            )
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+        assert review_page.load_batch(batch_id, template) is True
+        with qtbot.waitSignal(review_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            review_page.queue_table.selectRow(0)
+        yield review_page
+        review_page.close()
+
+    def test_typing_the_number_settles_the_one_record(
+        self, qtbot, monkeypatch, blank_page: ResolvePage
+    ):
+        conflict = blank_page.current_conflict()
+        assert conflict.conflict_type is ConflictType.IDENTIFIER_BLANK
+        assert conflict.field.is_whole_field
+        scan_id = conflict.scan_id
+        asked: list[object] = []
+        monkeypatch.setattr(
+            blank_page, "_confirm_override", lambda *args: asked.append(args) or True
+        )
+
+        blank_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+        assert blank_page.open_field_editor(FieldKind.IDENTIFIER) is True
+        blank_page.field_edit_input.setText("170599")
+        assert blank_page.apply_field_edit() is True
+
+        assert asked == [], "nothing confident was overridden"
+        assert review_store.get_conflict(blank_page.database, conflict.conflict_id).state is (
+            ConflictState.RESOLVED
+        )
+        records = review_store.list_conflicts(
+            blank_page.database,
+            blank_page.state.batch_id,
+            filters=review_store.ConflictFilter(scan_id=scan_id, include_withdrawn=True),
+        )
+        assert ConflictType.MANUAL_OVERRIDE not in {item.conflict_type for item in records}
+        found = review_store.effective_identifiers(
+            blank_page.database, blank_page.state.batch_id
+        )[scan_id]
+        assert found.value == "170599"
+
+        assert blank_page.undo_last_decision() is True
+        found = review_store.effective_identifiers(
+            blank_page.database, blank_page.state.batch_id
+        )[scan_id]
+        assert found.source is ValueSource.MACHINE
+
+
+class TestMixedWidthSetCodeSymbols:
+    """A set code whose positions print ``0``-``9`` **and** ``10``, ``11``.
+
+    Position 0 reads ``10`` confidently; position 1 is double-marked. The
+    field is ``["10", "2"]`` -> ``"102"``, never a character-indexed guess.
+    """
+
+    SYMBOLS = (*(str(digit) for digit in range(10)), "10", "11")
+
+    @pytest.fixture
+    def template(self):
+        return build_answer_sheet_template(set_symbols=self.SYMBOLS, set_positions=2)
+
+    @pytest.fixture
+    def mixed_page(self, qtbot, project_session: ProjectSession, template, tmp_path):
+        scans = tmp_path / "mixed"
+        scans.mkdir(parents=True, exist_ok=True)
+        path = scans / "SYN_000001.png"
+        cv2.imwrite(
+            str(path),
+            render_marked_sheet(
+                template, sheet_marks("170501", set_code={0: "10", 1: ["2", "3"]})
+            ),
+        )
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [path], identity=batch_store.BatchIdentity.of(template)
+        )
+        recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+        report = process_batch([path], template, on_result=recorder.record, workers=1)
+        recorder.flush()
+        batch_store.finalise_batch(database, batch_id)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        for item in report.processed:
+            review_store.sync_conflicts(
+                database,
+                batch_id=batch_id,
+                scan_id=ids[item.source_path],
+                result=item.result,
+                template=template,
+            )
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+        assert review_page.load_batch(batch_id, template) is True
+        with qtbot.waitSignal(review_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            review_page.queue_table.selectRow(0)
+        yield review_page
+        review_page.close()
+
+    @staticmethod
+    def effective(page: ResolvePage) -> review_store.EffectiveIdentifier:
+        # The batch has one sheet; once its last conflict is settled the
+        # "Unresolved" queue is empty, so the sheet is not read off a selection.
+        (found,) = review_store.effective_set_codes(
+            page.database, page.state.batch_id
+        ).values()
+        return found
+
+    def test_the_machine_reading_is_kept_as_whole_symbols(self, mixed_page):
+        assert mixed_page.current_conflict().field.kind is FieldKind.SET_CODE
+        assert mixed_page.current_conflict().field.group_key == 1
+        shape = mixed_page.sheet_field_shape(FieldKind.SET_CODE)
+        assert mixed_page.current_field_values(shape) == ["10", UNKNOWN_POSITION]
+        assert self.effective(mixed_page).machine_value == "10?"
+
+    def test_a_single_position_decision_reassembles_by_symbol(self, qtbot, mixed_page):
+        mixed_page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        assert mixed_page.choose_label("2") is True
+        assert mixed_page.confirm_resolution() is True
+        # Character substitution into "10?" at index 1 would give "12?".
+        assert self.effective(mixed_page).value == "102"
+
+    def test_parsing_preview_audit_and_undo(
+        self, qtbot, monkeypatch, mixed_page, template
+    ):
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            mixed_page,
+            "_confirm_override",
+            lambda _shape, overrides: seen.append(dict(overrides)) or True,
+        )
+        shape = mixed_page.sheet_field_shape(FieldKind.SET_CODE)
+        assert mixed_page._split_field_value(shape, "102") == ["10", "2"]
+        assert mixed_page._split_field_value(shape, "112") == ["11", "2"]
+        assert mixed_page._split_field_value(shape, "1") is None
+
+        mixed_page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
+        assert mixed_page.open_field_editor(FieldKind.SET_CODE) is True
+        assert mixed_page.field_edit_input.text() == f"10{UNKNOWN_POSITION}"
+        mixed_page.field_edit_input.setText("112")
+        status = mixed_page.field_edit_status.text()
+        assert f"<b>10{UNKNOWN_POSITION}</b> &rarr; <b>112</b>" in status
+        assert "Position 1 &mdash; confident machine read (10 &rarr; 11)" in status
+        assert "Changed positions: <b>1, 2</b>" in status
+
+        assert mixed_page.apply_field_edit() is True
+        assert seen == [{0: ("10", "11")}]
+        edit = mixed_page.state.last_field_edit
+        assert edit.changed == {0: "11", 1: "2"}
+        found = self.effective(mixed_page)
+        assert (found.machine_value, found.value) == ("10?", "112")
+        # The CSV export's reading goes through the same reassembly.
+        (exported,) = review_store.sheet_resolutions(
+            mixed_page.database, mixed_page.state.batch_id, template
+        ).values()
+        assert exported.set_code == "112"
+
+        conflict_ids = [
+            item.conflict_id
+            for item in review_store.list_conflicts(
+                mixed_page.database,
+                mixed_page.state.batch_id,
+                filters=review_store.ConflictFilter(include_withdrawn=True),
+            )
+            if item.field.zone_id == "set_code"
+        ]
+        assert len(conflict_ids) == 2
+        for conflict_id in conflict_ids:
+            (corrected,) = [
+                item
+                for item in review_store.history_for(mixed_page.database, conflict_id)
+                if item.action is ReviewAction.CORRECTED
+            ]
+            assert "Set code set to '112' (was '10?')" in corrected.detail
+            assert corrected.new_value in {"11", "2"}
+            assert review_store.group_of(corrected.detail) == edit.group
+
+        assert mixed_page.undo_last_decision() is True
+        found = self.effective(mixed_page)
+        assert found.source is ValueSource.MACHINE
+        assert found.value == "10?"
 
 
 class TestFullSetCodeEditor:
@@ -3033,12 +3369,17 @@ class TestFullSetCodeEditor:
 
 
 class TestWhereTheEditorIsNotOffered:
-    def test_not_for_a_duplicate_identifier(self, qtbot, page: ResolvePage):
-        # A duplicate names no zone and is already edited whole in the
-        # free-text box.
+    def test_a_duplicate_identifier_offers_the_student_id_editor(
+        self, qtbot, page: ResolvePage
+    ):
+        # The field editor belongs to the sheet: a registered sheet whose ID
+        # merely collides with another's still has a Student ID to correct.
         select_first(qtbot, page, ConflictType.IDENTIFIER_DUPLICATE)
-        assert page._field_shape_for(page.current_conflict()) is None
-        assert page.field_edit_toggle.isVisibleTo(page) is False
+        button = page.field_edit_buttons[FieldKind.IDENTIFIER]
+        assert button.isVisibleTo(page) is True
+        assert button.isEnabled() is True
+        assert page.open_field_editor(FieldKind.IDENTIFIER) is True
+        assert page.field_edit_input.text() == "170501"
 
     def test_not_for_a_sheet_that_never_registered(
         self, qtbot, project_session, template, tmp_path
@@ -3071,8 +3412,9 @@ class TestWhereTheEditorIsNotOffered:
         review_page.queue_table.selectRow(0)
 
         assert review_page._field_shape_for(review_page.current_conflict()) is None
-        assert review_page.field_edit_toggle.isVisibleTo(review_page) is False
-        assert review_page.open_field_editor() is False
+        for kind, button in review_page.field_edit_buttons.items():
+            assert button.isVisibleTo(review_page) is False, kind
+            assert review_page.open_field_editor(kind) is False
         review_page.close()
 
     def test_typing_in_a_text_box_does_not_open_it(self, qtbot, busy_page: ResolvePage):

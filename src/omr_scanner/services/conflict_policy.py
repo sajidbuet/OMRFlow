@@ -76,7 +76,9 @@ from omr_scanner.domain.template import (
 )
 from omr_scanner.recognition.fields import zone_groups
 from omr_scanner.recognition.models import (
+    BLANK_CHARACTER,
     MULTIPLE_MARK_SEPARATOR,
+    UNRESOLVED_CHARACTER,
     FieldStatus,
     MarkStatus,
 )
@@ -330,6 +332,68 @@ def field_shape(template: OmrTemplate, zone_id: str) -> FieldShape | None:
         label=zone.label or zone_id,
         positions=tuple(group.labels for group in groups),
     )
+
+
+# ----------------------------------------------------------------------
+# A field as a sequence of position symbols
+# ----------------------------------------------------------------------
+#
+# **The one place a field value is taken apart and put back together.** A field
+# is a sequence of printed positions, each carrying one *symbol* - and a symbol
+# may be more than one character (a set code printed "10", "11", "12"). Every
+# consumer that splits a typed value, rebuilds an effective identifier or set
+# code, or shows a field's current value goes through these three functions, so
+# nothing indexes into a field string by character.
+
+
+def split_field_value(shape: FieldShape, text: str) -> list[str] | None:
+    """Split a field value into one symbol per printed position, or ``None``.
+
+    Consumed greedily against the symbols each position actually prints,
+    longest first, so ``"1012"`` against positions offering ``10``/``11``/``12``
+    is ``["10", "12"]`` and a uniform single-character field - every roll
+    number - falls out of the same loop. ``None`` when the text does not fit
+    the field exactly; nothing is padded or truncated.
+    """
+    remaining = text
+    values: list[str] = []
+    for position in range(shape.length):
+        symbols = sorted(shape.positions[position], key=len, reverse=True)
+        match = next((item for item in symbols if remaining.startswith(item)), None)
+        if match is None:
+            return None
+        values.append(match)
+        remaining = remaining[len(match) :]
+    return values if not remaining else None
+
+
+def join_field_value(symbols: Sequence[str]) -> str:
+    """Assemble a field value from its position symbols, in printed order."""
+    return "".join(symbols)
+
+
+def machine_field_symbols(result: ScanResult, zone_id: str) -> list[str] | None:
+    """The machine's reading of one field, one symbol per printed position.
+
+    Rendered exactly as recognition assembles a field value
+    (:attr:`~omr_scanner.recognition.models.GroupDecision.character`): a
+    resolved position contributes its whole symbol, a blank one
+    :data:`~omr_scanner.recognition.models.BLANK_CHARACTER`, anything else
+    :data:`~omr_scanner.recognition.models.UNRESOLVED_CHARACTER`. ``None`` when
+    the result has no such field.
+    """
+    found = next((item for item in result.fields if item.zone_id == zone_id), None)
+    if found is None or not found.characters:
+        return None
+    symbols: list[str] = []
+    for character in sorted(found.characters, key=lambda item: item.position):
+        if character.status == MarkStatus.RESOLVED.value:
+            symbols.append(character.value)
+        elif character.status == MarkStatus.BLANK.value:
+            symbols.append(BLANK_CHARACTER)
+        else:
+            symbols.append(UNRESOLVED_CHARACTER)
+    return symbols
 
 
 def group_cells(
@@ -738,5 +802,8 @@ __all__ = [
     "field_shape",
     "group_cells",
     "group_labels",
+    "join_field_value",
+    "machine_field_symbols",
+    "split_field_value",
     "split_marks",
 ]

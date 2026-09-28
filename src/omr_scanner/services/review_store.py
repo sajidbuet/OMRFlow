@@ -95,10 +95,14 @@ from omr_scanner.domain.template import (
     QuestionBlockFieldDefinition,
 )
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.recognition.models import UNRESOLVED_CHARACTER
 from omr_scanner.services.conflict_policy import (
     detect_conflicts,
     detect_duplicate_identifiers,
+    join_field_value,
+    machine_field_symbols,
 )
+from omr_scanner.services.recognition_models import ScanResult
 from omr_scanner.services.scan_export import SheetResolution
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -109,7 +113,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.database.engine import ProjectDatabase
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services.conflict_policy import ConflictPolicy, DetectedConflict
-    from omr_scanner.services.recognition_models import ScanResult
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -2324,12 +2327,14 @@ def sheet_resolutions(
         ).all()
 
         decided: dict[Path, dict[str, Any]] = {}
+        scans: dict[Path, BatchScan] = {}
         for conflict, scan in rows:
             path = Path(scan.source_path)
+            scans[path] = scan
             entry = decided.setdefault(
                 path,
-                {"identifier": "", "set_code": "", "answers": {}, "unresolved": 0,
-                 "reviewed": False},
+                {"identifier": _FieldDecisions(), "set_code": _FieldDecisions(),
+                 "answers": {}, "unresolved": 0, "reviewed": False},
             )
             # Counted only for conflicts that still require resolution: the
             # exported `unresolved_conflicts` column says how much of this row
@@ -2346,6 +2351,16 @@ def sheet_resolutions(
                 continue
             entry["reviewed"] = True
             _apply_decision(entry, conflict, found, numbers, identifier_zones)
+
+        # Assembled once per sheet, after every decision is known, so each
+        # field is rebuilt from whole position symbols rather than patched one
+        # character at a time.
+        for path, entry in decided.items():
+            scan = scans[path]
+            entry["identifier"] = entry["identifier"].assemble(
+                scan, scan.identifier_value or ""
+            )
+            entry["set_code"] = entry["set_code"].assemble(scan, scan.set_code_value or "")
 
     return {
         path: SheetResolution(
@@ -2370,9 +2385,9 @@ def _apply_decision(
 
     A per-position decision on an identifier or set code cannot simply replace
     the whole field's value - correcting the third digit of a roll number says
-    nothing about the other five - so a positional correction is applied by
-    substitution into the machine's own string. A whole-field decision
-    replaces it outright.
+    nothing about the other five - so it is recorded against its position and
+    the field is assembled from position symbols afterwards; see
+    :class:`_FieldDecisions`. A whole-field decision replaces it outright.
     """
     kind = FieldKind(conflict.field_kind)
     if kind is FieldKind.QUESTION:
@@ -2384,27 +2399,110 @@ def _apply_decision(
     if kind not in (FieldKind.IDENTIFIER, FieldKind.SET_CODE):
         return
     slot = "identifier" if kind is FieldKind.IDENTIFIER else "set_code"
-    if conflict.group_key == WHOLE_FIELD or conflict.zone_id not in identifier_zones:
-        entry[slot] = found.value
-        return
-    current = entry[slot] or conflict.machine_value
-    entry[slot] = _substitute_position(current, conflict.group_key, found.value)
+    whole = conflict.group_key == WHOLE_FIELD or conflict.zone_id not in identifier_zones
+    entry[slot].add(conflict, found.value, whole=whole)
+
+
+@dataclass(slots=True)
+class _FieldDecisions:
+    """Every human decision on one sheet's identifier, or its set code.
+
+    Collected first and assembled once (:meth:`assemble`), because a field is
+    a sequence of **position symbols** and a symbol may be several characters
+    long - a set code printed ``10``, ``11``, ``12``. Patching the assembled
+    string one decision at a time, by character index, is what turned a
+    corrected ``["10", "2"]`` into something other than ``"102"``.
+
+    Attributes:
+        whole: A decision on the field as a whole, or ``None``.
+        zone_id: The field's zone, from its positional decisions.
+        positions: ``position -> decided symbol``.
+        ordered: Every decision in the order it was folded, for the fallback
+            path in :meth:`assemble`.
+    """
+
+    whole: str | None = None
+    zone_id: str = ""
+    positions: dict[int, str] = field(default_factory=dict)
+    ordered: list[tuple[int, str]] = field(default_factory=list)
+
+    def add(self, conflict: ReviewConflict, value: str, *, whole: bool) -> None:
+        """Record one resolved decision."""
+        if whole:
+            self.whole = value
+            self.ordered.append((WHOLE_FIELD, value))
+            return
+        self.zone_id = conflict.zone_id
+        self.positions[conflict.group_key] = value
+        self.ordered.append((conflict.group_key, value))
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether nobody decided anything about this field."""
+        return not self.ordered
+
+    def assemble(self, scan: BatchScan | None, machine_value: str) -> str:
+        """Return the field's effective value, or ``""`` when nothing was decided.
+
+        Positional decisions are laid over the **machine's per-position
+        symbols**, read from the stored recognition result
+        (:func:`~omr_scanner.services.conflict_policy.machine_field_symbols`),
+        and joined - never substituted into a string by character index.
+
+        Falls back to character substitution over ``machine_value`` only where
+        no per-position reading exists (a row whose stored result is missing or
+        will not decode), or when a whole-field decision and positional ones
+        meet on the same field. Both are recorded as limits in ``README.md``.
+        """
+        if self.is_empty:
+            return ""
+        if not self.positions:
+            return self.whole or ""
+        if self.whole is None:
+            symbols = _stored_field_symbols(scan, self.zone_id)
+            if symbols is not None:
+                for position, value in self.positions.items():
+                    if 0 <= position < len(symbols):
+                        symbols[position] = value
+                return join_field_value(symbols)
+        value = machine_value
+        for position, decided in self.ordered:
+            if position == WHOLE_FIELD:
+                value = decided
+            else:
+                value = _substitute_position(value, position, decided)
+        return value
+
+
+def _stored_field_symbols(scan: BatchScan | None, zone_id: str) -> list[str] | None:
+    """The machine's per-position symbols for one field, from the stored result."""
+    if scan is None or not scan.result_json or not zone_id:
+        return None
+    try:
+        result = ScanResult.from_dict(json.loads(scan.result_json))
+    except (ValueError, KeyError, TypeError):  # pragma: no cover - defensive
+        _LOGGER.warning("Scan %d: stored result could not be decoded", scan.scan_id)
+        return None
+    return machine_field_symbols(result, zone_id)
 
 
 def _substitute_position(value: str, position: int, replacement: str) -> str:
-    """Replace one printed position of a field value.
+    """Replace one printed position of a field value, by character. Fallback only.
 
-    Positions are *printed columns*, and a column's symbol may be more than one
-    character (a set code whose options are ``"10"``, ``"11"``, ``"12"``), so
-    this cannot index into the string. It rebuilds from the machine's own
-    characters where it can and falls back to appending, which is the honest
-    behaviour for a value whose length the correction disagrees with.
+    Correct only when every symbol is one character, which is why nothing calls
+    it except :meth:`_FieldDecisions.assemble` when no per-position machine
+    reading is available.
+
+    A position beyond the known value is padded with the unresolved marker
+    rather than dropped: a person's decision must never vanish because the
+    machine's string was shorter than the field.
     """
+    if position < 0:
+        return value
     characters = list(value)
-    if 0 <= position < len(characters):
-        characters[position] = replacement
-        return "".join(characters)
-    return value
+    characters.extend(UNRESOLVED_CHARACTER for _ in range(position + 1 - len(characters)))
+    characters[position] = replacement
+    return "".join(characters)
 
 
 def _question_numbers_by_group(template: OmrTemplate) -> dict[tuple[str, int], int]:
@@ -2507,8 +2605,11 @@ def effective_identifiers(
             for row in scans
         }
 
+        fields: dict[int, _FieldDecisions] = {}
         conflicts = session.scalars(
-            select(ReviewConflict).where(ReviewConflict.batch_id == batch_id)
+            select(ReviewConflict)
+            .where(ReviewConflict.batch_id == batch_id)
+            .order_by(ReviewConflict.conflict_id)
         ).all()
         for conflict in conflicts:
             current = found.get(conflict.scan_id)
@@ -2530,12 +2631,21 @@ def effective_identifiers(
             decided = _project_provenance(session, conflict)
             if not decided.is_human_decided:
                 continue
+            fields.setdefault(conflict.scan_id, _FieldDecisions()).add(
+                conflict, decided.value, whole=conflict.group_key == WHOLE_FIELD
+            )
             found[conflict.scan_id] = replace(
                 current,
-                value=_identifier_after(current.value, conflict, decided.value),
                 source=ValueSource.HUMAN,
                 reviewer=decided.reviewer,
                 reason=decided.reason,
+            )
+        by_scan = {row.scan_id: row for row in scans}
+        for scan_id, decisions in fields.items():
+            current = found[scan_id]
+            found[scan_id] = replace(
+                current,
+                value=decisions.assemble(by_scan.get(scan_id), current.machine_value),
             )
     return found
 
@@ -2568,8 +2678,8 @@ def effective_set_codes(
     against the wrong set's key is the defect this phase most has to avoid.
 
     Multi-character set codes (``"10"``, ``"X1"``) are carried through
-    unchanged: a positional correction substitutes one printed position, which
-    is why it cannot simply index into the string.
+    unchanged: a positional correction replaces one position's whole symbol and
+    the code is reassembled from symbols - see :class:`_FieldDecisions`.
     """
     with database.session() as session:
         scans = session.scalars(
@@ -2584,8 +2694,11 @@ def effective_set_codes(
             for row in scans
         }
 
+        fields: dict[int, _FieldDecisions] = {}
         conflicts = session.scalars(
-            select(ReviewConflict).where(ReviewConflict.batch_id == batch_id)
+            select(ReviewConflict)
+            .where(ReviewConflict.batch_id == batch_id)
+            .order_by(ReviewConflict.conflict_id)
         ).all()
         for conflict in conflicts:
             current = found.get(conflict.scan_id)
@@ -2607,12 +2720,21 @@ def effective_set_codes(
             decided = _project_provenance(session, conflict)
             if not decided.is_human_decided:
                 continue
+            fields.setdefault(conflict.scan_id, _FieldDecisions()).add(
+                conflict, decided.value, whole=conflict.group_key == WHOLE_FIELD
+            )
             found[conflict.scan_id] = replace(
                 current,
-                value=_identifier_after(current.value, conflict, decided.value),
                 source=ValueSource.HUMAN,
                 reviewer=decided.reviewer,
                 reason=decided.reason,
+            )
+        by_scan = {row.scan_id: row for row in scans}
+        for scan_id, decisions in fields.items():
+            current = found[scan_id]
+            found[scan_id] = replace(
+                current,
+                value=decisions.assemble(by_scan.get(scan_id), current.machine_value),
             )
     return found
 
@@ -2713,18 +2835,6 @@ def effective_answers(
         )
         for scan_id, entry in found.items()
     }
-
-
-def _identifier_after(current: str, conflict: ReviewConflict, decided: str) -> str:
-    """Apply one resolved identifier decision to a sheet's ID.
-
-    The same rule :func:`_apply_decision` uses for the CSV export, and for the
-    same reason: correcting the third digit of a roll number says nothing about
-    the other five, so a positional decision substitutes rather than replaces.
-    """
-    if conflict.group_key == WHOLE_FIELD:
-        return decided
-    return _substitute_position(current or conflict.machine_value, conflict.group_key, decided)
 
 
 def scan_source_path(database: ProjectDatabase, scan_id: int) -> str:

@@ -509,3 +509,105 @@ class TestSetCodeOverride:
         assert records[0].observation.value == "10"
         found = review_store.provenance_for(database, records[0].conflict_id)
         assert (found.machine_value, found.value) == ("10", "11")
+
+
+class TestFieldsAreSequencesOfSymbols:
+    """The shared split / join / machine-reading helpers, with wide symbols."""
+
+    @staticmethod
+    def shape() -> object:
+        from omr_scanner.services.conflict_policy import FieldShape
+
+        mixed = (*(str(digit) for digit in range(10)), "10", "11")
+        return FieldShape(zone_id="set_code", label="Set code", positions=(mixed, mixed))
+
+    def test_split_keeps_whole_symbols(self):
+        from omr_scanner.services import split_field_value
+
+        shape = self.shape()
+        assert split_field_value(shape, "102") == ["10", "2"]
+        assert split_field_value(shape, "1110") == ["11", "10"]
+        assert split_field_value(shape, "72") == ["7", "2"]
+        # Nothing padded, nothing truncated.
+        assert split_field_value(shape, "1") is None
+        assert split_field_value(shape, "10210") is None
+
+    def test_split_symbols_like_b2_and_x(self):
+        from omr_scanner.services import split_field_value
+        from omr_scanner.services.conflict_policy import FieldShape
+
+        shape = FieldShape(
+            zone_id="set_code",
+            label="Set code",
+            positions=(("A", "B2", "X"), ("A", "B2", "X")),
+        )
+        assert split_field_value(shape, "B2X") == ["B2", "X"]
+        assert split_field_value(shape, "AB2") == ["A", "B2"]
+        assert split_field_value(shape, "B") is None
+
+    def test_join_is_the_inverse(self):
+        from omr_scanner.services import join_field_value, split_field_value
+
+        shape = self.shape()
+        for text in ("102", "1110", "72"):
+            assert join_field_value(split_field_value(shape, text)) == text
+
+    def test_the_machine_reading_is_one_symbol_per_position(self):
+        from tests.unit.test_recognition_contract import make_result
+
+        from omr_scanner.services import machine_field_symbols
+        from omr_scanner.services.recognition_models import (
+            CharacterView,
+            FieldView,
+            RecognitionOutcome,
+            RegistrationStatus,
+        )
+
+        field = FieldView(
+            zone_id="set_code",
+            label="Set code",
+            field_type="set_code",
+            value="10?_",
+            status="multiple",
+            needs_review=True,
+            characters=(
+                CharacterView(position=0, value="10", status="resolved",
+                              top_fill=0.9, margin=0.8, confidence=1.0),
+                CharacterView(position=1, value="2-3", status="multiple",
+                              top_fill=0.8, margin=0.0, confidence=0.0),
+                CharacterView(position=2, value="", status="blank",
+                              top_fill=0.1, margin=0.0, confidence=0.0),
+            ),
+        )
+        result = make_result(
+            source_path=Path("s.png"),
+            outcome=RecognitionOutcome.REVIEW,
+            registration=RegistrationStatus.REGISTERED,
+            warnings=(),
+            status_codes=(),
+            fields=(field,),
+            answers=(),
+            bubbles=(),
+            identifier_zone_id="roll_number",
+            set_code_zone_id="set_code",
+        )
+        # The same rendering recognition uses for the assembled value.
+        assert machine_field_symbols(result, "set_code") == ["10", "?", "_"]
+        assert machine_field_symbols(result, "absent") is None
+
+
+class TestReassemblyWithoutAStoredResult:
+    def test_a_sheet_with_no_stored_result_falls_back_to_the_old_rule(
+        self, database, sheet
+    ):
+        # The `sheet` fixture never stores a recognition result, so there are
+        # no per-position machine symbols to lay decisions over. The effective
+        # value must still carry the decision, by the documented fallback.
+        batch_id, scan_id, conflicts = sheet
+        review_store.correct_value(
+            database, conflicts[0], value="1", reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        found = review_store.effective_identifiers(database, batch_id)[scan_id]
+        assert found.source is ValueSource.HUMAN
+        assert found.value == "1"

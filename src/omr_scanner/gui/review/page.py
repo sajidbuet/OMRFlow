@@ -130,6 +130,7 @@ from omr_scanner.services import (
     field_shape,
     group_labels,
     history_for,
+    join_field_value,
     last_decision,
     last_resolved_sheet,
     list_conflicts,
@@ -139,6 +140,7 @@ from omr_scanner.services import (
     provenance_for_scan,
     reopen,
     scan_source_path,
+    split_field_value,
     split_marks,
     undo_decision,
     undo_field_edit,
@@ -383,6 +385,12 @@ class ResolvePageState:
         editing_field: The field the whole-field editor is open on, or
             ``None``. Held so that the editor survives the refreshes a
             selection change causes.
+        editing_scan_id: The sheet it was opened on. Moving to another sheet
+            closes it, so a value typed for one script is never applied to the
+            next.
+        editing_kind: Which identity field that is - the Student ID or the
+            set code - so an override is recorded against the field being
+            edited, not against whichever record happens to be selected.
         last_field_edit: The most recent whole-field correction, so undo can
             take back the operator's *action* rather than the last of the
             several positions it happened to write.
@@ -400,6 +408,8 @@ class ResolvePageState:
     auto_advance: bool = True
     pending: dict[int, str] = field(default_factory=dict)
     editing_field: FieldShape | None = None
+    editing_scan_id: int | None = None
+    editing_kind: FieldKind | None = None
     last_field_edit: FieldEdit | None = None
 
 
@@ -972,22 +982,38 @@ class ResolvePage(WorkflowPage):
         value is being typed, which is the whole point - the operator is
         reading the number off the paper in the pane above. It occupies one
         line when shut.
+
+        **Sheet actions, not conflict actions.** One small button per identity
+        field the sheet carries - Student ID, Set Code - offered whatever
+        record is selected, because a field belongs to the sheet: a roll
+        number whose conflicts are all settled, or one read confidently with no
+        conflict at all, is still one an operator may need to correct.
         """
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Spacing.XXS)
 
-        self.field_edit_toggle = QToolButton()
-        self.field_edit_toggle.setObjectName("editFullFieldButton")
-        self.field_edit_toggle.setCheckable(True)
-        self.field_edit_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.field_edit_toggle.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
-        self.field_edit_toggle.setText("Edit full field...")
-        self.field_edit_toggle.toggled.connect(self._on_field_editor_toggled)
-        layout.addWidget(self.field_edit_toggle, alignment=Qt.AlignmentFlag.AlignLeft)
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(Spacing.SM)
+        self.field_edit_buttons: dict[FieldKind, QToolButton] = {}
+        for kind, name in (
+            (FieldKind.IDENTIFIER, "editFullFieldButton"),
+            (FieldKind.SET_CODE, "editFullSetCodeButton"),
+        ):
+            button = QToolButton()
+            button.setObjectName(name)
+            button.setCheckable(True)
+            button.setArrowType(Qt.ArrowType.RightArrow)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            button.setText("Edit field...")
+            button.toggled.connect(partial(self._on_field_editor_toggled, kind))
+            button.setVisible(False)
+            actions.addWidget(button)
+            self.field_edit_buttons[kind] = button
+        actions.addStretch(1)
+        layout.addLayout(actions)
 
         self.field_edit_row = QWidget()
         row = QHBoxLayout(self.field_edit_row)
@@ -1923,7 +1949,9 @@ class ResolvePage(WorkflowPage):
             _machine_summary_html(
                 conflict,
                 self._machine_marks(conflict),
-                "".join(self.current_field_values(shape)) if shape is not None else "",
+                join_field_value(self.current_field_values(shape))
+                if shape is not None
+                else "",
             )
         )
         self.evidence_label.setText(_evidence_html(conflict, assessment))
@@ -2351,27 +2379,65 @@ class ResolvePage(WorkflowPage):
     # ------------------------------------------------------------------
     # Correcting a whole field in one action
     # ------------------------------------------------------------------
-    def _field_shape_for(self, conflict: ConflictRecord | None) -> FieldShape | None:
-        """The whole-field definition behind one conflict, or ``None``.
+    @property
+    def field_edit_toggle(self) -> QToolButton:
+        """The field-editor button for the selected record's own field.
 
-        ``None`` for anything that is not a position of a grid field: a
-        duplicate identifier names no zone, a sheet that would not register has
-        no field geometry to map a typed value onto, and a whole-field conflict
-        is already edited as a whole through the free-text box.
+        The Student ID button unless a set-code record is selected. Both are
+        offered at once (:attr:`field_edit_buttons`); this names the one ``E``
+        opens.
         """
+        return self.field_edit_buttons[self._contextual_field_kind()]
+
+    def _contextual_field_kind(self) -> FieldKind:
+        """Which identity field ``E`` and the machine panel refer to."""
+        conflict = self.current_conflict()
+        if conflict is not None and conflict.field.kind is FieldKind.SET_CODE:
+            return FieldKind.SET_CODE
+        return FieldKind.IDENTIFIER
+
+    def sheet_field_shape(self, kind: FieldKind) -> FieldShape | None:
+        """The shape of one identity field on the sheet being reviewed, or ``None``.
+
+        **A property of the sheet, not of the selected record.** It does not
+        ask whether that field has a conflict: a Student ID read confidently in
+        every position, or one whose conflicts are all settled, is still one an
+        operator may need to correct. The zone is the one recognition itself
+        read the field from, and the shape comes from the template.
+
+        ``None`` when the loaded sheet never rectified - with no trustworthy
+        association between the template's positions and the paper, a typed
+        field value could not be mapped onto bubbles honestly - or when the
+        sheet is still loading, or the template has no such field.
+        """
+        conflict = self.current_conflict()
         if self.state.template is None or conflict is None:
-            return None
-        if not conflict.field.kind.is_record_identity:
-            return None
-        if not conflict.field.zone_id or conflict.field.is_whole_field:
             return None
         bundle = self.state.bundle
         if bundle is None or bundle.result is None or bundle.result.preview is None:
-            # A sheet that never rectified has no reliable association between
-            # the template's positions and the paper, so a typed field value
-            # could not be mapped onto bubbles honestly.
             return None
-        return field_shape(self.state.template, conflict.field.zone_id)
+        if self._loaded_scan_id != conflict.scan_id:
+            return None
+        result = bundle.result
+        zone_id = (
+            result.identifier_zone_id
+            if kind is FieldKind.IDENTIFIER
+            else result.set_code_zone_id
+        )
+        if not zone_id:
+            return None
+        return field_shape(self.state.template, zone_id)
+
+    def _field_shape_for(self, conflict: ConflictRecord | None) -> FieldShape | None:
+        """The identity field one record is about, on its sheet, or ``None``.
+
+        ``None`` for a record that is not about the Student ID or the set code.
+        A duplicate-ID record and a whole-field record *are* about the Student
+        ID, so they get its shape like any position of it.
+        """
+        if conflict is None or not conflict.field.kind.is_record_identity:
+            return None
+        return self.sheet_field_shape(conflict.field.kind)
 
     def current_field_values(self, shape: FieldShape) -> list[str]:
         """The field as it currently reads, one entry per printed position.
@@ -2385,6 +2451,13 @@ class ResolvePage(WorkflowPage):
         marker. It is never accepted back as input; see
         :meth:`_validate_field_value`.
         """
+        whole = self._whole_field_record(shape)
+        if whole is not None:
+            found = self.state.sheet_provenance.get(whole.conflict_id)
+            if found is not None and found.is_human_decided:
+                decided = split_field_value(shape, found.value)
+                if decided is not None:
+                    return decided
         conflict = self.current_conflict()
         scan_id = conflict.scan_id if conflict is not None else -1
         by_position = {
@@ -2433,27 +2506,35 @@ class ResolvePage(WorkflowPage):
             for character in found.characters
         }
 
+    def _whole_field_record(self, shape: FieldShape) -> ConflictRecord | None:
+        """The live record disputing this field *as a whole*, if there is one.
+
+        A wholly blank Student ID is one record for the field rather than one
+        per position, so a typed value settles that record - it is not a set of
+        per-position overrides of a reading nobody made.
+        """
+        conflict = self.current_conflict()
+        scan_id = conflict.scan_id if conflict is not None else -1
+        return next(
+            (
+                item
+                for item in self.state.sheet_conflicts
+                if item.scan_id == scan_id
+                and item.field.zone_id == shape.zone_id
+                and item.field.is_whole_field
+                and item.state is not ConflictState.WITHDRAWN
+            ),
+            None,
+        )
+
     def _split_field_value(self, shape: FieldShape, text: str) -> list[str] | None:
         """Split typed text into one symbol per printed position, or ``None``.
 
-        Not a character-per-position split. A set code whose options are
-        ``"10"``, ``"11"``, ``"12"`` has one *position* carrying two
-        characters, so the text is consumed greedily against the symbols each
-        position actually prints. A uniform single-character field - every roll
-        number - falls out of the same loop.
+        Delegates to :func:`~omr_scanner.services.conflict_policy.split_field_value`,
+        the one parser every field consumer shares, so the editor, the preview
+        and the stored effective value agree on what a position is.
         """
-        remaining = text
-        values: list[str] = []
-        for position in range(shape.length):
-            symbols = sorted(shape.positions[position], key=len, reverse=True)
-            match = next(
-                (item for item in symbols if remaining.startswith(item)), None
-            )
-            if match is None:
-                return None
-            values.append(match)
-            remaining = remaining[len(match) :]
-        return values if not remaining else None
+        return split_field_value(shape, text)
 
     def _validate_field_value(
         self, shape: FieldShape, text: str
@@ -2500,6 +2581,28 @@ class ResolvePage(WorkflowPage):
         Positions the machine already reads correctly are left alone, so a
         roll number with two bad digits produces two corrections and not eight.
         """
+        current = self.current_field_values(shape)
+        whole = self._whole_field_record(shape)
+        if whole is not None:
+            # Disputed as a whole: the typed value settles that one record.
+            proposed = join_field_value(values)
+            found = self.state.sheet_provenance.get(whole.conflict_id)
+            settled = found is not None and found.is_human_decided and (
+                found.value == proposed
+            )
+            return FieldEditPlan(
+                current=tuple(current),
+                proposed=tuple(values),
+                changes={} if settled else {whole.conflict_id: proposed},
+                overrides={},
+                positions=tuple(
+                    index
+                    for index, (before, after) in enumerate(
+                        zip(current, values, strict=True)
+                    )
+                    if before != after
+                ),
+            )
         conflict = self.current_conflict()
         scan_id = conflict.scan_id if conflict is not None else -1
         by_position = {
@@ -2510,7 +2613,6 @@ class ResolvePage(WorkflowPage):
             and not item.field.is_whole_field
             and item.state is not ConflictState.WITHDRAWN
         }
-        current = self.current_field_values(shape)
         changes: dict[int, str] = {}
         overrides: dict[int, tuple[str, str]] = {}
         positions: list[int] = []
@@ -2586,22 +2688,37 @@ class ResolvePage(WorkflowPage):
         box.exec()
         return box.clickedButton() is apply
 
-    def open_field_editor(self) -> bool:
-        """Open the whole-field editor on the active conflict's field.
+    def open_field_editor(self, kind: FieldKind | None = None) -> bool:
+        """Open the whole-field editor on one of the sheet's identity fields.
+
+        Args:
+            kind: Which field; the selected record's own field when omitted
+                (the Student ID unless a set-code record is selected).
 
         Refuses while the keyboard belongs to a text box, so that typing ``e``
         into the search field does not open an editor behind it.
         """
         if self._editing_text():
             return False
-        shape = self._field_shape_for(self.current_conflict())
-        if shape is None:
+        chosen = kind or self._contextual_field_kind()
+        shape = self.sheet_field_shape(chosen)
+        conflict = self.current_conflict()
+        if shape is None or conflict is None:
             return False
         self.state.editing_field = shape
+        self.state.editing_scan_id = conflict.scan_id
+        self.state.editing_kind = chosen
         self.field_edit_label.setText(f"Correct {shape.label}")
-        self.field_edit_input.setText("".join(self.current_field_values(shape)))
+        self.field_edit_input.setText(join_field_value(self.current_field_values(shape)))
         self.field_edit_row.setVisible(True)
-        self.field_edit_toggle.setArrowType(Qt.ArrowType.DownArrow)
+        for item, button in self.field_edit_buttons.items():
+            opened = item is chosen
+            button.blockSignals(True)
+            button.setChecked(opened)
+            button.blockSignals(False)
+            button.setArrowType(
+                Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow
+            )
         self.field_edit_input.setFocus()
         # Select-all, because the reviewer is almost always replacing the whole
         # value rather than editing one character of a reading they already
@@ -2619,19 +2736,26 @@ class ResolvePage(WorkflowPage):
         reviewer's next keystroke, including ``Ctrl+Z``, did nothing at all.
         """
         self.state.editing_field = None
+        self.state.editing_scan_id = None
+        self.state.editing_kind = None
         self.field_edit_row.setVisible(False)
-        self.field_edit_toggle.setArrowType(Qt.ArrowType.RightArrow)
-        if self.field_edit_toggle.isChecked():
-            self.field_edit_toggle.setChecked(False)
+        for button in self.field_edit_buttons.values():
+            button.blockSignals(True)
+            button.setChecked(False)
+            button.blockSignals(False)
+            button.setArrowType(Qt.ArrowType.RightArrow)
         self.clear_pending()
         self._refresh_pending_display()
         self.queue_table.setFocus()
 
-    def _on_field_editor_toggled(self, shown: bool) -> None:
-        """Open or shut the editor from its own button."""
+    def _on_field_editor_toggled(self, kind: FieldKind, shown: bool) -> None:
+        """Open or shut the editor from one field's own button."""
         if shown:
-            if not self.open_field_editor():
-                self.field_edit_toggle.setChecked(False)
+            if not self.open_field_editor(kind):
+                button = self.field_edit_buttons[kind]
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
             return
         if self.state.editing_field is not None:
             self.close_field_editor()
@@ -2679,8 +2803,8 @@ class ResolvePage(WorkflowPage):
 
         # Current -> proposed, then which positions move, then - in the
         # warning colour - any confident reading this would overrule.
-        before = html.escape("".join(plan.current))
-        after = html.escape("".join(plan.proposed))
+        before = html.escape(join_field_value(plan.current))
+        after = html.escape(join_field_value(plan.proposed))
         positions = ", ".join(str(item + 1) for item in plan.positions)
         # One line: the editor row is one line high, and a second line was
         # clipped. The override warning comes straight after the values, so
@@ -2766,7 +2890,7 @@ class ResolvePage(WorkflowPage):
                 scan_id=scan_id,
                 zone_id=shape.zone_id,
                 values=positions,
-                display_value="".join(values),
+                display_value=join_field_value(values),
                 field_label=shape.label,
                 reviewer=self.state.reviewer,
                 reason=self._selected_reason(),
@@ -2775,8 +2899,10 @@ class ResolvePage(WorkflowPage):
                     position: self._machine_observation_at(shape, position)
                     for position in plan.overrides
                 },
-                field_kind=conflict.field.kind,
-                previous_value="".join(plan.current),
+                # The field being edited - not the selected record, which may
+                # belong to the other field on this sheet.
+                field_kind=self.state.editing_kind or conflict.field.kind,
+                previous_value=join_field_value(plan.current),
             )
         except (ReviewError, OMRScannerError) as exc:
             report_error(self, exc, context="Conflict review (field edit)")
@@ -3212,27 +3338,38 @@ class ResolvePage(WorkflowPage):
     def _refresh_field_edit_controls(
         self, conflict: ConflictRecord | None, *, can_decide: bool
     ) -> None:
-        """Offer the whole-field editor exactly where it can do something.
+        """Offer each of the sheet's identity-field editors where it can work.
 
-        Hidden for a conflict that is not a position of a grid field. A sheet
-        that would not register has no trustworthy association between the
-        template's positions and the paper, so typing an identifier for it
-        would be asserting where bubbles are rather than reading them; a
-        duplicate identifier is already edited as a whole in the free-text box.
+        Per **sheet**, whatever record is selected - see
+        :meth:`sheet_field_shape`. Hidden only when the sheet has no such field
+        or never rectified: then there is no trustworthy association between
+        the template's positions and the paper, and typing an identifier would
+        be asserting where bubbles are rather than reading them.
         """
-        shape = self._field_shape_for(conflict)
-        self.field_edit_toggle.setVisible(shape is not None)
-        self.field_edit_toggle.setEnabled(shape is not None and can_decide)
-        if shape is None:
-            if self.state.editing_field is not None:
-                self.close_field_editor()
+        for kind, button in self.field_edit_buttons.items():
+            shape = self.sheet_field_shape(kind)
+            button.setVisible(shape is not None)
+            button.setEnabled(shape is not None and can_decide)
+            if shape is None:
+                continue
+            button.setText(f"Edit full {shape.label}...")
+            button.setToolTip(
+                f"Type the whole {shape.label} once ({shape.length} positions). "
+                "Settles every disputed position; changing a position the "
+                "machine read confidently is an audited override and asks first"
+            )
+        editing = self.state.editing_field
+        if editing is None:
             return
-        self.field_edit_toggle.setText(f"Edit full {shape.label}...")
-        self.field_edit_toggle.setToolTip(
-            f"Type the whole {shape.label} once ({shape.length} positions). "
-            "Settles every disputed position; changing a position the machine "
-            "read confidently is an audited override and asks first"
+        still_offered = any(
+            (shape := self.sheet_field_shape(kind)) is not None
+            and shape.zone_id == editing.zone_id
+            for kind in self.field_edit_buttons
         )
+        moved = conflict is None or conflict.scan_id != self.state.editing_scan_id
+        if moved or not still_offered:
+            # A value typed for one script is never carried to another.
+            self.close_field_editor()
 
     def _refresh_primary_action(
         self, conflict: ConflictRecord | None, *, can_decide: bool

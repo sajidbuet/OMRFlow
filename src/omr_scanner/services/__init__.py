@@ -144,6 +144,9 @@ from omr_scanner.services.conflict_policy import (
     field_shape,
     group_cells,
     group_labels,
+    join_field_value,
+    machine_field_symbols,
+    split_field_value,
     split_marks,
 )
 from omr_scanner.services.filename_manager import (
@@ -395,6 +398,7 @@ __all__ = [
     "is_override",
     "is_project_directory",
     "is_supported_scan",
+    "join_field_value",
     "key_from_scan",
     "last_decision",
     "last_resolved_sheet",
@@ -404,6 +408,7 @@ __all__ = [
     "load_scan_image",
     "load_summary",
     "load_template",
+    "machine_field_symbols",
     "map_canonical_to_source",
     "mark_cancelled",
     "mark_queued",
@@ -456,6 +461,7 @@ __all__ = [
     "set_attendance",
     "set_batch_status",
     "sheet_resolutions",
+    "split_field_value",
     "split_marks",
     "standing_commands",
     "sync_conflicts",

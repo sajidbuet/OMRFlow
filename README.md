@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 5,273 tests passing (14 skipped: no LibreOffice, no desktop window manager, no local real-scan fixtures), plus `ruff` and `mypy` |
+| Automated suite | 5,392 tests passing in the full local run of 2026-09-28 (3 skipped; 4 `stress` tests deselected by default), plus one test added after that run began, passing on its own; `ruff` and `mypy` clean |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -241,7 +241,7 @@ synthetically tested" to a qualified stable release.
 | Resolve stage UX & reversible decisions | 🟠 **Implemented — automated tests passing, not yet exercised by a real reviewer.** Whole-position lane overlay, keyboard-first operation, auto-advance, and undo / redo / undo-a-whole-sheet as persisted audit events. See below |
 | Resolve stage layout & workflow (2nd pass) | 🟠 **Implemented — automated tests passing; inspected in rendered screenshots, not yet worked by a real operator.** Space redistributed 29/71 and 70/30, ROI framing, machine-vs-operator colour semantics, pick-then-confirm, and an action that no longer offers to store an invalid reading. See below |
 | Resolve field-level entry & sheet-local progression | 🟠 **Implemented — automated tests passing; driven end to end in a rendered harness, not yet worked by a real operator.** A whole Student ID or Question Set typed once settles every position of it the sheet disputes; the queue is sheet-major and finishes a sheet before moving on. See below |
-| Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. See below |
+| Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 
 #### Overriding a confidently read position
@@ -302,7 +302,7 @@ not withdrawing a standing override; defer refused; reopen; the overlay;
 same-sheet navigation; the multi-position, multi-character set code
 (`10`/`11`/`12`); FieldShape validation; and duplicate detection. One existing
 test that asserted the old refusal was rewritten to assert the new warning.
-The review-store, undo and Resolve-stage suites pass; the full-suite count in the testing-status table above predates this change.
+The full suite passes; see the testing-status table above.
 
 **Manual acceptance.** Driven in a rendered harness on the busy synthetic sheet
 (`????29`): `100029` applied with no dialog; the resolved Student ID selected
@@ -312,19 +312,70 @@ manual and effective `8`, effective ID `100028`; the set-code conflict on the
 same sheet was selected next; a real `Ctrl+Z` keypress restored `100029`. **Not
 yet exercised by an operator on a real sheet.**
 
+**Follow-up patch: sheet-level field editors, and set codes rebuilt by symbol.**
+
+*Field editors belong to the sheet.* The editor used to be derived from the
+**selected record**: it opened only when that record was a position of the
+Student ID or set code. So once every Student ID conflict was resolved the
+operator had to switch the queue to *All* and find an old row, and a Student
+ID read confidently in every position — no record at all — could not be
+edited. The editor row now carries two compact buttons, **Edit full Student
+ID…** and **Edit full Set code…** (named from the template), shown for the
+sheet being reviewed whatever is selected: a position conflict, a set-code
+conflict, a duplicate-ID conflict, or a resolved record under *All* (the same
+rule covers a sheet-scope finding on a registered sheet; that case is not
+separately tested). The field's zone is the one recognition read it from and its
+shape comes from the template. Both buttons are hidden — and the editor
+refuses to open — while the sheet is still loading or if it never rectified.
+`E` opens the field the selected record belongs to, and the Student ID
+otherwise. Moving to another sheet closes an open editor, so a value typed for
+one script is never applied to the next. A Student ID with no conflict is
+edited through the operator-override path above; nothing is fabricated. A field
+disputed *as a whole* (a wholly blank ID) is settled as that one record rather
+than as per-position overrides.
+
+A defect found by the new tests and fixed: an override made while the *other*
+field's record was selected was stored against that field's kind (a Student ID
+override filed as a set-code record), so it never reached the effective ID.
+The kind now comes from the field being edited.
+
+*Set codes are rebuilt from symbols.* The effective Student ID / set code (and
+the CSV export's) was built by writing each decision into the machine's
+assembled string **by character index**. A position printing `10` is two
+characters, so correcting position 1 of `10?` to `2` gave `12?` instead of
+`102`. The per-position records were already right; the assembly was not.
+Decisions are now collected per field and laid over the machine's
+**per-position symbols**, read from the stored recognition result, then
+joined. One shared set of helpers in `conflict_policy` —
+`split_field_value`, `join_field_value`, `machine_field_symbols` — serves the
+editor's parsing, the current / proposed preview, the history text,
+`effective_identifiers`, `effective_set_codes` and `sheet_resolutions`.
+
+**Testing (this patch).** 10 Resolve-stage GUI tests (one of them the old
+"not for a duplicate identifier" test, rewritten to expect the editor) and 5
+review-store tests. They cover: the editors offered with a Student ID, set-code
+and duplicate-ID record selected; after every Student ID conflict is resolved,
+without changing the filter; a sheet with **no** Student ID record overridden
+through the sheet action, with no detection fabricated; a wholly blank
+Student ID settled as its one record; a never-registered
+sheet offering neither; the editor closing on a change of sheet; and, for a
+set code printing `0`–`9`, `10`, `11` with two positions, the machine
+reading `10?`, a single-position decision giving `102`, parsing (`102` →
+`10`+`2`, `112` → `11`+`2`), the preview, the audit text, the CSV export
+value, and grouped undo. Also symbols such as `B2` and `X`, and the fallback
+for a sheet with no stored result.
+
 **Remaining limits.**
 
-- The editor opens from a Student ID / Set Code record on the sheet. On a sheet
-  where that field has **no record at all** — every position confident and
-  nothing disputed — there is still no entry point to it.
 - At narrow window widths the one-line preview can be cut off at the right; the
   full text is in its tooltip, and the confirmation dialog always lists every
-  override.
+  override. Non-blocking.
 - An override stores the machine observation of the re-read, without per-bubble
-  candidate fill scores.
-- Positional substitution of a *multi-character* set-code symbol into the
-  assembled effective set-code string is pre-existing behaviour and indexes by
-  character; the per-position records themselves are correct.
+  candidate fill scores. Non-blocking.
+- Reassembly falls back to the old character substitution in two cases: a scan
+  row with no decodable stored result, and a field with both a whole-field
+  decision and positional ones. Both are exact for single-character symbols
+  (every numeric Student ID).
 
 #### Correcting a whole field, and finishing a sheet before leaving it
 
