@@ -45,6 +45,8 @@ from omr_scanner.gui.review.page import (
     FILTER_RESOLVED,
     ORIGINAL_TAB_INDEX,
     QUEUE_PANEL_WIDTH,
+    SHEET_CONTINUATION,
+    UNKNOWN_POSITION,
     ZOOM_TAB_INDEX,
     ResolvePage,
 )
@@ -435,9 +437,9 @@ class TestWorkspace:
         text = page.sheet_progress_label.text()
         # Every number says what it counts, so the header and the batch summary
         # cannot read as contradicting each other.
-        assert "on sheet" in text
+        assert "on this sheet" in text
         assert "left here" in text
-        assert "in batch" in text
+        assert "left in batch" in text
         assert page.sheet_progress_label.toolTip()
 
     def test_the_choice_buttons_come_from_the_template(
@@ -1177,7 +1179,7 @@ class TestKeyboard:
             pytest.skip("this Qt platform plugin never activates a window")
 
         QTest.keyClick(page.queue_table, Qt.Key.Key_1)
-        assert page.state.pending == "1"
+        assert page.pending == "1"
         QTest.keyClick(page.queue_table, Qt.Key.Key_Return)
 
         assert review_store.provenance_for(page.database, conflict_id).value == "1"
@@ -1743,11 +1745,12 @@ class TestCandidateButtonStates:
     def test_no_pick_survives_a_change_of_conflict(self, qtbot, page: ResolvePage):
         select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
         page.choose_label("3")
-        assert page.state.pending == "3"
+        assert page.pending == "3"
 
         page.select_next()
 
-        assert page.state.pending is None
+        assert page.pending is None
+        assert page.state.pending == {}
         assert self.chosen_buttons(page) == []
 
     def test_a_pick_shows_on_the_sheet_before_it_is_committed(
@@ -2053,6 +2056,623 @@ class TestLaneRendering:
         assert amber in unresolved
         assert red in manual
         assert red not in unresolved
+
+
+@pytest.fixture
+def busy(project_session: ProjectSession, template, tmp_path: Path):
+    """A sheet with several Student-ID gaps and a disputed set code.
+
+    The reported case: a candidate who left four roll-number positions blank
+    and marked two set codes, so one script carries five conflicts and the
+    operator knows the whole roll number without being able to read it.
+
+    A second, clean-identifier sheet follows it so that "stay on this sheet"
+    can be told from "there was nowhere else to go".
+    """
+    scans = tmp_path / "busy"
+    scans.mkdir(parents=True, exist_ok=True)
+    gappy = {
+        "roll_number": {4: "2", 5: "9"},
+        "set_code": {0: ["A", "B"]},
+        "questions_0": dict.fromkeys(range(10), "B"),
+        "questions_1": dict.fromkeys(range(10), "C"),
+    }
+    paths = []
+    for name, marks in (
+        ("SYN_000001.png", gappy),
+        ("SYN_000002.png", sheet_marks("170502", set_code={0: ["A", "C"]})),
+    ):
+        path = scans / name
+        cv2.imwrite(str(path), render_marked_sheet(template, marks))
+        paths.append(path)
+
+    database = project_session.database
+    batch_id = batch_store.create_batch(
+        database, paths, identity=batch_store.BatchIdentity.of(template)
+    )
+    recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+    report = process_batch(paths, template, on_result=recorder.record, workers=1)
+    recorder.flush()
+    batch_store.finalise_batch(database, batch_id)
+    ids = batch_store.scan_ids_by_path(database, batch_id)
+    for item in report.processed:
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[item.source_path],
+            result=item.result,
+            template=template,
+        )
+    review_store.sync_duplicate_identifiers(database, batch_id)
+    return batch_id
+
+
+@pytest.fixture
+def busy_page(qtbot, project_session: ProjectSession, template, busy):
+    """A Resolve page on the busy batch, with a sheet selected."""
+    spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+    review_page = ResolvePage(spec)
+    qtbot.addWidget(review_page)
+    review_page.on_project_changed(project_session)
+    review_page.set_reviewer(REVIEWER)
+    assert review_page.load_batch(busy, template) is True
+    with qtbot.waitSignal(review_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+        review_page.queue_table.selectRow(0)
+    yield review_page
+    review_page.close()
+
+
+class TestQueueIsSheetMajor:
+    def test_one_sheets_conflicts_are_contiguous(self, busy_page: ResolvePage):
+        # The root cause of the jumping: ordering by severity across the whole
+        # batch put a sheet's serious and ordinary conflicts hundreds of rows
+        # apart, so resolving one moved the selection to a different sheet.
+        seen: list[int] = []
+        for item in busy_page.state.conflicts:
+            if not seen or seen[-1] != item.scan_id:
+                seen.append(item.scan_id)
+        assert len(seen) == len(set(seen)), "a sheet appears in two separate runs"
+
+    def test_a_sheet_carries_several_conflicts(self, busy_page: ResolvePage):
+        first = busy_page.state.conflicts[0].scan_id
+        same = [item for item in busy_page.state.conflicts if item.scan_id == first]
+        assert len(same) >= 4, "this fixture should give one busy sheet"
+
+    def test_repeated_sheet_names_are_not_repeated(self, busy_page: ResolvePage):
+        # Eight identical file names read as eight unrelated problems.
+        first = busy_page.state.conflicts[0].scan_id
+        rows = [
+            index
+            for index, item in enumerate(busy_page.state.conflicts)
+            if item.scan_id == first
+        ]
+        named = busy_page.queue_table.item(rows[0], 0).text()
+        assert named == busy_page.state.conflicts[rows[0]].scan_name
+        for row in rows[1:]:
+            text = busy_page.queue_table.item(row, 0).text()
+            assert SHEET_CONTINUATION in text
+            assert named not in text
+            # ...and the full name is still one hover away.
+            assert named in busy_page.queue_table.item(row, 0).toolTip()
+
+
+class TestSheetLocalProgression:
+    def sheet_rows(self, page: ResolvePage, scan_id: int) -> list[int]:
+        return [
+            index
+            for index, item in enumerate(page.state.conflicts)
+            if item.scan_id == scan_id
+        ]
+
+    def test_resolving_stays_on_the_sheet(self, qtbot, busy_page: ResolvePage):
+        # The reported problem, directly: an operator holding one script must
+        # finish it before being sent to another.
+        start = busy_page.current_conflict()
+        busy_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+
+        busy_page.choose_label("1")
+        assert busy_page.confirm_resolution() is True
+
+        landed = busy_page.current_conflict()
+        assert landed is not None
+        assert landed.scan_id == start.scan_id, "the queue moved to another sheet"
+        assert landed.conflict_id != start.conflict_id
+        assert landed.state is ConflictState.OPEN
+
+    def test_the_whole_sheet_can_be_walked_without_jumping(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        total = len(self.sheet_rows(busy_page, scan_id))
+        busy_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+
+        seen: list[int] = []
+        for _ in range(total):
+            conflict = busy_page.current_conflict()
+            if conflict is None or conflict.scan_id != scan_id:
+                break
+            seen.append(conflict.conflict_id)
+            labels = busy_page._offered_labels(conflict)
+            busy_page.choose_label(labels[0] if labels else BLANK_CHOICE)
+            assert busy_page.confirm_resolution() is True
+
+        assert len(seen) == total, "the queue left the sheet before it was finished"
+        assert len(set(seen)) == total, "a conflict was visited twice"
+        counts = review_store.count_conflicts_for_scan(
+            busy_page.database, busy_page.state.batch_id, scan_id
+        )
+        assert counts.unresolved == 0
+
+    def test_only_a_finished_sheet_hands_over_to_the_next(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        busy_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+        while True:
+            conflict = busy_page.current_conflict()
+            if conflict is None or conflict.scan_id != scan_id:
+                break
+            labels = busy_page._offered_labels(conflict)
+            busy_page.choose_label(labels[0] if labels else BLANK_CHOICE)
+            busy_page.confirm_resolution()
+
+        landed = busy_page.current_conflict()
+        assert landed is not None, "the second sheet's conflicts were skipped"
+        assert landed.scan_id != scan_id
+        assert landed.state is ConflictState.OPEN
+
+    def test_deferring_does_not_leave_the_sheet(self, qtbot, busy_page: ResolvePage):
+        # Deferring does not advance, but the row does leave the "Unresolved"
+        # queue - that is what deferring means under the current filter - so
+        # what must hold is that the reviewer is still on the same script.
+        start = busy_page.current_conflict()
+        assert busy_page.defer_conflict() is True
+        landed = busy_page.current_conflict()
+        assert landed is not None
+        assert landed.scan_id == start.scan_id
+        assert review_store.get_conflict(busy_page.database, start.conflict_id).state is (
+            ConflictState.DEFERRED
+        )
+
+    def test_the_queue_does_not_return_to_the_top(self, qtbot, busy_page: ResolvePage):
+        # Restoring by row number is what sent the reviewer back to row zero.
+        scan_id = busy_page.current_conflict().scan_id
+        rows = self.sheet_rows(busy_page, scan_id)
+        busy_page.queue_table.selectRow(rows[-1])
+        busy_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+        labels = busy_page._offered_labels(busy_page.current_conflict())
+        busy_page.choose_label(labels[0] if labels else BLANK_CHOICE)
+        busy_page.confirm_resolution()
+
+        assert busy_page.queue_table.currentRow() != 0 or len(
+            busy_page.state.conflicts
+        ) <= 1
+
+    def test_the_sheet_progress_denominator_does_not_collapse(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        # "1 of 1" on the last conflict of five reads as though the sheet had
+        # one problem, rather than as progress through five.
+        scan_id = busy_page.current_conflict().scan_id
+        total = len(
+            [item for item in busy_page.state.sheet_conflicts if item.scan_id == scan_id]
+        )
+        assert f" of {total} on this sheet" in busy_page.sheet_progress_label.text()
+
+        busy_page.reason_combo.setCurrentText(ReasonCode.CLEAR_VISUAL_MARK.label)
+        busy_page.choose_label("1")
+        busy_page.confirm_resolution()
+
+        assert f" of {total} on this sheet" in busy_page.sheet_progress_label.text()
+
+
+class TestFullFieldEditor:
+    def shape(self, page: ResolvePage):
+        return page._field_shape_for(page.current_conflict())
+
+    def test_the_editor_is_offered_for_an_identifier_position(
+        self, busy_page: ResolvePage
+    ):
+        assert busy_page.field_edit_toggle.isVisibleTo(busy_page) is True
+        assert busy_page.field_edit_toggle.isEnabled() is True
+        assert "Roll number" in busy_page.field_edit_toggle.text()
+
+    def test_the_length_comes_from_the_template(self, busy_page: ResolvePage, template):
+        # Not a hard-coded 8: this template's roll number is six positions.
+        zone = next(item for item in template.zones if item.id == "roll_number")
+        assert self.shape(busy_page).length == zone.field.character_count
+
+    def test_the_current_field_is_reconstructed(self, busy_page: ResolvePage):
+        shape = self.shape(busy_page)
+        current = "".join(busy_page.current_field_values(shape))
+        assert len(current) == shape.length
+        # The four blank positions show the unknown marker; the two the machine
+        # read confidently show their digits.
+        assert current.count(UNKNOWN_POSITION) == 4
+        assert current.endswith("29")
+
+    def test_the_current_field_is_shown_in_the_machine_panel(
+        self, busy_page: ResolvePage
+    ):
+        assert "Current field" in busy_page.machine_summary_label.text()
+
+    def test_opening_prefills_and_selects_everything(self, busy_page: ResolvePage):
+        assert busy_page.open_field_editor() is True
+        assert busy_page.field_edit_row.isVisibleTo(busy_page) is True
+        shape = self.shape(busy_page)
+        assert busy_page.field_edit_input.text() == "".join(
+            busy_page.current_field_values(shape)
+        )
+        assert busy_page.field_edit_input.selectedText() == (
+            busy_page.field_edit_input.text()
+        )
+
+    def test_a_short_value_is_refused(self, busy_page: ResolvePage):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100")
+        assert busy_page.field_edit_apply.isEnabled() is False
+        assert "6 position" in busy_page.field_edit_status.text()
+
+    def test_a_non_numeric_value_is_refused(self, busy_page: ResolvePage):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("10002X")
+        assert busy_page.field_edit_apply.isEnabled() is False
+        assert "digits" in busy_page.field_edit_status.text()
+
+    def test_the_unknown_marker_is_never_accepted_as_input(
+        self, busy_page: ResolvePage
+    ):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText(f"1000{UNKNOWN_POSITION}9")
+        assert busy_page.field_edit_apply.isEnabled() is False
+        assert UNKNOWN_POSITION in busy_page.field_edit_status.text()
+
+    def test_nothing_is_padded_or_truncated(self, busy_page: ResolvePage):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("1000299")
+        assert busy_page.field_edit_apply.isEnabled() is False
+        assert busy_page.field_edit_input.text() == "1000299"
+
+    def test_a_value_disagreeing_with_an_undisputed_position_is_refused(
+        self, busy_page: ResolvePage
+    ):
+        # Position 5 reads 2 and nobody disputes it, so there is no conflict to
+        # record a decision against. Storing the typed value anyway would save
+        # an identifier different from the one on screen.
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100039")
+        assert busy_page.field_edit_apply.isEnabled() is False
+        assert "not in dispute" in busy_page.field_edit_status.text()
+
+    def test_a_valid_value_is_accepted_and_names_what_it_changes(
+        self, busy_page: ResolvePage
+    ):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100029")
+        assert busy_page.field_edit_apply.isEnabled() is True
+        assert "1, 2, 3, 4" in busy_page.field_edit_status.text()
+
+    def test_typing_stages_the_positions_on_the_sheet(self, busy_page: ResolvePage):
+        # Not an opaque text operation: the reviewer sees where the number they
+        # typed lands before any of it is written.
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100029")
+
+        lanes = lanes_of(busy_page)
+        pending = [item for item in lanes if item.state is LaneState.PENDING]
+        assert len(pending) == 4
+        assert sorted(item.choice.label for item in pending if item.choice) == [
+            "0",
+            "0",
+            "0",
+            "1",
+        ]
+
+    def test_untouched_positions_are_not_staged(self, busy_page: ResolvePage):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100029")
+        assert len(busy_page.state.pending) == 4, "only the disputed positions"
+
+    def test_cancelling_discards_everything_staged(self, busy_page: ResolvePage):
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("100029")
+        assert busy_page.state.pending
+
+        busy_page.close_field_editor()
+
+        assert busy_page.state.pending == {}
+        assert busy_page.field_edit_row.isVisibleTo(busy_page) is False
+        assert not [
+            item for item in lanes_of(busy_page) if item.state is LaneState.PENDING
+        ]
+
+
+class TestApplyingAFullField:
+    def apply(self, page: ResolvePage, value: str, reason=None) -> bool:
+        page.reason_combo.setCurrentText(
+            (reason or ReasonCode.CLEAR_VISUAL_MARK).label
+        )
+        page.open_field_editor()
+        page.field_edit_input.setText(value)
+        return page.apply_field_edit()
+
+    def test_one_operation_resolves_every_covered_position(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        before = review_store.count_conflicts_for_scan(
+            busy_page.database, busy_page.state.batch_id, scan_id
+        )
+
+        assert self.apply(busy_page, "100029") is True
+
+        after = review_store.count_conflicts_for_scan(
+            busy_page.database, busy_page.state.batch_id, scan_id
+        )
+        assert after.resolved == before.resolved + 4
+        assert after.unresolved == before.unresolved - 4
+
+    def test_the_identifier_downstream_is_the_value_typed(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100029") is True
+
+        found = review_store.effective_identifiers(
+            busy_page.database, busy_page.state.batch_id
+        )[scan_id]
+        assert found.value == "100029"
+        assert found.source is ValueSource.HUMAN
+
+    def test_confidently_read_positions_are_left_alone(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        # Six digits typed, four conflicts: the two the machine read are not
+        # turned into manual overrides for the sake of consistency.
+        assert self.apply(busy_page, "100029") is True
+        edit = busy_page.state.last_field_edit
+        assert edit is not None
+        assert sorted(edit.changed) == [0, 1, 2, 3]
+        assert edit.conflict_count == 4
+
+    def test_it_stays_on_the_sheet_afterwards(self, qtbot, busy_page: ResolvePage):
+        # §27: the set code on the same sheet is still open, so that is next.
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100029") is True
+
+        landed = busy_page.current_conflict()
+        assert landed is not None
+        assert landed.scan_id == scan_id
+        assert landed.field.kind is FieldKind.SET_CODE
+
+    def test_it_does_not_touch_the_set_code(self, qtbot, busy_page: ResolvePage):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100029") is True
+
+        set_code = next(
+            item
+            for item in busy_page.state.sheet_conflicts
+            if item.scan_id == scan_id and item.field.kind is FieldKind.SET_CODE
+        )
+        assert set_code.state is ConflictState.OPEN
+
+    def test_every_position_carries_the_one_reason_and_note(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        busy_page.reason_text.setPlainText("candidate supplied the roll number")
+        assert self.apply(busy_page, "100029", ReasonCode.STRAY_MARK) is True
+
+        edit = busy_page.state.last_field_edit
+        for conflict_id in self._edited_conflicts(busy_page, edit):
+            found = review_store.provenance_for(busy_page.database, conflict_id)
+            assert found.reason == ReasonCode.STRAY_MARK.value
+            assert found.reason_text == "candidate supplied the roll number"
+            assert found.reviewer == REVIEWER
+
+    def test_other_still_requires_a_note(self, qtbot, monkeypatch, busy_page):
+        monkeypatch.setattr(
+            "omr_scanner.gui.error_reporting.QMessageBox.warning",
+            staticmethod(_accept_warning),
+        )
+        busy_page.reason_text.setPlainText("   ")
+        assert self.apply(busy_page, "100029", ReasonCode.OTHER) is False
+        scan_id = busy_page.current_conflict().scan_id
+        counts = review_store.count_conflicts_for_scan(
+            busy_page.database, busy_page.state.batch_id, scan_id
+        )
+        assert counts.resolved == 0
+
+    def test_the_history_shows_it_was_one_action(self, qtbot, busy_page: ResolvePage):
+        assert self.apply(busy_page, "100029") is True
+        edit = busy_page.state.last_field_edit
+
+        groups = set()
+        for conflict_id in self._edited_conflicts(busy_page, edit):
+            history = review_store.history_for(busy_page.database, conflict_id)
+            corrected = [
+                item for item in history if item.action is ReviewAction.CORRECTED
+            ]
+            assert len(corrected) == 1
+            assert "Roll number set to '100029'" in corrected[0].detail
+            groups.add(review_store.group_of(corrected[0].detail))
+        assert groups == {edit.group}, "the positions do not share one action id"
+
+    def test_one_undo_takes_the_whole_edit_back(self, qtbot, busy_page: ResolvePage):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100029") is True
+
+        assert busy_page.undo_last_decision() is True
+
+        counts = review_store.count_conflicts_for_scan(
+            busy_page.database, busy_page.state.batch_id, scan_id
+        )
+        assert counts.resolved == 0
+        found = review_store.effective_identifiers(
+            busy_page.database, busy_page.state.batch_id
+        )[scan_id]
+        assert found.source is ValueSource.MACHINE
+
+    def test_undoing_it_is_still_in_the_history(self, qtbot, busy_page: ResolvePage):
+        assert self.apply(busy_page, "100029") is True
+        edit = busy_page.state.last_field_edit
+        conflicts = self._edited_conflicts(busy_page, edit)
+        busy_page.undo_last_decision()
+
+        for conflict_id in conflicts:
+            actions = [
+                item.action
+                for item in review_store.history_for(busy_page.database, conflict_id)
+            ]
+            assert actions.count(ReviewAction.CORRECTED) == 1
+            assert actions.count(ReviewAction.UNDONE) == 1
+
+    def test_it_survives_reopening_the_page(
+        self, qtbot, project_session, template, busy, busy_page: ResolvePage
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100029") is True
+        busy_page.close()
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        reopened = ResolvePage(spec)
+        qtbot.addWidget(reopened)
+        reopened.on_project_changed(project_session)
+        reopened.set_reviewer(REVIEWER)
+        reopened.load_batch(busy, template)
+
+        found = review_store.effective_identifiers(reopened.database, busy)[scan_id]
+        assert found.value == "100029"
+        reopened.close()
+
+    @staticmethod
+    def _edited_conflicts(page: ResolvePage, edit) -> list[int]:
+        scan_id = next(
+            item.scan_id
+            for item in page.state.sheet_conflicts
+            if item.field.zone_id == edit.zone_id
+        )
+        return [
+            item.conflict_id
+            for item in page.state.sheet_conflicts
+            if item.scan_id == scan_id
+            and item.field.zone_id == edit.zone_id
+            and item.field.group_key in edit.changed
+        ]
+
+
+class TestFullSetCodeEditor:
+    def select_set_code(self, qtbot, page: ResolvePage) -> bool:
+        for row, item in enumerate(page.state.conflicts):
+            if item.field.kind is FieldKind.SET_CODE:
+                page.queue_table.selectRow(row)
+                return True
+        return False
+
+    def test_the_editor_is_offered_for_a_set_code(self, qtbot, busy_page: ResolvePage):
+        assert self.select_set_code(qtbot, busy_page) is True
+        shape = busy_page._field_shape_for(busy_page.current_conflict())
+        assert shape is not None
+        assert "Set code" in busy_page.field_edit_toggle.text()
+
+    def test_its_length_and_symbols_come_from_the_template(
+        self, qtbot, busy_page: ResolvePage, template
+    ):
+        assert self.select_set_code(qtbot, busy_page) is True
+        shape = busy_page._field_shape_for(busy_page.current_conflict())
+        zone = next(item for item in template.zones if item.id == "set_code")
+        assert shape.length == zone.field.character_count
+        assert shape.positions[0] == tuple(zone.field.symbols)
+
+    def test_a_symbol_the_field_does_not_print_is_refused(
+        self, qtbot, busy_page: ResolvePage
+    ):
+        assert self.select_set_code(qtbot, busy_page) is True
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("Z")
+        assert busy_page.field_edit_apply.isEnabled() is False
+
+    def test_applying_resolves_the_set_code(self, qtbot, busy_page: ResolvePage):
+        assert self.select_set_code(qtbot, busy_page) is True
+        scan_id = busy_page.current_conflict().scan_id
+        conflict_id = busy_page.current_conflict().conflict_id
+        busy_page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("A")
+
+        assert busy_page.apply_field_edit() is True
+
+        assert review_store.provenance_for(busy_page.database, conflict_id).value == "A"
+        found = review_store.effective_set_codes(
+            busy_page.database, busy_page.state.batch_id
+        )[scan_id]
+        assert found.value == "A"
+        assert found.source is ValueSource.HUMAN
+
+    def test_it_does_not_touch_the_student_id(self, qtbot, busy_page: ResolvePage):
+        assert self.select_set_code(qtbot, busy_page) is True
+        scan_id = busy_page.current_conflict().scan_id
+        busy_page.reason_combo.setCurrentText(ReasonCode.DOMINANT_MARK.label)
+        busy_page.open_field_editor()
+        busy_page.field_edit_input.setText("A")
+        assert busy_page.apply_field_edit() is True
+
+        identifier = [
+            item
+            for item in busy_page.state.sheet_conflicts
+            if item.scan_id == scan_id and item.field.kind is FieldKind.IDENTIFIER
+        ]
+        assert identifier
+        assert all(item.state is ConflictState.OPEN for item in identifier)
+
+
+class TestWhereTheEditorIsNotOffered:
+    def test_not_for_a_duplicate_identifier(self, qtbot, page: ResolvePage):
+        # A duplicate names no zone and is already edited whole in the
+        # free-text box.
+        select_first(qtbot, page, ConflictType.IDENTIFIER_DUPLICATE)
+        assert page._field_shape_for(page.current_conflict()) is None
+        assert page.field_edit_toggle.isVisibleTo(page) is False
+
+    def test_not_for_a_sheet_that_never_registered(
+        self, qtbot, project_session, template, tmp_path
+    ):
+        # No trustworthy association between the template's positions and the
+        # paper, so typing an identifier would be asserting where bubbles are
+        # rather than reading them.
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+
+        corrupt = tmp_path / "corrupt.png"
+        corrupt.write_bytes(b"not an image")
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [corrupt], identity=batch_store.BatchIdentity.of(template)
+        )
+        report = process_batch([corrupt], template, workers=1)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[corrupt],
+            result=report.processed[0].result,
+            template=template,
+        )
+        review_page.load_batch(batch_id, template)
+        review_page.queue_table.selectRow(0)
+
+        assert review_page._field_shape_for(review_page.current_conflict()) is None
+        assert review_page.field_edit_toggle.isVisibleTo(review_page) is False
+        assert review_page.open_field_editor() is False
+        review_page.close()
+
+    def test_typing_in_a_text_box_does_not_open_it(self, qtbot, busy_page: ResolvePage):
+        busy_page.show()
+        busy_page.search_box.setFocus()
+        assert busy_page.focusWidget() is busy_page.search_box
+        assert busy_page.open_field_editor() is False
 
 
 class TestToolbar:

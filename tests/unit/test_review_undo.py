@@ -15,6 +15,7 @@ Why these assert against the database rather than a returned object:
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -481,6 +482,304 @@ class TestDownstreamSeesTheUndo:
         after = review_store.sheet_resolutions(database, batch_id, template)
         assert not any(item.reviewed for item in after.values())
         assert sum(item.unresolved for item in after.values()) == 1
+
+
+class TestCorrectingAWholeFieldAtOnce:
+    @pytest.fixture
+    def two_positions(self, database, template, batch) -> tuple[str, int, list[int]]:
+        """One sheet whose roll number has two disputed positions."""
+        from tests.unit.test_recognition_contract import make_answer, make_result
+        from tests.unit.test_review_store import roll_field
+
+        from omr_scanner.services.recognition_models import (
+            CharacterView,
+            RecognitionOutcome,
+            RegistrationStatus,
+        )
+
+        batch_id, ids = batch
+        field = roll_field()
+        # A second disputed position on the same field.
+        field = type(field)(
+            zone_id=field.zone_id,
+            label=field.label,
+            field_type=field.field_type,
+            value="??",
+            status="multiple",
+            needs_review=True,
+            characters=(
+                CharacterView(
+                    position=0,
+                    value="1-4",
+                    status="multiple",
+                    top_fill=0.8,
+                    margin=0.02,
+                    confidence=0.0,
+                ),
+                CharacterView(
+                    position=1,
+                    value="3-8",
+                    status="multiple",
+                    top_fill=0.8,
+                    margin=0.02,
+                    confidence=0.0,
+                ),
+            ),
+        )
+        result = make_result(
+            source_path=Path("sheet_0.png"),
+            outcome=RecognitionOutcome.REVIEW,
+            registration=RegistrationStatus.REGISTERED,
+            warnings=(),
+            status_codes=("MULTIPLE_MARK",),
+            fields=(field,),
+            answers=(make_answer(1, "B", "resolved", needs_review=False),),
+            bubbles=(),
+            identifier_zone_id="roll_number",
+            set_code_zone_id="set_code",
+        )
+        review_store.sync_conflicts(
+            database,
+            batch_id=batch_id,
+            scan_id=ids[0],
+            result=result,
+            template=template,
+        )
+        found = review_store.list_conflicts(
+            database, batch_id, filters=review_store.ConflictFilter(scan_id=ids[0])
+        )
+        return batch_id, ids[0], [item.conflict_id for item in found]
+
+    def test_one_call_decides_several_positions(self, database, two_positions):
+        batch_id, scan_id, conflicts = two_positions
+        assert len(conflicts) == 2
+
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+
+        assert edit.conflict_count == 2
+        assert sorted(edit.changed) == [0, 1]
+        for conflict_id in conflicts:
+            assert review_store.get_conflict(database, conflict_id).state is (
+                ConflictState.RESOLVED
+            )
+
+    def test_every_position_shares_one_action_identifier(self, database, two_positions):
+        batch_id, scan_id, conflicts = two_positions
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        groups = set()
+        for conflict_id in conflicts:
+            corrected = [
+                item
+                for item in review_store.history_for(database, conflict_id)
+                if item.action is ReviewAction.CORRECTED
+            ]
+            assert len(corrected) == 1
+            groups.add(review_store.group_of(corrected[0].detail))
+        assert groups == {edit.group}
+
+    def test_the_reason_reaches_every_position(self, database, two_positions):
+        batch_id, scan_id, conflicts = two_positions
+        review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.THRESHOLD_ERROR,
+            reason_text="read from the script",
+        )
+        for conflict_id in conflicts:
+            found = review_store.provenance_for(database, conflict_id)
+            assert found.reason == ReasonCode.THRESHOLD_ERROR.value
+            assert found.reason_text == "read from the script"
+
+    def test_other_without_a_note_is_refused(self, database, two_positions):
+        batch_id, scan_id, conflicts = two_positions
+        with pytest.raises(ReviewError):
+            review_store.correct_field(
+                database,
+                batch_id=batch_id,
+                scan_id=scan_id,
+                zone_id="roll_number",
+                values={0: "1", 1: "3"},
+                display_value="13",
+                field_label="Roll number",
+                reviewer=REVIEWER,
+                reason=ReasonCode.OTHER,
+            )
+        assert review_store.get_conflict(database, conflicts[0]).state is (
+            ConflictState.OPEN
+        )
+
+    def test_a_position_already_decided_that_way_is_left_alone(
+        self, database, two_positions
+    ):
+        batch_id, scan_id, conflicts = two_positions
+        correct(database, conflicts[0], "1")
+
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=OTHER_REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+
+        assert edit.changed == {1: "3"}
+        assert edit.unchanged == (0,)
+        # ...and its history did not gain a second identical correction.
+        corrected = [
+            item
+            for item in review_store.history_for(database, conflicts[0])
+            if item.action is ReviewAction.CORRECTED
+        ]
+        assert len(corrected) == 1
+
+    def test_a_position_with_no_conflict_is_reported_not_invented(
+        self, database, two_positions
+    ):
+        batch_id, scan_id, _ = two_positions
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3", 7: "9"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        assert edit.missing == (7,)
+        assert 7 not in edit.changed
+
+    def test_an_edit_that_changes_nothing_is_refused(self, database, two_positions):
+        batch_id, scan_id, conflicts = two_positions
+        for conflict_id, value in zip(conflicts, ("1", "3"), strict=True):
+            correct(database, conflict_id, value)
+
+        with pytest.raises(ReviewError):
+            review_store.correct_field(
+                database,
+                batch_id=batch_id,
+                scan_id=scan_id,
+                zone_id="roll_number",
+                values={0: "1", 1: "3"},
+                display_value="13",
+                field_label="Roll number",
+                reviewer=REVIEWER,
+                reason=ReasonCode.DOMINANT_MARK,
+            )
+
+    def test_undoing_the_edit_takes_back_every_position(self, database, two_positions):
+        batch_id, scan_id, conflicts = two_positions
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+
+        reversed_commands = review_store.undo_field_edit(
+            database, batch_id=batch_id, group=edit.group, reviewer=REVIEWER
+        )
+
+        assert len(reversed_commands) == 2
+        for conflict_id in conflicts:
+            assert review_store.get_conflict(database, conflict_id).state is (
+                ConflictState.OPEN
+            )
+            assert review_store.provenance_for(database, conflict_id).source is (
+                ValueSource.MACHINE
+            )
+
+    def test_the_undo_target_names_the_group(self, database, two_positions):
+        batch_id, scan_id, _ = two_positions
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        target = review_store.last_decision(database, batch_id)
+        assert target is not None
+        assert target.group == edit.group
+
+    def test_a_later_decision_is_not_rolled_over(self, database, two_positions):
+        # An edit whose positions have since been decided again must not be
+        # quietly rolled back over that later work.
+        batch_id, scan_id, conflicts = two_positions
+        edit = review_store.correct_field(
+            database,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            zone_id="roll_number",
+            values={0: "1", 1: "3"},
+            display_value="13",
+            field_label="Roll number",
+            reviewer=REVIEWER,
+            reason=ReasonCode.DOMINANT_MARK,
+        )
+        correct(database, conflicts[0], "7", reviewer=OTHER_REVIEWER)
+
+        review_store.undo_field_edit(
+            database, batch_id=batch_id, group=edit.group, reviewer=REVIEWER
+        )
+
+        assert review_store.provenance_for(database, conflicts[0]).value == "7"
+        assert review_store.provenance_for(database, conflicts[1]).source is (
+            ValueSource.MACHINE
+        )
+
+
+class TestQueueOrderIsSheetMajor:
+    def test_a_sheets_conflicts_are_contiguous(self, database, template, batch):
+        # The root cause of the queue jumping: ordering by severity across the
+        # batch split each sheet's conflicts apart.
+        batch_id, ids = batch
+        for index, scan_id in enumerate(ids):
+            stage(database, template, batch_id, scan_id, f"sheet_{index}.png")
+
+        order = [item.scan_id for item in review_store.list_conflicts(database, batch_id)]
+        runs = [key for key, _ in itertools.groupby(order)]
+        assert len(runs) == len(set(runs)), "a sheet appears in two separate runs"
 
 
 class TestUndoSurvivesReopeningTheProject:

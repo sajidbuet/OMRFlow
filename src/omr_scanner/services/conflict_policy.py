@@ -269,6 +269,69 @@ def split_marks(value: str) -> tuple[str, ...]:
     return tuple(part for part in value.split(MULTIPLE_MARK_SEPARATOR) if part)
 
 
+@dataclass(frozen=True, slots=True)
+class FieldShape:
+    """What one whole field may contain, straight from the template.
+
+    Attributes:
+        zone_id: The template zone.
+        label: The zone's own name, so the interface says "Student ID" or
+            "Question Set" because the template does, not because the
+            application decided what those fields are called.
+        positions: One entry per printed position, each the symbols that
+            position offers, in printed order.
+
+    Exists so that nothing above this layer has to know that a roll number is
+    six digits or that a set code is one character. Both are template
+    settings - OMRFlow supports a configurable identifier length and
+    multi-position, multi-character set codes - and a field editor that
+    assumed either would be wrong on the first project that disagreed.
+    """
+
+    zone_id: str
+    label: str
+    positions: tuple[tuple[str, ...], ...]
+
+    @property
+    def length(self) -> int:
+        """How many printed positions the field has."""
+        return len(self.positions)
+
+    @property
+    def is_uniform(self) -> bool:
+        """Whether every position offers the same symbols.
+
+        True for a roll number, whose columns are all ``0``-``9``. A field that
+        is not uniform cannot be validated character by character against one
+        alphabet, so the editor checks each position against its own.
+        """
+        return len(set(self.positions)) <= 1
+
+    def accepts(self, position: int, symbol: str) -> bool:
+        """Whether ``symbol`` is printed at ``position``."""
+        return 0 <= position < self.length and symbol in self.positions[position]
+
+
+def field_shape(template: OmrTemplate, zone_id: str) -> FieldShape | None:
+    """Return what one field may contain, or ``None`` when it is not a field.
+
+    Built from :func:`~omr_scanner.recognition.fields.zone_groups`, the same
+    function recognition used to read the zone, so the positions and the
+    symbols offered are exactly the ones the sheet was measured against.
+    """
+    zone = _zone_by_id(template, zone_id)
+    if zone is None or not isinstance(zone.field, GridFieldDefinition):
+        return None
+    groups = sorted(zone_groups(zone), key=lambda item: item.key)
+    if not groups:
+        return None
+    return FieldShape(
+        zone_id=zone_id,
+        label=zone.label or zone_id,
+        positions=tuple(group.labels for group in groups),
+    )
+
+
 def group_cells(
     template: OmrTemplate, zone_id: str, group_key: int
 ) -> tuple[tuple[int, int], ...]:
@@ -668,9 +731,11 @@ def describe_template_choices(template: OmrTemplate) -> dict[str, tuple[str, ...
 __all__ = [
     "ConflictPolicy",
     "DetectedConflict",
+    "FieldShape",
     "describe_template_choices",
     "detect_conflicts",
     "detect_duplicate_identifiers",
+    "field_shape",
     "group_cells",
     "group_labels",
     "split_marks",

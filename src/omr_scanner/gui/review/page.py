@@ -114,13 +114,17 @@ from omr_scanner.gui.theme import (
 from omr_scanner.services import (
     ConflictFilter,
     ConflictRecord,
+    FieldEdit,
+    FieldShape,
     ReviewError,
     UndoTarget,
     accept_machine_value,
+    correct_field,
     correct_value,
     count_conflicts,
     count_conflicts_for_scan,
     defer,
+    field_shape,
     group_labels,
     history_for,
     last_decision,
@@ -134,6 +138,7 @@ from omr_scanner.services import (
     scan_source_path,
     split_marks,
     undo_decision,
+    undo_field_edit,
     undo_resolved_sheet,
 )
 
@@ -240,6 +245,28 @@ _STATE_COLORS: dict[ConflictState, QColor] = {
     ConflictState.WITHDRAWN: QColor(238, 238, 238),
 }
 
+SHEET_CONTINUATION = "⤷"
+"""Drawn instead of the file name on a sheet's second and later queue rows.
+
+Eight identical file names in a column read as eight unrelated problems. One
+name, then seven continuations, reads as one script with eight things wrong -
+which is what it is, and what decides how the operator works it. The full name
+stays in every cell's tooltip."""
+
+MAX_LISTED_SYMBOLS = 6
+"""How many symbols a validation message names before it stops listing them.
+
+"must contain exactly 6 digits" is more use to an operator than ten symbols
+written out; a four-option set code is worth naming."""
+
+UNKNOWN_POSITION = "?"
+"""What the whole-field editor shows for a position it cannot state a value for.
+
+A **display marker only.** It is the same character recognition uses in an
+assembled identifier, and it is refused as *input*: a reviewer who leaves it in
+the box is told to replace it rather than having it stored as somebody's
+student ID."""
+
 BLANK_BUTTON_TEXT = "Blank"
 """What the "no mark here" button says.
 
@@ -288,16 +315,22 @@ class ResolvePageState:
             would offer to repeat commands whose context nobody remembers.
         auto_advance: Whether resolving the active conflict moves to the next
             unresolved one by itself.
-        pending: The value the reviewer has picked for the active conflict and
-            not yet committed, or ``None`` for "nothing picked". ``""`` is a
-            real choice - *this position is blank* - which is why it is not a
-            falsy check anywhere.
+        pending: ``conflict_id -> value`` for the choices the reviewer has made
+            and not yet committed. ``""`` is a real choice - *this position is
+            blank* - so membership, not truthiness, is what "picked" means.
 
-            Nothing is written while this is set. It exists so that choosing a
-            value and committing it are two separate acts: the reviewer picks,
-            sees the ring land on the bubble they meant, and then commits. It
-            is discarded whenever the selected conflict changes, so a choice
-            cannot follow the reviewer onto a different sheet.
+            Nothing is written while this holds anything. It exists so that
+            choosing a value and committing it are two separate acts: the
+            reviewer picks, sees the ring land on the bubble they meant, and
+            then commits. A **map** rather than one value because a whole-field
+            edit stages every position it will change at once, and all of them
+            have to be visible on the sheet before any of them is written.
+        editing_field: The field the whole-field editor is open on, or
+            ``None``. Held so that the editor survives the refreshes a
+            selection change causes.
+        last_field_edit: The most recent whole-field correction, so undo can
+            take back the operator's *action* rather than the last of the
+            several positions it happened to write.
     """
 
     session: ProjectSession | None = None
@@ -310,7 +343,9 @@ class ResolvePageState:
     sheet_provenance: dict[int, Provenance] = field(default_factory=dict)
     redo: list[UndoTarget] = field(default_factory=list)
     auto_advance: bool = True
-    pending: str | None = None
+    pending: dict[int, str] = field(default_factory=dict)
+    editing_field: FieldShape | None = None
+    last_field_edit: FieldEdit | None = None
 
 
 class ResolvePage(WorkflowPage):
@@ -860,6 +895,7 @@ class ResolvePage(WorkflowPage):
         layout.addWidget(self.free_value_row)
         self.free_value_row.setVisible(False)
 
+        layout.addWidget(self._build_field_editor())
         layout.addWidget(self._build_reason_row())
         # Slack goes here, between the controls and the commit, so a taller
         # panel gives the reviewer room rather than stretching the buttons.
@@ -867,6 +903,70 @@ class ResolvePage(WorkflowPage):
         layout.addWidget(self._build_provenance_strip())
         layout.addWidget(self._build_button_row())
         return box
+
+    def _build_field_editor(self) -> QWidget:
+        """Build the "correct the whole field in one go" control.
+
+        A student who leaves four digits of their roll number blank produces
+        four separate position conflicts, and the operator knows the whole
+        number - it is written on the script, or the candidate is standing
+        there. Making them visit four positions to type four digits, each with
+        its own reason, is the workflow this removes.
+
+        An **inline expander**, not a dialog: the sheet stays visible while the
+        value is being typed, which is the whole point - the operator is
+        reading the number off the paper in the pane above. It occupies one
+        line when shut.
+        """
+        holder = QWidget()
+        layout = QVBoxLayout(holder)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.XXS)
+
+        self.field_edit_toggle = QToolButton()
+        self.field_edit_toggle.setObjectName("editFullFieldButton")
+        self.field_edit_toggle.setCheckable(True)
+        self.field_edit_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.field_edit_toggle.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.field_edit_toggle.setText("Edit full field...")
+        self.field_edit_toggle.toggled.connect(self._on_field_editor_toggled)
+        layout.addWidget(self.field_edit_toggle, alignment=Qt.AlignmentFlag.AlignLeft)
+
+        self.field_edit_row = QWidget()
+        row = QHBoxLayout(self.field_edit_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(Spacing.SM)
+
+        self.field_edit_label = QLabel("Correct value")
+        row.addWidget(self.field_edit_label)
+
+        self.field_edit_input = QLineEdit()
+        self.field_edit_input.setObjectName("fullFieldValueEdit")
+        self.field_edit_input.textChanged.connect(self._on_field_edit_typed)
+        self.field_edit_input.returnPressed.connect(self.apply_field_edit)
+        row.addWidget(self.field_edit_input, stretch=2)
+
+        self.field_edit_status = QLabel("")
+        self.field_edit_status.setObjectName("fullFieldStatusLabel")
+        self.field_edit_status.setTextFormat(Qt.TextFormat.RichText)
+        row.addWidget(self.field_edit_status, stretch=3)
+
+        self.field_edit_apply = QPushButton("Apply")
+        self.field_edit_apply.setObjectName("applyFullFieldButton")
+        self.field_edit_apply.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
+        self.field_edit_apply.clicked.connect(self.apply_field_edit)
+        row.addWidget(self.field_edit_apply)
+
+        self.field_edit_cancel = QPushButton("Cancel")
+        self.field_edit_cancel.setObjectName("cancelFullFieldButton")
+        self.field_edit_cancel.clicked.connect(self.close_field_editor)
+        row.addWidget(self.field_edit_cancel)
+
+        layout.addWidget(self.field_edit_row)
+        self.field_edit_row.setVisible(False)
+        return holder
 
     def _build_reason_row(self) -> QWidget:
         """Build the reason and note controls, on one row.
@@ -1001,6 +1101,8 @@ class ResolvePage(WorkflowPage):
             (QKeySequence(Qt.Key.Key_Return), self.confirm_resolution),
             (QKeySequence(Qt.Key.Key_Enter), self.confirm_resolution),
             (QKeySequence(Qt.Key.Key_D), self.defer_conflict),
+            (QKeySequence(Qt.Key.Key_E), self.open_field_editor),
+            (QKeySequence(Qt.Key.Key_Escape), self.close_field_editor),
             (QKeySequence(BLANK_KEY), lambda: self.choose_label(BLANK_CHOICE)),
             (
                 QKeySequence(Qt.Modifier.SHIFT | Qt.Key.Key_Return),
@@ -1151,7 +1253,8 @@ class ResolvePage(WorkflowPage):
             return
 
         selected = self.current_conflict()
-        previous_row = self.queue_table.currentRow()
+        scrollbar = self.queue_table.verticalScrollBar()
+        scrolled_to = scrollbar.value()
         self.state.conflicts = list(
             list_conflicts(
                 database,
@@ -1162,11 +1265,11 @@ class ResolvePage(WorkflowPage):
         )
         self._rebuild_queue_table()
         self._refresh_summary()
-        self._restore_selection(selected, previous_row)
+        self._restore_selection(selected, scrolled_to)
         self._refresh_controls()
 
     def _restore_selection(
-        self, selected: ConflictRecord | None, previous_row: int
+        self, selected: ConflictRecord | None, scrolled_to: int
     ) -> None:
         """Put the selection back where it belongs after the queue changed.
 
@@ -1178,6 +1281,13 @@ class ResolvePage(WorkflowPage):
         one. Selection is therefore cleared before every rebuild and re-applied
         explicitly here, so the workspace and the queue can never disagree
         about which conflict is being reviewed.
+
+        **Nothing is restored by row number.** Rows disappear as they are
+        decided, so an index means a different conflict after every rebuild -
+        which is how the queue came to jump. What is restored is, in order: the
+        conflict that was selected, the sheet it was on, and finally the
+        scrollbar, so a reviewer working halfway down a long queue stays there
+        instead of being returned to the top.
         """
         if not self.state.conflicts:
             self.queue_table.clearSelection()
@@ -1188,16 +1298,48 @@ class ResolvePage(WorkflowPage):
         if selected is not None and self.select_conflict_by_id(selected.conflict_id):
             return
 
-        # The conflict that was being reviewed is no longer in this view -
-        # almost always because it was just decided. Staying at the same
-        # position lands on whatever came next, which is the natural place to
-        # continue from.
-        row = max(0, min(previous_row, len(self.state.conflicts) - 1))
+        # The conflict that was being reviewed has left this view - almost
+        # always because it was just decided. Stay on its sheet if it still has
+        # work; that is where the reviewer is looking and what they are holding.
+        if selected is not None and self.select_next_on_sheet(selected.scan_id):
+            return
+
+        row = self._row_near(selected, scrolled_to)
         self.queue_table.selectRow(row)
+        self.queue_table.verticalScrollBar().setValue(
+            min(scrolled_to, self.queue_table.verticalScrollBar().maximum())
+        )
         # `selectRow` emits nothing when the index is unchanged, and the index
         # very often *is* unchanged here even though the conflict at it is not.
         if self.queue_table.currentRow() == row:
             self._on_queue_selection_changed()
+
+    def _row_near(self, selected: ConflictRecord | None, scrolled_to: int) -> int:
+        """The row to fall back to when the selected conflict has gone.
+
+        The first row of the sheet that was being worked on, when that sheet is
+        still in the queue - the reviewer's place in a ten-thousand-row batch
+        is which *sheet* they had reached, not which row number. Otherwise the
+        first row currently on screen, which at least leaves the scrollbar
+        where they put it.
+        """
+        if selected is not None:
+            same_sheet = next(
+                (
+                    index
+                    for index, item in enumerate(self.state.conflicts)
+                    if item.scan_id == selected.scan_id
+                ),
+                None,
+            )
+            if same_sheet is not None:
+                return same_sheet
+        visible = self.queue_table.rowAt(0)
+        if 0 <= visible < len(self.state.conflicts):
+            return visible
+        if scrolled_to and self.state.conflicts:
+            return min(scrolled_to, len(self.state.conflicts) - 1)
+        return 0
 
     def _rebuild_queue_table(self) -> None:
         """Rebuild the table from :attr:`ResolvePageState.conflicts`."""
@@ -1217,8 +1359,20 @@ class ResolvePage(WorkflowPage):
                 # deficiency, or reading a printed screenshot, sees the state
                 # either way. "Reopened" is a conflict that is open because
                 # somebody put it back, which the tint alone cannot show.
+                # One sheet's conflicts are contiguous (see `list_conflicts`),
+                # so the file name is written once per sheet and the rows
+                # beneath it are indented instead. Eight identical file names
+                # in a column read as eight unrelated problems; one name with
+                # seven continuations reads as one script with eight.
+                previous = self.state.conflicts[row - 1] if row else None
+                starts_sheet = previous is None or previous.scan_id != conflict.scan_id
+                sheet_text = (
+                    conflict.scan_name
+                    if starts_sheet
+                    else f"{SHEET_CONTINUATION} {conflict.identifier_value}".rstrip()
+                )
                 values = (
-                    conflict.scan_name,
+                    sheet_text,
                     conflict.identifier_value,
                     _issue_text(conflict),
                     f"{conflict.state_marker} {conflict.state_label}",
@@ -1229,8 +1383,18 @@ class ResolvePage(WorkflowPage):
                     # Every cell can elide, so every cell carries its full
                     # value where the operator can reach it.
                     item.setToolTip(
-                        _state_tooltip(conflict) if column == 3 else text
+                        _state_tooltip(conflict)
+                        if column == 3
+                        else _sheet_tooltip(conflict, self.state.conflicts)
+                        if column == 0
+                        else text
                     )
+                    if starts_sheet and row:
+                        # A hairline above the first row of each sheet, so the
+                        # groups are visible without a heavier treatment.
+                        font = item.font()
+                        font.setOverline(True)
+                        item.setFont(font)
                     self.queue_table.setItem(row, column, item)
         finally:
             self.queue_table.setUpdatesEnabled(True)
@@ -1404,6 +1568,13 @@ class ResolvePage(WorkflowPage):
         self._loaded_scan_id = conflict.scan_id if conflict is not None else None
         if conflict is not None:
             self._apply_bundle_to_views(conflict)
+            # Everything that needs the sheet's own geometry is re-read here,
+            # because it was computed before the sheet existed. The whole-field
+            # editor is the case that made this visible: it may only be offered
+            # once the page has rectified, so a panel built while the loader
+            # was still running hid it and never brought it back.
+            self._refresh_evidence(conflict)
+            self._refresh_controls()
         self.sheet_ready.emit()
 
     def _apply_bundle_to_views(self, conflict: ConflictRecord) -> None:
@@ -1687,8 +1858,13 @@ class ResolvePage(WorkflowPage):
         bundle = self.state.bundle
         result = bundle.result if bundle is not None else None
         assessment = result.scan_quality if result is not None else None
+        shape = self._field_shape_for(conflict)
         self.machine_summary_label.setText(
-            _machine_summary_html(conflict, self._machine_marks(conflict))
+            _machine_summary_html(
+                conflict,
+                self._machine_marks(conflict),
+                "".join(self.current_field_values(shape)) if shape is not None else "",
+            )
         )
         self.evidence_label.setText(_evidence_html(conflict, assessment))
 
@@ -1711,8 +1887,15 @@ class ResolvePage(WorkflowPage):
             self.sheet_progress_label.setText("")
             return
         counts = count_conflicts_for_scan(database, self.state.batch_id, conflict.scan_id)
+        # Counted over **the sheet**, not over the filtered queue. A
+        # denominator taken from the queue shrinks as the reviewer works -
+        # "1 of 1" on the last conflict of eight - which reads as though the
+        # sheet had one problem rather than as progress through eight.
         on_sheet = [
-            item for item in self.state.conflicts if item.scan_id == conflict.scan_id
+            item
+            for item in self.state.sheet_conflicts
+            if item.scan_id == conflict.scan_id
+            and item.state is not ConflictState.WITHDRAWN
         ]
         position = next(
             (
@@ -1726,16 +1909,15 @@ class ResolvePage(WorkflowPage):
         # "1 of 1 - 1 unresolved" beside a summary reading "157 unresolved",
         # which are both true of different things and read as a contradiction.
         self.sheet_progress_label.setText(
-            f"<b>{position}</b>/{len(on_sheet)} on sheet &middot; "
-            f"<b>{counts.unresolved}</b> left here &middot; "
-            f"<b>{self._batch_unresolved}</b> in batch"
+            f"Conflict <b>{position}</b> of {len(on_sheet)} on this sheet "
+            f"&middot; <b>{counts.unresolved}</b> left here "
+            f"&middot; <b>{self._batch_unresolved}</b> left in batch"
         )
         self.sheet_progress_label.setToolTip(
-            f"Conflict {position} of {len(on_sheet)} shown for this sheet. "
-            f"The sheet has {counts.total} conflict(s) in total: "
+            f"Conflict {position} of {len(on_sheet)} on this sheet. "
             f"{counts.open_count} open, {counts.deferred} deferred, "
-            f"{counts.resolved} resolved, {counts.withdrawn} withdrawn. "
-            f"The batch has {self._batch_unresolved} unresolved."
+            f"{counts.resolved} resolved, {counts.withdrawn} withdrawn here. "
+            f"The batch has {self._batch_unresolved} unresolved altogether."
         )
 
     def _clear_choices(self) -> None:
@@ -1848,7 +2030,7 @@ class ResolvePage(WorkflowPage):
         """
         conflict = self.current_conflict()
         machine = self._machine_marks(conflict) if conflict is not None else frozenset()
-        pending = self.state.pending
+        pending = self.pending
         for button in self._choice_buttons:
             label = button.objectName().removeprefix("choiceButton_")
             value = "" if label == BLANK_CHOICE else label
@@ -1888,8 +2070,9 @@ class ResolvePage(WorkflowPage):
             return
         found = provenance_for(database, conflict.conflict_id)
         machine = found.machine_value or "(blank)"
-        if self.state.pending is not None:
-            manual = self.state.pending or "(blank)"
+        picked = self.pending
+        if picked is not None:
+            manual = picked or "(blank)"
             # "Pending", not the value: nothing has been written, and a strip
             # that showed the chosen value as the effective result would be
             # claiming a decision the ledger does not carry.
@@ -2015,16 +2198,32 @@ class ResolvePage(WorkflowPage):
             return False
         if label != BLANK_CHOICE and label not in self._offered_labels(conflict):
             return False
-        self.state.pending = "" if label == BLANK_CHOICE else label
-        self._refresh_choice_states()
-        self._refresh_lanes()
-        self._refresh_provenance(conflict)
-        self._refresh_controls()
+        self.state.pending = {
+            conflict.conflict_id: "" if label == BLANK_CHOICE else label
+        }
+        self._refresh_pending_display()
         return True
 
+    @property
+    def pending(self) -> str | None:
+        """The value picked for the conflict on screen, or ``None``."""
+        conflict = self.current_conflict()
+        if conflict is None:
+            return None
+        return self.state.pending.get(conflict.conflict_id)
+
     def clear_pending(self) -> None:
-        """Forget an uncommitted choice."""
-        self.state.pending = None
+        """Forget every uncommitted choice."""
+        self.state.pending = {}
+
+    def _refresh_pending_display(self) -> None:
+        """Show an uncommitted choice everywhere it has to be visible."""
+        conflict = self.current_conflict()
+        self._refresh_choice_states()
+        self._refresh_lanes()
+        if conflict is not None:
+            self._refresh_provenance(conflict)
+        self._refresh_controls()
 
     def confirm_resolution(self) -> bool:
         """Commit whatever the comparison strip says the effective value is.
@@ -2045,8 +2244,9 @@ class ResolvePage(WorkflowPage):
         conflict = self.current_conflict()
         if conflict is None:
             return False
-        if self.state.pending is not None:
-            return self.correct(self.state.pending)
+        picked = self.pending
+        if picked is not None:
+            return self.correct(picked)
         if self._machine_value_is_confirmable(conflict):
             return self.accept_machine()
         return False
@@ -2087,6 +2287,375 @@ class ResolvePage(WorkflowPage):
         return group_labels(
             self.state.template, conflict.field.zone_id, conflict.field.group_key
         )
+
+    # ------------------------------------------------------------------
+    # Correcting a whole field in one action
+    # ------------------------------------------------------------------
+    def _field_shape_for(self, conflict: ConflictRecord | None) -> FieldShape | None:
+        """The whole-field definition behind one conflict, or ``None``.
+
+        ``None`` for anything that is not a position of a grid field: a
+        duplicate identifier names no zone, a sheet that would not register has
+        no field geometry to map a typed value onto, and a whole-field conflict
+        is already edited as a whole through the free-text box.
+        """
+        if self.state.template is None or conflict is None:
+            return None
+        if not conflict.field.kind.is_record_identity:
+            return None
+        if not conflict.field.zone_id or conflict.field.is_whole_field:
+            return None
+        bundle = self.state.bundle
+        if bundle is None or bundle.result is None or bundle.result.preview is None:
+            # A sheet that never rectified has no reliable association between
+            # the template's positions and the paper, so a typed field value
+            # could not be mapped onto bubbles honestly.
+            return None
+        return field_shape(self.state.template, conflict.field.zone_id)
+
+    def current_field_values(self, shape: FieldShape) -> list[str]:
+        """The field as it currently reads, one entry per printed position.
+
+        Built from the effective value of each position that has a conflict,
+        and from the engine's own reading everywhere else - so the editor
+        starts from what the sheet says rather than from an empty box.
+
+        A position nobody can currently put a value to - unresolved, or read as
+        two marks - contributes :data:`UNKNOWN_POSITION`, which is a *display*
+        marker. It is never accepted back as input; see
+        :meth:`_validate_field_value`.
+        """
+        conflict = self.current_conflict()
+        scan_id = conflict.scan_id if conflict is not None else -1
+        by_position = {
+            item.field.group_key: item
+            for item in self.state.sheet_conflicts
+            if item.scan_id == scan_id
+            and item.field.zone_id == shape.zone_id
+            and not item.field.is_whole_field
+        }
+        machine = self._machine_characters(shape)
+
+        values: list[str] = []
+        for position in range(shape.length):
+            record = by_position.get(position)
+            if record is None:
+                values.append(machine.get(position, UNKNOWN_POSITION))
+                continue
+            found = self.state.sheet_provenance.get(record.conflict_id)
+            value = found.value if found is not None else record.observation.value
+            # A value the field cannot hold - a double mark - is not a reading
+            # the editor may offer back as text.
+            values.append(value if shape.accepts(position, value) else UNKNOWN_POSITION)
+        return values
+
+    def _machine_characters(self, shape: FieldShape) -> dict[int, str]:
+        """What the engine read at each position of one field.
+
+        From the freshly re-read result, which carries a
+        :class:`~omr_scanner.services.recognition_models.CharacterView` per
+        printed position - the same per-position reading the conflicts were
+        detected from.
+        """
+        bundle = self.state.bundle
+        if bundle is None or bundle.result is None:
+            return {}
+        found = next(
+            (item for item in bundle.result.fields if item.zone_id == shape.zone_id),
+            None,
+        )
+        if found is None:
+            return {}
+        return {
+            character.position: character.value
+            if shape.accepts(character.position, character.value)
+            else UNKNOWN_POSITION
+            for character in found.characters
+        }
+
+    def _split_field_value(self, shape: FieldShape, text: str) -> list[str] | None:
+        """Split typed text into one symbol per printed position, or ``None``.
+
+        Not a character-per-position split. A set code whose options are
+        ``"10"``, ``"11"``, ``"12"`` has one *position* carrying two
+        characters, so the text is consumed greedily against the symbols each
+        position actually prints. A uniform single-character field - every roll
+        number - falls out of the same loop.
+        """
+        remaining = text
+        values: list[str] = []
+        for position in range(shape.length):
+            symbols = sorted(shape.positions[position], key=len, reverse=True)
+            match = next(
+                (item for item in symbols if remaining.startswith(item)), None
+            )
+            if match is None:
+                return None
+            values.append(match)
+            remaining = remaining[len(match) :]
+        return values if not remaining else None
+
+    def _validate_field_value(
+        self, shape: FieldShape, text: str
+    ) -> tuple[list[str] | None, str]:
+        """Check typed text against the template, and say why if it fails.
+
+        Every rule comes from the field definition - how many positions, and
+        which symbols each one prints - so a project with a five-digit roll
+        number or a two-position set code is validated against *its* field and
+        not against an assumption made here.
+
+        Nothing is padded, truncated or coerced: a value the field cannot hold
+        is refused with a reason, because quietly turning it into one the field
+        can hold would record an identifier nobody typed.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return None, f"Enter the complete {shape.label}."
+        if UNKNOWN_POSITION in cleaned:
+            return None, (
+                f"'{UNKNOWN_POSITION}' marks a position the machine could not "
+                "read. Replace it with the value on the sheet."
+            )
+        values = self._split_field_value(shape, cleaned)
+        if values is None:
+            return None, _field_requirement(shape)
+        return values, ""
+
+    def _field_edit_plan(
+        self, shape: FieldShape, values: Sequence[str]
+    ) -> tuple[dict[int, str], list[int]]:
+        """Decide which positions a typed value would change, and which it cannot.
+
+        Returns ``(changes, blocked)``: the positions to write, keyed by
+        conflict id, and the positions the value disagrees with that have **no
+        conflict to correct**.
+
+        The second half is the honest part. A correction is recorded *against a
+        conflict*, so there is nowhere to put a decision about a position the
+        machine read confidently and nobody disputed. Rather than silently
+        dropping such a digit - which would store an identifier different from
+        the one the operator typed - those positions are reported and the edit
+        is refused.
+
+        Positions the machine already reads correctly are left alone, so a
+        roll number with two bad digits produces two corrections and not eight.
+        """
+        conflict = self.current_conflict()
+        scan_id = conflict.scan_id if conflict is not None else -1
+        by_position = {
+            item.field.group_key: item
+            for item in self.state.sheet_conflicts
+            if item.scan_id == scan_id
+            and item.field.zone_id == shape.zone_id
+            and not item.field.is_whole_field
+            and item.state is not ConflictState.WITHDRAWN
+        }
+        current = self.current_field_values(shape)
+        changes: dict[int, str] = {}
+        blocked: list[int] = []
+        for position, wanted in enumerate(values):
+            record = by_position.get(position)
+            if record is None:
+                if current[position] != wanted:
+                    blocked.append(position)
+                continue
+            found = self.state.sheet_provenance.get(record.conflict_id)
+            settled = found is not None and found.is_human_decided
+            if settled and found is not None and found.value == wanted:
+                continue
+            changes[record.conflict_id] = wanted
+        return changes, blocked
+
+    def open_field_editor(self) -> bool:
+        """Open the whole-field editor on the active conflict's field.
+
+        Refuses while the keyboard belongs to a text box, so that typing ``e``
+        into the search field does not open an editor behind it.
+        """
+        if self._editing_text():
+            return False
+        shape = self._field_shape_for(self.current_conflict())
+        if shape is None:
+            return False
+        self.state.editing_field = shape
+        self.field_edit_label.setText(f"Correct {shape.label}")
+        self.field_edit_input.setText("".join(self.current_field_values(shape)))
+        self.field_edit_row.setVisible(True)
+        self.field_edit_toggle.setArrowType(Qt.ArrowType.DownArrow)
+        self.field_edit_input.setFocus()
+        # Select-all, because the reviewer is almost always replacing the whole
+        # value rather than editing one character of a reading they already
+        # know is wrong.
+        self.field_edit_input.selectAll()
+        self._refresh_field_edit_status()
+        return True
+
+    def close_field_editor(self) -> None:
+        """Shut the whole-field editor, discarding anything staged in it.
+
+        Hands the keyboard back to the queue. Qt moves focus to the next widget
+        in the chain when the focused one is hidden, which landed it in the
+        note box - where every shortcut on this page refuses to fire, so the
+        reviewer's next keystroke, including ``Ctrl+Z``, did nothing at all.
+        """
+        self.state.editing_field = None
+        self.field_edit_row.setVisible(False)
+        self.field_edit_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        if self.field_edit_toggle.isChecked():
+            self.field_edit_toggle.setChecked(False)
+        self.clear_pending()
+        self._refresh_pending_display()
+        self.queue_table.setFocus()
+
+    def _on_field_editor_toggled(self, shown: bool) -> None:
+        """Open or shut the editor from its own button."""
+        if shown:
+            if not self.open_field_editor():
+                self.field_edit_toggle.setChecked(False)
+            return
+        if self.state.editing_field is not None:
+            self.close_field_editor()
+
+    def _on_field_edit_typed(self, _text: str) -> None:
+        """Re-validate and re-stage as the reviewer types."""
+        self._refresh_field_edit_status()
+
+    def _refresh_field_edit_status(self) -> None:
+        """Validate what is typed, stage it on the sheet, and say what it does.
+
+        Staging as they type is what keeps a field-level correction from being
+        an opaque text operation: the positions the value would change light up
+        on the paper in the pane above, so the operator can see that the number
+        they typed lands on the bubbles they meant before anything is written.
+        """
+        shape = self.state.editing_field
+        if shape is None:
+            return
+        values, problem = self._validate_field_value(
+            shape, self.field_edit_input.text()
+        )
+        if values is None:
+            self.clear_pending()
+            self._refresh_pending_display()
+            self.field_edit_status.setText(
+                f"<span style='color:{Color.DESTRUCTIVE};'>{problem}</span>"
+            )
+            self.field_edit_apply.setEnabled(False)
+            return
+
+        changes, blocked = self._field_edit_plan(shape, values)
+        self.state.pending = dict(changes)
+        self._refresh_pending_display()
+
+        if blocked:
+            positions = ", ".join(str(item + 1) for item in blocked)
+            reads = ", ".join(
+                f"{item + 1}={self.current_field_values(shape)[item] or '(blank)'}"
+                for item in blocked
+            )
+            self.field_edit_status.setText(
+                f"<span style='color:{Color.DESTRUCTIVE};'>Position(s) {positions} "
+                f"are not in dispute - the machine read {reads} and nothing here "
+                "can overrule that. Correct the disputed positions only, or "
+                "re-read the sheet.</span>"
+            )
+            self.field_edit_apply.setEnabled(False)
+            return
+        if not changes:
+            self.field_edit_status.setText(
+                f"<span style='color:{Color.TEXT_TERTIARY};'>Already recorded; "
+                "nothing to change.</span>"
+            )
+            self.field_edit_apply.setEnabled(False)
+            return
+
+        positions = ", ".join(
+            str(self._position_of(conflict_id) + 1) for conflict_id in changes
+        )
+        self.field_edit_status.setText(
+            f"<span style='color:{Color.TEXT_TERTIARY};'>Changes position(s) "
+            f"<b>{positions}</b> &middot; {len(changes)} conflict(s)</span>"
+        )
+        self.field_edit_apply.setEnabled(bool(self.state.reviewer))
+
+    def _position_of(self, conflict_id: int) -> int:
+        """The printed position one conflict is about."""
+        record = next(
+            (
+                item
+                for item in self.state.sheet_conflicts
+                if item.conflict_id == conflict_id
+            ),
+            None,
+        )
+        return record.field.group_key if record is not None else -1
+
+    def apply_field_edit(self) -> bool:
+        """Record the typed field value across the positions it settles.
+
+        One transaction, one reason, one note, one operator action - and, under
+        it, one ordinary correction per position with the audit event a
+        single-digit correction would have had. See
+        :func:`~omr_scanner.services.review_store.correct_field`.
+        """
+        shape = self.state.editing_field
+        database = self.database
+        conflict = self.current_conflict()
+        if shape is None or database is None or conflict is None:
+            return False
+        if self.state.batch_id is None or not self.field_edit_apply.isEnabled():
+            return False
+        values, problem = self._validate_field_value(
+            shape, self.field_edit_input.text()
+        )
+        if values is None:
+            _LOGGER.info("Field edit refused: %s", problem)
+            return False
+        changes, blocked = self._field_edit_plan(shape, values)
+        if blocked or not changes:
+            return False
+
+        scan_id = conflict.scan_id
+        try:
+            edit = correct_field(
+                database,
+                batch_id=self.state.batch_id,
+                scan_id=scan_id,
+                zone_id=shape.zone_id,
+                values={
+                    self._position_of(conflict_id): value
+                    for conflict_id, value in changes.items()
+                },
+                display_value="".join(values),
+                field_label=shape.label,
+                reviewer=self.state.reviewer,
+                reason=self._selected_reason(),
+                reason_text=self.reason_text.toPlainText(),
+            )
+        except (ReviewError, OMRScannerError) as exc:
+            report_error(self, exc, context="Conflict review (field edit)")
+            return False
+
+        self.state.last_field_edit = edit
+        # A field edit is one action, so it supersedes anything that could have
+        # been redone - exactly as a single decision does.
+        self.state.redo.clear()
+        self.clear_pending()
+        self.close_field_editor()
+        self.reason_text.clear()
+        self._settle(scan_id)
+        self.resolution_recorded.emit(conflict.conflict_id)
+        self._advance_after(scan_id)
+        _LOGGER.info(
+            "Scan %d: %s set to %r across %d position(s) by %s",
+            scan_id,
+            shape.label,
+            edit.value,
+            edit.conflict_count,
+            self.state.reviewer,
+        )
+        return True
 
     def _machine_marks(self, conflict: ConflictRecord) -> frozenset[str]:
         """The symbols the engine read as marked in this group.
@@ -2184,7 +2753,7 @@ class ResolvePage(WorkflowPage):
         self._settle(conflict.scan_id)
         self.resolution_recorded.emit(conflict.conflict_id)
         if advance:
-            self._advance_after()
+            self._advance_after(conflict.scan_id)
         return True
 
     def _settle(self, scan_id: int) -> None:
@@ -2200,22 +2769,61 @@ class ResolvePage(WorkflowPage):
         self._refresh_lanes()
         self.refresh_queue()
 
-    def _advance_after(self) -> None:
+    def _advance_after(self, scan_id: int) -> None:
         """Move to the next thing needing a decision, if that is wanted.
 
-        Called only by the two commands that **settle** a conflict. Deferring
-        and reopening deliberately do not advance: both are a reviewer saying
-        "come back to this", and skipping past it would make the thing they
-        asked to see again the thing they cannot find.
+        **The sheet is finished before the next one is started.** An operator
+        holds one script; making them settle a digit on it and then sending
+        them to a different sheet - which is what advancing purely by queue
+        order did - means picking the same paper up again later for every
+        other problem on it.
 
-        Selecting is all this does. The queue's own ordering decides where
-        "next" is - sheet by sheet, since the queue is ordered by severity then
-        by scan - so a reviewer who turns auto-advance off walks exactly the
-        same sequence by hand, and the last conflict of a sheet leads to the
-        next sheet that has one.
+        The order is:
+
+        1. the next unresolved conflict on **this sheet**, after the one just
+           decided, wrapping to its first;
+        2. failing that, the next unresolved conflict in queue order, which is
+           the next sheet that needs work;
+        3. failing that, nothing - the queue is clear, and
+           :meth:`_restore_selection` has already emptied the workspace.
+
+        Called only by the commands that **settle** a conflict. Deferring and
+        reopening deliberately do not advance: both are a reviewer saying "come
+        back to this", and skipping past it would make the thing they asked to
+        see again the thing they cannot find.
         """
-        if self.state.auto_advance:
-            self.select_next_unresolved()
+        if not self.state.auto_advance:
+            return
+        if self.select_next_on_sheet(scan_id):
+            return
+        self.select_next_unresolved()
+
+    def select_next_on_sheet(self, scan_id: int) -> bool:
+        """Select the next conflict still needing a decision on one sheet.
+
+        Args:
+            scan_id: The sheet to stay on.
+
+        Returns:
+            Whether one was found. ``False`` means the sheet is finished, and
+            is what sends the reviewer to the next one.
+
+        Deferred conflicts are passed over for the same reason
+        :meth:`_select_unresolved` passes over them: deferring is "not this
+        one, not now", and looping back to it would make finishing a sheet
+        impossible.
+        """
+        rows = [
+            index
+            for index, item in enumerate(self.state.conflicts)
+            if item.scan_id == scan_id and item.state is ConflictState.OPEN
+        ]
+        if not rows:
+            return False
+        current = self.queue_table.currentRow()
+        row = next((item for item in rows if item > current), rows[0])
+        self.queue_table.selectRow(row)
+        return True
 
     # ------------------------------------------------------------------
     # Undo, redo, and taking a whole sheet back
@@ -2242,17 +2850,33 @@ class ResolvePage(WorkflowPage):
         if target is None:
             return False
         try:
-            undone = undo_decision(
-                database,
-                target.conflict_id,
-                reviewer=self.state.reviewer,
-                reason_text=self.reason_text.toPlainText(),
-            )
+            # A whole-field edit was one action from where the operator was
+            # sitting - they typed one roll number - so one press takes it
+            # back, rather than one press per position it happened to write.
+            if target.group:
+                reversed_commands = undo_field_edit(
+                    database,
+                    batch_id=self.state.batch_id,
+                    group=target.group,
+                    reviewer=self.state.reviewer,
+                    reason_text=self.reason_text.toPlainText(),
+                )
+                if not reversed_commands:
+                    return False
+                self.state.redo.extend(reversed_commands)
+                undone = reversed_commands[-1]
+            else:
+                undone = undo_decision(
+                    database,
+                    target.conflict_id,
+                    reviewer=self.state.reviewer,
+                    reason_text=self.reason_text.toPlainText(),
+                )
+                self.state.redo.append(undone)
         except (ReviewError, OMRScannerError) as exc:
             report_error(self, exc, context="Conflict review (undo)")
             return False
 
-        self.state.redo.append(undone)
         _LOGGER.info(
             "Conflict %d: %s undone by %s",
             undone.conflict_id,
@@ -2422,6 +3046,7 @@ class ResolvePage(WorkflowPage):
             button.setEnabled(can_decide)
         self.free_value_edit.setEnabled(can_decide)
         self.free_value_button.setEnabled(can_decide)
+        self._refresh_field_edit_controls(conflict, can_decide=can_decide)
         self.history_button.setEnabled(has_conflict)
         for action in (
             self.previous_action,
@@ -2432,6 +3057,30 @@ class ResolvePage(WorkflowPage):
             action.setEnabled(bool(self.state.conflicts))
         self._refresh_undo_controls(named=named)
         self._refresh_reviewer_label()
+
+    def _refresh_field_edit_controls(
+        self, conflict: ConflictRecord | None, *, can_decide: bool
+    ) -> None:
+        """Offer the whole-field editor exactly where it can do something.
+
+        Hidden for a conflict that is not a position of a grid field. A sheet
+        that would not register has no trustworthy association between the
+        template's positions and the paper, so typing an identifier for it
+        would be asserting where bubbles are rather than reading them; a
+        duplicate identifier is already edited as a whole in the free-text box.
+        """
+        shape = self._field_shape_for(conflict)
+        self.field_edit_toggle.setVisible(shape is not None)
+        self.field_edit_toggle.setEnabled(shape is not None and can_decide)
+        if shape is None:
+            if self.state.editing_field is not None:
+                self.close_field_editor()
+            return
+        self.field_edit_toggle.setText(f"Edit full {shape.label}...")
+        self.field_edit_toggle.setToolTip(
+            f"Type the whole {shape.label} once and settle every position of it "
+            f"this sheet disputes ({shape.length} positions)"
+        )
 
     def _refresh_primary_action(
         self, conflict: ConflictRecord | None, *, can_decide: bool
@@ -2456,8 +3105,9 @@ class ResolvePage(WorkflowPage):
             self.confirm_button.setToolTip("")
             return
 
-        if self.state.pending is not None:
-            shown = self.state.pending or BLANK_BUTTON_TEXT.lower()
+        picked = self.pending
+        if picked is not None:
+            shown = picked or BLANK_BUTTON_TEXT.lower()
             self.confirm_button.setVisible(True)
             self.confirm_button.setText(f"Confirm '{shown}'")
             self.confirm_button.setToolTip(
@@ -2618,7 +3268,9 @@ listed falls back to the label, so a type added later is described rather than
 blank."""
 
 
-def _machine_summary_html(conflict: ConflictRecord, marks: Collection[str]) -> str:
+def _machine_summary_html(
+    conflict: ConflictRecord, marks: Collection[str], field_value: str = ""
+) -> str:
     """Render the four facts a reviewer needs before choosing.
 
     What position, what is wrong with it, what was on the paper, and which
@@ -2627,9 +3279,16 @@ def _machine_summary_html(conflict: ConflictRecord, marks: Collection[str]) -> s
     **Details**, because it answers a question nobody asks on most sheets and
     it was taking more of the panel than all four of these together.
     """
-    rows: list[tuple[str, str]] = [
+    rows: list[tuple[str, str]] = []
+    if field_value:
+        # The whole field, not only the position in dispute: a reviewer
+        # deciding the third digit of a roll number is deciding it *as part of*
+        # a number, and the other five are what tells them whether they have
+        # the right script in front of them.
+        rows.append(("Current field", field_value))
+    rows.append(
         ("Issue", _ISSUE_WORDING.get(conflict.conflict_type, conflict.conflict_type.label))
-    ]
+    )
     if conflict.conflict_type.allows_value_correction:
         rows.append(("Detected", _describe_marks(sorted(marks))))
     rows.append(("Sheet", conflict.scan_name or "(unknown)"))
@@ -2681,6 +3340,39 @@ def _reason_or_other(stored: str) -> ReasonCode:
         return ReasonCode(stored)
     except ValueError:
         return ReasonCode.OTHER
+
+
+def _field_requirement(shape: FieldShape) -> str:
+    """Say what a field will accept, in the template's own terms.
+
+    Derived from the field definition rather than written out, so a project
+    with a five-digit roll number or a two-position set code is told about
+    *its* field. The alphabet is named only when it is short enough to read -
+    "exactly 6 digits" is more use than ten symbols listed - and only when
+    every position offers the same one.
+    """
+    positions = f"exactly {shape.length} position(s)"
+    if not shape.is_uniform:
+        return f"{shape.label} must contain {positions}, each a symbol that position prints."
+    symbols = shape.positions[0]
+    if set(symbols) <= set("0123456789"):
+        kind = "digits"
+    elif len(symbols) <= MAX_LISTED_SYMBOLS:
+        kind = f"of {', '.join(symbols)}"
+    else:
+        kind = "symbols this field prints"
+    return f"{shape.label} must contain {positions}, {kind}."
+
+
+def _sheet_tooltip(
+    conflict: ConflictRecord, queue: Sequence[ConflictRecord]
+) -> str:
+    """Name the sheet in full, and say how much of the queue belongs to it."""
+    same = sum(1 for item in queue if item.scan_id == conflict.scan_id)
+    return (
+        f"{conflict.scan_name or '(unknown)'}\n"
+        f"{same} conflict(s) from this sheet in the queue"
+    )
 
 
 def _issue_text(conflict: ConflictRecord) -> str:

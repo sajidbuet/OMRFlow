@@ -314,7 +314,7 @@ def build_lanes(
     provenance: Mapping[int, Provenance],
     *,
     active_conflict_id: int | None = None,
-    pending: str | None = None,
+    pending: Mapping[int, str] | None = None,
 ) -> tuple[FieldLane, ...]:
     """Return every lane one sheet should show.
 
@@ -325,9 +325,10 @@ def build_lanes(
         provenance: Where each conflict's current value came from, keyed by
             conflict id. A conflict absent from it is drawn as unresolved.
         active_conflict_id: The conflict being reviewed, drawn more heavily.
-        pending: A value picked but not yet committed on the active conflict.
-            Applied to that lane only - an uncommitted choice belongs to the
-            position the reviewer is looking at and nowhere else.
+        pending: ``conflict_id -> value`` for choices made and not yet
+            committed. A map rather than one value because a whole-field edit
+            stages every position it will change at once, and the reviewer has
+            to see all of them on the paper before any is written.
 
     Returns:
         The lanes, in the order the conflicts were given.
@@ -347,14 +348,13 @@ def build_lanes(
         manual = found is not None and found.source is ValueSource.HUMAN
         if conflict.state is ConflictState.WITHDRAWN and not manual:
             continue
-        active = conflict.conflict_id == active_conflict_id
         lane = lane_for(
             result,
             template,
             conflict,
             found,
-            active=active,
-            pending=pending if active else None,
+            active=conflict.conflict_id == active_conflict_id,
+            pending=(pending or {}).get(conflict.conflict_id),
         )
         if lane is not None:
             lanes.append(lane)

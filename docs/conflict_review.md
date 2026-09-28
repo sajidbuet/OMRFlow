@@ -218,6 +218,49 @@ and there is exactly one place where "how sure is sure enough" is configured.
    1-7          1           Pending
    ```
 
+### Correcting a whole field at once
+
+A candidate who leaves four positions of their roll number blank produces four
+position conflicts. The operator usually knows the whole number - it is written
+on the script - so making them visit four positions to type four digits, each
+with its own reason, is work the interface was creating rather than work the
+examination needed.
+
+**Edit full \<field\>…** opens a one-line editor beside the value buttons,
+prefilled with the field as it currently reads (`??00 29`, with `?` where no
+value can yet be stated). Typing a value stages every position it would change
+**on the sheet**, in the pending style, so the operator can see the number
+landing on the bubbles they meant before anything is written. One **Apply**,
+one reason, one note.
+
+Everything about it is derived from the template - how many positions the field
+has, and which symbols each one prints - so a five-digit identifier or a
+two-position set code is validated against *its* field. A set code whose
+options are `10`, `11`, `12` is split by symbol, not by character. Nothing is
+padded or truncated: a value the field cannot hold is refused with a reason.
+
+What it writes is **ordinary position corrections**, one per position, each
+against its own conflict with its own audit event. The position model is
+untouched; this is a faster way to reach it. Two consequences worth knowing:
+
+- **Positions the machine read confidently are left alone.** Six digits typed
+  against four disputed positions writes four corrections, not six.
+- **A position nobody disputes cannot be overruled here.** A correction is
+  recorded *against a conflict*, and a position the engine read confidently has
+  none - there is nowhere to put the decision. The editor says so and names the
+  position rather than storing an identifier different from the one typed. If
+  such a digit is genuinely wrong, the sheet needs re-reading.
+
+The editor is not offered where a typed field value could not be mapped
+honestly: a duplicate student ID (which names no position and is already edited
+whole in the free-text box), and a sheet that never registered, whose template
+positions have no trustworthy association with the paper.
+
+Every event of one edit carries a shared action token, so the history shows the
+four corrections as one operator action - and **one `Ctrl+Z` takes the whole
+edit back**, not one position of it. A position somebody has since decided
+again is left alone rather than rolled back over their work.
+
 ### Why the machine's reading is not always offered
 
 A roll-number position the engine read as `0-5` carries **two marks**. That is
@@ -241,8 +284,31 @@ identifier and is perfectly legible.
 
 9. **History...** shows the complete provenance at any time.
 10. With **auto-advance** on (the toolbar's tick, remembered in your own
-    settings), resolving the current conflict selects the next undecided one by
-    itself. Deferring does not advance - deferring is "come back to this".
+    settings), resolving the current conflict selects **the next one on the
+    same sheet**, and only moves to another sheet once this one has nothing
+    left needing a decision. An operator holds one script; finishing it before
+    being sent elsewhere is the point. Deferring does not advance - deferring
+    is "come back to this".
+
+### The queue is sheet by sheet
+
+`list_conflicts` orders the queue **sheet-major**: the sheets in most trouble
+first, and within each sheet its worst conflict first, then by field and
+printed position. One sheet's conflicts are therefore one contiguous run, which
+is what makes finishing a sheet possible and what the queue's grouping shows -
+the file name is written once per sheet and its other rows carry a
+continuation mark.
+
+It did not used to be. Ordering by severity across the whole *batch* put a
+roll-number column with two marks (severity 1) and an uncertain one (severity
+0) hundreds of rows apart, so two problems on the same paper were nowhere near
+each other and resolving one moved the selection to a different sheet. That was
+the jumping.
+
+Nothing is restored by row number either. Rows disappear as they are decided,
+so an index means a different conflict after every rebuild; what is restored
+is the conflict that was selected, then the sheet it was on, then the
+scrollbar.
 
 ### What the preview shows
 
@@ -300,6 +366,8 @@ The stage is usable without the mouse, because a sitting is hundreds of sheets.
 | `B` | Pick blank |
 | `Enter` | **Confirm** what the strip says the effective value would be |
 | `D` | Defer |
+| `E` | Open the whole-field editor |
+| `Esc` | Close it, discarding what was staged |
 | Left / Right | Previous / next conflict |
 | `Shift+Enter` | Previous unresolved conflict |
 | `Ctrl+Enter` | Next unresolved conflict |

@@ -64,10 +64,11 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from sqlalchemy import func, select
 
@@ -101,7 +102,7 @@ from omr_scanner.services.conflict_policy import (
 from omr_scanner.services.scan_export import SheetResolution
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from sqlalchemy.orm import Session
 
@@ -801,39 +802,324 @@ def correct_value(
 
     with database.session() as session:
         row = _require_conflict(session, conflict_id)
-        conflict_type = ConflictType(row.conflict_type)
-        if not conflict_type.allows_value_correction:
-            raise ReviewError(
-                f"Conflict {conflict_id} ({conflict_type.value}) carries no field value",
-                user_message=(
-                    f"'{conflict_type.label}' is not a value that can be corrected. "
-                    "Acknowledge it or defer it instead."
-                ),
-            )
-
-        previous = _project_provenance(session, row).value
-        _append_event(
+        _correct_one(
             session,
-            conflict=row,
-            action=ReviewAction.CORRECTED,
+            row,
+            value=value,
             reviewer=name,
-            previous_value=previous,
-            new_value=value,
-            reason_code=reason.value,
+            reason=reason,
             reason_text=text_value,
         )
-        row.state = ConflictState.RESOLVED.value
-        row.updated_at = _now()
         session.flush()
-        _LOGGER.info(
-            "Conflict %d corrected by %s: %r -> %r (machine value %r preserved)",
-            conflict_id,
-            name,
-            previous,
-            value,
-            row.machine_value,
-        )
         return _project_provenance(session, row)
+
+
+def _correct_one(
+    session: Session,
+    row: ReviewConflict,
+    *,
+    value: str,
+    reviewer: str,
+    reason: ReasonCode,
+    reason_text: str,
+    detail: str = "",
+) -> str:
+    """Record one replacement value inside an open transaction.
+
+    Returns:
+        The effective value this decision replaced.
+
+    Factored out of :func:`correct_value` so that a field-level edit can write
+    several positions in **one** transaction without a second implementation of
+    what a correction is. Both paths append the same event, set the same state
+    and leave ``machine_value`` alone.
+    """
+    conflict_type = ConflictType(row.conflict_type)
+    if not conflict_type.allows_value_correction:
+        raise ReviewError(
+            f"Conflict {row.conflict_id} ({conflict_type.value}) carries no field value",
+            user_message=(
+                f"'{conflict_type.label}' is not a value that can be corrected. "
+                "Acknowledge it or defer it instead."
+            ),
+        )
+
+    previous = _project_provenance(session, row).value
+    _append_event(
+        session,
+        conflict=row,
+        action=ReviewAction.CORRECTED,
+        reviewer=reviewer,
+        previous_value=previous,
+        new_value=value,
+        reason_code=reason.value,
+        reason_text=reason_text,
+        detail=detail,
+    )
+    row.state = ConflictState.RESOLVED.value
+    row.updated_at = _now()
+    _LOGGER.info(
+        "Conflict %d corrected by %s: %r -> %r (machine value %r preserved)",
+        row.conflict_id,
+        reviewer,
+        previous,
+        value,
+        row.machine_value,
+    )
+    return previous
+
+
+# ----------------------------------------------------------------------
+# Correcting a whole field in one action
+# ----------------------------------------------------------------------
+GROUP_MARKER = "[edit "
+"""How a grouped operator action is marked in an event's ``detail``.
+
+A **context identifier, carried in free text** because the ledger has no column
+for one. ``audit_event`` is the one table in the schema that cannot be altered
+casually - it is under immutability triggers and holds every decision any
+project has ever recorded - and adding a column to it so that a convenience
+action can group its own events would be a migration of the whole ledger for a
+presentation concern.
+
+The marker is human-readable on purpose: it appears in the history dialog as
+part of a sentence, so a reader sees *why* three positions changed at once
+rather than a bare identifier. :func:`group_of` is the only thing that parses
+it back."""
+
+
+def group_of(detail: str) -> str:
+    """Return the grouped-action token an event's detail carries, or ``""``."""
+    start = detail.find(GROUP_MARKER)
+    if start < 0:
+        return ""
+    start += len(GROUP_MARKER)
+    end = detail.find("]", start)
+    return detail[start:end] if end > start else ""
+
+
+@dataclass(frozen=True, slots=True)
+class FieldEdit:
+    """What one whole-field correction did.
+
+    Attributes:
+        group: The token every event of this action carries, so the history can
+            show that they were one operator action and
+            :func:`undo_field_edit` can take all of them back together.
+        zone_id: The field that was edited.
+        value: What the operator entered, as one string.
+        changed: ``group_key -> new value`` for the positions that were
+            actually written.
+        unchanged: Positions whose conflict already carried the entered value
+            and needed no second decision.
+        missing: Positions the entered value disagrees with that have **no
+            conflict to correct**. Always empty when the caller checked first;
+            reported rather than silently ignored, because a value the
+            interface accepted and did not store is the worst outcome here.
+    """
+
+    group: str
+    zone_id: str
+    value: str
+    changed: dict[int, str] = field(default_factory=dict)
+    unchanged: tuple[int, ...] = ()
+    missing: tuple[int, ...] = ()
+
+    @property
+    def conflict_count(self) -> int:
+        """How many position conflicts this action decided."""
+        return len(self.changed)
+
+
+def correct_field(
+    database: ProjectDatabase,
+    *,
+    batch_id: str,
+    scan_id: int,
+    zone_id: str,
+    values: Mapping[int, str],
+    display_value: str,
+    field_label: str,
+    reviewer: str,
+    reason: ReasonCode,
+    reason_text: str = "",
+) -> FieldEdit:
+    """Decide several positions of one field as a single operator action.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch being reviewed.
+        scan_id: The sheet.
+        zone_id: The field's template zone.
+        values: ``group_key -> value`` for every position the entered field
+            value implies. ``WHOLE_FIELD`` for a field that is disputed as a
+            whole rather than per position.
+        display_value: The field value as the operator typed it, for the
+            history.
+        field_label: What to call the field in the history ("Student ID").
+        reviewer: Who decided. Required.
+        reason: Why. Required, and shared by every position.
+        reason_text: Free text; required when ``reason`` is ``OTHER``.
+
+    Returns:
+        What was written, and what was deliberately not.
+
+    Raises:
+        ReviewError: No reviewer, a missing explanation, or nothing to decide.
+
+    **A convenience over the position model, not a replacement for it.** A
+    student who left four digits of their roll number blank produces four
+    position conflicts, and making the operator visit each one to type one
+    digit is the workflow this exists to remove. What it writes is still four
+    ordinary corrections, each against its own conflict, each with the
+    reviewer, the reason and the audit event a single-digit correction would
+    have had - so every guarantee the position model gives (per-bubble
+    provenance, granular reopen, the effective-value fold) is untouched.
+
+    **One transaction.** A field half-applied would leave an identifier that is
+    neither what the machine read nor what the operator typed.
+
+    A position whose conflict already carries the entered value is left alone:
+    re-deciding it would put a second identical correction in its history and
+    say nothing.
+    """
+    name = validate_reviewer(reviewer)
+    text_value = validate_reason(reason, reason_text)
+    group = uuid4().hex[:8]
+
+    with database.session() as session:
+        rows = {
+            row.group_key: row
+            for row in session.scalars(
+                _resolution_only(
+                    select(ReviewConflict)
+                    .where(ReviewConflict.batch_id == batch_id)
+                    .where(ReviewConflict.scan_id == scan_id)
+                    .where(ReviewConflict.zone_id == zone_id)
+                    .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
+                )
+            ).all()
+        }
+
+        changed: dict[int, str] = {}
+        unchanged: list[int] = []
+        missing: list[int] = []
+        for position in sorted(values):
+            wanted = values[position]
+            row = rows.get(position)
+            if row is None:
+                missing.append(position)
+                continue
+            current = _project_provenance(session, row)
+            # Already decided, and decided this way: a second identical
+            # correction would add a line to the history saying nothing.
+            if current.is_human_decided and current.value == wanted:
+                unchanged.append(position)
+                continue
+            _correct_one(
+                session,
+                row,
+                value=wanted,
+                reviewer=name,
+                reason=reason,
+                reason_text=text_value,
+                detail=(
+                    f"{field_label} set to '{display_value or '(blank)'}' in one "
+                    f"edit; this position took '{wanted or '(blank)'}'. "
+                    f"{GROUP_MARKER}{group}]"
+                ),
+            )
+            changed[position] = wanted
+
+        if not changed:
+            raise ReviewError(
+                f"Field edit on scan {scan_id} zone {zone_id} changed nothing",
+                user_message=(
+                    "That value is already recorded for every position this "
+                    "edit can reach. Nothing was changed."
+                ),
+            )
+        session.flush()
+
+    _LOGGER.info(
+        "Scan %d %s set to %r by %s in one edit (%d position(s), group %s)",
+        scan_id,
+        zone_id,
+        display_value,
+        name,
+        len(changed),
+        group,
+    )
+    return FieldEdit(
+        group=group,
+        zone_id=zone_id,
+        value=display_value,
+        changed=changed,
+        unchanged=tuple(unchanged),
+        missing=tuple(missing),
+    )
+
+
+def undo_field_edit(
+    database: ProjectDatabase,
+    *,
+    batch_id: str,
+    group: str,
+    reviewer: str,
+    reason_text: str = "",
+) -> tuple[UndoTarget, ...]:
+    """Take back every decision one whole-field edit made.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch being reviewed.
+        group: The token :class:`FieldEdit` reported.
+        reviewer: Who is undoing. Required.
+        reason_text: Optional free text, recorded against every reversal.
+
+    Returns:
+        What was reversed, oldest first. Empty when none of the edit's
+        decisions still stands.
+
+    **One press, one action.** An operator who typed a roll number once and
+    corrected four positions with it should not have to press undo four times
+    to take that back - the four were never four decisions from where they were
+    sitting. Only the decisions still standing are reversed, so an edit whose
+    positions have since been decided again is not quietly rolled over the top
+    of that later work.
+    """
+    name = validate_reviewer(reviewer)
+
+    with database.session() as session:
+        events = _human_events(session, batch_id, limit=UNDO_SEARCH_LIMIT)
+        # `_walk_back_to_standing` keeps every command an undo has not
+        # cancelled, which for one conflict includes the decisions a later
+        # decision superseded. Only the **top** of each conflict's stack may be
+        # popped, so a position somebody has since decided again is left alone
+        # rather than rolled back over their work.
+        topmost: dict[int, AuditEvent] = {}
+        for event in _walk_back_to_standing(events):
+            topmost.setdefault(event.conflict_id, event)
+        standing = [
+            event
+            for event in topmost.values()
+            if group_of(event.detail) == group
+        ]
+        if not standing:
+            return ()
+        moment = _now()
+        reversed_commands: list[UndoTarget] = []
+        for event in standing:
+            row = _require_conflict(session, event.conflict_id)
+            reversed_commands.append(
+                _undo_one(session, row, reviewer=name, reason_text=reason_text)
+            )
+            row.updated_at = moment
+        session.flush()
+    _LOGGER.info(
+        "Field edit %s: %d decision(s) undone by %s", group, len(standing), name
+    )
+    return tuple(reversed(reversed_commands))
 
 
 def defer(
@@ -937,6 +1223,9 @@ class UndoTarget:
         value: The effective value it established, ``""`` for blank.
         reason: Its reason code's stored value.
         reason_text: The free text that accompanied it.
+        group: The whole-field edit it was part of, or ``""``. Lets undo take
+            back one *operator action* rather than one of the several positions
+            that action happened to write.
         describe: One short phrase naming it, for a tooltip or a menu item.
 
     Carries everything needed to *re-issue* the command, which is how redo is
@@ -951,6 +1240,7 @@ class UndoTarget:
     value: str
     reason: str = ""
     reason_text: str = ""
+    group: str = ""
     describe: str = ""
 
 
@@ -1077,6 +1367,7 @@ def _to_target(event: AuditEvent, conflict: ReviewConflict | None) -> UndoTarget
         value=event.new_value,
         reason=event.reason_code,
         reason_text=event.reason_text,
+        group=group_of(event.detail),
         describe=_describe_command(action, event.new_value, conflict),
     )
 
@@ -1186,6 +1477,7 @@ def _undo_one(
         value=undone.new_value,
         reason=undone.reason_code,
         reason_text=undone.reason_text,
+        group=group_of(undone.detail),
         describe=_describe_command(undone.action, undone.new_value, row),
     )
 
@@ -1601,8 +1893,10 @@ def list_conflicts(
         offset: Where the page starts.
 
     Returns:
-        Detached value objects, ordered by severity, then sheet, then field -
-        deterministic, so paging is stable and a reopened queue looks the same.
+        Detached value objects, **sheet by sheet**: the sheets in most trouble
+        first, and within each sheet its worst conflict first, then by field
+        and printed position. Deterministic, so paging is stable and a reopened
+        queue looks the same.
 
     Ordering and filtering happen in SQL. A batch of ten thousand sheets can
     carry thousands of conflicts, and loading them all to sort them in Python
@@ -1617,9 +1911,23 @@ def list_conflicts(
             .where(ReviewConflict.batch_id == batch_id)
         )
         statement = _apply_filters(statement, rules)
+        # **Sheet-major, worst sheet first.** Ordering by severity across the
+        # whole batch - which this did - scatters one sheet's conflicts through
+        # every other sheet's: a roll-number column with two marks is severity
+        # 1 and an uncertain one is severity 0, so two problems on the same
+        # paper ended up hundreds of rows apart. An operator holding one sheet
+        # could not work it, and resolving a conflict moved the selection to a
+        # different sheet, which is the jumping this ordering caused.
+        #
+        # The window keeps the intent of the old ordering - the sheets in most
+        # trouble are still first - while making each sheet one contiguous run.
+        sheet_severity = func.max(ReviewConflict.severity).over(
+            partition_by=ReviewConflict.scan_id
+        )
         statement = statement.order_by(
-            ReviewConflict.severity.desc(),
+            sheet_severity.desc(),
             ReviewConflict.scan_id,
+            ReviewConflict.severity.desc(),
             ReviewConflict.zone_id,
             ReviewConflict.group_key,
             ReviewConflict.conflict_id,
@@ -2223,16 +2531,19 @@ __all__ = [
     "AuditRecord",
     "ConflictFilter",
     "ConflictRecord",
+    "FieldEdit",
     "ReviewError",
     "SheetUndo",
     "UndoTarget",
     "accept_machine_value",
+    "correct_field",
     "correct_value",
     "count_conflicts",
     "count_conflicts_for_scan",
     "defer",
     "effective_values_for_scan",
     "get_conflict",
+    "group_of",
     "history_for",
     "last_decision",
     "last_resolved_sheet",
@@ -2247,6 +2558,7 @@ __all__ = [
     "sync_conflicts",
     "sync_duplicate_identifiers",
     "undo_decision",
+    "undo_field_edit",
     "undo_resolved_sheet",
     "validate_reason",
     "validate_reviewer",

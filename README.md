@@ -240,7 +240,91 @@ synthetically tested" to a qualified stable release.
 | Conflict-resolution semantics | ✅ Updated — Resolve now covers student ID / roll and set code only; ambiguous answers stay in the recognition result. See below |
 | Resolve stage UX & reversible decisions | 🟠 **Implemented — automated tests passing, not yet exercised by a real reviewer.** Whole-position lane overlay, keyboard-first operation, auto-advance, and undo / redo / undo-a-whole-sheet as persisted audit events. See below |
 | Resolve stage layout & workflow (2nd pass) | 🟠 **Implemented — automated tests passing; inspected in rendered screenshots, not yet worked by a real operator.** Space redistributed 29/71 and 70/30, ROI framing, machine-vs-operator colour semantics, pick-then-confirm, and an action that no longer offers to store an invalid reading. See below |
+| Resolve field-level entry & sheet-local progression | 🟠 **Implemented — automated tests passing; driven end to end in a rendered harness, not yet worked by a real operator.** A whole Student ID or Question Set typed once settles every position of it the sheet disputes; the queue is sheet-major and finishes a sheet before moving on. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+
+#### Correcting a whole field, and finishing a sheet before leaving it
+
+Two workflow problems, both reported from working a real 1,875-sheet batch.
+
+**A candidate who leaves four Student ID positions blank produces four
+conflicts**, and the operator usually knows the whole number — it is written on
+the script. Deciding four positions separately, each with its own reason, was
+work the interface was creating rather than work the examination needed.
+
+**Edit full \<field\>…** (or `E`) opens a one-line editor beside the value
+buttons, prefilled with what the sheet currently reads — `??0029`, with `?`
+where no value can yet be stated. Typing stages every position the value would
+change **on the sheet**, in the pending style, so the number can be seen
+landing on the right bubbles before anything is written. One **Apply**, one
+reason, one note. The same control handles the Question Set / Set Code,
+including multi-position and multi-character codes.
+
+Everything is derived from the template — how many positions, and which symbols
+each one prints — so a five-digit identifier or a two-position set code is
+validated against *its* field. A set code printed `10`, `11`, `12` is split by
+symbol, not by character. Nothing is padded or truncated.
+
+**The position model is untouched.** What an edit writes is ordinary position
+corrections, one per position, each against its own conflict with its own audit
+event, reviewer and reason — a faster way to reach the existing model, not a
+replacement for it. Two deliberate limits:
+
+- **Confidently read positions are left alone.** Six digits typed against four
+  disputed positions writes four corrections, not six.
+- **A position nobody disputes cannot be overruled here.** A correction is
+  recorded *against a conflict*, and a position the engine read confidently has
+  none — there is nowhere to put the decision. The editor names the position
+  and refuses, rather than storing an identifier different from the one typed.
+  A genuinely wrong confident digit still needs the sheet re-read; that is a
+  limit of the position model, now surfaced instead of silently mis-saved.
+
+Every event of one edit carries a shared action token in the ledger's detail —
+no schema change; `audit_event` is under immutability triggers and is not
+altered for a convenience feature — so the history shows the four corrections
+as one operator action, and **one `Ctrl+Z` takes the whole edit back**. A
+position somebody has since decided again is left alone rather than rolled back
+over their work.
+
+**The queue jumped after every resolution.** The root cause was the ordering:
+`list_conflicts` sorted by severity across the whole *batch*, so a roll-number
+column with two marks (severity 1) and an uncertain one (severity 0) on the
+same paper ended up hundreds of rows apart. Resolving one therefore moved the
+selection to a different sheet, and selection was then restored **by row
+number** — which means a different conflict after every rebuild.
+
+The queue is now **sheet-major**: the sheets in most trouble first, each sheet's
+conflicts one contiguous run. Auto-advance selects the next conflict *on the
+same sheet* and only hands over to another sheet when this one has nothing left
+needing a decision — so a script can be worked to the end while it is in the
+operator's hand. Selection is restored by conflict, then by sheet, then by
+scrollbar; never by index. The queue shows the grouping by writing the file
+name once per sheet and marking its other rows as continuations, and the header
+counts each thing separately: `Conflict 2 of 5 on this sheet · 4 left here ·
+137 left in batch`, with the denominator taken from the sheet rather than from
+the filtered queue so it does not collapse to "1 of 1" as the work proceeds.
+
+**Two defects found while driving it**, both fixed: the whole-field editor was
+computed before the sheet finished loading and so stayed hidden for the rest of
+that conflict; and closing the editor let Qt move focus into the note box,
+where every shortcut on the page correctly refuses to fire — so the next
+`Ctrl+Z` did nothing. A third was found by a test written for it: undoing a
+field edit reversed a position that had since been decided again, because the
+"still standing" walk returns superseded commands as well as current ones.
+
+**Testing.** 170 Resolve-stage GUI tests (41 new) and 42 review-store tests (14
+new), covering queue contiguity, sheet-local progression across a five-conflict
+sheet, template-derived field length and symbols, validation (length, alphabet,
+the `?` marker, no padding, the undisputed-position refusal), one-operation
+resolution, untouched positions, shared reason and note, `Other` still needing
+a note, the shared action token, grouped undo, undo not rolling over later
+work, staging on the sheet, and the duplicate-ID and registration-failure
+refusals. Ruff and mypy green.
+
+Driven end to end in a rendered harness — five conflicts on one sheet, whole
+roll number typed once, four positions settled, stayed on the sheet for the set
+code, one undo took the field edit back. **No operator has yet worked a sitting
+on it**; that remains Phase 11B.
 
 #### The Resolve stage, laid out for the work it is actually used for
 

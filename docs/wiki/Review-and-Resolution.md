@@ -69,6 +69,53 @@ MACHINE      MANUAL      EFFECTIVE
 
 **History…** shows every decision recorded against the sheet.
 
+### Correcting a whole Student ID or Question Set at once
+
+If a candidate left several positions of their Student ID blank, you do not
+have to decide them one at a time.
+
+1. Press **Edit full Student ID…** (or `E`). A one-line editor opens, prefilled
+   with what the sheet currently reads — `??0029`, with `?` where nothing can
+   be stated yet.
+2. Type the whole number. As you type, every position it would change lights
+   up on the sheet above, so you can see it landing on the right bubbles.
+3. Choose a **reason** once, and press **Apply** (or `Enter`).
+
+The same works for the **Question Set / Set Code**, including multi-position
+and multi-character codes — the number of positions and the values allowed come
+from your template, not from an assumption.
+
+What OMRFlow records is still one ordinary correction per position, each
+auditable on its own — this is a faster way to reach them, not a different
+kind of decision. **One `Ctrl+Z` takes the whole entry back.**
+
+Two things it deliberately will not do:
+
+- It leaves alone the positions recognition read confidently, so typing six
+  digits against four blanks records four corrections, not six.
+- It will not overrule a position that **nobody is disputing**. If the value
+  you type disagrees with a digit recognition read confidently, the editor
+  names that position and refuses, rather than saving an ID different from the
+  one you typed. If that digit really is wrong, the sheet needs re-reading.
+
+It is not offered for a duplicate Student ID (type the whole ID in the box
+instead) or for a sheet that failed registration, where there is no reliable
+link between the template's positions and the paper.
+
+### Finishing one sheet before the next
+
+The queue is ordered **sheet by sheet**. When you resolve a conflict, OMRFlow
+selects the next one **on the same sheet**, and only moves to a different sheet
+once this one has nothing left needing a decision — so you can work a script
+through to the end while you are holding it. The queue does not jump back to
+the top, and your scroll position is kept.
+
+The header counts each thing separately, for example:
+
+```text
+Conflict 2 of 5 on this sheet · 4 left here · 137 left in batch
+```
+
 ### When the machine's reading is not offered
 
 If recognition found **two marks** in one position — `0-5` — that is not a
@@ -117,6 +164,8 @@ the preview only; your scan file is never modified.
 | `B` | Pick blank |
 | `Enter` | **Confirm** — records what the strip says |
 | `D` | Defer |
+| `E` | Edit the whole field |
+| `Esc` | Close the field editor |
 | ← / → | Previous / next conflict |
 | `Shift+Enter` / `Ctrl+Enter` | Previous / next **unresolved** conflict |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo the last decision |
