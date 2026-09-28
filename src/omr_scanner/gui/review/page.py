@@ -39,6 +39,7 @@ Why the queue holds value objects and pages its reads:
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass, field
 from functools import partial
@@ -62,6 +63,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -82,6 +84,7 @@ from omr_scanner.domain.review import (
     ConflictState,
     ConflictType,
     FieldKind,
+    MachineObservation,
     ReasonCode,
     ReviewAction,
     ValueSource,
@@ -287,6 +290,58 @@ BLANK_KEY = Qt.Key.Key_B
 ``B`` for blank. Deliberately not the space bar, which every Qt widget on the
 page already uses for something, and not ``0`` - a roll-number column has a
 zero, and a reviewer who meant the digit must never get the blank."""
+
+
+FIELD_EDIT_APPLY_TEXT = "Apply"
+"""The whole-field editor's commit button, when nothing it writes overrides a
+confident reading. It reads "Apply override..." when something does."""
+
+
+@dataclass(frozen=True, slots=True)
+class FieldEditPlan:
+    """What one typed whole-field value would do, before any of it is written.
+
+    Attributes:
+        current: The field as it reads now, one entry per printed position.
+        proposed: The value typed, split the same way.
+        changes: ``conflict_id -> value`` for positions that already have a
+            record - an unresolved conflict, or an earlier manual decision.
+        overrides: ``position -> (machine reading, typed value)`` for positions
+            the machine read **confidently** and nobody disputed. Writing these
+            overrides the machine, which is why they are kept apart: they are
+            the ones the operator is warned about.
+        positions: Every position the edit changes, in printed order.
+    """
+
+    current: tuple[str, ...]
+    proposed: tuple[str, ...]
+    changes: dict[int, str]
+    overrides: dict[int, tuple[str, str]]
+    positions: tuple[int, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether applying this would change nothing."""
+        return not self.changes and not self.overrides
+
+
+def override_warning_text(field_label: str, overrides: dict[int, tuple[str, str]]) -> str:
+    """The body of the "you are overriding a confident reading" confirmation.
+
+    Pure, so a test can assert what an operator is told without a dialog.
+    Positions are printed one-based, as the sheet numbers them.
+    """
+    count = len(overrides)
+    noun = "value that was" if count == 1 else "values that were"
+    rows = "\n".join(
+        f"    Position {position + 1}     {machine or '(blank)'} → {typed or '(blank)'}"
+        for position, (machine, typed) in sorted(overrides.items())
+    )
+    return (
+        f"The entered {field_label} changes {count} {noun} read confidently:\n\n"
+        f"{rows}\n\n"
+        "These changes will override the machine result."
+    )
 
 
 @dataclass
@@ -946,14 +1001,19 @@ class ResolvePage(WorkflowPage):
         self.field_edit_input.setObjectName("fullFieldValueEdit")
         self.field_edit_input.textChanged.connect(self._on_field_edit_typed)
         self.field_edit_input.returnPressed.connect(self.apply_field_edit)
-        row.addWidget(self.field_edit_input, stretch=2)
+        row.addWidget(self.field_edit_input, stretch=1)
 
         self.field_edit_status = QLabel("")
         self.field_edit_status.setObjectName("fullFieldStatusLabel")
         self.field_edit_status.setTextFormat(Qt.TextFormat.RichText)
-        row.addWidget(self.field_edit_status, stretch=3)
+        # Takes its stretch share and no more, so a long preview never squeezes
+        # the box being typed into; the full text is also its tooltip.
+        self.field_edit_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        row.addWidget(self.field_edit_status, stretch=4)
 
-        self.field_edit_apply = QPushButton("Apply")
+        self.field_edit_apply = QPushButton(FIELD_EDIT_APPLY_TEXT)
         self.field_edit_apply.setObjectName("applyFullFieldButton")
         self.field_edit_apply.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
         self.field_edit_apply.clicked.connect(self.apply_field_edit)
@@ -2422,21 +2482,20 @@ class ResolvePage(WorkflowPage):
             return None, _field_requirement(shape)
         return values, ""
 
-    def _field_edit_plan(
-        self, shape: FieldShape, values: Sequence[str]
-    ) -> tuple[dict[int, str], list[int]]:
-        """Decide which positions a typed value would change, and which it cannot.
+    def _field_edit_plan(self, shape: FieldShape, values: Sequence[str]) -> FieldEditPlan:
+        """Decide which positions a typed value would change, and how.
 
-        Returns ``(changes, blocked)``: the positions to write, keyed by
-        conflict id, and the positions the value disagrees with that have **no
-        conflict to correct**.
+        Three kinds of position can change, and the plan keeps them apart:
 
-        The second half is the honest part. A correction is recorded *against a
-        conflict*, so there is nowhere to put a decision about a position the
-        machine read confidently and nobody disputed. Rather than silently
-        dropping such a digit - which would store an identifier different from
-        the one the operator typed - those positions are reported and the edit
-        is refused.
+        * an **unresolved conflict** - the ordinary case;
+        * a position with an **earlier manual decision**, which the new value
+          supersedes;
+        * a position the machine read **confidently**, with no conflict at all.
+          The explicit field editor is the operator saying "I can see the
+          whole number", so it may overrule such a reading - a clean ``9`` that
+          is an ``8`` on the paper - but only as a named override, after a
+          warning, and never as a disguised conflict. These are
+          :attr:`FieldEditPlan.overrides`.
 
         Positions the machine already reads correctly are left alone, so a
         roll number with two bad digits produces two corrections and not eight.
@@ -2453,19 +2512,79 @@ class ResolvePage(WorkflowPage):
         }
         current = self.current_field_values(shape)
         changes: dict[int, str] = {}
-        blocked: list[int] = []
+        overrides: dict[int, tuple[str, str]] = {}
+        positions: list[int] = []
         for position, wanted in enumerate(values):
             record = by_position.get(position)
             if record is None:
                 if current[position] != wanted:
-                    blocked.append(position)
+                    overrides[position] = (current[position], wanted)
+                    positions.append(position)
                 continue
             found = self.state.sheet_provenance.get(record.conflict_id)
             settled = found is not None and found.is_human_decided
             if settled and found is not None and found.value == wanted:
                 continue
             changes[record.conflict_id] = wanted
-        return changes, blocked
+            positions.append(position)
+        return FieldEditPlan(
+            current=tuple(current),
+            proposed=tuple(values),
+            changes=changes,
+            overrides=overrides,
+            positions=tuple(positions),
+        )
+
+    def _machine_observation_at(self, shape: FieldShape, position: int) -> MachineObservation:
+        """What the engine read at one position, as an override record keeps it.
+
+        Taken verbatim from the re-read result's
+        :class:`~omr_scanner.services.recognition_models.CharacterView`, the
+        same per-position reading conflicts are detected from, so an override
+        stores exactly what it overruled.
+        """
+        bundle = self.state.bundle
+        fields = bundle.result.fields if bundle is not None and bundle.result else ()
+        found = next((item for item in fields if item.zone_id == shape.zone_id), None)
+        character = next(
+            (
+                item
+                for item in (found.characters if found is not None else ())
+                if item.position == position
+            ),
+            None,
+        )
+        if character is None:
+            return MachineObservation(value=self._machine_characters(shape).get(position, ""))
+        return MachineObservation(
+            value=character.value,
+            status=character.status,
+            confidence=character.confidence,
+            top_fill=character.top_fill,
+            margin=character.margin,
+            detail="Read confidently; recognition raised no conflict here.",
+        )
+
+    def _confirm_override(
+        self, shape: FieldShape, overrides: dict[int, tuple[str, str]]
+    ) -> bool:
+        """Ask before a typed value overrules a confident machine reading.
+
+        Only ever shown when :attr:`FieldEditPlan.overrides` is non-empty:
+        correcting positions that were already in dispute is what Apply means,
+        and warning about it would teach the operator to click through this.
+        Cancel is the default, so a stray Enter changes nothing.
+        """
+        box = QMessageBox(self)
+        box.setObjectName("fieldOverrideConfirmation")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Manual field override")
+        box.setText(override_warning_text(shape.label, overrides))
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        apply = box.addButton("Apply override", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is apply
 
     def open_field_editor(self) -> bool:
         """Open the whole-field editor on the active conflict's field.
@@ -2535,6 +2654,8 @@ class ResolvePage(WorkflowPage):
         values, problem = self._validate_field_value(
             shape, self.field_edit_input.text()
         )
+        self.field_edit_status.setToolTip("")
+        self.field_edit_apply.setText(FIELD_EDIT_APPLY_TEXT)
         if values is None:
             self.clear_pending()
             self._refresh_pending_display()
@@ -2544,25 +2665,11 @@ class ResolvePage(WorkflowPage):
             self.field_edit_apply.setEnabled(False)
             return
 
-        changes, blocked = self._field_edit_plan(shape, values)
-        self.state.pending = dict(changes)
+        plan = self._field_edit_plan(shape, values)
+        self.state.pending = dict(plan.changes)
         self._refresh_pending_display()
 
-        if blocked:
-            positions = ", ".join(str(item + 1) for item in blocked)
-            reads = ", ".join(
-                f"{item + 1}={self.current_field_values(shape)[item] or '(blank)'}"
-                for item in blocked
-            )
-            self.field_edit_status.setText(
-                f"<span style='color:{Color.DESTRUCTIVE};'>Position(s) {positions} "
-                f"are not in dispute - the machine read {reads} and nothing here "
-                "can overrule that. Correct the disputed positions only, or "
-                "re-read the sheet.</span>"
-            )
-            self.field_edit_apply.setEnabled(False)
-            return
-        if not changes:
+        if plan.is_empty:
             self.field_edit_status.setText(
                 f"<span style='color:{Color.TEXT_TERTIARY};'>Already recorded; "
                 "nothing to change.</span>"
@@ -2570,12 +2677,32 @@ class ResolvePage(WorkflowPage):
             self.field_edit_apply.setEnabled(False)
             return
 
-        positions = ", ".join(
-            str(self._position_of(conflict_id) + 1) for conflict_id in changes
+        # Current -> proposed, then which positions move, then - in the
+        # warning colour - any confident reading this would overrule.
+        before = html.escape("".join(plan.current))
+        after = html.escape("".join(plan.proposed))
+        positions = ", ".join(str(item + 1) for item in plan.positions)
+        # One line: the editor row is one line high, and a second line was
+        # clipped. The override warning comes straight after the values, so
+        # it is the last thing a narrow row cuts off, not the first.
+        parts = [f"<b>{before}</b> &rarr; <b>{after}</b>"]
+        parts.extend(
+            f"<span style='color:{Color.STATUS_BUSY};'>Position {position + 1} "
+            f"&mdash; confident machine read ({html.escape(machine or '(blank)')} "
+            f"&rarr; {html.escape(typed or '(blank)')})</span>"
+            for position, (machine, typed) in sorted(plan.overrides.items())
         )
-        self.field_edit_status.setText(
-            f"<span style='color:{Color.TEXT_TERTIARY};'>Changes position(s) "
-            f"<b>{positions}</b> &middot; {len(changes)} conflict(s)</span>"
+        parts.append(f"Changed positions: <b>{positions}</b>")
+        text = (
+            f"<span style='color:{Color.TEXT_TERTIARY};'>"
+            + " &middot; ".join(parts)
+            + "</span>"
+        )
+        self.field_edit_status.setText(text)
+        self.field_edit_status.setToolTip(text)
+        # The button says what it will do: an override asks first.
+        self.field_edit_apply.setText(
+            "Apply override..." if plan.overrides else FIELD_EDIT_APPLY_TEXT
         )
         self.field_edit_apply.setEnabled(bool(self.state.reviewer))
 
@@ -2612,10 +2739,25 @@ class ResolvePage(WorkflowPage):
         if values is None:
             _LOGGER.info("Field edit refused: %s", problem)
             return False
-        changes, blocked = self._field_edit_plan(shape, values)
-        if blocked or not changes:
+        plan = self._field_edit_plan(shape, values)
+        if plan.is_empty:
+            return False
+        # Asked before anything is written, so Cancel leaves the database, the
+        # editor and what is staged on the sheet exactly as they were.
+        if plan.overrides and not self._confirm_override(shape, plan.overrides):
+            _LOGGER.info(
+                "Field edit cancelled at the override warning (%d position(s))",
+                len(plan.overrides),
+            )
             return False
 
+        positions = {
+            self._position_of(conflict_id): value
+            for conflict_id, value in plan.changes.items()
+        }
+        positions.update(
+            {position: typed for position, (_machine, typed) in plan.overrides.items()}
+        )
         scan_id = conflict.scan_id
         try:
             edit = correct_field(
@@ -2623,15 +2765,18 @@ class ResolvePage(WorkflowPage):
                 batch_id=self.state.batch_id,
                 scan_id=scan_id,
                 zone_id=shape.zone_id,
-                values={
-                    self._position_of(conflict_id): value
-                    for conflict_id, value in changes.items()
-                },
+                values=positions,
                 display_value="".join(values),
                 field_label=shape.label,
                 reviewer=self.state.reviewer,
                 reason=self._selected_reason(),
                 reason_text=self.reason_text.toPlainText(),
+                overrides={
+                    position: self._machine_observation_at(shape, position)
+                    for position in plan.overrides
+                },
+                field_kind=conflict.field.kind,
+                previous_value="".join(plan.current),
             )
         except (ReviewError, OMRScannerError) as exc:
             report_error(self, exc, context="Conflict review (field edit)")
@@ -3036,7 +3181,13 @@ class ResolvePage(WorkflowPage):
         can_decide = has_conflict and named
 
         self._refresh_primary_action(conflict, can_decide=can_decide)
-        self.defer_button.setEnabled(can_decide)
+        # An operator override is not an open question, so there is nothing to
+        # postpone; undo or reopen it instead.
+        self.defer_button.setEnabled(
+            can_decide
+            and conflict is not None
+            and not conflict.conflict_type.is_operator_override
+        )
         decided = conflict is not None and conflict.state.is_human_touched
         # Shown only when there is something to reopen. A permanently disabled
         # button teaches an operator to stop seeing a third of the action area.
@@ -3078,8 +3229,9 @@ class ResolvePage(WorkflowPage):
             return
         self.field_edit_toggle.setText(f"Edit full {shape.label}...")
         self.field_edit_toggle.setToolTip(
-            f"Type the whole {shape.label} once and settle every position of it "
-            f"this sheet disputes ({shape.length} positions)"
+            f"Type the whole {shape.label} once ({shape.length} positions). "
+            "Settles every disputed position; changing a position the machine "
+            "read confidently is an audited override and asks first"
         )
 
     def _refresh_primary_action(
@@ -3258,6 +3410,7 @@ _ISSUE_WORDING: dict[ConflictType, str] = {
     ConflictType.SET_CODE_UNCERTAIN: "Too faint, or too close to call",
     ConflictType.SET_CODE_UNREADABLE: "Could not be measured",
     ConflictType.SET_CODE_LOW_CONFIDENCE: "Below the template's confidence floor",
+    ConflictType.MANUAL_OVERRIDE: "Confident reading overridden by an operator",
 }
 """What each conflict means, in a reviewer's words rather than the taxonomy's.
 
@@ -3398,6 +3551,16 @@ def _state_tooltip(conflict: ConflictRecord) -> str:
         return (
             "Open again: somebody decided this and then reopened or undid the "
             "decision. The earlier one is still in the history."
+        )
+    if conflict.conflict_type.is_operator_override:
+        if conflict.state is ConflictState.WITHDRAWN:
+            return (
+                "The operator override was undone or reopened; the machine's "
+                "confident reading stands again. Kept in the history."
+            )
+        return (
+            "An operator overrode a value the machine read confidently. "
+            "Recognition raised no conflict here."
         )
     return {
         ConflictState.OPEN: "Nobody has decided this yet.",

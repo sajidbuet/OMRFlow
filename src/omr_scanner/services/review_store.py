@@ -566,7 +566,18 @@ def _refresh_conflict(
     leaves no trace in the ledger - which is what lets a resumed batch call this
     for every sheet without filling the history with noise.
     """
-    observation = found.observation
+    _refresh_observation(session, row, found.observation, moment)
+
+
+def _refresh_observation(
+    session: Session, row: ReviewConflict, observation: MachineObservation, moment: datetime
+) -> None:
+    """Bring a row's machine observation up to date, recording any change.
+
+    Shared by detection and by :func:`_override_row`, so a reused override
+    record whose sheet has since been read differently says so in its history
+    exactly as a detected conflict would.
+    """
     unchanged = (
         row.machine_value == observation.value
         and row.machine_status == observation.status
@@ -845,6 +856,13 @@ def _correct_one(
         )
 
     previous = _project_provenance(session, row).value
+    if _is_override_row(row) and not is_override(detail):
+        # A redo, or a single-value correction made on the override record
+        # itself: still an override of a confident reading, and the ledger row
+        # has to say so on its own.
+        detail = (f"{detail} " if detail else "") + (
+            f"Explicit manual override of a confident machine reading. {OVERRIDE_MARKER}"
+        )
     _append_event(
         session,
         conflict=row,
@@ -898,6 +916,104 @@ def group_of(detail: str) -> str:
     return detail[start:end] if end > start else ""
 
 
+OVERRIDE_MARKER = "[override]"
+"""How an explicit override of a confident machine reading is marked in an
+event's ``detail``.
+
+Carried in free text for the same reason as :data:`GROUP_MARKER`: the ledger
+is under immutability triggers and gains no column for this. The record the
+event belongs to already says so structurally - its type is
+:attr:`~omr_scanner.domain.review.ConflictType.MANUAL_OVERRIDE` - but an
+exported ledger row is read on its own, and must say by itself that nobody
+detected a problem here and a person overruled the machine anyway.
+:func:`is_override` is the only thing that reads it back."""
+
+
+def is_override(detail: str) -> bool:
+    """Whether an event records an explicit override of a confident reading."""
+    return OVERRIDE_MARKER in detail
+
+
+def _is_override_row(row: ReviewConflict) -> bool:
+    """Whether a stored record was opened by an operator rather than detected."""
+    return row.conflict_type == ConflictType.MANUAL_OVERRIDE.value
+
+
+def _resting_state(row: ReviewConflict) -> ConflictState:
+    """Where a record stands when no decision stands on it.
+
+    ``OPEN`` for a detected conflict: the question it raised is unanswered
+    again. ``WITHDRAWN`` for an operator override: there never was a question,
+    so the machine's reading simply stands again - see
+    :attr:`~omr_scanner.domain.review.ConflictType.MANUAL_OVERRIDE`.
+    """
+    return ConflictState.WITHDRAWN if _is_override_row(row) else ConflictState.OPEN
+
+
+def _override_row(
+    session: Session,
+    *,
+    batch_id: str,
+    scan_id: int,
+    zone_id: str,
+    position: int,
+    observation: MachineObservation,
+    kind: FieldKind,
+    field_label: str,
+    moment: datetime,
+) -> ReviewConflict:
+    """Return the record an override of one confident position is stored on.
+
+    Reuses the record an earlier, since-undone override left behind - the
+    identity ``(batch, scan, type, zone, group)`` is unique, and one position
+    overridden twice is one record with a longer history rather than two -
+    and otherwise creates one.
+
+    **No DETECTED event is written.** The machine raised nothing here, and a
+    history that opened with "machine recognition flagged this" would record
+    something that did not happen. The first event on a new record is the
+    operator's own correction.
+    """
+    row = session.scalars(
+        select(ReviewConflict)
+        .where(ReviewConflict.batch_id == batch_id)
+        .where(ReviewConflict.scan_id == scan_id)
+        .where(ReviewConflict.conflict_type == ConflictType.MANUAL_OVERRIDE.value)
+        .where(ReviewConflict.zone_id == zone_id)
+        .where(ReviewConflict.group_key == position)
+    ).first()
+    if row is not None:
+        _refresh_observation(session, row, observation, moment)
+        return row
+    row = ReviewConflict(
+        batch_id=batch_id,
+        scan_id=scan_id,
+        conflict_type=ConflictType.MANUAL_OVERRIDE.value,
+        scope=ConflictType.MANUAL_OVERRIDE.scope.value,
+        severity=0,
+        state=ConflictState.WITHDRAWN.value,
+        zone_id=zone_id,
+        group_key=position,
+        field_kind=kind.value,
+        field_label=field_label,
+        question_number=None,
+        machine_value=observation.value,
+        machine_status=observation.status,
+        machine_confidence=observation.confidence,
+        machine_top_fill=observation.top_fill,
+        machine_margin=observation.margin,
+        machine_candidates=_dump_candidates(observation.candidates),
+        machine_detail=observation.detail,
+        related_scan_ids="",
+        created_at=moment,
+        updated_at=moment,
+    )
+    session.add(row)
+    # Flushed to obtain `conflict_id` before the correction that references it.
+    session.flush()
+    return row
+
+
 @dataclass(frozen=True, slots=True)
 class FieldEdit:
     """What one whole-field correction did.
@@ -913,9 +1029,12 @@ class FieldEdit:
         unchanged: Positions whose conflict already carried the entered value
             and needed no second decision.
         missing: Positions the entered value disagrees with that have **no
-            conflict to correct**. Always empty when the caller checked first;
-            reported rather than silently ignored, because a value the
-            interface accepted and did not store is the worst outcome here.
+            conflict to correct** and no override was requested for. Always
+            empty when the caller checked first; reported rather than silently
+            ignored, because a value the interface accepted and did not store
+            is the worst outcome here.
+        overridden: The subset of :attr:`changed` that overrode a *confident*
+            machine reading - positions nobody had disputed.
     """
 
     group: str
@@ -924,6 +1043,7 @@ class FieldEdit:
     changed: dict[int, str] = field(default_factory=dict)
     unchanged: tuple[int, ...] = ()
     missing: tuple[int, ...] = ()
+    overridden: tuple[int, ...] = ()
 
     @property
     def conflict_count(self) -> int:
@@ -943,6 +1063,9 @@ def correct_field(
     reviewer: str,
     reason: ReasonCode,
     reason_text: str = "",
+    overrides: Mapping[int, MachineObservation] | None = None,
+    field_kind: FieldKind | None = None,
+    previous_value: str = "",
 ) -> FieldEdit:
     """Decide several positions of one field as a single operator action.
 
@@ -960,12 +1083,29 @@ def correct_field(
         reviewer: Who decided. Required.
         reason: Why. Required, and shared by every position.
         reason_text: Free text; required when ``reason`` is ``OTHER``.
+        overrides: ``group_key -> machine observation`` for positions the
+            operator is **explicitly overriding** although the machine read
+            them confidently and no conflict exists. Only these may be written
+            without a conflict; any other conflict-less position is reported
+            in :attr:`FieldEdit.missing`, as before.
+        field_kind: What kind of field this is, for a new override record.
+            Taken from the field's existing conflicts when omitted.
+        previous_value: The field as it read before the edit, for the history.
 
     Returns:
         What was written, and what was deliberately not.
 
     Raises:
         ReviewError: No reviewer, a missing explanation, or nothing to decide.
+
+    **Overriding a confident reading is allowed, and is never disguised.** A
+    digit read cleanly as ``9`` that the paper shows is an ``8`` must be
+    correctable, or the one tool meant for "I can see the whole number" cannot
+    fix the error that matters most. Such a position is stored on an
+    :attr:`~omr_scanner.domain.review.ConflictType.MANUAL_OVERRIDE` record
+    (:func:`_override_row`), never on an invented detection, and its event
+    carries :data:`OVERRIDE_MARKER` as well as the edit's group token - so it
+    is undone with the rest of the edit and reads as what it was.
 
     **A convenience over the position model, not a replacement for it.** A
     student who left four digits of their roll number blank produces four
@@ -986,6 +1126,9 @@ def correct_field(
     name = validate_reviewer(reviewer)
     text_value = validate_reason(reason, reason_text)
     group = uuid4().hex[:8]
+    requested = dict(overrides or {})
+    was = f" (was '{previous_value}')" if previous_value else ""
+    moment = _now()
 
     with database.session() as session:
         rows = {
@@ -1001,21 +1144,54 @@ def correct_field(
             ).all()
         }
 
+        kind = field_kind or next(
+            (FieldKind(row.field_kind) for row in rows.values()), FieldKind.OTHER
+        )
+
         changed: dict[int, str] = {}
         unchanged: list[int] = []
         missing: list[int] = []
+        overridden: list[int] = []
         for position in sorted(values):
             wanted = values[position]
             row = rows.get(position)
+            detail = (
+                f"{field_label} set to '{display_value or '(blank)'}'{was} in one "
+                f"edit; this position took '{wanted or '(blank)'}'."
+            )
             if row is None:
-                missing.append(position)
-                continue
-            current = _project_provenance(session, row)
-            # Already decided, and decided this way: a second identical
-            # correction would add a line to the history saying nothing.
-            if current.is_human_decided and current.value == wanted:
-                unchanged.append(position)
-                continue
+                observation = requested.get(position)
+                if observation is None:
+                    missing.append(position)
+                    continue
+                if observation.value == wanted:
+                    # Agreeing with a confident reading overrides nothing.
+                    unchanged.append(position)
+                    continue
+                row = _override_row(
+                    session,
+                    batch_id=batch_id,
+                    scan_id=scan_id,
+                    zone_id=zone_id,
+                    position=position,
+                    observation=observation,
+                    kind=kind,
+                    field_label=field_label,
+                    moment=moment,
+                )
+                detail = (
+                    "Explicit manual override of a confidently read machine value: "
+                    f"recognition read '{observation.value or '(blank)'}' here and "
+                    f"raised no conflict. {detail} {OVERRIDE_MARKER}"
+                )
+                overridden.append(position)
+            else:
+                current = _project_provenance(session, row)
+                # Already decided, and decided this way: a second identical
+                # correction would add a line to the history saying nothing.
+                if current.is_human_decided and current.value == wanted:
+                    unchanged.append(position)
+                    continue
             _correct_one(
                 session,
                 row,
@@ -1023,11 +1199,7 @@ def correct_field(
                 reviewer=name,
                 reason=reason,
                 reason_text=text_value,
-                detail=(
-                    f"{field_label} set to '{display_value or '(blank)'}' in one "
-                    f"edit; this position took '{wanted or '(blank)'}'. "
-                    f"{GROUP_MARKER}{group}]"
-                ),
+                detail=f"{detail} {GROUP_MARKER}{group}]",
             )
             changed[position] = wanted
 
@@ -1042,12 +1214,14 @@ def correct_field(
         session.flush()
 
     _LOGGER.info(
-        "Scan %d %s set to %r by %s in one edit (%d position(s), group %s)",
+        "Scan %d %s set to %r by %s in one edit (%d position(s), %d override(s) "
+        "of a confident reading, group %s)",
         scan_id,
         zone_id,
         display_value,
         name,
         len(changed),
+        len(overridden),
         group,
     )
     return FieldEdit(
@@ -1057,6 +1231,7 @@ def correct_field(
         changed=changed,
         unchanged=tuple(unchanged),
         missing=tuple(missing),
+        overridden=tuple(overridden),
     )
 
 
@@ -1139,6 +1314,16 @@ def defer(
 
     with database.session() as session:
         row = _require_conflict(session, conflict_id)
+        if _is_override_row(row):
+            # Deferring means "still unresolved"; an override was never a
+            # question, so there is nothing to postpone. Undo or reopen it.
+            raise ReviewError(
+                f"Conflict {conflict_id} is an operator override and cannot be deferred",
+                user_message=(
+                    "An operator override is not an open question and cannot be "
+                    "deferred. Undo or reopen it to restore the machine reading."
+                ),
+            )
         previous = _project_provenance(session, row).value
         _append_event(
             session,
@@ -1187,9 +1372,14 @@ def reopen(
             previous_value=previous,
             new_value=row.machine_value,
             reason_text=reason_text.strip(),
-            detail="The earlier decision was withdrawn; the conflict is open again.",
+            detail=(
+                "The operator override was withdrawn; the machine reading stands "
+                "again."
+                if _is_override_row(row)
+                else "The earlier decision was withdrawn; the conflict is open again."
+            ),
         )
-        row.state = ConflictState.OPEN.value
+        row.state = _resting_state(row).value
         row.updated_at = _now()
         session.flush()
         _LOGGER.info("Conflict %d reopened by %s", conflict_id, name)
@@ -1385,6 +1575,13 @@ def _describe_command(
             label=conflict.field_label,
             question_number=conflict.question_number,
         ).describe()
+    if (
+        conflict is not None
+        and action is ReviewAction.CORRECTED
+        and _is_override_row(conflict)
+    ):
+        what = f"overriding the machine reading with '{value or '(blank)'}'"
+        return f"{what} on {where}" if where else what
     what = {
         ReviewAction.ACCEPTED: f"accepting '{value or '(blank)'}'",
         ReviewAction.CORRECTED: f"correcting to '{value or '(blank)'}'",
@@ -1467,7 +1664,7 @@ def _undo_one(
             "was undone. It remains in this history."
         ),
     )
-    row.state = _state_of(remaining).value
+    row.state = _state_of(remaining, override=_is_override_row(row)).value
     session.flush()
     return UndoTarget(
         conflict_id=row.conflict_id,
@@ -1752,7 +1949,9 @@ _STATE_AFTER: dict[ReviewAction, ConflictState] = {
 command cannot be added without deciding what it means for the state."""
 
 
-def recompute_state(events: Sequence[AuditRecord]) -> ConflictState:
+def recompute_state(
+    events: Sequence[AuditRecord], *, override: bool = False
+) -> ConflictState:
     """Derive a conflict's state from its history alone.
 
     Exists so a test can prove the cached
@@ -1762,14 +1961,23 @@ def recompute_state(events: Sequence[AuditRecord]) -> ConflictState:
     everything else. Nothing in the application reads this on the hot path; the
     cached column is there to make a ten-thousand-row queue fast.
     """
-    return _state_of(standing_commands(events))
+    return _state_of(standing_commands(events), override=override)
 
 
-def _state_of(stack: Sequence[AuditRecord]) -> ConflictState:
-    """Return the state the topmost standing command leaves a conflict in."""
+def _state_of(
+    stack: Sequence[AuditRecord], *, override: bool = False
+) -> ConflictState:
+    """Return the state the topmost standing command leaves a conflict in.
+
+    ``override`` is for an :attr:`~omr_scanner.domain.review.ConflictType.MANUAL_OVERRIDE`
+    record, which has no open state to return to: with nothing standing it
+    rests as withdrawn, because nobody is being asked anything.
+    """
+    rest = ConflictState.WITHDRAWN if override else ConflictState.OPEN
     if not stack:
-        return ConflictState.OPEN
-    return _STATE_AFTER.get(stack[-1].action, ConflictState.OPEN)
+        return rest
+    state = _STATE_AFTER.get(stack[-1].action, ConflictState.OPEN)
+    return rest if state is ConflictState.OPEN else state
 
 
 def provenance_for(database: ProjectDatabase, conflict_id: int) -> Provenance:
@@ -2527,6 +2735,7 @@ def scan_source_path(database: ProjectDatabase, scan_id: int) -> str:
 
 
 __all__ = [
+    "OVERRIDE_MARKER",
     "UNDO_SEARCH_LIMIT",
     "AuditRecord",
     "ConflictFilter",
@@ -2545,6 +2754,7 @@ __all__ = [
     "get_conflict",
     "group_of",
     "history_for",
+    "is_override",
     "last_decision",
     "last_resolved_sheet",
     "list_conflicts",

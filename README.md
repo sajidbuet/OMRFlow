@@ -241,7 +241,90 @@ synthetically tested" to a qualified stable release.
 | Resolve stage UX & reversible decisions | 🟠 **Implemented — automated tests passing, not yet exercised by a real reviewer.** Whole-position lane overlay, keyboard-first operation, auto-advance, and undo / redo / undo-a-whole-sheet as persisted audit events. See below |
 | Resolve stage layout & workflow (2nd pass) | 🟠 **Implemented — automated tests passing; inspected in rendered screenshots, not yet worked by a real operator.** Space redistributed 29/71 and 70/30, ROI framing, machine-vs-operator colour semantics, pick-then-confirm, and an action that no longer offers to store an invalid reading. See below |
 | Resolve field-level entry & sheet-local progression | 🟠 **Implemented — automated tests passing; driven end to end in a rendered harness, not yet worked by a real operator.** A whole Student ID or Question Set typed once settles every position of it the sheet disputes; the queue is sheet-major and finishes a sheet before moving on. See below |
+| Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+
+#### Overriding a confidently read position
+
+The whole-field editor used to refuse a value that disagreed with a position
+the engine had read **confidently**: with no conflict at that position there
+was nowhere to record a decision. That made it unable to fix the error that
+matters most — a clean `9` that the paper shows is an `8` — so `100029`
+could not be corrected to `100028`.
+
+The explicit **Edit full Student ID / Question Set** action is now a
+human-authoritative field correction. The typed value is compared with the
+current field position by position, and each difference is one of: an
+unresolved conflict, an earlier manual decision, or a **confident machine
+reading with no conflict**. All three can be changed. Nothing else is:
+recognition thresholds, detection policy and the single-position controls are
+exactly as they were, and no conflict is raised for any position nobody edits.
+
+- **Preview.** The editor shows `100029 → 100028`, the changed positions, and —
+  in the warning colour — `Position 6 — confident machine read (9 → 8)`. Apply
+  reads **Apply override…** when an override is involved.
+- **Confirmation, only when needed.** A *Manual field override* dialog lists
+  each confident position with its machine and entered values; **Cancel** is
+  the default and changes nothing — no event, no record, the editor stays open
+  with the value. Changing only disputed positions shows no dialog.
+- **Stored honestly.** An overridden position is recorded on a new
+  `manual_override` record ("Operator field override"), **never on a fabricated
+  detection**: it has no `DETECTED` event, its machine observation is copied
+  verbatim from the re-read, and its correction event carries both an
+  `[override]` marker and the edit's shared action token — reviewer, time,
+  sheet, field, position, machine value, new value, reason and note, all in the
+  existing append-only ledger. No schema migration.
+- **Machine / manual / effective.** The machine value stays `9`; the manual and
+  effective values become `8`; the effective Student ID becomes `100028`; the
+  lane overlay shows it as a manual decision like any other.
+- **Undo.** One `Ctrl+Z` reverses the whole edit — disputed and confident
+  positions together. A reversed override rests as withdrawn, so the machine's
+  `9` stands again and nothing new appears in the working queue. A position
+  somebody has decided again since is still not rolled back.
+- **History.** Opens with "Not raised by recognition", headings the event
+  *Explicit field override*, and shows machine value and source on every
+  decision line. Reopening an override restores the machine reading without
+  erasing it. Overrides cannot be deferred — there is no open question to put
+  off.
+- **Downstream.** The effective Student ID feeds reconciliation, so a changed
+  ID is re-evaluated for duplicates there (tested: overriding a sheet to
+  another sheet's ID raises `DUPLICATE_SCRIPT`; undo clears it).
+
+**Testing.** 21 review-store tests and 18 Resolve-stage GUI tests added for
+this, covering: disputed-only edits (no override record, no dialog); a single
+confident override; disputed and confident together under one token and one
+reason; the preview; the dialog appearing only when needed, defaulting to
+Cancel, and its text; Cancel leaving the ledger size and conflict counts
+unchanged; machine/manual/effective values; no fabricated `DETECTED`; the
+audit fields and marker; grouped undo; later decisions protected; a redo still
+marked as an override; re-overriding after undo reusing the record; a re-read
+not withdrawing a standing override; defer refused; reopen; the overlay;
+same-sheet navigation; the multi-position, multi-character set code
+(`10`/`11`/`12`); FieldShape validation; and duplicate detection. One existing
+test that asserted the old refusal was rewritten to assert the new warning.
+The review-store, undo and Resolve-stage suites pass; the full-suite count in the testing-status table above predates this change.
+
+**Manual acceptance.** Driven in a rendered harness on the busy synthetic sheet
+(`????29`): `100029` applied with no dialog; the resolved Student ID selected
+again and `100028` typed; the preview named position 6 as a confident read;
+the dialog listed `Position 6  9 → 8`; confirmed; history kept machine `9`,
+manual and effective `8`, effective ID `100028`; the set-code conflict on the
+same sheet was selected next; a real `Ctrl+Z` keypress restored `100029`. **Not
+yet exercised by an operator on a real sheet.**
+
+**Remaining limits.**
+
+- The editor opens from a Student ID / Set Code record on the sheet. On a sheet
+  where that field has **no record at all** — every position confident and
+  nothing disputed — there is still no entry point to it.
+- At narrow window widths the one-line preview can be cut off at the right; the
+  full text is in its tooltip, and the confirmation dialog always lists every
+  override.
+- An override stores the machine observation of the re-read, without per-bubble
+  candidate fill scores.
+- Positional substitution of a *multi-character* set-code symbol into the
+  assembled effective set-code string is pre-existing behaviour and indexes by
+  character; the per-position records themselves are correct.
 
 #### Correcting a whole field, and finishing a sheet before leaving it
 
@@ -272,12 +355,10 @@ replacement for it. Two deliberate limits:
 
 - **Confidently read positions are left alone.** Six digits typed against four
   disputed positions writes four corrections, not six.
-- **A position nobody disputes cannot be overruled here.** A correction is
-  recorded *against a conflict*, and a position the engine read confidently has
-  none — there is nowhere to put the decision. The editor names the position
-  and refuses, rather than storing an identifier different from the one typed.
-  A genuinely wrong confident digit still needs the sheet re-read; that is a
-  limit of the position model, now surfaced instead of silently mis-saved.
+- ~~**A position nobody disputes cannot be overruled here.**~~ *Superseded:*
+  the explicit field editor can now overrule a confident reading, as an audited
+  override after a warning — see
+  [Overriding a confidently read position](#overriding-a-confidently-read-position).
 
 Every event of one edit carries a shared action token in the ledger's detail —
 no schema change; `audit_event` is under immutability triggers and is not

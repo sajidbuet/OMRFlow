@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.domain.review import ReviewAction
+from omr_scanner.services import group_of, is_override
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -70,14 +71,24 @@ def render_history(conflict: ConflictRecord, events: Sequence[AuditRecord]) -> s
         "Machine read: <b>"
         f"{conflict.observation.value or '(blank)'}</b>"
         f" &middot; status {conflict.observation.status or 'n/a'}<br>",
-        "<hr>",
     ]
+    if conflict.conflict_type.is_operator_override:
+        # Said in the header, before any event, because it changes how every
+        # line below reads: nobody detected a problem here.
+        lines.append(
+            "<i>Not raised by recognition. The machine read this position "
+            "confidently; an operator overrode it through an explicit field "
+            "edit.</i><br>"
+        )
+    lines.append("<hr>")
     if not events:
         lines.append("<i>No history has been recorded for this conflict.</i>")
         return "".join(lines)
 
     for event in events:
         heading = _ACTION_HEADINGS.get(event.action, event.action.value)
+        if event.action is ReviewAction.CORRECTED and is_override(event.detail):
+            heading = "Explicit field override"
         lines.append(f"<p><b>{event.occurred_at}</b> &mdash; {heading}")
         if event.reviewer:
             lines.append(f"<br>Reviewer: <b>{event.reviewer}</b>")
@@ -96,10 +107,28 @@ def render_history(conflict: ConflictRecord, events: Sequence[AuditRecord]) -> s
             lines.append(f"<br>Value: <b>{event.new_value or '(blank)'}</b>")
         if event.reason_label:
             lines.append(f"<br>Reason: {event.reason_label}")
+        if event.action.sets_effective_value or event.action is ReviewAction.UNDONE:
+            # The machine's reading beside the manual one, on the event itself,
+            # so no correction reads as though it replaced the recognition.
+            source = (
+                f" &middot; source: {_source_of(event)}"
+                if event.action.sets_effective_value
+                else ""
+            )
+            lines.append(f"<br>Machine: {event.machine_value or '(blank)'}{source}")
         if event.detail:
             lines.append(f"<br><i>{event.detail}</i>")
         lines.append("</p>")
     return "".join(lines)
+
+
+def _source_of(event: AuditRecord) -> str:
+    """Name where a decision came from, for one history line."""
+    if is_override(event.detail):
+        return "explicit field override"
+    if group_of(event.detail):
+        return "full-field edit"
+    return "position decision"
 
 
 class HistoryDialog(QDialog):

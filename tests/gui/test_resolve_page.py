@@ -2333,16 +2333,17 @@ class TestFullFieldEditor:
         assert busy_page.field_edit_apply.isEnabled() is False
         assert busy_page.field_edit_input.text() == "1000299"
 
-    def test_a_value_disagreeing_with_an_undisputed_position_is_refused(
+    def test_a_value_disagreeing_with_an_undisputed_position_is_named(
         self, busy_page: ResolvePage
     ):
-        # Position 5 reads 2 and nobody disputes it, so there is no conflict to
-        # record a decision against. Storing the typed value anyway would save
-        # an identifier different from the one on screen.
+        # Position 5 reads 2 and nobody disputes it. The explicit field editor
+        # may overrule it - but says so, before anything is written.
         busy_page.open_field_editor()
         busy_page.field_edit_input.setText("100039")
-        assert busy_page.field_edit_apply.isEnabled() is False
-        assert "not in dispute" in busy_page.field_edit_status.text()
+        assert busy_page.field_edit_apply.isEnabled() is True
+        status = busy_page.field_edit_status.text()
+        assert "Position 5" in status
+        assert "confident machine read" in status
 
     def test_a_valid_value_is_accepted_and_names_what_it_changes(
         self, busy_page: ResolvePage
@@ -2558,6 +2559,412 @@ class TestApplyingAFullField:
             and item.field.zone_id == edit.zone_id
             and item.field.group_key in edit.changed
         ]
+
+
+class TestOverridingAConfidentReading:
+    """The reported case: ``100029`` read cleanly as 9 where the paper says 8.
+
+    The busy sheet reads ``????29``: four blank positions in dispute, and
+    positions 5 and 6 read confidently with no conflict at all.
+    """
+
+    @pytest.fixture
+    def asked(self, monkeypatch, busy_page: ResolvePage) -> list[dict]:
+        """Record every override confirmation, and confirm it."""
+        seen: list[dict] = []
+
+        def confirm(_shape: object, overrides: dict) -> bool:
+            seen.append(dict(overrides))
+            return True
+
+        monkeypatch.setattr(busy_page, "_confirm_override", confirm)
+        return seen
+
+    @staticmethod
+    def type_value(page: ResolvePage, value: str) -> None:
+        page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
+        page.open_field_editor()
+        page.field_edit_input.setText(value)
+
+    def apply(self, page: ResolvePage, value: str) -> bool:
+        self.type_value(page, value)
+        return page.apply_field_edit()
+
+    @staticmethod
+    def overrides_on(page: ResolvePage, scan_id: int) -> list:
+        return [
+            item
+            for item in review_store.list_conflicts(
+                page.database,
+                page.state.batch_id,
+                filters=review_store.ConflictFilter(
+                    scan_id=scan_id, include_withdrawn=True
+                ),
+            )
+            if item.conflict_type is ConflictType.MANUAL_OVERRIDE
+        ]
+
+    @staticmethod
+    def ledger_size(page: ResolvePage) -> int:
+        from sqlalchemy import func, select
+
+        from omr_scanner.database.models import AuditEvent
+
+        with page.database.session() as session:
+            return int(session.scalar(select(func.count()).select_from(AuditEvent)))
+
+    def test_no_warning_when_only_disputed_positions_change(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        assert self.apply(busy_page, "100029") is True
+        assert asked == []
+        assert busy_page.state.last_field_edit.overridden == ()
+
+    def test_the_preview_names_the_confident_position(self, busy_page: ResolvePage):
+        self.type_value(busy_page, "100028")
+        status = busy_page.field_edit_status.text()
+        assert "????29" in status and "100028" in status
+        assert "Changed positions: <b>1, 2, 3, 4, 6</b>" in status
+        assert "Position 6 &mdash; confident machine read (9 &rarr; 8)" in status
+        assert "Position 5" not in status
+        assert busy_page.field_edit_apply.isEnabled() is True
+
+    def test_the_warning_is_shown_once_and_lists_the_override(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        assert self.apply(busy_page, "100028") is True
+        assert asked == [{5: ("9", "8")}]
+
+    def test_the_warning_text(self):
+        from omr_scanner.gui.review.page import override_warning_text
+
+        text = override_warning_text("Student ID", {3: ("6", "8"), 6: ("9", "3")})
+        assert "changes 2 values that were read confidently" in text
+        assert "Position 4     6 → 8" in text
+        assert "Position 7     9 → 3" in text
+        assert "override the machine result" in text
+
+    @pytest.mark.parametrize(("button", "expected"), [("Apply override", True), ("Cancel", False)])
+    def test_the_real_dialog_defaults_to_cancel_and_reports_the_choice(
+        self, qtbot, monkeypatch, busy_page: ResolvePage, button, expected
+    ):
+        from PySide6.QtWidgets import QMessageBox
+
+        shown: list[QMessageBox] = []
+
+        def exec_(box: QMessageBox) -> int:
+            shown.append(box)
+            assert box.defaultButton().text().replace("&", "") == "Cancel"
+            next(
+                item for item in box.buttons() if item.text().replace("&", "") == button
+            ).click()
+            return 0
+
+        monkeypatch.setattr(QMessageBox, "exec", exec_)
+        shape = busy_page._field_shape_for(busy_page.current_conflict())
+        assert busy_page._confirm_override(shape, {5: ("9", "8")}) is expected
+        assert shown[0].windowTitle() == "Manual field override"
+        assert "Position 6     9 → 8" in shown[0].text()
+
+    def test_cancelling_the_warning_changes_nothing(
+        self, qtbot, monkeypatch, busy_page: ResolvePage
+    ):
+        monkeypatch.setattr(busy_page, "_confirm_override", lambda *_: False)
+        scan_id = busy_page.current_conflict().scan_id
+        selected = busy_page.current_conflict().conflict_id
+        events = self.ledger_size(busy_page)
+        before = review_store.count_conflicts(busy_page.database, busy_page.state.batch_id)
+
+        assert self.apply(busy_page, "100028") is False
+
+        assert self.ledger_size(busy_page) == events
+        assert review_store.count_conflicts(
+            busy_page.database, busy_page.state.batch_id
+        ) == before
+        assert self.overrides_on(busy_page, scan_id) == []
+        assert busy_page.state.last_field_edit is None
+        # The operator is left where they were, value still in the box.
+        assert busy_page.current_conflict().conflict_id == selected
+        assert busy_page.field_edit_row.isVisibleTo(busy_page) is True
+        assert busy_page.field_edit_input.text() == "100028"
+
+    def test_confirming_stores_machine_manual_and_effective(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100028") is True
+
+        (record,) = self.overrides_on(busy_page, scan_id)
+        assert record.field.group_key == 5
+        assert record.state is ConflictState.RESOLVED
+        found = review_store.provenance_for(busy_page.database, record.conflict_id)
+        assert (found.machine_value, found.value) == ("9", "8")
+        assert found.source is ValueSource.HUMAN
+        assert found.reviewer == REVIEWER
+
+        identifier = review_store.effective_identifiers(
+            busy_page.database, busy_page.state.batch_id
+        )[scan_id]
+        assert identifier.value == "100028"
+        # The recognition result itself is untouched.
+        assert identifier.machine_value.endswith("29")
+
+    def test_the_audit_names_the_explicit_override(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        busy_page.reason_text.setPlainText("digit visible on the script")
+        assert self.apply(busy_page, "100028") is True
+        edit = busy_page.state.last_field_edit
+
+        (record,) = self.overrides_on(busy_page, scan_id)
+        history = review_store.history_for(busy_page.database, record.conflict_id)
+        assert [item.action for item in history] == [ReviewAction.CORRECTED]
+        (event,) = history
+        assert review_store.is_override(event.detail)
+        assert review_store.group_of(event.detail) == edit.group
+        assert (event.previous_value, event.new_value, event.machine_value) == (
+            "9",
+            "8",
+            "9",
+        )
+        assert event.reason_code == ReasonCode.MISCLASSIFICATION.value
+        assert event.reason_text == "digit visible on the script"
+        assert "(was '????29')" in event.detail
+
+        rendered = render_history(record, history)
+        assert "Not raised by recognition" in rendered
+        assert "Explicit field override" in rendered
+        assert "source: explicit field override" in rendered
+
+    def test_the_overlay_shows_the_override(self, qtbot, busy_page: ResolvePage, asked):
+        assert self.apply(busy_page, "100028") is True
+        manual = [
+            item
+            for item in lanes_of(busy_page)
+            if item.state is LaneState.MANUAL and item.choice is not None
+        ]
+        assert "8" in [item.choice.label for item in manual]
+
+    def test_the_reported_case_end_to_end(self, qtbot, busy_page: ResolvePage, asked):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100029") is True
+        assert asked == []
+        landed = busy_page.current_conflict()
+        assert landed.scan_id == scan_id, "left the sheet with its set code open"
+
+        # Same sheet, now reading 100029; the operator sees the 9 is an 8 and
+        # goes back to the (now resolved) Student ID to edit it again.
+        busy_page.state_filter.setCurrentText(FILTER_ALL)
+        # Same sheet: already loaded, so no reload and no sheet_ready.
+        busy_page.queue_table.selectRow(
+            next(
+                index
+                for index, item in enumerate(busy_page.state.conflicts)
+                if item.scan_id == scan_id and item.field.kind is FieldKind.IDENTIFIER
+            )
+        )
+        self.type_value(busy_page, "100028")
+        assert "Changed positions: <b>6</b>" in busy_page.field_edit_status.text()
+        assert busy_page.apply_field_edit() is True
+        assert asked == [{5: ("9", "8")}]
+
+        ids = review_store.effective_identifiers
+        assert ids(busy_page.database, busy_page.state.batch_id)[scan_id].value == (
+            "100028"
+        )
+        landed = busy_page.current_conflict()
+        assert landed is not None and landed.scan_id == scan_id
+
+        # One Ctrl+Z takes the override back, and only the override.
+        assert busy_page.undo_last_decision() is True
+        assert ids(busy_page.database, busy_page.state.batch_id)[scan_id].value == (
+            "100029"
+        )
+        (record,) = self.overrides_on(busy_page, scan_id)
+        assert record.state is ConflictState.WITHDRAWN
+        found = review_store.provenance_for(busy_page.database, record.conflict_id)
+        assert (found.machine_value, found.value) == ("9", "9")
+
+    def test_one_undo_reverts_disputed_and_confident_positions_together(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100028") is True
+
+        assert busy_page.undo_last_decision() is True
+
+        counts = review_store.count_conflicts_for_scan(
+            busy_page.database, busy_page.state.batch_id, scan_id
+        )
+        assert counts.resolved == 0
+        found = review_store.effective_identifiers(
+            busy_page.database, busy_page.state.batch_id
+        )[scan_id]
+        assert found.source is ValueSource.MACHINE
+        assert found.value.endswith("29")
+
+    def test_the_queue_stays_on_the_sheet_and_does_not_jump_to_the_top(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100028") is True
+        landed = busy_page.current_conflict()
+        assert landed is not None
+        assert landed.scan_id == scan_id
+        assert landed.field.kind is FieldKind.SET_CODE
+        assert landed.state is ConflictState.OPEN
+        # An override is never an open item for navigation to land on.
+        assert not [
+            item
+            for item in busy_page.state.conflicts
+            if item.conflict_type is ConflictType.MANUAL_OVERRIDE
+            and item.state is ConflictState.OPEN
+        ]
+
+    def test_a_changed_student_id_reaches_duplicate_detection(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        # The second sheet reads 170502. Overriding this sheet's confident
+        # "29" to "02" makes the two scripts claim one ID, and reconciliation -
+        # which reads the effective ID - must see that; undoing must clear it.
+        from omr_scanner.domain.reconciliation import ReconciliationIssue
+        from omr_scanner.services.reconciliation import ReconciliationInput, reconcile
+        from omr_scanner.services.reconciliation_store import batch_scripts
+
+        def duplicated() -> bool:
+            entries = reconcile(
+                ReconciliationInput(
+                    candidates=(),
+                    scripts=batch_scripts(busy_page.database, busy_page.state.batch_id),
+                )
+            )
+            return any(
+                ReconciliationIssue.DUPLICATE_SCRIPT in item.issues for item in entries
+            )
+
+        assert duplicated() is False
+        assert self.apply(busy_page, "170502") is True
+        assert asked == [{4: ("2", "0"), 5: ("9", "2")}]
+        assert duplicated() is True
+
+        assert busy_page.undo_last_decision() is True
+        assert duplicated() is False
+
+    def test_defer_is_not_offered_on_an_override(
+        self, qtbot, busy_page: ResolvePage, asked
+    ):
+        scan_id = busy_page.current_conflict().scan_id
+        assert self.apply(busy_page, "100028") is True
+        busy_page.state_filter.setCurrentText(FILTER_ALL)
+        (record,) = self.overrides_on(busy_page, scan_id)
+        assert busy_page.select_conflict_by_id(record.conflict_id) is True
+        assert busy_page.defer_button.isEnabled() is False
+
+
+class TestOverridingAMultiPositionSetCode:
+    """A two-position set code whose symbols are ``10``, ``11`` and ``12``.
+
+    Position 1 is double-marked (a conflict); position 0 reads ``10``
+    confidently. Nothing in the editor may assume one character per position.
+    """
+
+    @pytest.fixture
+    def template(self):
+        return build_answer_sheet_template(set_symbols=("10", "11", "12"), set_positions=2)
+
+    @pytest.fixture
+    def coded_page(self, qtbot, project_session: ProjectSession, template, tmp_path):
+        scans = tmp_path / "coded"
+        scans.mkdir(parents=True, exist_ok=True)
+        path = scans / "SYN_000001.png"
+        cv2.imwrite(
+            str(path),
+            render_marked_sheet(
+                template, sheet_marks("170501", set_code={0: "10", 1: ["11", "12"]})
+            ),
+        )
+        database = project_session.database
+        batch_id = batch_store.create_batch(
+            database, [path], identity=batch_store.BatchIdentity.of(template)
+        )
+        recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+        report = process_batch([path], template, on_result=recorder.record, workers=1)
+        recorder.flush()
+        batch_store.finalise_batch(database, batch_id)
+        ids = batch_store.scan_ids_by_path(database, batch_id)
+        for item in report.processed:
+            review_store.sync_conflicts(
+                database,
+                batch_id=batch_id,
+                scan_id=ids[item.source_path],
+                result=item.result,
+                template=template,
+            )
+
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "resolve")
+        review_page = ResolvePage(spec)
+        qtbot.addWidget(review_page)
+        review_page.on_project_changed(project_session)
+        review_page.set_reviewer(REVIEWER)
+        assert review_page.load_batch(batch_id, template) is True
+        row = next(
+            index
+            for index, item in enumerate(review_page.state.conflicts)
+            if item.field.kind is FieldKind.SET_CODE
+        )
+        with qtbot.waitSignal(review_page.sheet_ready, timeout=SHEET_TIMEOUT_MS):
+            review_page.queue_table.selectRow(row)
+        yield review_page
+        review_page.close()
+
+    def test_the_shape_comes_from_the_template(self, coded_page: ResolvePage):
+        shape = coded_page._field_shape_for(coded_page.current_conflict())
+        assert shape is not None
+        assert shape.length == 2
+        assert shape.positions[0] == ("10", "11", "12")
+        assert "".join(coded_page.current_field_values(shape)) == f"10{UNKNOWN_POSITION}"
+
+    def test_a_symbol_the_field_does_not_print_is_still_refused(
+        self, coded_page: ResolvePage
+    ):
+        coded_page.open_field_editor()
+        coded_page.field_edit_input.setText("1013")
+        assert coded_page.field_edit_apply.isEnabled() is False
+
+    def test_overriding_the_confident_position(
+        self, qtbot, monkeypatch, coded_page: ResolvePage
+    ):
+        seen: list[dict] = []
+        monkeypatch.setattr(
+            coded_page,
+            "_confirm_override",
+            lambda _shape, overrides: seen.append(dict(overrides)) or True,
+        )
+        scan_id = coded_page.current_conflict().scan_id
+        coded_page.reason_combo.setCurrentText(ReasonCode.MISCLASSIFICATION.label)
+        coded_page.open_field_editor()
+        coded_page.field_edit_input.setText("1112")
+        assert "Position 1 &mdash; confident machine read (10 &rarr; 11)" in (
+            coded_page.field_edit_status.text()
+        )
+
+        assert coded_page.apply_field_edit() is True
+
+        assert seen == [{0: ("10", "11")}]
+        edit = coded_page.state.last_field_edit
+        assert edit.changed == {0: "11", 1: "12"}
+        assert edit.overridden == (0,)
+        found = review_store.effective_set_codes(
+            coded_page.database, coded_page.state.batch_id
+        )[scan_id]
+        assert found.source is ValueSource.HUMAN
+
+        assert coded_page.undo_last_decision() is True
+        found = review_store.effective_set_codes(
+            coded_page.database, coded_page.state.batch_id
+        )[scan_id]
+        assert found.source is ValueSource.MACHINE
 
 
 class TestFullSetCodeEditor:

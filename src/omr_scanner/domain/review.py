@@ -101,6 +101,24 @@ class ConflictType(StrEnum):
     SET_CODE_UNREADABLE = "set_code_unreadable"
     SET_CODE_LOW_CONFIDENCE = "set_code_low_confidence"
 
+    # -- operator-initiated ---------------------------------------------
+    MANUAL_OVERRIDE = "manual_override"
+    """An operator overrode a position the machine read **confidently**.
+
+    **Not a detection.** Recognition raised nothing here; the record exists
+    only because a person, using the explicit whole-field editor, typed a value
+    that disagrees with a confident reading - a digit read cleanly as ``9``
+    that the paper shows is an ``8``. A human decision has to be recorded
+    against *something*, and this is the smallest thing that can carry one
+    without pretending the machine had doubted it: the history of such a
+    record begins with the operator's correction, never with a ``DETECTED``
+    event, and every event it holds is marked as an explicit override.
+
+    Never open. With no decision standing - its override undone or reopened -
+    it rests as :attr:`ConflictState.WITHDRAWN` and the machine's reading
+    stands again, so it can neither enter the working queue nor block a
+    batch. See :attr:`is_operator_override`."""
+
     # -- question answers (legacy; no longer raised) ---------------------
     #
     # These five are **never produced** any more. An ambiguous answer is a
@@ -228,6 +246,17 @@ class ConflictType(StrEnum):
         return self.scope is not ConflictScope.SHEET
 
     @property
+    def is_operator_override(self) -> bool:
+        """Whether this record was opened by a person rather than by detection.
+
+        The one distinction :attr:`MANUAL_OVERRIDE` exists to keep: a history
+        reader, an export and the review store all need to tell "the machine
+        doubted this and somebody decided" from "the machine was sure and
+        somebody overruled it".
+        """
+        return self is ConflictType.MANUAL_OVERRIDE
+
+    @property
     def label(self) -> str:
         """A short human-readable name, for the queue and the review header."""
         return _TYPE_LABELS[self]
@@ -281,6 +310,7 @@ _TYPE_LABELS: dict[ConflictType, str] = {
     ConflictType.SET_CODE_UNCERTAIN: "Set code uncertain",
     ConflictType.SET_CODE_UNREADABLE: "Set code unreadable",
     ConflictType.SET_CODE_LOW_CONFIDENCE: "Set code low confidence",
+    ConflictType.MANUAL_OVERRIDE: "Operator field override",
     ConflictType.ANSWER_MULTIPLE: "Multiple answers marked",
     ConflictType.ANSWER_UNCERTAIN: "Answer uncertain",
     ConflictType.ANSWER_UNREADABLE: "Answer unreadable",
@@ -320,7 +350,12 @@ class ConflictState(StrEnum):
     succeeded, say. Applied only to conflicts **no human has acted on**; a
     resolved or deferred conflict keeps its state and its history whatever a
     later re-read says. Withdrawn conflicts are kept, never deleted, because
-    the fact that the machine once disputed this value is itself evidence."""
+    the fact that the machine once disputed this value is itself evidence.
+
+    Also where an :attr:`ConflictType.MANUAL_OVERRIDE` record rests when no
+    override stands on it any more. The meaning is the same - nothing here is
+    awaiting anybody - and a sixth state would have to be taught to every
+    count, filter and SQL predicate in the application."""
 
     @property
     def is_open(self) -> bool:
