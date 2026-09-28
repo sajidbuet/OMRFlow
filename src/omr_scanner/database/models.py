@@ -1,7 +1,8 @@
 """ORM table definitions for a project database.
 
 Purpose:
-    Declare the tables that exist in schema version 1.
+    Declare the tables of the current schema. Each phase's section names the
+    migration that created it.
 
 What does NOT belong here:
     * Queries. Modules that need data write their own statements or repository
@@ -1318,3 +1319,87 @@ class ProjectSet(Base):
     def __repr__(self) -> str:
         """Return a debugging representation naming the set and its code."""
         return f"ProjectSet(set_id={self.set_id!r}, code={self.code!r})"
+
+
+# ----------------------------------------------------------------------
+# Reject & Rescan
+# ----------------------------------------------------------------------
+class ScanRejection(Base):
+    """An operator's standing decision that one scan is unusable.
+
+    The **current position** of a scan's logical lifecycle - see
+    :class:`~omr_scanner.domain.scan_lifecycle.LifecycleState` - kept apart
+    from :class:`BatchScan` on purpose. ``batch_scan`` is the *processing*
+    record: reprocessing archives and resets it, resume rewrites its status.
+    A rejection must survive all of that, so it lives here, keyed by the
+    scan, and nothing in the processing path writes to this table.
+
+    Its **history** is in :class:`AuditEvent` (``entity_type`` of
+    ``scan_lifecycle``), appended in the same transaction as every change
+    here - the same arrangement :class:`ReconciliationDecision` uses. A row is
+    never deleted: an undone rejection rests with ``state='active'``, so the
+    record that the scan was once rejected outlives the undo.
+
+    **Logical state and file state are separate columns.** :attr:`state` says
+    whether the scan may contribute to a result; :attr:`file_state` says
+    whether its image is still on disk. Purging an image changes only the
+    second.
+
+    Identity columns are **snapshots and declarations, not effective
+    values**. :attr:`recognised_candidate_id` is what the review ledger said
+    at rejection time; :attr:`declared_candidate_id` is what the operator
+    typed to identify the case. Neither feeds reconciliation's effective
+    Student ID - that remains the review ledger's alone.
+    """
+
+    __tablename__ = "scan_rejection"
+    __table_args__ = (
+        UniqueConstraint("scan_id", name="scan_rejection_scan"),
+        # A scan replaces at most one rejected original. NULLs are distinct in
+        # SQLite, so every case still awaiting a rescan can hold NULL here.
+        UniqueConstraint("replacement_scan_id", name="scan_rejection_replacement"),
+        Index("ix_scan_rejection_batch_state", "batch_id", "state"),
+    )
+
+    rejection_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("batch_scan.scan_id", ondelete="CASCADE"), nullable=False
+    )
+    batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="CASCADE"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    declared_candidate_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    declared_set_code: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    recognised_candidate_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=""
+    )
+    recognised_set_code: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    source_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    rejected_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    rejected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    replacement_scan_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("batch_scan.scan_id", ondelete="SET NULL"), nullable=True
+    )
+    replaced_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    replaced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reimport_of_scan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    file_state: Mapped[str] = mapped_column(String(15), nullable=False, default="present")
+    file_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """JSON: every file a purge moved or deleted, where to, and what it left
+    in place and why - so the record explains itself without the image."""
+    file_action_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    file_action_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        """Return a debugging representation. Names no candidate."""
+        return f"ScanRejection(scan_id={self.scan_id}, state={self.state!r})"

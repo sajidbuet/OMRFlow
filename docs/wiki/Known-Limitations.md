@@ -90,7 +90,9 @@ Closing this is the whole purpose of
 | 🟡 | **Investigating an exception from the scan** - original scan, full Student ID / set-code correction through the review ledger, suggested scripts and candidates. Implemented and tested with synthetic scans; not yet used by an operator on real sheets |
 | 🟡 | **Set-scoped reconciliation.** A set reconciles only the scripts whose effective set code is its own; another set's scripts are outside it, and a script whose set code is unresolved or names no defined set is counted and raised on the Resolve stage (`Set code not a defined set`). Tested with synthetic batches of three sets |
 | 🟡 | **Student-ID suggestions** use a conservative edit distance (one wrong, missing or extra digit; up to two wrong digits at the same length; unread positions match anything), with ties shown as ties. Tested on synthetic IDs only |
-| ⚪ | **Reject & Rescan** is not implemented. A script that should be rejected and re-scanned cannot yet be marked so; set it aside on the Attendance stage meanwhile |
+| 🟡 | **Reject & Rescan.** An unusable scan is rejected on the Resolve stage, stops counting everywhere at once, and is replaced only by a rescan an operator explicitly confirms; superseded images can be quarantined or deleted by *Purge Rejects*, which never touches a file outside the project's own scan folders. Tested with synthetic and rendered scans and a scripted run of the real window; not yet used by an operator on real damaged sheets |
+| 🟠 | A rescan must be read into the **same batch** as the rejected sheet; linking across batches is refused. A cleanly read scan with no Resolve record cannot yet be rejected from the interface |
+| 🟠 | Final export of a set with an outstanding rescan is blocked unless an operator acknowledges **Export incomplete results**; the workbook is then marked INCOMPLETE and the acknowledgement audited |
 | 🟠 | The Resolve stage's own dividers are not remembered between sessions (the Attendance stage's is) |
 
 ### Answer keys and scoring

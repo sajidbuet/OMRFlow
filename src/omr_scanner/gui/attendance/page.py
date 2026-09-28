@@ -211,6 +211,14 @@ _STATUS_FILTERS: tuple[tuple[str, tuple[ReconciliationStatus, ...]], ...] = (
     (ALL_CANDIDATES, ()),
     (EXCEPTIONS_ONLY, ()),
     ("Missing script", (ReconciliationStatus.PRESENT_WITHOUT_SCRIPT,)),
+    (
+        "Script found — set unresolved",
+        (ReconciliationStatus.SCRIPT_SET_UNRESOLVED,),
+    ),
+    (
+        "Rejected — rescan required",
+        (ReconciliationStatus.RESCAN_REQUIRED,),
+    ),
     ("Absent but script found", (ReconciliationStatus.ABSENT_WITH_SCRIPT,)),
     ("Unrecognised ID", UNRECOGNISED),
     ("Duplicate scripts", (ReconciliationStatus.DUPLICATE_SCRIPT,)),
@@ -239,6 +247,8 @@ _MARKERS: dict[ReconciliationStatus, str] = {
     ReconciliationStatus.UNRESOLVED_CANDIDATE_ID: "⚠",
     ReconciliationStatus.ABSENT_WITH_SCRIPT: "!",
     ReconciliationStatus.DUPLICATE_SCRIPT: "!",
+    ReconciliationStatus.RESCAN_REQUIRED: "✖",
+    ReconciliationStatus.SCRIPT_SET_UNRESOLVED: "◐",
 }
 """A glyph beside every status word, so the state is never colour alone."""
 
@@ -271,7 +281,27 @@ _EXPLANATIONS: dict[ReconciliationStatus, str] = {
         "re-scan (set it aside) or another candidate's sheet (correct its "
         "Student ID). Nothing is chosen for you."
     ),
+    ReconciliationStatus.RESCAN_REQUIRED: (
+        "This candidate's script <b>was received</b>, but it was rejected as "
+        "unusable on the Resolve stage and does not count. Rescan the sheet, "
+        "then confirm the rescan under <b>Resolve &gt; Rejected / Rescan</b>. "
+        "This is not the same as no script having arrived."
+    ),
+    ReconciliationStatus.SCRIPT_SET_UNRESOLVED: (
+        "A script with exactly this Student ID exists, but its set code is not "
+        "settled (or names no defined set), so no set reconciles it yet. "
+        "Settle its set code on the Resolve stage; it will then appear here."
+    ),
 }
+
+
+_LOOK_FOR_SCRIPT: tuple[ReconciliationStatus, ...] = (
+    ReconciliationStatus.PRESENT_WITHOUT_SCRIPT,
+    ReconciliationStatus.SCRIPT_SET_UNRESOLVED,
+)
+"""A candidate with no valid script here whose sheet may exist elsewhere - the
+entries *Where to look* searches scripts for. A rejected sheet's candidate is
+not among them: their script is known, and its rescan is found on Resolve."""
 
 
 _CHIP_FILTERS: dict[str, str] = {
@@ -1555,6 +1585,14 @@ class AttendancePage(WorkflowPage):
                 + " and ".join(waiting)
                 + "</b> - settle them on the <b>Resolve</b> stage</span>"
             )
+        if scope.rescan_required:
+            parts.append(
+                f"<span style='color:{Color.DESTRUCTIVE};'><b>{scope.rescan_required} "
+                "rejected - rescan required</b> (not counted; see Resolve &gt; "
+                "Rejected / Rescan)</span>"
+            )
+        if scope.superseded:
+            parts.append(f"{scope.superseded} superseded by a confirmed rescan (not counted)")
         return f"<br><span style='color:{Color.TEXT_TERTIARY};'>{' · '.join(parts)}.</span>"
 
     # ------------------------------------------------------------------
@@ -1731,6 +1769,10 @@ class AttendancePage(WorkflowPage):
             return "Read ID is not on this set's list"
         if status is ReconciliationStatus.UNRESOLVED_CANDIDATE_ID:
             return "Student ID not fully read"
+        if status is ReconciliationStatus.RESCAN_REQUIRED:
+            return "Script received but rejected; rescan required"
+        if status is ReconciliationStatus.SCRIPT_SET_UNRESOLVED:
+            return "Script exists; its set assignment is unresolved"
         return ""
 
     def _attendance_text(self, entry: ReconciliationEntry) -> str:
@@ -1745,10 +1787,16 @@ class AttendancePage(WorkflowPage):
         return entry.effective_attendance.label
 
     def _script_text(self, entry: ReconciliationEntry) -> str:
-        """How many scripts count, and how many are set aside."""
+        """How many scripts count, and how many are set aside or rejected."""
         aside = sum(1 for item in entry.scripts if item.excluded)
+        rejected = sum(1 for item in entry.scripts if item.script.rejected)
+        extras = []
         if aside:
-            return f"{entry.script_count} (+{aside} set aside)"
+            extras.append(f"+{aside} set aside")
+        if rejected:
+            extras.append(f"+{rejected} rejected")
+        if extras:
+            return f"{entry.script_count} ({', '.join(extras)})"
         return str(entry.script_count)
 
     def _recognised_text(self, entry: ReconciliationEntry) -> str:
@@ -1756,7 +1804,16 @@ class AttendancePage(WorkflowPage):
         values = []
         for view in entry.scripts:
             machine = view.script.machine_candidate_id or "(not read)"
-            if view.script.effective_candidate_id != machine:
+            if view.script.rejected:
+                # For a rejected script the second value is the case's
+                # identity, which may be the operator's declaration - not a
+                # correction of the scan's Student ID, so it is not shown as one.
+                case = view.script.effective_candidate_id
+                values.append(
+                    f"{machine} (rejected; case {case})" if case and case != machine
+                    else f"{machine} (rejected)"
+                )
+            elif view.script.effective_candidate_id != machine:
                 values.append(f"{machine} → {view.script.effective_candidate_id}")
             else:
                 values.append(machine)
@@ -1884,6 +1941,8 @@ class AttendancePage(WorkflowPage):
                 bits.append("working script")
             if view.excluded:
                 bits.append("SET ASIDE")
+            if script.rejected:
+                bits.append("REJECTED — RESCAN REQUIRED")
             item = QListWidgetItem(" · ".join(bits))
             item.setData(Qt.ItemDataRole.UserRole, script.scan_id)
             if view.excluded:
@@ -1891,13 +1950,18 @@ class AttendancePage(WorkflowPage):
                     "Set aside as an accidental re-scan. The scan, its "
                     "recognition result and this decision are all kept."
                 )
+            if script.rejected:
+                item.setToolTip(
+                    "Rejected as unusable on the Resolve stage. It is kept, but "
+                    "it does not count until its rescan is confirmed there."
+                )
             self.scripts_list.addItem(item)
         if self.scripts_list.count():
             self.scripts_list.setCurrentRow(0)
         _fit_list(self.scripts_list)
 
         entries = self._entries_for_leads()
-        if entry.status is ReconciliationStatus.PRESENT_WITHOUT_SCRIPT:
+        if entry.status in _LOOK_FOR_SCRIPT:
             leads = script_leads(entry, entries, outside=self._outside_scripts())
         elif entry.status in (
             ReconciliationStatus.ABSENT_WITH_SCRIPT,
@@ -1968,7 +2032,13 @@ class AttendancePage(WorkflowPage):
         else:
             lines.append("<b>Attendance:</b> not on this set's candidate list")
         count = entry.script_count
-        if count == 0:
+        rejected = sum(1 for view in entry.scripts if view.script.rejected)
+        if count == 0 and rejected:
+            lines.append(
+                f"<b>Script:</b> received, but <b>rejected — rescan required</b> "
+                f"({rejected} rejected scan(s); none counts)"
+            )
+        elif count == 0:
             lines.append("<b>Script:</b> none matched")
         else:
             plural = "script" if count == 1 else "scripts"
@@ -1987,7 +2057,7 @@ class AttendancePage(WorkflowPage):
     ) -> None:
         """Fill *Where to look*, or say why it is empty."""
         relevant = entry is not None and entry.status in (
-            ReconciliationStatus.PRESENT_WITHOUT_SCRIPT,
+            *_LOOK_FOR_SCRIPT,
             ReconciliationStatus.ABSENT_WITH_SCRIPT,
             ReconciliationStatus.UNKNOWN_ID,
             ReconciliationStatus.UNRESOLVED_CANDIDATE_ID,
@@ -2009,13 +2079,13 @@ class AttendancePage(WorkflowPage):
                 "No likely script found: nothing unread, unknown or duplicated "
                 "is within two digits of this ID. Search the table, or review "
                 "unread sheets on the Resolve stage."
-                if entry.status is ReconciliationStatus.PRESENT_WITHOUT_SCRIPT
+                if entry.status in _LOOK_FOR_SCRIPT
                 else "No candidate expected present without a script has a "
                 "similar ID."
             )
         self.leads_heading.setText(
             "WHERE TO LOOK"
-            if entry is None or entry.status is ReconciliationStatus.PRESENT_WITHOUT_SCRIPT
+            if entry is None or entry.status in _LOOK_FOR_SCRIPT
             else "WHO ELSE MIGHT HAVE WRITTEN THIS ID"
         )
 

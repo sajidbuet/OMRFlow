@@ -372,6 +372,63 @@ def _scan_row(batch_id: str, index: int, path: Path) -> BatchScan:
     )
 
 
+def add_scans_to_batch(
+    database: ProjectDatabase, batch_id: str, paths: Sequence[Path]
+) -> int:
+    """Register further scans in an existing batch, after the ones it has.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch to extend.
+        paths: Files to add. One already in the batch - by its recorded source
+            path - is skipped, so adding the same folder twice changes nothing.
+
+    Returns:
+        How many scans were registered.
+
+    What makes a **rescan** possible: the replacement for a rejected sheet has
+    to be read into the batch the original belongs to, because reconciliation,
+    scoring and reporting all work per batch. Before this existed a file added
+    to a batch that had already been registered was processed but silently
+    never stored - :func:`record_results` only updates rows that exist.
+
+    New rows are appended at the end of the batch order and start
+    :attr:`~omr_scanner.database.models.ScanJobStatus.PENDING`, exactly as
+    :func:`create_batch` registers them, so resume, retry and reprocessing
+    treat them like any other scan.
+    """
+    if not paths:
+        return 0
+    moment = _now()
+    with database.session() as session:
+        batch = session.get(ScanBatch, batch_id)
+        if batch is None:
+            return 0
+        known = set(
+            session.scalars(
+                select(BatchScan.source_path).where(BatchScan.batch_id == batch_id)
+            ).all()
+        )
+        highest = session.scalar(
+            select(func.max(BatchScan.batch_index)).where(BatchScan.batch_id == batch_id)
+        )
+        index = int(highest) + 1 if highest is not None else 0
+        added = 0
+        for path in paths:
+            if str(path) in known:
+                continue
+            known.add(str(path))
+            session.add(_scan_row(batch_id, index, path))
+            index += 1
+            added += 1
+        if added:
+            batch.total_scans = len(known)
+            batch.updated_at = moment
+    if added:
+        _LOGGER.info("Batch %s extended by %d scan(s)", batch_id, added)
+    return added
+
+
 def set_batch_status(database: ProjectDatabase, batch_id: str, status: BatchStatus) -> None:
     """Record a batch's lifecycle state."""
     with database.session() as session:
@@ -1151,6 +1208,7 @@ __all__ = [
     "ErrorCategory",
     "ReprocessingRecord",
     "ScanJobStatus",
+    "add_scans_to_batch",
     "categorise_error",
     "check_compatibility",
     "completed_results",

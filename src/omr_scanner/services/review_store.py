@@ -72,7 +72,7 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 
-from omr_scanner.database.models import AuditEvent, BatchScan, ReviewConflict
+from omr_scanner.database.models import AuditEvent, BatchScan, ReviewConflict, ScanRejection
 from omr_scanner.domain.review import (
     REOPENED_LABEL,
     REOPENED_MARKER,
@@ -90,6 +90,7 @@ from omr_scanner.domain.review import (
     ReviewCounts,
     ValueSource,
 )
+from omr_scanner.domain.scan_lifecycle import LifecycleState
 from omr_scanner.domain.template import (
     GridFieldDefinition,
     QuestionBlockFieldDefinition,
@@ -163,6 +164,35 @@ def _resolution_only(statement: Any) -> Any:
     made would be the one genuinely destructive reading of this change.
     """
     return statement.where(ReviewConflict.conflict_type.in_(_RESOLUTION_TYPE_VALUES))
+
+
+def _ineligible_scans_select() -> Any:
+    """Select every scan that must not contribute to a result.
+
+    Rejected, superseded and re-imported scans - see
+    :mod:`omr_scanner.services.scan_lifecycle`, which owns the table. Read
+    here directly, as a SQL predicate, so the queue stays one query.
+    """
+    return select(ScanRejection.scan_id).where(
+        ScanRejection.state != LifecycleState.ACTIVE.value
+    )
+
+
+def _ineligible_scans() -> Any:
+    """:func:`_ineligible_scans_select` as a scalar subquery, for ``NOT IN``."""
+    return _ineligible_scans_select().scalar_subquery()
+
+
+def _active_scans_only(statement: Any) -> Any:
+    """Restrict a select over conflicts to scans that are still in play.
+
+    A rejected scan's conflicts are **not** withdrawn, resolved or rewritten -
+    its evidence and every decision on it are needed for audit and for *Undo
+    Reject*, which must restore the sheet exactly as it was. They simply leave
+    the working queue and every count while the scan is rejected, the way a
+    legacy answer conflict does (:func:`_resolution_only`).
+    """
+    return statement.where(ReviewConflict.scan_id.not_in(_ineligible_scans()))
 
 
 # ----------------------------------------------------------------------
@@ -782,11 +812,19 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
     Only identifiers the engine itself considered reliable take part: two sheets
     both read as ``"21?312"`` are evidence of a recognition problem, which they
     already have their own conflicts for, not of a duplicate candidate.
+
+    **Only result-eligible scans take part.** A rejected original shares its
+    Student ID with its rescan by definition; counting it would keep the
+    replacement in a duplicate conflict with a sheet that no longer counts.
+    Two *active* sheets with one ID are still detected exactly as before, and
+    a duplicate conflict somebody has already decided is kept, as always.
     """
     moment = _now()
     with database.session() as session:
         scans = session.scalars(
-            select(BatchScan).where(BatchScan.batch_id == batch_id)
+            select(BatchScan)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.scan_id.not_in(_ineligible_scans()))
         ).all()
         # `identifier_is_reliable` is a property of the result, and the durable
         # row stores the value only - so reliability is inferred the same way
@@ -818,10 +856,16 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
                 row.related_scan_ids = _dump_related(found.related_scan_ids)
                 _refresh_conflict(session, row, found, moment)
 
+        ineligible = set(session.scalars(_ineligible_scans_select()).all())
         for scan_id, row in existing.items():
             if scan_id in detected or row.state == ConflictState.WITHDRAWN.value:
                 continue
             if ConflictState(row.state).is_human_touched:
+                continue
+            if scan_id in ineligible:
+                # A rejected scan's own record is left exactly as it was -
+                # hidden from the queue, not withdrawn - so that undoing the
+                # rejection brings it back rather than losing it.
                 continue
             _withdraw_conflict(session, row, moment)
 
@@ -2221,6 +2265,9 @@ class ConflictFilter:
             name and its recognised identifier.
         include_withdrawn: Show conflicts the machine has retracted. Off by
             default - they are kept for the record, not for the working queue.
+        include_rejected: Show conflicts on rejected, superseded or re-imported
+            scans. Off by default - such a scan is out of the working queue
+            until its rejection is undone - and on only for inspecting one.
     """
 
     states: tuple[ConflictState, ...] = ()
@@ -2228,6 +2275,7 @@ class ConflictFilter:
     scan_id: int | None = None
     search: str = ""
     include_withdrawn: bool = False
+    include_rejected: bool = False
 
 
 def list_conflicts(
@@ -2321,6 +2369,8 @@ def _reversed_before_column() -> Any:
 def _apply_filters(statement: Any, rules: ConflictFilter) -> Any:
     """Apply a :class:`ConflictFilter` to a select over conflicts."""
     statement = _resolution_only(statement)
+    if not rules.include_rejected:
+        statement = _active_scans_only(statement)
     if rules.states:
         statement = statement.where(
             ReviewConflict.state.in_([item.value for item in rules.states])
@@ -2356,26 +2406,34 @@ def count_conflicts(database: ProjectDatabase, batch_id: str) -> ReviewCounts:
     reports three, not a hundred and three - which is the number an operator has
     to act on. How many answers were ambiguous is a recognition statistic and is
     reported with the recognition results.
+
+    Nor are the conflicts of a **rejected** scan: it awaits a rescan, not a
+    decision, and is counted by
+    :func:`~omr_scanner.services.scan_lifecycle.count_cases` instead.
     """
     with database.session() as session:
         by_state = {
             str(state): int(count)
             for state, count in session.execute(
-                _resolution_only(
-                    select(ReviewConflict.state, func.count())
-                    .where(ReviewConflict.batch_id == batch_id)
-                    .group_by(ReviewConflict.state)
+                _active_scans_only(
+                    _resolution_only(
+                        select(ReviewConflict.state, func.count())
+                        .where(ReviewConflict.batch_id == batch_id)
+                        .group_by(ReviewConflict.state)
+                    )
                 )
             ).all()
         }
         by_type = {
             str(kind): int(count)
             for kind, count in session.execute(
-                _resolution_only(
-                    select(ReviewConflict.conflict_type, func.count())
-                    .where(ReviewConflict.batch_id == batch_id)
-                    .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
-                    .group_by(ReviewConflict.conflict_type)
+                _active_scans_only(
+                    _resolution_only(
+                        select(ReviewConflict.conflict_type, func.count())
+                        .where(ReviewConflict.batch_id == batch_id)
+                        .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
+                        .group_by(ReviewConflict.conflict_type)
+                    )
                 )
             ).all()
         }

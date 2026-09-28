@@ -62,7 +62,7 @@ from omr_scanner.database.models import (
 )
 from omr_scanner.domain.reconciliation import ReconciliationStatus
 from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState
-from omr_scanner.services import project_backup, scan_provenance
+from omr_scanner.services import project_backup, scan_lifecycle, scan_provenance
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.database.engine import ProjectDatabase
@@ -285,7 +285,13 @@ def _source_scan_issues(database: ProjectDatabase) -> list[HealthIssue]:
     missing = 0
     changed = 0
     for batch_id in batch_ids:
+        # A superseded original whose image *Purge Rejects* quarantined or
+        # deleted is gone on purpose, with the record to prove it - not a
+        # source scan that went missing.
+        removed = scan_lifecycle.removed_images(database, batch_id)
         for entry in scan_provenance.check_availability(database, batch_id):
+            if entry.scan_id in removed:
+                continue
             if entry.availability == scan_provenance.ScanAvailability.MISSING:
                 missing += 1
             elif entry.availability == scan_provenance.ScanAvailability.CHANGED:

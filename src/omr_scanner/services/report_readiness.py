@@ -41,6 +41,7 @@ def evaluate(
     entries: Sequence[ReconciliationEntry],
     results_by_candidate: Mapping[str, StoredResult],
     has_verified_key: bool,
+    unattached_rescans: Sequence[str] = (),
 ) -> ReadinessReport:
     """Build the full readiness report for one set.
 
@@ -55,6 +56,10 @@ def evaluate(
         results_by_candidate: Every stored Phase 8 result, keyed by candidate
             ID.
         has_verified_key: Whether the set has a verified answer key.
+        unattached_rescans: File names of rejected sheets awaiting a rescan
+            that may belong to this set but are filed under no candidate - an
+            unknown Student ID, or no known set. Each is an outstanding rescan
+            the report cannot place, and must not quietly omit.
 
     Returns:
         Every issue found. Blocking issues (the default) prevent **Final
@@ -97,6 +102,14 @@ def evaluate(
         )
     )
     issues.extend(_stale_result_issues(roster, results_by_candidate))
+    issues.extend(
+        ReadinessIssue(
+            ReadinessIssueKind.RESCAN_OUTSTANDING,
+            f"A rejected sheet ({name or 'unnamed scan'}) whose candidate is not "
+            f"known is awaiting its rescan and may belong to Set {set_code}.",
+        )
+        for name in unattached_rescans
+    )
     return ReadinessReport(set_code=set_code, issues=tuple(issues))
 
 
@@ -160,6 +173,21 @@ def _cross_reference_issues(
                     ReadinessIssueKind.CANDIDATE_NOT_IN_PROJECT,
                     f"Roll {row.roll} exists in the template but is not a "
                     "registered candidate in this project.",
+                    roll=row.roll,
+                )
+            )
+            continue
+
+        if entry.status is ReconciliationStatus.RESCAN_REQUIRED:
+            # One issue, not three: "unresolved exception" and "present
+            # without a score" are both true, and both are this - the script
+            # was received and rejected, and its rescan is not in yet. Kept a
+            # distinct kind so it alone may be acknowledged.
+            issues.append(
+                ReadinessIssue(
+                    ReadinessIssueKind.RESCAN_OUTSTANDING,
+                    f"Roll {row.roll}'s script was rejected as unusable and its "
+                    "rescan has not been confirmed; it has no mark.",
                     roll=row.roll,
                 )
             )
@@ -279,6 +307,23 @@ def block_stale_results_for_final_export(report: ReadinessReport) -> ReadinessRe
         for item in report.issues
     )
     return ReadinessReport(set_code=report.set_code, issues=promoted)
+
+
+def acknowledge_incomplete_results(report: ReadinessReport) -> ReadinessReport:
+    """Demote every outstanding-rescan issue to a warning.
+
+    The operator's *Export incomplete results* acknowledgement, and nothing
+    else: every other blocking issue still blocks. The caller records the
+    acknowledgement in the audit ledger and writes it into the workbook -
+    see :func:`~omr_scanner.services.report_store.generate_xlsx`.
+    """
+    demoted = tuple(
+        ReadinessIssue(kind=item.kind, message=item.message, blocking=False, roll=item.roll)
+        if item.kind.is_acknowledgeable
+        else item
+        for item in report.issues
+    )
+    return ReadinessReport(set_code=report.set_code, issues=demoted)
 
 
 def _blocked(issue: ReadinessIssue) -> ReadinessIssue:

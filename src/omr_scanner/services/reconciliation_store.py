@@ -55,6 +55,7 @@ from omr_scanner.database.models import (
     ReconciliationRun,
     ReconciliationScript,
     RegisteredCandidate,
+    ScanRejection,
 )
 from omr_scanner.domain.reconciliation import (
     AttendanceSource,
@@ -73,7 +74,9 @@ from omr_scanner.domain.reconciliation import (
     ScriptRecord,
     ScriptView,
 )
+from omr_scanner.domain.scan_lifecycle import LifecycleState
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.services import scan_lifecycle
 from omr_scanner.services.reconciliation import (
     ReconciliationInput,
     count_entries,
@@ -89,7 +92,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.orm import Session
 
     from omr_scanner.database.engine import ProjectDatabase
+    from omr_scanner.domain.scan_lifecycle import RescanCase
     from omr_scanner.services.candidate_import import RosterValidation
+    from omr_scanner.services.review_store import EffectiveIdentifier
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -627,10 +632,11 @@ class ScriptSetPlacement(StrEnum):
     rather than silently dropped, so an operator can see what is outside the
     set and why.
 
-    Reject & Rescan is not implemented yet. When it is, a script rejected
-    pending a rescan and a superseded original are further placements outside
-    the set, and a verified replacement is simply :attr:`IN_SET` - which is
-    why this is an enumeration rather than a yes/no filter.
+    Reject & Rescan adds three placements. A script rejected pending a rescan
+    in this set is :attr:`REJECTED` - filed under its candidate, never
+    counted; a superseded original or an exact re-import of rejected content
+    is :attr:`SUPERSEDED` - outside every set's reconciliation; and a confirmed
+    replacement is simply :attr:`IN_SET`, like any other active script.
     """
 
     IN_SET = "in_set"
@@ -649,6 +655,28 @@ class ScriptSetPlacement(StrEnum):
     """The set code was read and settled, but names no defined set - a
     decision somebody made on the Resolve stage that still names no set."""
 
+    REJECTED = "rejected"
+    """Rejected pending a rescan, and belonging to this set - by the
+    operator's declared set code, else its effective one. Filed under its
+    candidate as *rescan required*; never counted."""
+
+    REJECTED_UNPLACED = "rejected_unplaced"
+    """Rejected pending a rescan, with no known set. Reconciled by no set -
+    and reported by every set, because it could be anybody's."""
+
+    SUPERSEDED = "superseded"
+    """A rejected original whose rescan has been confirmed, or an exact
+    re-import of rejected content. Outside every set's reconciliation."""
+
+
+_LIFECYCLE_PLACEMENTS = frozenset(
+    {
+        ScriptSetPlacement.REJECTED,
+        ScriptSetPlacement.REJECTED_UNPLACED,
+        ScriptSetPlacement.SUPERSEDED,
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SetScriptScope:
@@ -656,10 +684,14 @@ class SetScriptScope:
 
     Attributes:
         set_code: The set, or ``""`` when reconciliation is unscoped.
-        in_set: Scripts reconciled for this set.
+        in_set: Active scripts reconciled for this set.
         other_sets: Scripts belonging to another defined set, by that set's code.
         unresolved: Scripts whose set code is still in dispute.
         undefined: Scripts whose settled set code is no defined set.
+        rescan_required: Rejected scripts awaiting a rescan that belong to this
+            set or to no known set.
+        superseded: Superseded originals and re-imports of rejected content
+            belonging to this set (or, unscoped, to the batch).
     """
 
     set_code: str
@@ -667,6 +699,8 @@ class SetScriptScope:
     other_sets: dict[str, int] = field(default_factory=dict)
     unresolved: int = 0
     undefined: int = 0
+    rescan_required: int = 0
+    superseded: int = 0
 
     @property
     def other_set_total(self) -> int:
@@ -692,9 +726,16 @@ def _placements(
     from omr_scanner.services import project_sets
 
     defined = {item.code for item in project_sets.list_sets(database)}
+    cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
     placements: dict[int, tuple[ScriptSetPlacement, str]] = {}
     for scan_id, found in effective_set_codes(database, batch_id).items():
         code = found.value
+        case = cases.get(scan_id)
+        if case is not None:
+            # A lifecycle decision outranks the set code: a rejected or
+            # superseded scan is never IN_SET, whatever its code says.
+            placements[scan_id] = _lifecycle_placement(case, found, set_code, defined)
+            continue
         if found.unresolved or not code or "?" in code or "_" in code:
             placements[scan_id] = (ScriptSetPlacement.UNRESOLVED, code)
         elif code == set_code:
@@ -704,6 +745,43 @@ def _placements(
         else:
             placements[scan_id] = (ScriptSetPlacement.UNDEFINED, code)
     return placements
+
+
+def _case_set_code(case: RescanCase, found: EffectiveIdentifier | None) -> str:
+    """The set a rejected scan belongs to: declared, else effective, else ``""``."""
+    if case.declared_set_code:
+        return case.declared_set_code
+    if found is None or found.unresolved:
+        return ""
+    value = found.value
+    return "" if not value or "?" in value or "_" in value else value
+
+
+def _case_identity(case: RescanCase, found: EffectiveIdentifier | None) -> str:
+    """The Student ID a rejected scan is filed under: declared, else effective."""
+    if case.declared_candidate_id:
+        return case.declared_candidate_id
+    if found is None or found.unresolved:
+        return ""
+    value = found.value
+    return "" if not value or "?" in value or "_" in value else value
+
+
+def _lifecycle_placement(
+    case: RescanCase,
+    found: EffectiveIdentifier | None,
+    set_code: str,
+    defined: set[str],
+) -> tuple[ScriptSetPlacement, str]:
+    """Place a rejected, superseded or re-imported scan relative to one set."""
+    code = _case_set_code(case, found)
+    if case.state is not LifecycleState.REJECTED_PENDING_RESCAN:
+        return ScriptSetPlacement.SUPERSEDED, code
+    if code and code == set_code:
+        return ScriptSetPlacement.REJECTED, code
+    if code and code in defined:
+        return ScriptSetPlacement.OTHER_SET, code
+    return ScriptSetPlacement.REJECTED_UNPLACED, code
 
 
 def _set_code_of_roster(database: ProjectDatabase, roster_id: int) -> str | None:
@@ -727,8 +805,23 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
     """
     set_code = _set_code_of_roster(database, roster_id)
     if set_code is None:
-        return SetScriptScope(set_code="", in_set=len(batch_scripts(database, batch_id)))
-    in_set = unresolved = undefined = 0
+        states = scan_lifecycle.lifecycle_states(database, batch_id)
+        scripts = batch_scripts(database, batch_id)
+        return SetScriptScope(
+            set_code="",
+            in_set=sum(1 for item in scripts if not item.rejected),
+            rescan_required=sum(
+                1
+                for item in states.values()
+                if item is LifecycleState.REJECTED_PENDING_RESCAN
+            ),
+            superseded=sum(
+                1
+                for item in states.values()
+                if item is not LifecycleState.REJECTED_PENDING_RESCAN
+            ),
+        )
+    in_set = unresolved = undefined = rescan = superseded = 0
     others: dict[str, int] = {}
     for placement, code in _placements(database, batch_id, set_code).values():
         if placement is ScriptSetPlacement.IN_SET:
@@ -737,6 +830,11 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
             others[code] = others.get(code, 0) + 1
         elif placement is ScriptSetPlacement.UNRESOLVED:
             unresolved += 1
+        elif placement in (ScriptSetPlacement.REJECTED, ScriptSetPlacement.REJECTED_UNPLACED):
+            rescan += 1
+        elif placement is ScriptSetPlacement.SUPERSEDED:
+            if code == set_code or not code:
+                superseded += 1
         else:
             undefined += 1
     return SetScriptScope(
@@ -745,6 +843,8 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
         other_sets=dict(sorted(others.items())),
         unresolved=unresolved,
         undefined=undefined,
+        rescan_required=rescan,
+        superseded=superseded,
     )
 
 
@@ -767,7 +867,9 @@ def out_of_set_scripts(
     found: list[OutOfSetScript] = []
     for script in batch_scripts(database, batch_id):
         placement, code = placements.get(script.scan_id, (ScriptSetPlacement.IN_SET, ""))
-        if placement is ScriptSetPlacement.IN_SET:
+        if placement is ScriptSetPlacement.IN_SET or placement in _LIFECYCLE_PLACEMENTS:
+            # A rejected or superseded scan is no lead for anybody: it is not
+            # a script that counts, and its rescan is found on Resolve.
             continue
         if placement is ScriptSetPlacement.OTHER_SET:
             reason, exact = f"Read as set {code} - check its set code", True
@@ -804,8 +906,16 @@ def batch_scripts(
     ``BatchScan.identifier_value`` directly - that column holds what the machine
     read, and reconciling against it would ignore every correction a reviewer
     made on the Resolve stage.
+
+    **Lifecycle first.** A superseded original and a re-import of rejected
+    content are never returned. A scan rejected pending a rescan is returned
+    with :attr:`~omr_scanner.domain.reconciliation.ScriptRecord.rejected` set
+    - so its candidate can be told *rescan required* - carrying the case's
+    identity (the operator's declared Student ID, else its effective one);
+    it never counts. See :mod:`omr_scanner.services.scan_lifecycle`.
     """
     identifiers = effective_identifiers(database, batch_id)
+    cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
     keep: set[int] | None = None
     if set_code is not None:
         keep = {
@@ -813,7 +923,7 @@ def batch_scripts(
             for scan_id, (placement, _code) in _placements(
                 database, batch_id, set_code
             ).items()
-            if placement is ScriptSetPlacement.IN_SET
+            if placement in (ScriptSetPlacement.IN_SET, ScriptSetPlacement.REJECTED)
         }
     with database.session() as session:
         rows = session.scalars(
@@ -826,13 +936,29 @@ def batch_scripts(
             if keep is not None and row.scan_id not in keep:
                 continue
             found = identifiers.get(row.scan_id)
+            case = cases.get(row.scan_id)
+            if case is not None and case.state is not LifecycleState.REJECTED_PENDING_RESCAN:
+                continue
+            machine = found.machine_value if found else (row.identifier_value or "")
+            if case is not None:
+                identity = _case_identity(case, found)
+                scripts.append(
+                    ScriptRecord(
+                        scan_id=row.scan_id,
+                        source_name=row.filename or "",
+                        machine_candidate_id=machine,
+                        effective_candidate_id=identity,
+                        identifier_unresolved=not identity,
+                        corrected_by_human=bool(found and found.was_corrected),
+                        rejected=True,
+                    )
+                )
+                continue
             scripts.append(
                 ScriptRecord(
                     scan_id=row.scan_id,
                     source_name=row.filename or "",
-                    machine_candidate_id=(
-                        found.machine_value if found else (row.identifier_value or "")
-                    ),
+                    machine_candidate_id=machine,
                     effective_candidate_id=(
                         found.value if found else (row.identifier_value or "")
                     ),
@@ -841,6 +967,37 @@ def batch_scripts(
                 )
             )
         return tuple(scripts)
+
+
+def _set_unresolved_ids(
+    database: ProjectDatabase, batch_id: str, set_code: str
+) -> frozenset[str]:
+    """Student IDs of active scripts left out of a set because their set is unsettled.
+
+    What lets a candidate read *Script found - set unresolved* rather than
+    *Missing script*. Only fully read IDs take part - an ID with an unread
+    position identifies nobody.
+    """
+    placements = _placements(database, batch_id, set_code)
+    unsettled = {
+        scan_id
+        for scan_id, (placement, _code) in placements.items()
+        if placement in (ScriptSetPlacement.UNRESOLVED, ScriptSetPlacement.UNDEFINED)
+    }
+    if not unsettled:
+        return frozenset()
+    found: set[str] = set()
+    for scan_id, item in effective_identifiers(database, batch_id).items():
+        value = item.value
+        if (
+            scan_id in unsettled
+            and not item.unresolved
+            and value
+            and "?" not in value
+            and "_" not in value
+        ):
+            found.add(value)
+    return frozenset(found)
 
 
 # ----------------------------------------------------------------------
@@ -938,9 +1095,8 @@ def reconcile_batch(
     # A set's roster is reconciled against that set's scripts only. A script
     # of another set is outside this universe - not an unknown candidate - and
     # one whose set code is unsettled waits on the Resolve stage.
-    scripts = batch_scripts(
-        database, batch_id, set_code=_set_code_of_roster(database, roster_id)
-    )
+    set_code = _set_code_of_roster(database, roster_id)
+    scripts = batch_scripts(database, batch_id, set_code=set_code)
 
     with database.session() as session:
         script_decisions, candidate_decisions = _decisions(session, roster_id, batch_id)
@@ -951,9 +1107,16 @@ def reconcile_batch(
             scripts=scripts,
             script_decisions=script_decisions,
             candidate_decisions=candidate_decisions,
+            set_unresolved_ids=(
+                _set_unresolved_ids(database, batch_id, set_code)
+                if set_code is not None
+                else frozenset()
+            ),
         )
     )
-    counts = count_entries(entries, scripts=len(scripts))
+    # A rejected script is listed under its candidate, but it is not one of
+    # the scripts this reconciliation counts.
+    counts = count_entries(entries, scripts=sum(1 for item in scripts if not item.rejected))
 
     moment = _now()
     with database.session() as session:
@@ -1107,6 +1270,8 @@ def _counts_payload(counts: ReconciliationCounts) -> dict[str, Any]:
         "present_without_script": counts.present_without_script,
         "absent_with_script": counts.absent_with_script,
         "unresolved_candidate_id": counts.unresolved_candidate_id,
+        "rescan_required": counts.rescan_required,
+        "script_set_unresolved": counts.script_set_unresolved,
         "resolved": counts.resolved,
         "dismissed": counts.dismissed,
         "outstanding_count": counts.outstanding_count,
@@ -1204,10 +1369,30 @@ def list_entries(
                 )
             ).all()
         }
+        ineligible = _ineligible_among(session, [link.scan_id for link in links])
         return tuple(
-            _to_entry(row, by_entry.get(row.entry_id, ()), candidates)
+            _to_entry(row, by_entry.get(row.entry_id, ()), candidates, ineligible)
             for row in rows
         )
+
+
+def _ineligible_among(session: Session, scan_ids: Sequence[int]) -> frozenset[int]:
+    """Which of these scans are rejected, superseded or re-imported, **now**.
+
+    Read at the moment an entry is read rather than stored with it, so that a
+    reconciliation computed before a scan was rejected - a cache - can never
+    hand scoring or a report a rejected script as though it counted.
+    """
+    if not scan_ids:
+        return frozenset()
+    return frozenset(
+        int(item)
+        for item in session.scalars(
+            select(ScanRejection.scan_id)
+            .where(ScanRejection.scan_id.in_(list(set(scan_ids))))
+            .where(ScanRejection.state != LifecycleState.ACTIVE.value)
+        ).all()
+    )
 
 
 def _apply_filters(statement: Any, rules: EntryFilter) -> Any:
@@ -1295,13 +1480,15 @@ def get_entry(
                 )
             ).all()
         }
-        return _to_entry(row, links, candidates)
+        ineligible = _ineligible_among(session, [link.scan_id for link in links])
+        return _to_entry(row, links, candidates, ineligible)
 
 
 def _to_entry(
     row: ReconciliationEntryRow,
     links: Sequence[ReconciliationScript],
     candidates: dict[int, RegisteredCandidate],
+    ineligible: frozenset[int] = frozenset(),
 ) -> ReconciliationEntry:
     """Convert stored rows into a detached domain entry."""
     candidate = None
@@ -1320,7 +1507,9 @@ def _to_entry(
     return ReconciliationEntry(
         candidate_id=row.candidate_id,
         candidate=candidate,
-        scripts=tuple(_to_script_view(link) for link in links),
+        scripts=tuple(
+            _to_script_view(link, rejected=link.scan_id in ineligible) for link in links
+        ),
         issues=issues,
         status=ReconciliationStatus(row.status),
         effective_attendance=AttendanceState(row.effective_attendance),
@@ -1332,7 +1521,7 @@ def _to_entry(
     )
 
 
-def _to_script_view(link: ReconciliationScript) -> ScriptView:
+def _to_script_view(link: ReconciliationScript, *, rejected: bool = False) -> ScriptView:
     """Convert one stored script link into a detached view."""
     return ScriptView(
         script=ScriptRecord(
@@ -1344,6 +1533,7 @@ def _to_script_view(link: ReconciliationScript) -> ScriptView:
             corrected_by_human=(
                 link.effective_candidate_id != link.machine_candidate_id
             ),
+            rejected=rejected,
         ),
         assignment=ScriptAssignment(link.assignment),
         excluded=link.excluded,

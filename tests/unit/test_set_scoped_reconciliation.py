@@ -199,7 +199,10 @@ class TestEachSetSeesOnlyItsOwnScripts:
         _sets, roster_ids, batch_id, ids = world
         entries = reconciled(database, roster_ids["2"], batch_id)
         missing = entries["200003"]
-        assert missing.status is ReconciliationStatus.PRESENT_WITHOUT_SCRIPT
+        # Reject & Rescan terminology pass: a script with exactly this ID
+        # exists, its set code merely unsettled, so this reads "Script found -
+        # set unresolved" rather than "Missing script". The leads are unchanged.
+        assert missing.status is ReconciliationStatus.SCRIPT_SET_UNRESOLVED
         outside = reconciliation_store.out_of_set_scripts(
             database, roster_ids["2"], batch_id
         )
@@ -355,7 +358,8 @@ class TestAnUnscopedRosterIsUnchanged:
 
 
 def test_placement_is_an_enumeration_ready_for_rescan():
-    # Reject & Rescan will add placements; the filter is written for that.
+    # Reject & Rescan added three placements, as this enumeration anticipated.
     assert {item.value for item in ScriptSetPlacement} == {
         "in_set", "other_set", "unresolved", "undefined",
+        "rejected", "rejected_unplaced", "superseded",
     }

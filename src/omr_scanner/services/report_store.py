@@ -53,9 +53,12 @@ from omr_scanner.domain.reporting import (
 from omr_scanner.domain.scoring import ResultStatus
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.reporting import excel as rx
-from omr_scanner.services import reconciliation_store, scoring_store
+from omr_scanner.services import reconciliation_store, scan_lifecycle, scoring_store
 from omr_scanner.services.answer_key import plan_for
-from omr_scanner.services.report_readiness import block_stale_results_for_final_export
+from omr_scanner.services.report_readiness import (
+    acknowledge_incomplete_results,
+    block_stale_results_for_final_export,
+)
 from omr_scanner.services.report_readiness import evaluate as evaluate_readiness_report
 from omr_scanner.services.report_template import (
     ReportColumnMapping,
@@ -645,6 +648,9 @@ class SetGenerationInputs:
     verified_key: scoring_store.StoredKey | None
     policy: scoring_store.StoredPolicy
     question_plan_count: int
+    unattached_rescans: tuple[str, ...] = ()
+    """File names of outstanding rescans that may belong to this set but are
+    filed under no candidate - see :func:`_unattached_rescans`."""
 
 
 def gather_set_inputs(
@@ -668,6 +674,33 @@ def gather_set_inputs(
         verified_key=keys.get(set_code),
         policy=policy,
         question_plan_count=plan.question_count,
+        unattached_rescans=_unattached_rescans(database, batch_id, set_code, entries),
+    )
+
+
+def _unattached_rescans(
+    database: ProjectDatabase,
+    batch_id: str,
+    set_code: str,
+    entries: Sequence[ReconciliationEntry],
+) -> tuple[str, ...]:
+    """Outstanding rescans relevant to a set that no candidate row accounts for.
+
+    A rejected sheet filed under a candidate already produces that
+    candidate's own readiness issue. One whose Student ID or set is unknown
+    does not - and a report that ignored it would look complete while a paper
+    that might belong to it is still waiting to be rescanned.
+    """
+    attached = {
+        view.script.scan_id
+        for entry in entries
+        for view in entry.scripts
+        if view.script.rejected
+    }
+    return tuple(
+        case.source_name
+        for case in scan_lifecycle.outstanding_for_set(database, batch_id, set_code)
+        if case.scan_id not in attached
     )
 
 
@@ -755,6 +788,7 @@ def check_readiness(
         entries=inputs.entries,
         results_by_candidate=inputs.results_by_candidate,
         has_verified_key=inputs.verified_key is not None,
+        unattached_rescans=inputs.unattached_rescans,
     )
     return block_stale_results_for_final_export(report) if for_final_export else report
 
@@ -873,6 +907,7 @@ def generate_xlsx(
     final: bool = True,
     should_cancel: Callable[[], bool] | None = None,
     set_id: str | None = None,
+    acknowledge_incomplete: bool = False,
 ) -> GenerationOutcome:
     """Generate one set's XLSX report from canonical stored data.
 
@@ -903,6 +938,12 @@ def generate_xlsx(
             numbers - cannot have one set's template or candidates reached
             from another's generation. Prefer :func:`generate_for_set`, which
             resolves it and refuses missing inputs up front.
+        acknowledge_incomplete: The operator's explicit *Export incomplete
+            results*. Demotes outstanding-rescan issues - and only those - so
+            a final export may proceed while rejected sheets still await
+            their rescan. The acknowledgement is recorded in the audit ledger
+            against ``computed_by`` (which is then required) and written into
+            the workbook's Processing Log, so the file says it is incomplete.
 
     Returns:
         The outcome, always backed by a :class:`GeneratedReport` audit row -
@@ -928,9 +969,23 @@ def generate_xlsx(
         entries=inputs.entries,
         results_by_candidate=inputs.results_by_candidate,
         has_verified_key=inputs.verified_key is not None,
+        unattached_rescans=inputs.unattached_rescans,
     )
+    outstanding = readiness.outstanding_rescans
+    acknowledged = bool(final and acknowledge_incomplete and outstanding)
+    if acknowledged and not computed_by.strip():
+        return GenerationOutcome(
+            report_id=0, set_code=set_code, report_type="xlsx", status="blocked",
+            warnings=(
+                "Exporting incomplete results must be acknowledged by a named "
+                "operator. Set your name in File > Settings first.",
+            ),
+            readiness=readiness,
+        )
     if final:
         readiness = block_stale_results_for_final_export(readiness)
+        if acknowledged:
+            readiness = acknowledge_incomplete_results(readiness)
         if not readiness.is_ready:
             return GenerationOutcome(
                 report_id=0, set_code=set_code, report_type="xlsx", status="blocked",
@@ -938,6 +993,20 @@ def generate_xlsx(
             )
 
     warnings: list[str] = list(readiness.describe()) if readiness.has_warnings else []
+    if outstanding:
+        # First, so that nobody reading the Processing Log can miss it.
+        warnings.insert(
+            0,
+            (
+                f"INCOMPLETE RESULTS: exported with {outstanding} rejected sheet(s) "
+                f"still awaiting rescan - acknowledged by {computed_by.strip()}."
+            )
+            if acknowledged
+            else (
+                f"Results incomplete: {outstanding} rejected sheet(s) still awaiting "
+                "rescan."
+            ),
+        )
 
     try:
         association = (
@@ -1041,6 +1110,19 @@ def generate_xlsx(
         layout=layout, summary=summary, output_path=output_path,
         output_hash=output_hash, warnings=warnings, moment=moment, computed_by=computed_by,
     )
+    if acknowledged:
+        scan_lifecycle.record_incomplete_export(
+            database,
+            batch_id=batch_id,
+            set_code=set_code,
+            reviewer=computed_by,
+            outstanding=outstanding,
+            detail=(
+                f"Final export of set {set_code} (report {report_id}, "
+                f"{output_path.name}) produced with {outstanding} rejected sheet(s) "
+                "still awaiting rescan; acknowledged as incomplete results."
+            ),
+        )
     _LOGGER.info(
         "Report generated: set=%s type=xlsx status=success candidates=%d",
         set_code, len(roster.rows),
@@ -1062,6 +1144,7 @@ def generate_for_set(
     computed_by: str = "",
     final: bool = True,
     should_cancel: Callable[[], bool] | None = None,
+    acknowledge_incomplete: bool = False,
 ) -> GenerationOutcome:
     """Generate one **defined set's** result workbook.
 
@@ -1075,6 +1158,7 @@ def generate_for_set(
         computed_by: Who ran it.
         final: Final export (blocked by readiness issues) or preview.
         should_cancel: Polled before the work begins.
+        acknowledge_incomplete: See :func:`generate_xlsx`.
 
     Returns:
         The outcome. A set that cannot be generated returns a ``"blocked"``
@@ -1114,6 +1198,7 @@ def generate_for_set(
         final=final,
         should_cancel=should_cancel,
         set_id=set_id,
+        acknowledge_incomplete=acknowledge_incomplete,
     )
 
 
@@ -1309,6 +1394,7 @@ def generate_pdf(
     pdf_exporter: PdfExporter,
     computed_by: str = "",
     final: bool = True,
+    acknowledge_incomplete: bool = False,
 ) -> GenerationOutcome:
     """Generate a fresh XLSX, then export one of its sheets to PDF.
 
@@ -1331,6 +1417,7 @@ def generate_pdf(
         computed_by: Who ran the generation, if known.
         final: Forwarded to the XLSX generation this performs first - see
             :func:`generate_xlsx`.
+        acknowledge_incomplete: Likewise forwarded.
 
     PDF export always regenerates the XLSX first (§23: never patch an old
     file), then converts a temporary single-sheet copy of *that* fresh
@@ -1344,7 +1431,7 @@ def generate_pdf(
     xlsx_outcome = generate_xlsx(
         database, roster_id, batch_id, template, set_code,
         project_name=project_name, output_dir=output_dir, computed_by=computed_by,
-        final=final,
+        final=final, acknowledge_incomplete=acknowledge_incomplete,
     )
     if not xlsx_outcome.ok:
         return GenerationOutcome(

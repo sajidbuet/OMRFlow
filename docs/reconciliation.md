@@ -197,6 +197,14 @@ Two normal outcomes and five exceptions.
 | **Missing script** | Expected to attend; nothing arrived. |
 | **Absent but script found** | Recorded absent; a script arrived anyway. |
 | **Student ID not yet resolved** | Part of the sheet's roll number could not be read; complete it from the scan here or on the **Resolve** stage. |
+| **Script received but rejected — rescan required** | A script for this candidate arrived, but an operator rejected it as unusable (Reject & Rescan) and its rescan has not been confirmed. It is listed under the candidate and **never counts**. |
+| **Script found — set unresolved** | Nothing is filed under this candidate in this set, but a script carrying exactly their Student ID exists whose set code is unsettled or names no defined set. Its set assignment, not its existence, is missing. |
+
+*Missing script*, *Script found — set unresolved* and *Script received but
+rejected — rescan required* are three different situations with three
+different actions, and are three different words (and glyphs) - never one
+status told apart by colour or a tooltip. The last two replace *Missing
+script* rather than joining it.
 
 That last one exists so an unread identifier is never reported as an *unknown
 candidate*. The two need different actions: one is a recognition problem with
@@ -218,6 +226,8 @@ candidate ID not yet resolved   (everything below is provisional while unread)
 unknown candidate ID            (a script filed under nobody is the likeliest to be lost)
 marked absent but script found  (questions the roster itself)
 duplicate script                (questions the scanning)
+script received but rejected    (a rescan is outstanding)
+script found, set unresolved    (its set code, not its existence, is missing)
 present but no script found     (often the consequence of one of the above)
 ```
 
@@ -264,9 +274,27 @@ scripts as leads for a *Missing script*. A roster with no set (a project
 without sets, or a list from before attendance was per-set) still reconciles
 every script, as before.
 
-*Reject & Rescan* is not implemented yet. When it is, a script rejected
-pending a rescan and a superseded original become further placements outside
-every set, and a verified replacement is simply *in set*.
+*Reject & Rescan* adds three placements, decided by
+`services/scan_lifecycle.py` and read here - a lifecycle decision outranks the
+set code:
+
+| Placement | Meaning | In this set's reconciliation? |
+|---|---|---|
+| Rejected | Rejected pending a rescan; its set (declared, else effective) is this set | Listed under its candidate as *rescan required*; **never counted** |
+| Rejected, unplaced | Rejected pending a rescan with no known set | No - counted as outstanding for **every** set, and reported by each set's export readiness |
+| Superseded | A rejected original whose rescan is confirmed, or an exact re-import of rejected content | No - counted |
+
+A confirmed replacement is an ordinary active script: *in set* by its own
+effective set code. A rejected script is filed only under a **registered**
+candidate - by the operator's declared Student ID when one was given, else its
+effective one - and never becomes an *unknown ID* entry of its own. The
+Resolve stage's *Rejected / Rescan* view lists every rejected scan.
+
+Even a reconciliation computed *before* a scan was rejected cannot count it:
+when stored entries are read back, each script's current lifecycle is looked
+up (`_ineligible_among`), and scoring drops a rejected scan's answers
+regardless (`scoring_store.gather_inputs`). A lifecycle change also re-runs
+every stored reconciliation of its batch.
 
 ### Suggestions: the matching rule
 
@@ -283,8 +311,13 @@ never acted on automatically. The rule, exactly:
   missing or one extra digit). Nothing else is offered.
 - For a script whose ID may not be its writer's, the candidate space is this
   set's roster: candidates **without a script**, expected present first,
-  then marked absent. A candidate who already has their own script is not
-  offered.
+  then marked absent. A candidate who already has **a valid script** of their
+  own is not offered. A script rejected pending a rescan is not a valid
+  script, and a superseded original is not a script at all here, so a
+  candidate whose only script was rejected is offered (*script rejected,
+  rescan required*, ranked with *expected present*); a candidate whose rescan
+  has been confirmed has a valid script and is not. The edit-distance rule
+  itself is unchanged by Reject & Rescan.
 - For a candidate with no script, the sources are unread, unknown,
   duplicated and absent-filed scripts of this set, scripts whose set code is
   unresolved or undefined, and - for an identical ID only - another set's

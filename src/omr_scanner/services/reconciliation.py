@@ -74,9 +74,21 @@ class ReconciliationInput:
         scripts: Every script in the batch under reconciliation.
         script_decisions: Standing operator decisions, keyed by scan id.
         candidate_decisions: Standing operator decisions, keyed by candidate ID.
+        set_unresolved_ids: Student IDs carried by scripts this set's
+            reconciliation leaves out *because their set code is unsettled*.
+            A candidate with no script here whose exact ID is among them is
+            told so - *Script found, set unresolved* - rather than *Missing
+            script*. Empty for an unscoped reconciliation, which leaves
+            nothing out on set grounds.
     """
 
-    __slots__ = ("candidate_decisions", "candidates", "script_decisions", "scripts")
+    __slots__ = (
+        "candidate_decisions",
+        "candidates",
+        "script_decisions",
+        "scripts",
+        "set_unresolved_ids",
+    )
 
     def __init__(
         self,
@@ -84,11 +96,13 @@ class ReconciliationInput:
         scripts: Sequence[ScriptRecord],
         script_decisions: Mapping[int, ScriptDecision] | None = None,
         candidate_decisions: Mapping[str, CandidateDecision] | None = None,
+        set_unresolved_ids: frozenset[str] = frozenset(),
     ) -> None:
         self.candidates = tuple(candidates)
         self.scripts = tuple(scripts)
         self.script_decisions = dict(script_decisions or {})
         self.candidate_decisions = dict(candidate_decisions or {})
+        self.set_unresolved_ids = frozenset(set_unresolved_ids)
 
 
 def reconcile(data: ReconciliationInput) -> tuple[ReconciliationEntry, ...]:
@@ -129,6 +143,16 @@ def reconcile(data: ReconciliationInput) -> tuple[ReconciliationEntry, ...]:
             reviewer=decision.reviewer,
         )
         target = decision.assigned_candidate_id or script.effective_candidate_id
+        if script.rejected:
+            # A rejected script is filed only under a registered candidate it
+            # can be attributed to, so that candidate reads "rescan required".
+            # It never becomes an entry of its own: it does not count, so an
+            # unknown-ID or unread entry holding nothing but it would be an
+            # exception about nothing. The Resolve stage's Rejected / Rescan
+            # queue is where every rejected scan is listed.
+            if target in by_id:
+                attributed.setdefault(target, []).append(view)
+            continue
         if decision.assigned_candidate_id and target in by_id:
             # An operator said where this script belongs, and that candidate
             # exists. Their decision outranks recognition, which is the point
@@ -151,6 +175,7 @@ def reconcile(data: ReconciliationInput) -> tuple[ReconciliationEntry, ...]:
             candidate,
             attributed.get(candidate.candidate_id, []),
             data.candidate_decisions.get(candidate.candidate_id, CandidateDecision()),
+            set_unresolved=candidate.candidate_id in data.set_unresolved_ids,
         )
         for candidate in data.candidates
     ]
@@ -180,10 +205,20 @@ def _candidate_entry(
     candidate: CandidateRecord,
     views: Sequence[ScriptView],
     decision: CandidateDecision,
+    *,
+    set_unresolved: bool = False,
 ) -> ReconciliationEntry:
-    """Classify one registered candidate."""
+    """Classify one registered candidate.
+
+    With no valid script, three different things can be true, and the entry
+    says which: a script was received and **rejected** pending a rescan; a
+    script with this exact ID exists but its **set is unsettled**; or nothing
+    matched at all (*Missing script*). The first two replace the third rather
+    than joining it - they are the more specific account of the same gap.
+    """
     ordered = tuple(sorted(views, key=lambda item: item.script.scan_id))
     counted = [item for item in ordered if item.counts_as_a_script]
+    rejected = [item for item in ordered if item.script.rejected]
 
     overridden = decision.attendance_override is not AttendanceState.UNKNOWN
     attendance = (
@@ -196,8 +231,16 @@ def _candidate_entry(
         issues.add(ReconciliationIssue.DUPLICATE_SCRIPT)
     if counted and attendance is AttendanceState.ABSENT:
         issues.add(ReconciliationIssue.ABSENT_WITH_SCRIPT)
-    if not counted and attendance.expects_a_script:
-        issues.add(ReconciliationIssue.PRESENT_WITHOUT_SCRIPT)
+    if not counted and rejected:
+        # Whatever the roster says: a sheet was received and is waiting to be
+        # rescanned, which is outstanding physical work either way.
+        issues.add(ReconciliationIssue.RESCAN_REQUIRED)
+    elif not counted and attendance.expects_a_script:
+        issues.add(
+            ReconciliationIssue.SCRIPT_SET_UNRESOLVED
+            if set_unresolved
+            else ReconciliationIssue.PRESENT_WITHOUT_SCRIPT
+        )
 
     return ReconciliationEntry(
         candidate_id=candidate.candidate_id,
@@ -361,6 +404,10 @@ def count_entries(
         absent_with_script=counts.get(ReconciliationIssue.ABSENT_WITH_SCRIPT.value, 0),
         unresolved_candidate_id=counts.get(
             ReconciliationIssue.UNRESOLVED_CANDIDATE_ID.value, 0
+        ),
+        rescan_required=counts.get(ReconciliationIssue.RESCAN_REQUIRED.value, 0),
+        script_set_unresolved=counts.get(
+            ReconciliationIssue.SCRIPT_SET_UNRESOLVED.value, 0
         ),
         resolved=counts.get("resolved", 0),
         dismissed=counts.get("dismissed", 0),

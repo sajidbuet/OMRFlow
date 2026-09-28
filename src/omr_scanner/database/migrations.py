@@ -76,6 +76,7 @@ from omr_scanner.database.models import (
     ReportTemplateAssociation,
     ReviewConflict,
     ScanBatch,
+    ScanRejection,
     SchemaMigration,
     ScoringPolicyRevision,
 )
@@ -457,6 +458,24 @@ def _migration_010_roster_source_path(connection: Connection) -> None:
         )
 
 
+def _migration_011_reject_and_rescan(connection: Connection) -> None:
+    """Add Reject & Rescan: ``scan_rejection``.
+
+    Purely additive, and nothing to backfill: no build before this one could
+    reject a scan, so every existing scan is - correctly - active, which is
+    exactly what the *absence* of a row here means. No existing table is
+    altered; ``batch_scan``, the review ledger and every result keep their
+    rows and their meaning.
+
+    Built with ``create_all`` on a named table, like migrations 2-8, so a
+    re-run after a failed attempt that rolled back is harmless.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[Base.metadata.tables[ScanRejection.__tablename__]],
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -522,6 +541,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=10,
         description="Attendance file provenance: candidate_roster.source_path",
         apply=_migration_010_roster_source_path,
+    ),
+    Migration(
+        version=11,
+        description="Reject & Rescan: scan_rejection",
+        apply=_migration_011_reject_and_rescan,
     ),
 )
 

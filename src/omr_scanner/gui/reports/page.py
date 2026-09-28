@@ -770,7 +770,76 @@ class ReportsPage(WorkflowPage):
         assert self.state.session is not None
         return self.state.session.project.layout.exports_dir
 
-    def _run_jobs(self, jobs: list[ReportJob], *, final: bool) -> bool:
+    def _incomplete_sets(self, rows: list[SetRow]) -> list[tuple[str, int]]:
+        """Sets blocked for final export **only** by outstanding rescans.
+
+        ``(set code, outstanding count)`` for each. A set blocked by anything
+        else is not offered the acknowledgement - it stays blocked, and its
+        readiness issues say why.
+        """
+        found: list[tuple[str, int]] = []
+        for row in rows:
+            if row.blocker:
+                continue
+            report = self._readiness_for(row, for_final_export=True)
+            if (
+                report is not None
+                and report.outstanding_rescans
+                and report.only_acknowledgeable_blocks
+            ):
+                found.append((row.set_code, report.outstanding_rescans))
+        return found
+
+    def _acknowledge_if_needed(self, rows: list[SetRow]) -> bool | None:
+        """Ask before a final export that would be incomplete.
+
+        Returns:
+            ``False`` when nothing needs acknowledging, ``True`` when the
+            operator chose *Export incomplete results*, and ``None`` when they
+            cancelled - in which case nothing is generated.
+
+        **Never a silent export.** A final export while rejected sheets still
+        await their rescan must look like what it is; the acknowledgement is
+        recorded in the audit ledger against the operator and written into
+        the workbook's Processing Log by the service.
+        """
+        pending = self._incomplete_sets(rows)
+        if not pending:
+            return False
+        summary = "\n".join(
+            f"• Set {code}: {count} rejected sheet(s) awaiting rescan"
+            for code, count in pending
+        )
+        return True if self.confirm_incomplete_export(summary) else None
+
+    def confirm_incomplete_export(self, summary: str) -> bool:
+        """Show the *Export incomplete results* confirmation. Cancel is the default.
+
+        Separate from :meth:`_acknowledge_if_needed` so a test can replace the
+        modal question with an answer, the same split every other dialog on
+        this page follows.
+        """
+        box = QMessageBox(self)
+        box.setObjectName("incompleteExportConfirmation")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Results are incomplete")
+        box.setText(
+            "Some sheets were rejected as unusable and their rescans have not "
+            f"been confirmed:\n\n{summary}\n\nThose candidates have no mark. "
+            "Exporting now produces a final report marked as INCOMPLETE, and "
+            "the decision is recorded against your name."
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        export = box.addButton(
+            "Export incomplete results", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is export
+
+    def _run_jobs(
+        self, jobs: list[ReportJob], *, final: bool, acknowledge_incomplete: bool = False
+    ) -> bool:
         database = self.database
         if database is None or self.state.batch_id is None or self.state.template is None:
             return False
@@ -796,7 +865,7 @@ class ReportsPage(WorkflowPage):
             database, self.state.roster_id, self.state.batch_id, self.state.template, jobs,
             project_name=self.state.project_name, output_dir=self._output_dir(),
             pdf_exporter=detect_exporter(), computed_by=self.state.reviewer, final=final,
-            parent=self,
+            acknowledge_incomplete=acknowledge_incomplete, parent=self,
         )
         worker.ready.connect(self._on_generated)
         worker.progressed.connect(self._on_progress)
@@ -879,15 +948,25 @@ class ReportsPage(WorkflowPage):
         row = self.selected_overview()
         if row is None:
             return False
-        return self._run_jobs(self._jobs_for(row, ("xlsx",)), final=True)
+        acknowledged = self._acknowledge_if_needed([row])
+        if acknowledged is None:
+            return False
+        return self._run_jobs(
+            self._jobs_for(row, ("xlsx",)), final=True, acknowledge_incomplete=acknowledged
+        )
 
     def generate_selected_pdf(self) -> bool:
         """Generate both Rollwise and Meritwise PDFs for the selected set."""
         row = self.selected_overview()
         if row is None:
             return False
+        acknowledged = self._acknowledge_if_needed([row])
+        if acknowledged is None:
+            return False
         return self._run_jobs(
-            self._jobs_for(row, ("pdf_rollwise", "pdf_meritwise")), final=True
+            self._jobs_for(row, ("pdf_rollwise", "pdf_meritwise")),
+            final=True,
+            acknowledge_incomplete=acknowledged,
         )
 
     def generate_all_sets(self) -> bool:
@@ -900,7 +979,10 @@ class ReportsPage(WorkflowPage):
         jobs = [
             job for row in self.state.sets for job in self._jobs_for(row, ("xlsx",))
         ]
-        return self._run_jobs(jobs, final=True)
+        acknowledged = self._acknowledge_if_needed(list(self.state.sets))
+        if acknowledged is None:
+            return False
+        return self._run_jobs(jobs, final=True, acknowledge_incomplete=acknowledged)
 
     # ------------------------------------------------------------------
     # Enablement and lifetime

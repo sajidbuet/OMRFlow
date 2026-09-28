@@ -58,6 +58,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -68,6 +69,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -89,6 +91,11 @@ from omr_scanner.domain.review import (
     ReviewAction,
     ValueSource,
 )
+from omr_scanner.domain.scan_lifecycle import (
+    FileState,
+    RejectionReason,
+    RescanCase,
+)
 from omr_scanner.domain.scan_quality import issue_label
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
@@ -101,7 +108,12 @@ from omr_scanner.gui.review.lanes import (
     context_bubbles,
     group_bubbles,
 )
-from omr_scanner.gui.review.worker import SheetBundle, SheetWorker
+from omr_scanner.gui.review.rescan import (
+    LifecycleHistoryDialog,
+    RejectScanDialog,
+    RescanPanel,
+)
+from omr_scanner.gui.review.worker import OriginalImageWorker, SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
 from omr_scanner.gui.theme import (
     CANDIDATE_CHOSEN,
@@ -135,9 +147,11 @@ from omr_scanner.services import (
     list_conflicts,
     load_summary,
     map_canonical_to_source,
+    project_sets,
     provenance_for,
     provenance_for_scan,
     reopen,
+    scan_lifecycle,
     scan_source_path,
     split_field_value,
     split_marks,
@@ -163,6 +177,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable, Collection, Sequence
 
     from omr_scanner.domain.review import Provenance
+    from omr_scanner.domain.scan_lifecycle import ReplacementCandidate
     from omr_scanner.domain.scan_quality import ScanQualityAssessment
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
@@ -243,6 +258,16 @@ FILTER_OPEN = "Unresolved"
 FILTER_RESOLVED = "Resolved"
 FILTER_DEFERRED = "Deferred"
 FILTER_WITHDRAWN = "Withdrawn"
+FILTER_RESCAN = "Rejected / Rescan"
+"""The queue view listing Reject & Rescan cases instead of conflicts.
+
+Part of the ordinary status filter rather than a panel of its own: the same
+queue, the same search box, the same Ctrl+Up / Ctrl+Down - which here walk the
+cases still awaiting a rescan, passing over the completed ones."""
+
+REJECT_KEY = Qt.Key.Key_R
+"""The key that opens *Reject / Rescan* for the sheet being reviewed. Free on
+this page: digits choose values, ``B`` blank, ``D`` defer, ``E`` edit."""
 
 _STATE_FILTERS: dict[str, tuple[ConflictState, ...]] = {
     FILTER_OPEN: (ConflictState.OPEN,),
@@ -261,6 +286,11 @@ _STATE_COLORS: dict[ConflictState, QColor] = {
     ConflictState.DEFERRED: QColor(226, 236, 250),
     ConflictState.WITHDRAWN: QColor(238, 238, 238),
 }
+
+_RESCAN_PENDING_COLOR = QColor(252, 226, 224)
+_RESCAN_DONE_COLOR = QColor(238, 238, 238)
+"""Row tints in the Rejected / Rescan view - the third way of saying what the
+State column already says in words and a glyph."""
 
 SHEET_CONTINUATION = "⤷"
 """Drawn instead of the file name on a sheet's second and later queue rows.
@@ -345,6 +375,11 @@ class ResolvePageState:
         last_field_edit: The most recent whole-field correction, so undo can
             take back the operator's *action* rather than the last of the
             several positions it happened to write.
+        rescan_cases: The *Rejected / Rescan* view's rows, when it is shown.
+        rescan_candidates: Possible rescans per outstanding case, read once
+            with the view.
+        showing_replacement: Whether the image view shows a completed case's
+            replacement rather than its rejected original.
     """
 
     session: ProjectSession | None = None
@@ -362,6 +397,11 @@ class ResolvePageState:
     editing_scan_id: int | None = None
     editing_kind: FieldKind | None = None
     last_field_edit: FieldEdit | None = None
+    rescan_cases: list[RescanCase] = field(default_factory=list)
+    rescan_candidates: dict[int, tuple[ReplacementCandidate, ...]] = field(
+        default_factory=dict
+    )
+    showing_replacement: bool = False
 
 
 class ResolvePage(WorkflowPage):
@@ -377,6 +417,12 @@ class ResolvePage(WorkflowPage):
         auto_advance_changed: ``bool`` when the reviewer turns auto-advance on
             or off, so the window can remember it in their own settings. The
             page never writes a configuration file itself.
+        lifecycle_changed: ``int`` scan id after a Reject & Rescan action -
+            reject, undo, replacement confirmed or removed - so the window can
+            tell the Attendance, Results and Reports stages to re-read.
+        rescan_import_requested: ``(batch id, [paths])`` when the operator
+            asks to read rescan files into this batch. The window routes it to
+            the Scan stage, which owns processing.
 
     Args:
         spec: The "resolve" workflow stage description.
@@ -387,6 +433,8 @@ class ResolvePage(WorkflowPage):
     sheet_ready = Signal()
     resolution_recorded = Signal(int)
     auto_advance_changed = Signal(bool)
+    lifecycle_changed = Signal(int)
+    rescan_import_requested = Signal(str, list)
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
@@ -394,8 +442,8 @@ class ResolvePage(WorkflowPage):
         self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET + RESOLVE_STAGE_STYLESHEET)
 
         self.state = ResolvePageState()
-        self._worker: SheetWorker | None = None
-        self._workers: list[SheetWorker] = []
+        self._worker: SheetWorker | OriginalImageWorker | None = None
+        self._workers: list[SheetWorker | OriginalImageWorker] = []
         self._loaded_scan_id: int | None = None
         self._suppress_selection = False
         self._batch_unresolved = 0
@@ -453,9 +501,19 @@ class ResolvePage(WorkflowPage):
         self.state_filter = QComboBox()
         self.state_filter.setObjectName("conflictStateFilter")
         self.state_filter.addItems(
-            [FILTER_OPEN, FILTER_ALL, FILTER_RESOLVED, FILTER_DEFERRED, FILTER_WITHDRAWN]
+            [
+                FILTER_OPEN,
+                FILTER_ALL,
+                FILTER_RESOLVED,
+                FILTER_DEFERRED,
+                FILTER_WITHDRAWN,
+                FILTER_RESCAN,
+            ]
         )
-        self.state_filter.setToolTip("Show conflicts in this review state")
+        self.state_filter.setToolTip(
+            "Show conflicts in this review state - or, under Rejected / Rescan, "
+            "the sheets rejected as unusable and their rescans"
+        )
         self.state_filter.currentIndexChanged.connect(self.refresh_queue)
         filter_layout.addWidget(self.state_filter, stretch=1)
 
@@ -558,12 +616,35 @@ class ResolvePage(WorkflowPage):
 
         layout.addWidget(self._build_toolbar())
 
+        # Says in words, above the image, when the sheet on screen is a
+        # rejected one - never left to a colour or to the queue beside it.
+        self.lifecycle_banner = QLabel("")
+        self.lifecycle_banner.setObjectName("lifecycleBanner")
+        self.lifecycle_banner.setTextFormat(Qt.TextFormat.RichText)
+        self.lifecycle_banner.setWordWrap(True)
+        self.lifecycle_banner.setVisible(False)
+        layout.addWidget(self.lifecycle_banner)
+
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.setObjectName("resolveWorkspaceSplitter")
         self.workspace_splitter.setChildrenCollapsible(False)
         views = self._build_views()
         views.setMinimumHeight(PREVIEW_MIN_HEIGHT)
-        decisions = self._build_decision_panel()
+        # The conflict decision panel, or - for a Rejected / Rescan case - the
+        # case panel, in the same place and at the same size.
+        self.decision_stack = QStackedWidget()
+        self.decision_stack.setObjectName("resolveDecisionStack")
+        self.decision_stack.addWidget(self._build_decision_panel())
+        self.rescan_panel = RescanPanel()
+        self.rescan_panel.use_replacement.connect(self.confirm_replacement_for_case)
+        self.rescan_panel.undo_requested.connect(self.undo_reject_for_case)
+        self.rescan_panel.unlink_requested.connect(self.remove_replacement_for_case)
+        self.rescan_panel.import_requested.connect(self.prompt_import_rescan)
+        self.rescan_panel.compare_toggled.connect(self.show_replacement_image)
+        self.rescan_panel.history_requested.connect(self.show_case_history)
+        self.rescan_panel.show_all_button.toggled.connect(self._on_show_all_scans)
+        self.decision_stack.addWidget(self.rescan_panel)
+        decisions = self.decision_stack
         decisions.setMinimumHeight(RESOLUTION_MIN_HEIGHT)
         self.workspace_splitter.addWidget(views)
         self.workspace_splitter.addWidget(decisions)
@@ -726,6 +807,17 @@ class ResolvePage(WorkflowPage):
         self.history_button.setToolTip("Every decision recorded for this conflict")
         self.history_button.clicked.connect(self.show_history)
         toolbar.addWidget(self.history_button)
+
+        # A sheet action, like the field editors: the scan on screen is
+        # unusable, whichever of its conflicts is selected.
+        self.reject_button = QPushButton(load_icon("triangle-alert"), "Reject / Rescan...")
+        self.reject_button.setObjectName("rejectRescanButton")
+        self.reject_button.setToolTip(
+            "This scan is unusable - folded, clipped, skewed, the wrong page. "
+            "Reject it pending a rescan (R). Nothing is deleted."
+        )
+        self.reject_button.clicked.connect(self.prompt_reject_current_sheet)
+        toolbar.addWidget(self.reject_button)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -1147,6 +1239,7 @@ class ResolvePage(WorkflowPage):
             (QKeySequence(Qt.Key.Key_Enter), self.confirm_resolution),
             (QKeySequence(Qt.Key.Key_D), self.defer_conflict),
             (QKeySequence(Qt.Key.Key_E), self.open_field_editor),
+            (QKeySequence(REJECT_KEY), self.prompt_reject_current_sheet),
             (QKeySequence(Qt.Key.Key_Escape), self.close_field_editor),
             (QKeySequence(BLANK_KEY), lambda: self.choose_label(BLANK_CHOICE)),
             (
@@ -1233,6 +1326,8 @@ class ResolvePage(WorkflowPage):
         # project's database. Carrying one across would eventually re-issue a
         # decision onto whatever conflict happened to have that number.
         self.state.redo = []
+        self.state.rescan_cases = []
+        self.state.rescan_candidates = {}
         self._loaded_scan_id = None
         self.queue_table.setRowCount(0)
         self._clear_views()
@@ -1299,15 +1394,32 @@ class ResolvePage(WorkflowPage):
             include_withdrawn=self.state_filter.currentText() == FILTER_WITHDRAWN,
         )
 
+    @property
+    def rescan_mode(self) -> bool:
+        """Whether the queue is showing *Rejected / Rescan* cases."""
+        return self.state_filter.currentText() == FILTER_RESCAN
+
     def refresh_queue(self) -> None:
         """Re-read the queue from the database and rebuild the table."""
         database = self.database
         if database is None or self.state.batch_id is None:
             self.queue_table.setRowCount(0)
             self.state.conflicts = []
+            self.state.rescan_cases = []
             self._refresh_summary()
             self._refresh_controls()
             return
+        if self.rescan_mode:
+            self._refresh_rescan_queue()
+            return
+        if self.decision_stack.currentWidget() is self.rescan_panel:
+            # Back from the Rejected / Rescan view: the conflict workspace
+            # returns, and the banner about a rejected sheet goes with it.
+            self.decision_stack.setCurrentIndex(0)
+            self.lifecycle_banner.setVisible(False)
+            self.state.rescan_cases = []
+            self._loaded_scan_id = None
+            self.state.bundle = None
 
         selected = self.current_conflict()
         scrollbar = self.queue_table.verticalScrollBar()
@@ -1466,15 +1578,31 @@ class ResolvePage(WorkflowPage):
             self._batch_unresolved = 0
             return
         counts = count_conflicts(database, self.state.batch_id)
+        rescans = scan_lifecycle.count_cases(database, self.state.batch_id)
         self._batch_unresolved = counts.unresolved
+        # Outstanding rescans are physical work, not decisions, so they are
+        # counted beside the conflicts rather than in them - and said in
+        # words, so the count is there whichever view the queue is showing.
+        rescan_text = (
+            f" &nbsp; <b>{rescans.outstanding}</b> rescan required"
+            if rescans.outstanding or rescans.superseded
+            else ""
+        )
         self.summary_label.setText(
             f"<b>{counts.total}</b> total &nbsp; "
             f"<b>{counts.unresolved}</b> unresolved &nbsp; "
-            f"<b>{counts.resolved}</b> resolved"
+            f"<b>{counts.resolved}</b> resolved{rescan_text}"
         )
         self.summary_label.setToolTip(
             f"{counts.open_count} never looked at, {counts.deferred} deferred, "
             f"{counts.resolved} decided, {counts.withdrawn} withdrawn by a re-read."
+            + (
+                f" {rescans.outstanding} rejected sheet(s) awaiting a rescan, "
+                f"{rescans.superseded} replaced by a confirmed rescan - see "
+                "Rejected / Rescan."
+                if rescans.total
+                else ""
+            )
         )
         biggest = sorted(counts.by_type.items(), key=lambda item: -item[1])[:3]
         breakdown = " &middot; ".join(
@@ -1511,8 +1639,12 @@ class ResolvePage(WorkflowPage):
     def select_next(self) -> None:
         """Move to the next conflict in the queue."""
         row = self.queue_table.currentRow()
-        if row + 1 < len(self.state.conflicts):
+        if row + 1 < self._row_count():
             self.queue_table.selectRow(row + 1)
+
+    def _row_count(self) -> int:
+        """How many rows the queue holds, in whichever view it is showing."""
+        return len(self.state.rescan_cases) if self.rescan_mode else len(self.state.conflicts)
 
     def select_next_unresolved(self) -> bool:
         """Skip forward to the next conflict nobody has decided.
@@ -1548,14 +1680,27 @@ class ResolvePage(WorkflowPage):
         """
         if self._editing_text():
             return False
-        total = len(self.state.conflicts)
+        rescan = self.rescan_mode
+        total = self._row_count()
+        # In the Rejected / Rescan view "unresolved" means a sheet still
+        # awaiting its rescan; a completed case is passed over like a decided
+        # conflict. Same keys, same wrap, same notes - one navigation system.
+        nothing = (
+            "No rejected sheet is still awaiting a rescan in this view."
+            if rescan
+            else "Nothing is left undecided in this view."
+        )
         if not total:
-            self._note_navigation("Nothing is left undecided in this view.")
+            self._note_navigation(nothing)
             return False
         start = self.queue_table.currentRow()
         for offset in range(1, total + 1):
             row = (start + step * offset) % total
-            if self.state.conflicts[row].state is ConflictState.OPEN:
+            if (
+                self.state.rescan_cases[row].is_outstanding
+                if rescan
+                else self.state.conflicts[row].state is ConflictState.OPEN
+            ):
                 wrapped = (row <= start) if step > 0 else (row >= start)
                 self.queue_table.selectRow(row)
                 self._note_navigation(
@@ -1568,7 +1713,7 @@ class ResolvePage(WorkflowPage):
                     else ""
                 )
                 return True
-        self._note_navigation("Nothing is left undecided in this view.")
+        self._note_navigation(nothing)
         return False
 
     def _note_navigation(self, text: str) -> None:
@@ -1579,6 +1724,9 @@ class ResolvePage(WorkflowPage):
     def _on_queue_selection_changed(self) -> None:
         """React to the queue selection moving."""
         if self._suppress_selection:
+            return
+        if self.rescan_mode:
+            self._show_case(self.current_case())
             return
         conflict = self.current_conflict()
         if conflict is None:
@@ -3150,7 +3298,18 @@ class ResolvePage(WorkflowPage):
             self.previous_open_action,
             self.next_open_action,
         ):
-            action.setEnabled(bool(self.state.conflicts))
+            action.setEnabled(bool(self._row_count()))
+        rescan = self.rescan_mode
+        # The type filter names conflict types, which the Rejected / Rescan
+        # view does not list.
+        self.type_filter.setEnabled(not rescan)
+        self.reject_button.setEnabled(can_decide and not rescan)
+        self.reject_button.setToolTip(
+            "This scan is unusable - folded, clipped, skewed, the wrong page. "
+            "Reject it pending a rescan (R). Nothing is deleted."
+            if named
+            else "Set your reviewer name in File > Settings before rejecting a scan."
+        )
         self._refresh_undo_controls(named=named)
         self._refresh_reviewer_label()
 
@@ -3309,6 +3468,428 @@ class ResolvePage(WorkflowPage):
             if sheet is not None
             else "Undo the last sheet you finished (Ctrl+Shift+Z) - none yet"
         )
+
+    # ------------------------------------------------------------------
+    # Reject & Rescan
+    # ------------------------------------------------------------------
+    def prompt_reject_current_sheet(self) -> bool:
+        """Ask why the sheet on screen is unusable, then reject it.
+
+        Owns the modal :class:`~omr_scanner.gui.review.rescan.RejectScanDialog`
+        and nothing else; :meth:`reject_current_sheet` does the work and is
+        what a test drives.
+        """
+        if self._editing_text() or self.rescan_mode:
+            return False
+        conflict = self.current_conflict()
+        database = self.database
+        if conflict is None or database is None or self.state.batch_id is None:
+            return False
+        if not self.state.reviewer:
+            QMessageBox.information(
+                self,
+                "Reviewer needed",
+                "Set your reviewer name in File > Settings. A rejection is "
+                "recorded against the person who made it.",
+            )
+            return False
+        identity = scan_lifecycle.current_identity(database, conflict.scan_id)
+        dialog = RejectScanDialog(
+            conflict.scan_name,
+            identity[0],
+            identity[1],
+            [item.code for item in project_sets.list_sets(database)],
+            self,
+        )
+        if dialog.exec() != RejectScanDialog.DialogCode.Accepted:
+            return False
+        reason, note, declared_id, declared_set = dialog.values()
+        return self.reject_current_sheet(
+            reason, note=note, declared_candidate_id=declared_id, declared_set_code=declared_set
+        )
+
+    def reject_current_sheet(
+        self,
+        reason: RejectionReason,
+        *,
+        note: str = "",
+        declared_candidate_id: str = "",
+        declared_set_code: str = "",
+    ) -> bool:
+        """Reject the sheet the selected conflict is on, pending a rescan.
+
+        The sheet leaves the working queue at once - its conflicts are kept,
+        not withdrawn, and come back exactly as they were if the rejection is
+        undone - and, with auto-advance on, the next unresolved conflict is
+        selected as after any decision that settles a sheet.
+        """
+        conflict = self.current_conflict()
+        database = self.database
+        if conflict is None or database is None or self.state.batch_id is None:
+            return False
+        scan_id = conflict.scan_id
+        try:
+            scan_lifecycle.reject_scan(
+                database,
+                scan_id,
+                reviewer=self.state.reviewer,
+                reason=reason,
+                note=note,
+                declared_candidate_id=declared_candidate_id,
+                declared_set_code=declared_set_code,
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Reject scan")
+            return False
+        _LOGGER.info("Scan %d rejected on the Resolve stage by %s", scan_id, self.state.reviewer)
+        self.close_field_editor()
+        self.clear_pending()
+        self.refresh_queue()
+        if self.state.auto_advance:
+            # The rejected sheet's rows are gone, and the selection has moved
+            # to what now occupies their place. Stay there when that is work
+            # to do; otherwise go on to the next unresolved conflict.
+            current = self.current_conflict()
+            if current is None or current.state is not ConflictState.OPEN:
+                self.select_next_unresolved()
+        self.lifecycle_changed.emit(scan_id)
+        return True
+
+    def show_rejected_rescans(self) -> None:
+        """Switch the queue to the *Rejected / Rescan* view."""
+        self.state_filter.setCurrentText(FILTER_RESCAN)
+
+    def current_case(self) -> RescanCase | None:
+        """The Reject & Rescan case selected in that view, or ``None``."""
+        if not self.rescan_mode:
+            return None
+        row = self.queue_table.currentRow()
+        if 0 <= row < len(self.state.rescan_cases):
+            return self.state.rescan_cases[row]
+        return None
+
+    def select_case(self, scan_id: int) -> bool:
+        """Select the case of one rejected scan, if it is in the view."""
+        for row, case in enumerate(self.state.rescan_cases):
+            if case.scan_id == scan_id:
+                self.queue_table.selectRow(row)
+                return True
+        return False
+
+    def _refresh_rescan_queue(self) -> None:
+        """Re-read the *Rejected / Rescan* view: outstanding cases, then completed."""
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is None or batch_id is None:  # pragma: no cover - checked by caller
+            return
+        selected = self.current_case()
+        scrolled_to = self.queue_table.verticalScrollBar().value()
+        self.state.conflicts = []
+        cases = list(scan_lifecycle.list_cases(database, batch_id, include_completed=True))
+        search = self.search_box.text().strip().casefold()
+        if search:
+            cases = [
+                case
+                for case in cases
+                if search in (case.source_name or "").casefold()
+                or search in case.identity.casefold()
+                or search in (case.replacement_name or "").casefold()
+            ]
+        self.state.rescan_cases = cases
+        self.state.rescan_candidates = scan_lifecycle.possible_rescans(database, batch_id)
+        self._rebuild_rescan_table()
+        self._refresh_summary()
+        if self.decision_stack.currentWidget() is not self.rescan_panel:
+            self.decision_stack.setCurrentWidget(self.rescan_panel)
+            self._loaded_scan_id = None
+            # A note about the conflict queue says nothing about this view.
+            self._note_navigation("")
+        if not cases:
+            self.queue_table.clearSelection()
+            self._show_case(None)
+        elif selected is None or not self.select_case(selected.scan_id):
+            first = next((i for i, case in enumerate(cases) if case.is_outstanding), 0)
+            self.queue_table.selectRow(first)
+            self.queue_table.verticalScrollBar().setValue(
+                min(scrolled_to, self.queue_table.verticalScrollBar().maximum())
+            )
+            if self.queue_table.currentRow() == first:
+                self._on_queue_selection_changed()
+        self._refresh_controls()
+
+    def _rebuild_rescan_table(self) -> None:
+        """Rebuild the table from :attr:`ResolvePageState.rescan_cases`."""
+        self._suppress_selection = True
+        self.queue_table.setUpdatesEnabled(False)
+        try:
+            self.queue_table.clearSelection()
+            self.queue_table.setCurrentCell(-1, -1)
+            self.queue_table.setRowCount(len(self.state.rescan_cases))
+            for row, case in enumerate(self.state.rescan_cases):
+                issue = case.reason_label or "Rejected"
+                if case.set_code:
+                    issue += f" · Set {case.set_code}"
+                values = (
+                    case.source_name or f"scan {case.scan_id}",
+                    case.identity or "(unknown)",
+                    issue,
+                    f"{case.state.marker} {case.status_text}",
+                )
+                tip = (
+                    f"{case.source_name}\nRejected "
+                    + (f"{case.rejected_at:%Y-%m-%d %H:%M}" if case.rejected_at else "")
+                    + f" by {case.rejected_by or '-'}"
+                    + (
+                        f"\nReplaced by {case.replacement_name}"
+                        if case.replacement_name
+                        else ""
+                    )
+                    + f"\n{case.file_state.label}"
+                )
+                colour = (
+                    _RESCAN_PENDING_COLOR if case.is_outstanding else _RESCAN_DONE_COLOR
+                )
+                for column, text in enumerate(values):
+                    item = QTableWidgetItem(text)
+                    item.setBackground(colour)
+                    item.setToolTip(tip if column in (0, 3) else text)
+                    self.queue_table.setItem(row, column, item)
+        finally:
+            self.queue_table.setUpdatesEnabled(True)
+            self._suppress_selection = False
+
+    def _candidates_for_case(self, case: RescanCase) -> tuple[ReplacementCandidate, ...]:
+        """The scans the case panel offers: suggestions, or every scan on request."""
+        database = self.database
+        if database is None or not case.is_outstanding:
+            return ()
+        if self.rescan_panel.show_all_button.isChecked():
+            return scan_lifecycle.association_choices(database, case.scan_id)
+        return self.state.rescan_candidates.get(case.scan_id, ())
+
+    def _on_show_all_scans(self, _shown: bool) -> None:
+        case = self.current_case()
+        if case is not None:
+            self.rescan_panel.show_case(
+                case, self._candidates_for_case(case), can_decide=bool(self.state.reviewer)
+            )
+
+    def _show_case(self, case: RescanCase | None) -> None:
+        """Display one case in the workspace: its image, its state, its actions."""
+        self.state.showing_replacement = False
+        self.clear_pending()
+        if case is None:
+            self.rescan_panel.show_case(None)
+            self.lifecycle_banner.setVisible(False)
+            self._clear_views()
+            self._refresh_controls()
+            return
+        self.rescan_panel.show_case(
+            case, self._candidates_for_case(case), can_decide=bool(self.state.reviewer)
+        )
+        self._set_banner(case, replacement=False)
+        self._load_case_image(case, replacement=False)
+        self._refresh_controls()
+
+    def _set_banner(self, case: RescanCase, *, replacement: bool) -> None:
+        """Say above the image which scan is on screen and what it is."""
+        if replacement:
+            text = (
+                f"<b>Showing the replacement</b> {html.escape(case.replacement_name)} "
+                f"&mdash; the confirmed rescan of {html.escape(case.source_name)}"
+            )
+            colour = Color.TEXT_TERTIARY
+        else:
+            text = (
+                f"<b>{case.state.marker} {html.escape(case.state.label)}</b> &mdash; "
+                f"{html.escape(case.source_name)} does not count towards any result"
+            )
+            colour = (
+                Color.DESTRUCTIVE if case.is_outstanding else Color.TEXT_TERTIARY
+            )
+        self.lifecycle_banner.setText(f"<span style='color:{colour};'>{text}</span>")
+        self.lifecycle_banner.setVisible(True)
+
+    def _load_case_image(self, case: RescanCase, *, replacement: bool) -> None:
+        """Decode the rejected original, or its replacement, for inspection."""
+        database = self.database
+        if database is None:
+            return
+        for view in (self.zoom_view, self.normalised_view, self.original_view):
+            view.clear()
+        if not replacement and case.file_state is not FileState.PRESENT:
+            when = f" on {case.file_action_at:%Y-%m-%d}" if case.file_action_at else ""
+            message = (
+                f"{case.file_state.label}{when}. The scan's record, its rejection, "
+                "its replacement link and its history are kept."
+            )
+            self.original_view.set_placeholder(message)
+            self.original_note.setText(message)
+            self._offer_the_useful_tab(registered=False)
+            return
+        source = (
+            scan_source_path(database, case.replacement_scan_id)
+            if replacement and case.replacement_scan_id is not None
+            else case.source_path or scan_source_path(database, case.scan_id)
+        )
+        if not source:
+            return
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.ready.disconnect()
+        worker = OriginalImageWorker(Path(source), self)
+        worker.ready.connect(self._on_case_image_ready)
+        self._worker = worker
+        self._workers = [item for item in self._workers if item.isRunning()]
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_case_image_ready(self, bundle: SheetBundle) -> None:
+        """Draw a decoded case image. Runs on the GUI thread."""
+        if not self.rescan_mode or self.current_case() is None:
+            self.sheet_ready.emit()
+            return
+        message = (
+            "A rejected sheet is inspected as it arrived - see the Original scan tab."
+        )
+        for view in (self.normalised_view, self.zoom_view):
+            view.clear()
+            view.set_placeholder(message)
+        self._offer_the_useful_tab(registered=False)
+        if bundle.original is not None:
+            self.original_view.set_placeholder("")
+            self.original_view.set_page(
+                bundle.original,
+                canonical_width=bundle.original.width,
+                canonical_height=bundle.original.height,
+            )
+            self.original_view.set_overlay((), (), ())
+            self.original_view.set_scan_quality(None)
+            self.original_view.set_overlay_visible(zones=False, bubbles=False, empty=False)
+            self.original_view.fit_to_window()
+            self.original_note.setText(
+                f"{bundle.path.name}, exactly as it arrived (never modified)."
+            )
+        else:
+            reason = bundle.error or "The image could not be decoded."
+            self.original_view.set_placeholder(reason)
+            self.original_note.setText(reason)
+        self.sheet_ready.emit()
+
+    def show_replacement_image(self, shown: bool) -> None:
+        """Compare: show a completed case's replacement, or its original."""
+        case = self.current_case()
+        if case is None or case.replacement_scan_id is None:
+            return
+        self.state.showing_replacement = shown
+        self._set_banner(case, replacement=shown)
+        self._load_case_image(case, replacement=shown)
+
+    def confirm_replacement_for_case(self, replacement_scan_id: int) -> bool:
+        """Confirm, explicitly, which scan is the selected case's rescan."""
+        case = self.current_case()
+        database = self.database
+        if case is None or database is None:
+            return False
+        try:
+            scan_lifecycle.confirm_replacement(
+                database, case.scan_id, replacement_scan_id, reviewer=self.state.reviewer
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Confirm replacement")
+            return False
+        self._after_lifecycle_action(case.scan_id)
+        return True
+
+    def undo_reject_for_case(self) -> bool:
+        """Undo the selected case's rejection.
+
+        Refused by the service once a replacement is linked - see
+        :func:`~omr_scanner.services.scan_lifecycle.undo_reject`.
+        """
+        case = self.current_case()
+        database = self.database
+        if case is None or database is None:
+            return False
+        try:
+            scan_lifecycle.undo_reject(database, case.scan_id, reviewer=self.state.reviewer)
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Undo reject")
+            return False
+        self._after_lifecycle_action(case.scan_id)
+        return True
+
+    def remove_replacement_for_case(self) -> bool:
+        """Withdraw a confirmed replacement link, after asking."""
+        case = self.current_case()
+        database = self.database
+        if case is None or database is None:
+            return False
+        if not self.confirm_remove_replacement(case):
+            return False
+        try:
+            scan_lifecycle.remove_replacement(database, case.scan_id, reviewer=self.state.reviewer)
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Remove replacement link")
+            return False
+        self._after_lifecycle_action(case.scan_id)
+        return True
+
+    def confirm_remove_replacement(self, case: RescanCase) -> bool:
+        """Ask before withdrawing a replacement link. Cancel is the default.
+
+        A method of its own so that a test can answer it instead of a person.
+        """
+        box = QMessageBox(self)
+        box.setObjectName("removeReplacementConfirmation")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Remove replacement link")
+        box.setText(
+            f"{case.replacement_name or 'The replacement'} will no longer be recorded "
+            f"as the rescan of {case.source_name}. The rejected scan goes back to "
+            "awaiting a rescan - it is not reactivated. Continue?"
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        remove = box.addButton("Remove link", QMessageBox.ButtonRole.DestructiveRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is remove
+
+    def prompt_import_rescan(self) -> bool:
+        """Ask for rescan image files, then hand them to the Scan stage."""
+        if self.state.batch_id is None:
+            return False
+        patterns = "Scanned sheets (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)"
+        paths, _filter = QFileDialog.getOpenFileNames(self, "Import rescan", "", patterns)
+        if not paths:
+            return False
+        return self.request_rescan_import([Path(item) for item in paths])
+
+    def request_rescan_import(self, paths: Sequence[Path]) -> bool:
+        """Ask the window to read rescan files into this batch.
+
+        The files are processed like any other scan; nothing links them to a
+        rejected sheet until the operator confirms it in this view.
+        """
+        if self.state.batch_id is None or not paths:
+            return False
+        self.rescan_import_requested.emit(self.state.batch_id, list(paths))
+        return True
+
+    def show_case_history(self) -> bool:
+        """Show the selected case's lifecycle history."""
+        case = self.current_case()
+        database = self.database
+        if case is None or database is None:
+            return False
+        LifecycleHistoryDialog(
+            case, scan_lifecycle.lifecycle_history(database, case.scan_id), self
+        ).exec()
+        return True
+
+    def _after_lifecycle_action(self, scan_id: int) -> None:
+        """Re-read the view after a lifecycle write, and tell the window."""
+        self.refresh_queue()
+        self.lifecycle_changed.emit(scan_id)
 
     # ------------------------------------------------------------------
     # Qt overrides

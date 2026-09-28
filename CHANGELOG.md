@@ -14,6 +14,28 @@ produced them, because that is how the work was sequenced and how
 
 ### Added
 
+- **Reject & Rescan.** Resolve can reject an unusable scan (*Reject / Rescan…*,
+  `R`) with a reason and an optional case identity; it stops contributing to
+  reconciliation validity, scoring, results and exports at once, without
+  deleting anything, and can be undone until a rescan is confirmed. A
+  *Rejected / Rescan* view of the Resolve queue lists cases, suggests rescans
+  by effective Student ID (never by file name), links one only on explicit
+  confirmation, and compares original and replacement. Exact re-imports of
+  rejected bytes are linked back, never resurrected. Final export with an
+  outstanding rescan requires an audited *Export incomplete results*
+  acknowledgement. *Tools > Purge Rejects* quarantines or deletes superseded
+  originals' images, only inside the project's own scan folders. New table
+  `scan_rejection` (schema migration 11); lifecycle events in the existing
+  audit ledger.
+- Attendance distinguishes **Script found — set unresolved** and **Script
+  received but rejected — rescan required** from *Missing script*.
+
+### Fixed
+
+- A scan added to the Scan stage's list after its batch had been registered was
+  read but never stored; it is now registered in the batch
+  (`batch_store.add_scans_to_batch`).
+
 - **Physical corner folds in generated datasets.** Micro / small / moderate /
   severe folds at any of the four page corners, off by default, in **both**
   rendering modes. The fold is applied to the *composed* sheet — printed

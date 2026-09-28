@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 5,491 tests passing in the full local run of 2026-09-28 (3 skipped; 4 `stress` tests deselected by default); `ruff` and `mypy` clean |
+| Automated suite | 5,574 tests passing in the full local run of 2026-09-28 after Reject & Rescan (15 skipped - 10 of them local real-scan fixtures absent on the machine; 4 `stress` tests deselected by default); `ruff` and `mypy` clean |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -243,7 +243,143 @@ synthetically tested" to a qualified stable release.
 | Resolve field-level entry & sheet-local progression | 🟠 **Implemented — automated tests passing; driven end to end in a rendered harness, not yet worked by a real operator.** A whole Student ID or Question Set typed once settles every position of it the sheet disputes; the queue is sheet-major and finishes a sheet before moving on. See below |
 | Attendance: reconciliation workstation | 🟠 **Implemented — automated tests passing; the 100-candidate acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Missing script and absent-but-script-found are investigated from the original scan; the complete Student ID or set code is corrected through the Resolve stage's own review ledger; suggestions of where to look; a compact layout usable at 1366×768; the Choose / Replace Attendance File defect fixed. See below |
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
+| Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+
+#### Reject & Rescan
+
+A scan can be unusable even when each of its conflicts could in principle be
+corrected - folded through the answer grid, clipped, skewed, the wrong page.
+It can now be **rejected pending a rescan**, and replaced.
+
+**On Resolve.** *Reject / Rescan…* (toolbar, or `R`; never while typing) opens
+a compact dialog naming the scan and its current Student ID and set code, with
+a reason (folded, poor quality, registration, clipped, skew, wrong document,
+Student ID unreadable, other + note), an optional note, and an **optional**
+Student ID / set as read off the paper. Identity is not required - a sheet
+with no readable roll number can be rejected. Cancel is the default button.
+The sheet leaves the working queue at once and, with auto-advance on, the next
+unresolved conflict is selected. Its conflicts are **kept, not withdrawn**, and
+come back exactly as they were on *Undo Reject*.
+
+**Rejected / Rescan** is a view of the ordinary status filter, so the same
+queue, search and Ctrl+Up / Ctrl+Down apply (walking cases still awaiting a
+rescan, passing over completed ones, wrapping with a note). Each row says its
+state in words and a glyph - `✖ REJECTED — RESCAN REQUIRED`, `⇄ Rejected —
+replaced by rescan: IMG_…` - never colour alone; a banner above the image says
+the scan on screen does not count. The case panel (two columns, so every
+control fits at 1366×768) lists what is recorded - file, Student ID, set,
+reason, who and when, replacement, image state - and offers *Import rescan…*,
+**Possible rescan: … · Student ID … · original …** candidates with *Use as
+replacement*, *Show every scan in this batch* for an unknown-identity case,
+*Undo Reject*, *Remove replacement link…* (asks first), *Show replacement /
+original* to compare, and *History…*. The summary under the queue counts
+*N rescan required* beside the conflicts.
+
+**Rescans.** *Import rescan…* reads the file into **the rejected sheet's own
+batch** through the Scan stage, like any scan. (A defect fixed on the way: a
+file added to a batch that had already been registered was read but silently
+never stored - `batch_store.add_scans_to_batch` now registers it.) Candidates
+are suggested only by an **effective** Student ID that is fully read and equals
+the case's identity; set code is extra evidence; **file names are never
+compared**. Nothing is ever linked automatically: before confirmation the
+rescan is an ordinary active scan and the case stays outstanding.
+
+**Lifecycle, in the service layer** (`services/scan_lifecycle.py`, table
+`scan_rejection`, migration 11): `active → rejected_pending_rescan →
+superseded_by_replacement`, plus `reimport_of_rejected`; the image's
+`file_state` (`present / quarantined / purged`) is a separate column. Only
+`active` is result-eligible. Enforced where it matters: reconciliation places a
+rejected script under its candidate as **Script received but rejected — rescan
+required** and never counts it, drops superseded originals, and re-reads
+lifecycle when stored entries are read; scoring drops ineligible scans'
+answers; a mark made from a scan that is later rejected or replaced is
+reported stale; duplicate-ID detection ignores ineligible scans; the review
+queue and counts hide them; the recognition CSV leaves them out. Undo Reject
+is refused while a replacement is linked - remove the link first, which
+returns the original to *awaiting rescan*, never to active; undoing then makes
+two active scans with one ID, which the ordinary duplicate detection and
+scoring refuse to resolve silently. An exact re-import of a rejected scan's
+bytes (content hash) is linked back to it as a re-import: never counted, never
+offered as a rescan, never able to resurrect it. Every transition is an
+append-only audit event (`entity_type='scan_lifecycle'`).
+
+**Export.** Results stay viewable, and Results says *may be incomplete: N
+rejected sheet(s) still awaiting rescan*. A **final** export of a set with an
+outstanding rescan (including a rejected sheet of unknown identity or set) is
+blocked by a new readiness issue that - alone among blocking issues - can be
+acknowledged: Reports asks, *Export incomplete results* (Cancel default), the
+workbook's Processing Log opens with `INCOMPLETE RESULTS … acknowledged by …`,
+and the acknowledgement is audited (`entity_type='results_export'`). Any other
+blocking issue still blocks.
+
+**Purge Rejects** (Tools menu) lists superseded originals whose replacement is
+still active - never a sheet awaiting rescan - with sizes, and moves their
+images to `<project>/quarantine/` (recommended) or deletes them. Only files
+inside the project's own `scans_original` / `scans_aligned` / `quarantine`
+folders are touched, after rejecting relative paths, `..`, symbolic links and
+junctions, paths resolving elsewhere, files another scan still references and
+files whose content hash changed since import. Scans read in place from a
+scanner share or another folder are **never** removed - they are listed as
+left in place. The database row, the rejection, the replacement link and the
+history are kept; Project Health no longer reports a purged image as a missing
+source.
+
+**Terminology.** Attendance now distinguishes *Missing script* (nothing
+matched), **Script found — set unresolved** (a script with exactly this ID
+exists but its set code is unsettled) and **Script received but rejected —
+rescan required**, each with its own word, glyph, filter and explanation. The
+suggestion matcher is unchanged; "already has a valid script" now excludes
+rejected and superseded scans and includes a confirmed replacement.
+
+**Testing.** 95 new tests: 57 service-level integration tests on a real
+project (every lifecycle transition and refusal, audit fields, persistence
+across reopening, reprocessing and resume, scoring and staleness, the
+acknowledged / refused / unacknowledgeable final export and its workbook,
+declared and unknown identities, candidates and file-name independence,
+re-imports and hash provenance, genuine duplicates kept, Undo before and after
+replacement, purge eligibility, quarantine, delete, external / shared / changed
+files, `..`, junction and symlink paths, Project Health, migration from schema
+10 and re-running migration 11), 20 unit tests of the pure rules, and 17 GUI
+tests on real rendered sheets (reject, the view and banner, `R` and not while
+typing, the dialog, reviewer required, **import a rescan through the Scan
+stage → offered → confirmed → compared → CSV excludes the original**, undo,
+navigation, 1366×768 and 1024×640 layouts, the Reports question, the window's
+Purge action); the combined three-set scenario was extended with the
+Reject & Rescan steps and a close/reopen. Two existing tests were updated, both
+for intended changes: one set-scoping test now expects *Script found — set
+unresolved* where it expected *Missing script* (its lead assertions are
+unchanged), and the placement-enumeration test lists the three new placements
+it was written to anticipate. **Full suite: 5,574 passed, 15 skipped, 0 failed** (local run of 2026-09-28, 30 min; 4 `stress` tests deselected by default; each of the 15 skips states its reason - 10 are local real-scan fixtures absent from the machine, 1 is the new symlink test, which needs a Windows privilege the machine lacks; its junction counterpart ran and passed). The three presentation fixes below were made after that run; the five affected GUI files were re-run afterwards: 351 passed, 1 skipped. `ruff` and `mypy` clean.
+
+**Acceptance, scripted in the real window** (1366×768, a two-set project,
+three rendered sheets, driving the window's own commands; screenshots
+inspected): a sheet was rejected and left the queue, read *REJECTED — RESCAN
+REQUIRED* in the view and banner, reconciled as *Script received but rejected*
+with 0 counted scripts, and was still rejected after closing and restarting the
+window; a rendered rescan imported through *Import rescan* was read, offered as
+*Possible rescan … set code matches* and not linked, then confirmed; the
+candidate became *Matched* with only the rescan counted and scored from the
+rescan (17 correct, its answers); the Resolve count fell to 0; Purge Rejects
+listed only the original and quarantined it while the rescan stayed; the
+history read *Rejected → Replaced → Image moved to quarantine*; all of it held
+after reopening. The screenshots found two presentation defects, both fixed:
+the case panel's actions were below the fold at 1366×768, and a stale
+navigation note carried into the view; a rejected script's declared identity
+also read as a correction on Attendance and now reads *(rejected; case …)*.
+**Not yet worked by an operator, and not on real damaged sheets.**
+
+**Known limits.** A rescan must be read into the same batch as the rejected
+sheet (reconciliation and scoring are per batch); linking across batches is
+refused with that message. Reject is offered for a sheet that has a Resolve
+record; a scan read cleanly with no conflict can be rejected through the
+service but has no Resolve row to act from yet. A duplicate-ID record that was
+*withdrawn* when its partner was rejected is not re-opened by *Undo Reject*
+(detection never re-opens a withdrawn conflict); the rejected scan's own
+record, and reconciliation's *Duplicate scripts*, do come back. A
+quarantined image can be restored only by hand, and an original whose image
+was quarantined or purged cannot be un-rejected. The Resolve stage's dividers
+are still not remembered.
 
 #### Attendance as a reconciliation workstation
 
@@ -339,8 +475,8 @@ remembered divider.**
   application configuration (like the ribbon density), restored on the next
   start, clamped to 30-80 % and never allowed to squeeze the detail pane below
   its minimum. The Resolve stage's own dividers are still not remembered.
-- *Reject & Rescan - not implemented*, so the combined scenario's reject /
-  replace / supersede steps are deferred with it.
+- *Reject & Rescan* - not implemented at the time; since implemented, see
+  **Reject & Rescan** below, which also completes the combined scenario.
 
 Testing: 53 new tests - 16 set-scoping tests over one batch of three sets (each set sees only its own scripts, unresolved / overridden / undefined set codes, idempotent sync, withdrawal when the set is added, the unscoped legacy path), 13 more suggestion tests (substitution, one missing digit, one extra digit, leading zeros, unrelated IDs, two equally close IDs shown as tied, a short list, out-of-set scripts), 17 navigation and divider tests (Ctrl+Down / Ctrl+Up on both stages, filtered walks, announced wrap, nothing-left, config round trip, clamping, restore through the window), and the 7-test combined three-set scenario including close-and-reopen. Three existing investigation tests were updated: two for set scoping (their sets now carry the sheets' set code) and one for the new suggestion wording. Full suite 5,491 passed, 3 skipped; `ruff` and `mypy` clean.
 

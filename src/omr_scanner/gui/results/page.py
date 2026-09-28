@@ -64,6 +64,7 @@ from omr_scanner.gui.results.worker import ScoringResult, ScoringWorker
 from omr_scanner.services import (
     batch_store,
     reconciliation_store,
+    scan_lifecycle,
     scoring,
     scoring_store,
 )
@@ -715,6 +716,28 @@ class ResultsPage(WorkflowPage):
             f"Need recalculating <b>{counts.stale}</b><br>"
             + (f"{by_set}<br>" if by_set else "")
             + verdict
+            + self._incomplete_warning()
+        )
+
+    def _incomplete_warning(self) -> str:
+        """Say, when it is true, that these results may be incomplete.
+
+        Results stay viewable while rejected sheets await their rescan - a
+        rescan may take days - but they must not look finished. Final export
+        of such a set asks for an explicit *Export incomplete results* on the
+        Reports stage.
+        """
+        session = self.state.session
+        if session is None or not self.state.batch_id:
+            return ""
+        outstanding = scan_lifecycle.count_cases(
+            session.database, self.state.batch_id
+        ).outstanding
+        if not outstanding:
+            return ""
+        return (
+            f"<br><span style='color:#a4262c'><b>Results may be incomplete: "
+            f"{outstanding} rejected sheet(s) still awaiting rescan.</b></span>"
         )
 
     # ------------------------------------------------------------------

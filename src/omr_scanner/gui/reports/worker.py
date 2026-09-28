@@ -86,6 +86,7 @@ class ReportGenerationWorker(QThread):
         pdf_exporter: PdfExporter,
         computed_by: str = "",
         final: bool = True,
+        acknowledge_incomplete: bool = False,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -99,6 +100,9 @@ class ReportGenerationWorker(QThread):
         self._pdf_exporter = pdf_exporter
         self._computed_by = computed_by
         self._final = final
+        # The operator's explicit *Export incomplete results*; see
+        # report_store.generate_xlsx. Never set without their say-so.
+        self._acknowledge_incomplete = acknowledge_incomplete
         self._cancelled = False
 
     def cancel(self) -> None:
@@ -157,6 +161,7 @@ class ReportGenerationWorker(QThread):
                 self._database, job.set_id, self._batch_id, self._template,
                 project_name=self._project_name, output_dir=self._output_dir,
                 computed_by=self._computed_by, final=self._final,
+                acknowledge_incomplete=self._acknowledge_incomplete,
             )
 
         roster_id, refusal = self._roster_id_for(job)
@@ -176,6 +181,7 @@ class ReportGenerationWorker(QThread):
                 job.set_code, project_name=self._project_name,
                 output_dir=self._output_dir, computed_by=self._computed_by,
                 final=self._final,
+                acknowledge_incomplete=self._acknowledge_incomplete,
             )
 
         label = "Rollwise" if job.kind == "pdf_rollwise" else "Meritwise"
@@ -186,6 +192,7 @@ class ReportGenerationWorker(QThread):
             sheet_name=self._sheet_name_for(job.set_code, label, job.set_id),
             report_label=label, pdf_exporter=self._pdf_exporter,
             computed_by=self._computed_by, final=self._final,
+            acknowledge_incomplete=self._acknowledge_incomplete,
         )
 
     def _roster_id_for(self, job: ReportJob) -> tuple[int | None, str]:

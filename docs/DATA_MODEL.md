@@ -625,6 +625,35 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `candidate_roster.set_id` | Which set an attendance list belongs to. NULL for a roster imported before attendance was per-set. | Per-set attendance (migration 9) |
 | `report_template_association.set_id` / `source_kind` | Which set a result template belongs to, and whether it arrived as that set's attendance workbook. | Per-set attendance (migration 9) |
 | `candidate_roster.source_path` | The full path an attendance file was imported from. Empty for a roster imported before migration 10. | Attendance file provenance (migration 10) |
+| `scan_rejection` | Reject & Rescan: one scan's standing lifecycle position (rejected pending rescan / superseded by a confirmed replacement / exact re-import of rejected content / undone), the reason, the operator's case identity, the replacement link and the image's file state. History in `audit_event` (`entity_type='scan_lifecycle'`). | Reject & Rescan (migration 11) |
+
+### Schema version 11 (Reject & Rescan)
+
+`_migration_011_reject_and_rescan` creates one table, `scan_rejection`, with
+`create_all` on that table alone. Purely additive; nothing is backfilled,
+because no earlier build could reject a scan and **no row means active**.
+
+- **One row per scan** (`UNIQUE(scan_id)`), never deleted: an undone
+  rejection rests with `state='active'`. `UNIQUE(replacement_scan_id)` - a scan
+  replaces at most one original (SQLite treats NULLs as distinct).
+- **Logical state and file state are separate columns.** `state` decides
+  result eligibility (only `active` is eligible);
+  `file_state` (`present` / `quarantined` / `purged`) says whether the image is
+  on disk, with `file_detail` (JSON) recording every file a purge moved or
+  deleted and what it left in place. Purging changes `file_state` only.
+- **Identity columns are snapshots and declarations.** `recognised_*` is the
+  review ledger's effective value at rejection time; `declared_*` is what the
+  operator typed to identify the case. Neither is the scan's effective Student
+  ID, which remains the review ledger's alone.
+- **Why not columns on `batch_scan`.** That row is the processing record:
+  reprocessing archives and resets it and resume rewrites its status. A
+  rejection has to survive both.
+- **Audit.** Every transition appends to `audit_event` with
+  `entity_type='scan_lifecycle'`, `entity_id` = scan id; actions `rejected`,
+  `reject_undone`, `replaced`, `linked_replacement`, `replacement_removed`,
+  `reimport_linked`, `image_quarantined`, `image_purged`. An acknowledged
+  incomplete final export is `entity_type='results_export'`, action
+  `export_incomplete`, `entity_id` = set code.
 
 ### Schema version 10 (attendance file provenance)
 

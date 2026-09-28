@@ -320,6 +320,20 @@ class ReadinessIssueKind(StrEnum):
     UNRESOLVED_EXCEPTION = "unresolved_exception"
     STALE_RESULT = "stale_result"
     RANK_MISMATCH = "rank_mismatch"
+    RESCAN_OUTSTANDING = "rescan_outstanding"
+    """A sheet was rejected as unusable and its rescan has not been confirmed.
+
+    Blocking for **Final Export** by default, but - unlike every other
+    blocking issue - an operator may *acknowledge* it and export anyway
+    (:func:`~omr_scanner.services.report_readiness.acknowledge_incomplete_results`):
+    a rescan can take days to arrive, and incomplete results clearly marked as
+    such are a legitimate interim product. The acknowledgement is audited and
+    written into the workbook."""
+
+    @property
+    def is_acknowledgeable(self) -> bool:
+        """Whether an operator may export past this issue by acknowledging it."""
+        return self is ReadinessIssueKind.RESCAN_OUTSTANDING
 
     @property
     def label(self) -> str:
@@ -365,6 +379,9 @@ class ReadinessIssueKind(StrEnum):
             ),
             ReadinessIssueKind.RANK_MISMATCH: (
                 "The application's rank does not match the generated formula"
+            ),
+            ReadinessIssueKind.RESCAN_OUTSTANDING: (
+                "A rejected sheet is still awaiting its rescan"
             ),
         }[self]
 
@@ -417,3 +434,19 @@ class ReadinessReport:
     def by_kind(self, kind: ReadinessIssueKind) -> tuple[ReadinessIssue, ...]:
         """Every issue of one kind - for a test asserting a specific defect."""
         return tuple(item for item in self.issues if item.kind is kind)
+
+    @property
+    def outstanding_rescans(self) -> int:
+        """How many readiness issues are outstanding rescans."""
+        return len(self.by_kind(ReadinessIssueKind.RESCAN_OUTSTANDING))
+
+    @property
+    def only_acknowledgeable_blocks(self) -> bool:
+        """Whether everything blocking export could be acknowledged away.
+
+        True when the set is blocked, and blocked *only* by outstanding
+        rescans - the case in which the interface offers *Export incomplete
+        results* rather than refusing outright.
+        """
+        blocking = [item for item in self.issues if item.blocking]
+        return bool(blocking) and all(item.kind.is_acknowledgeable for item in blocking)

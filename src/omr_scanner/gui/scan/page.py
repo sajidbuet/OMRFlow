@@ -94,6 +94,7 @@ from omr_scanner.services import (
     RecognitionOutcome,
     ScanResult,
     active_template_is_missing,
+    add_scans_to_batch,
     check_compatibility,
     collect_scan_files,
     completed_results,
@@ -112,6 +113,7 @@ from omr_scanner.services import (
     resolve_active_template,
     resumable_scans,
     scan_ids_by_path,
+    scan_lifecycle,
     scan_paths,
     set_batch_status,
     sheet_resolutions,
@@ -913,6 +915,17 @@ class ScanPage(WorkflowPage):
         if database is None or identity is None:
             return None
         if self.state.batch_id is not None:
+            # Scans added to the list after the batch was registered - a
+            # rescan of a rejected sheet, most importantly - must be stored
+            # too, or they would be read and then silently never recorded.
+            try:
+                add_scans_to_batch(
+                    database,
+                    self.state.batch_id,
+                    [entry.path for entry in self.state.entries] or list(paths),
+                )
+            except OMRScannerError:
+                _LOGGER.exception("Could not register added scans in batch %s", self.state.batch_id)
             return self.state.batch_id
         try:
             batch_id = create_batch(
@@ -1713,6 +1726,9 @@ class ScanPage(WorkflowPage):
                     result=item.result,
                     template=template,
                 )
+            # Before duplicate detection: a re-import of a rejected scan's
+            # exact bytes is linked back to it and must not take part.
+            scan_lifecycle.sync_reimports(database, batch_id)
             duplicates = sync_duplicate_identifiers(database, batch_id)
             sync_undefined_set_codes(database, batch_id)
         except OMRScannerError:
@@ -2254,6 +2270,9 @@ class ScanPage(WorkflowPage):
         if self.state.template is None:
             return None
         processed = [entry.processed for entry in self.state.entries if entry.processed]
+        # A rejected, superseded or re-imported scan contributes to no export.
+        left_out = self._ineligible_paths()
+        processed = [item for item in processed if item.source_path not in left_out]
         if not processed:
             QMessageBox.information(
                 self,
@@ -2281,8 +2300,82 @@ class ScanPage(WorkflowPage):
             written,
             sum(1 for item in resolutions.values() if item.reviewed),
         )
-        self.progress_label.setText(f"Exported {len(processed)} result(s) to {written.name}")
+        excluded = (
+            f" ({len(left_out)} rejected scan(s) left out)" if left_out else ""
+        )
+        self.progress_label.setText(
+            f"Exported {len(processed)} result(s) to {written.name}{excluded}"
+        )
         return written
+
+    def _ineligible_paths(self) -> set[Path]:
+        """Source paths of this batch's rejected, superseded and re-imported scans."""
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return set()
+        states = scan_lifecycle.lifecycle_states(database, self.state.batch_id)
+        if not states:
+            return set()
+        return {
+            path
+            for path, scan_id in scan_ids_by_path(database, self.state.batch_id).items()
+            if scan_id in states
+        }
+
+    def import_rescans(self, batch_id: str, paths: Sequence[Path]) -> bool:
+        """Read rescans of rejected sheets into the batch the originals belong to.
+
+        Args:
+            batch_id: The batch holding the rejected sheets.
+            paths: The rescan image files.
+
+        Returns:
+            Whether processing started.
+
+        Reached from the Resolve stage's *Rejected / Rescan* view through the
+        main window. The files go through exactly the ordinary path - added
+        to the scan list, registered in the batch, read by the worker pool,
+        their conflicts detected, re-imports of rejected bytes linked - so a
+        rescan is never a special kind of scan. **Nothing links a rescan to a
+        rejected sheet here**: that is the operator's explicit confirmation,
+        back on the Resolve stage.
+        """
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Batch running",
+                "Wait for the batch that is running to finish, then import the rescan.",
+            )
+            return False
+        if self.state.batch_id != batch_id and not self.adopt_batch(batch_id):
+            return False
+        wanted = list(collect_scan_files(paths))
+        database = self.database
+        known = (
+            {path.resolve() for path in scan_ids_by_path(database, batch_id)}
+            if database is not None
+            else set()
+        )
+        repeated = [path for path in wanted if path.resolve() in known]
+        wanted = [path for path in wanted if path.resolve() not in known]
+        if repeated:
+            # A file already in the batch is not a rescan - it may be the
+            # rejected scan itself - and reading it "again" would only
+            # reprocess the existing row.
+            QMessageBox.information(
+                self,
+                "Already in this batch",
+                f"{len(repeated)} file(s) are already part of this batch and were "
+                "not imported as rescans. A rescan is a new scan of the paper, "
+                "saved as a new file.",
+            )
+        if not wanted:
+            return False
+        self.add_scan_paths(wanted)
+        resolved = {path.resolve() for path in wanted}
+        run = [entry.path for entry in self.state.entries if entry.path.resolve() in resolved]
+        _LOGGER.info("Importing %d rescan file(s) into batch %s", len(run), batch_id)
+        return self._start_batch(run)
 
     def _export_resolutions(self) -> dict[Path, SheetResolution]:
         """The human decisions that apply to this batch, or none."""

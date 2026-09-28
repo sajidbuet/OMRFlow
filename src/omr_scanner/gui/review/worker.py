@@ -148,4 +148,39 @@ class SheetWorker(QThread):
         self.ready.emit(SheetBundle(path=self._path, original=original, result=result))
 
 
-__all__ = ["SheetBundle", "SheetWorker"]
+class OriginalImageWorker(QThread):
+    """Decodes one scan for inspection only, without re-reading it.
+
+    What the *Rejected / Rescan* view uses. A rejected sheet is inspected as
+    it arrived - the reason it was rejected is usually that it cannot be read
+    - and comparing it with its rescan needs the two images, not a second
+    recognition of either. Needs no template.
+
+    Signals:
+        ready: :class:`SheetBundle` with :attr:`~SheetBundle.original` set, or
+            with :attr:`~SheetBundle.error` when the file cannot be decoded -
+            including when it has been quarantined or purged.
+    """
+
+    ready = Signal(object)
+
+    def __init__(self, path: Path, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._path = path
+
+    @property
+    def path(self) -> Path:
+        """The image this worker is decoding."""
+        return self._path
+
+    def run(self) -> None:
+        """Decode the file. Runs on the worker thread."""
+        try:
+            original = decode_image_file(self._path)
+        except Exception as exc:
+            self.ready.emit(SheetBundle(path=self._path, error=str(exc)))
+            return
+        self.ready.emit(SheetBundle(path=self._path, original=original))
+
+
+__all__ = ["OriginalImageWorker", "SheetBundle", "SheetWorker"]

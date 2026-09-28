@@ -137,6 +137,16 @@ class ReconciliationStatus(StrEnum):
     PRESENT_WITHOUT_SCRIPT = "present_without_script"
     ABSENT_WITH_SCRIPT = "absent_with_script"
     UNRESOLVED_CANDIDATE_ID = "unresolved_candidate_id"
+    RESCAN_REQUIRED = "rescan_required"
+    """A script was received for this candidate, but an operator rejected it as
+    unusable and its rescan is still awaited. **Not** a valid script, and not
+    the same as none having arrived."""
+
+    SCRIPT_SET_UNRESOLVED = "script_set_unresolved"
+    """No script is filed under this candidate *in this set*, but a script
+    carrying their exact Student ID exists whose set code is still unsettled
+    (or names no defined set). Its set assignment, not its existence, is what
+    is missing - which is resolved on the Resolve stage."""
 
     @property
     def label(self) -> str:
@@ -155,6 +165,12 @@ class ReconciliationStatus(StrEnum):
             ReconciliationStatus.ABSENT_WITH_SCRIPT: "Absent but script found",
             ReconciliationStatus.UNRESOLVED_CANDIDATE_ID: (
                 "Student ID not yet resolved"
+            ),
+            ReconciliationStatus.RESCAN_REQUIRED: (
+                "Script received but rejected — rescan required"
+            ),
+            ReconciliationStatus.SCRIPT_SET_UNRESOLVED: (
+                "Script found — set unresolved"
             ),
         }[self]
 
@@ -194,6 +210,19 @@ class ReconciliationStatus(StrEnum):
                 "This script's candidate ID is still awaiting review on the "
                 "Resolve stage. It is not an unknown candidate - it is a "
                 "candidate nobody has read yet."
+            ),
+            ReconciliationStatus.RESCAN_REQUIRED: (
+                "A script was received for this candidate, but it was rejected "
+                "as unusable on the Resolve stage and its rescan has not been "
+                "confirmed yet. The rejected scan does not count. Rescan the "
+                "sheet and confirm the replacement under Resolve > Rejected / "
+                "Rescan."
+            ),
+            ReconciliationStatus.SCRIPT_SET_UNRESOLVED: (
+                "No script is filed under this candidate in this set, but a "
+                "script with exactly their Student ID exists whose set code is "
+                "not yet settled (or is not a defined set). Settle its set code "
+                "on the Resolve stage; it will then be reconciled here."
             ),
         }[self]
 
@@ -236,6 +265,8 @@ class ReconciliationIssue(StrEnum):
     PRESENT_WITHOUT_SCRIPT = "present_without_script"
     ABSENT_WITH_SCRIPT = "absent_with_script"
     UNRESOLVED_CANDIDATE_ID = "unresolved_candidate_id"
+    RESCAN_REQUIRED = "rescan_required"
+    SCRIPT_SET_UNRESOLVED = "script_set_unresolved"
 
     @property
     def status(self) -> ReconciliationStatus:
@@ -261,10 +292,17 @@ _STATUS_PRECEDENCE: tuple[ReconciliationIssue, ...] = (
     # ABSENT_WITH_SCRIPT before DUPLICATE_SCRIPT because it questions the
     # roster itself rather than the scanning, and PRESENT_WITHOUT_SCRIPT last
     # because it is very often the *consequence* of one of the others.
+    #
+    # RESCAN_REQUIRED and SCRIPT_SET_UNRESOLVED sit just above it: each is a
+    # more specific account of "no valid script here" - one was received and
+    # rejected, or one exists whose set is unsettled - and each replaces
+    # PRESENT_WITHOUT_SCRIPT rather than joining it.
     ReconciliationIssue.UNRESOLVED_CANDIDATE_ID,
     ReconciliationIssue.UNKNOWN_ID,
     ReconciliationIssue.ABSENT_WITH_SCRIPT,
     ReconciliationIssue.DUPLICATE_SCRIPT,
+    ReconciliationIssue.RESCAN_REQUIRED,
+    ReconciliationIssue.SCRIPT_SET_UNRESOLVED,
     ReconciliationIssue.PRESENT_WITHOUT_SCRIPT,
 )
 """Which issue becomes the headline when an entry carries several.
@@ -490,6 +528,13 @@ class ScriptRecord:
             ``UNKNOWN_ID``.
         corrected_by_human: Whether :attr:`effective_candidate_id` differs from
             the machine's because a named reviewer said so.
+        rejected: Whether the scan was rejected as unusable and awaits a
+            rescan (Reject & Rescan). Such a script is filed under its
+            candidate so that the candidate reads *rescan required* rather
+            than *missing script*, but it **never counts as a script** - see
+            :attr:`ScriptView.counts_as_a_script`. For a rejected script,
+            :attr:`effective_candidate_id` is the case's identity: the
+            operator's declared Student ID when one was given.
     """
 
     scan_id: int
@@ -498,6 +543,7 @@ class ScriptRecord:
     effective_candidate_id: str = ""
     identifier_unresolved: bool = False
     corrected_by_human: bool = False
+    rejected: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -563,9 +609,11 @@ class ScriptView:
         """Whether this script counts towards the entry's script total.
 
         An excluded script does not - that is what excluding it means - but it
-        is still listed, still stored and still auditable.
+        is still listed, still stored and still auditable. Nor does a script
+        rejected pending a rescan: it was received, and it is shown, but it is
+        not a valid script for any count, duplicate or mark.
         """
-        return not self.excluded
+        return not self.excluded and not self.script.rejected
 
 
 @dataclass(frozen=True, slots=True)
@@ -648,6 +696,8 @@ class ReconciliationCounts:
     present_without_script: int = 0
     absent_with_script: int = 0
     unresolved_candidate_id: int = 0
+    rescan_required: int = 0
+    script_set_unresolved: int = 0
     resolved: int = 0
     """Entries a human decision turned *into* a normal outcome.
 
@@ -680,6 +730,8 @@ class ReconciliationCounts:
             + self.present_without_script
             + self.absent_with_script
             + self.unresolved_candidate_id
+            + self.rescan_required
+            + self.script_set_unresolved
         )
 
     @property

@@ -98,6 +98,7 @@ from PySide6.QtWidgets import (
 
 from omr_scanner import APPLICATION_NAME, __version__
 from omr_scanner.config import AppConfig, ProcessingSettings, load_app_config, save_app_config
+from omr_scanner.domain.scan_lifecycle import PurgeMode, PurgeOutcome, format_bytes
 from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
 from omr_scanner.gui.answer_key.page import AnswerKeyPage
@@ -112,6 +113,7 @@ from omr_scanner.gui.project_config_dialog import ProjectConfigDialog
 from omr_scanner.gui.reports.page import ReportsPage
 from omr_scanner.gui.results.page import ResultsPage
 from omr_scanner.gui.review.page import ResolvePage
+from omr_scanner.gui.review.rescan import PurgeRejectsDialog
 from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
@@ -131,6 +133,7 @@ from omr_scanner.services import (
     recover_interrupted,
     resolve_active_template,
     review_store,
+    scan_lifecycle,
     set_active_template,
 )
 from omr_scanner.services.project_lock import ProjectLockHeldError
@@ -362,6 +365,8 @@ class MainWindow(QMainWindow):
             elif spec.key == "resolve":
                 resolve_page = ResolvePage(spec)
                 resolve_page.auto_advance_changed.connect(self._on_auto_advance_changed)
+                resolve_page.lifecycle_changed.connect(self._on_lifecycle_changed)
+                resolve_page.rescan_import_requested.connect(self.import_rescans)
                 page = resolve_page
             elif spec.key == "attendance":
                 attendance_page = AttendancePage(spec)
@@ -526,6 +531,16 @@ class MainWindow(QMainWindow):
         )
         self.project_health_action.triggered.connect(self._prompt_project_health)
         tools_menu.addAction(self.project_health_action)
+
+        self.purge_rejects_action = QAction("P&urge Rejects...", self)
+        self.purge_rejects_action.setObjectName("purgeRejectsAction")
+        self.purge_rejects_action.setEnabled(False)
+        self.purge_rejects_action.setStatusTip(
+            "Quarantine or delete the images of rejected scans whose rescan has "
+            "been confirmed - never one still awaiting a rescan"
+        )
+        self.purge_rejects_action.triggered.connect(self._prompt_purge_rejects)
+        tools_menu.addAction(self.purge_rejects_action)
 
         self.diagnostic_bundle_action = QAction("Create &Diagnostic Bundle...", self)
         self.diagnostic_bundle_action.setObjectName("diagnosticBundleAction")
@@ -1042,6 +1057,99 @@ class MainWindow(QMainWindow):
         if resolve is not None and resolve.state.batch_id is not None:
             resolve.refresh_queue()
 
+    def _on_lifecycle_changed(self, _scan_id: int) -> None:
+        """Tell every stage that depends on script validity to re-read.
+
+        A rejected, restored or replaced scan changes who has a valid script,
+        which changes attendance, results staleness and report readiness.
+        The service has already re-run the stored reconciliation; the pages
+        only have to redraw from it.
+        """
+        attendance = self._attendance_page()
+        if attendance is not None and attendance.state.batch_id is not None:
+            attendance.refresh_table()
+        results = self._results_page()
+        if results is not None:
+            results.refresh_table()
+        reports = self._reports_page()
+        if reports is not None:
+            reports.refresh_table()
+
+    def import_rescans(self, batch_id: str, paths: list[Path]) -> bool:
+        """Read rescan files into a batch, through the Scan stage.
+
+        Args:
+            batch_id: The batch holding the rejected sheets.
+            paths: The rescan image files.
+
+        Returns:
+            Whether processing started. The Scan stage is shown so the
+            operator sees the run; when it finishes, the Resolve stage's
+            *Rejected / Rescan* view offers the new scans as possible rescans.
+            Nothing is linked automatically.
+        """
+        scan_page = self._scan_page()
+        if scan_page is None:
+            return False
+        started = scan_page.import_rescans(batch_id, paths)
+        if started:
+            self.show_page("scan")
+        return started
+
+    def purge_rejects(self, mode: PurgeMode) -> PurgeOutcome | None:
+        """Run *Purge Rejects* for the open project. No dialog - testable directly."""
+        session = self._session
+        if session is None or session.read_only:
+            return None
+        resolve = self._resolve_page()
+        reviewer = resolve.state.reviewer if resolve is not None else ""
+        try:
+            outcome = scan_lifecycle.execute_purge(
+                session.database, session.root, mode=mode, reviewer=reviewer
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Purge Rejects")
+            return None
+        if resolve is not None and resolve.state.batch_id is not None:
+            resolve.refresh_queue()
+        return outcome
+
+    def _prompt_purge_rejects(self) -> None:
+        """Show what Purge Rejects would do, and do it on request."""
+        session = self._session
+        if session is None:
+            return
+        plan = scan_lifecycle.plan_purge(session.database, session.root)
+        dialog = PurgeRejectsDialog(plan, self)
+
+        def run(mode_value: str) -> None:
+            mode = PurgeMode(mode_value)
+            if mode is PurgeMode.DELETE:
+                answer = QMessageBox.warning(
+                    dialog,
+                    "Delete permanently",
+                    "The selected images will be deleted and cannot be recovered "
+                    "from within OMRFlow. Their records and history are kept. "
+                    "Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+            outcome = self.purge_rejects(mode)
+            if outcome is None:
+                return
+            dialog.result_label.setText(
+                f"{outcome.processed} original(s) processed, {outcome.files_moved} "
+                f"file(s) {'moved to quarantine' if mode is PurgeMode.QUARANTINE else 'deleted'}, "
+                f"{format_bytes(outcome.bytes_freed)} freed."
+                + (f" {len(outcome.skipped)} file(s) left in place." if outcome.skipped else "")
+            )
+            dialog.purge_button.setEnabled(False)
+
+        dialog.purge_requested.connect(run)
+        dialog.exec()
+
     def _on_answer_key_changed(self, _key_id: int) -> None:
         """Tell the Results and Reports stages that this project's keys have moved on.
 
@@ -1096,6 +1204,11 @@ class MainWindow(QMainWindow):
         reports = self._reports_page()
         if reports is not None:
             reports.set_batch(batch_id)
+        resolve = self._resolve_page()
+        if resolve is not None and resolve.state.batch_id == batch_id:
+            # A rescan read into the batch under review is now offered as a
+            # possible replacement - listed, never linked.
+            resolve.refresh_queue()
         answer_key = self._answer_key_page()
         session = self._session
         if answer_key is None or session is None:
@@ -1562,6 +1675,9 @@ class MainWindow(QMainWindow):
         has_project = self._session is not None
         self.close_project_action.setEnabled(has_project)
         self.project_health_action.setEnabled(has_project)
+        self.purge_rejects_action.setEnabled(
+            has_project and self._session is not None and not self._session.read_only
+        )
         self.project_config_action.setEnabled(has_project)
 
         if self._session is None:

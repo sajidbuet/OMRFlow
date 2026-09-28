@@ -63,7 +63,12 @@ from omr_scanner.domain.scoring import (
     score_answers,
 )
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import batch_store, reconciliation_store, review_store
+from omr_scanner.services import (
+    batch_store,
+    reconciliation_store,
+    review_store,
+    scan_lifecycle,
+)
 from omr_scanner.services.answer_key import QuestionPlan, plan_for
 from omr_scanner.services.scoring import (
     CandidateAnswers,
@@ -569,7 +574,14 @@ def gather_inputs(
     """
     plan = plan_for(template)
     entries = reconciliation_store.list_entries(database, roster_id, batch_id)
-    results = batch_store.results_by_scan(database, batch_id)
+    # A rejected, superseded or re-imported scan never supplies answers, even
+    # if something upstream still named it: no answers, no mark.
+    ineligible = scan_lifecycle.ineligible_scan_ids(database, batch_id)
+    results = {
+        scan_id: result
+        for scan_id, result in batch_store.results_by_scan(database, batch_id).items()
+        if scan_id not in ineligible
+    }
     decisions = review_store.effective_answers(database, batch_id, template)
     set_codes = review_store.effective_set_codes(database, batch_id)
 
@@ -1004,6 +1016,12 @@ def stale_reasons_for(
         if now_absent != was_absent:
             reasons.append(StaleReason.RECONCILIATION)
         scan_id, _ = working_script(entry)
+        if status is ResultStatus.SCORED and scan_id != row.scan_id:
+            # The script this mark was computed from is no longer the one
+            # that counts - it was rejected, or a rescan replaced it. The mark
+            # is still a true record of that script, but not of this
+            # candidate any more.
+            reasons.append(StaleReason.RECONCILIATION)
         answers = current.answers.get(scan_id) if scan_id is not None else None
         if answers is not None and status is ResultStatus.SCORED:
             if answers.answers != row.answer_string:

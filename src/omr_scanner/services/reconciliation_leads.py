@@ -85,14 +85,22 @@ _SCRIPT_SOURCES: dict[ReconciliationStatus, tuple[int, str]] = {
 
 _OWNER_SOURCES: dict[ReconciliationStatus, tuple[int, str]] = {
     ReconciliationStatus.PRESENT_WITHOUT_SCRIPT: (0, "expected present, no script"),
+    ReconciliationStatus.RESCAN_REQUIRED: (0, "script rejected, rescan required"),
+    ReconciliationStatus.SCRIPT_SET_UNRESOLVED: (0, "expected present, script set unresolved"),
     ReconciliationStatus.ABSENT_CONFIRMED: (1, "marked absent, no script"),
 }
 """Which candidates on the list might have written a given ID.
 
-A candidate who already has their own script is not offered: the question is
-whose sheet this is, and they are accounted for. Someone marked absent is
-offered after those expected present - the attendance list can be wrong, which
-is exactly what an absent-but-script-found exception is about."""
+A candidate who already has **a valid script** of their own is not offered:
+the question is whose sheet this is, and they are accounted for. A script
+rejected pending a rescan is *not* a valid script, so a candidate whose only
+script was rejected is offered like one with none; so is a candidate whose
+only script is outside this set with its set code unsettled, exactly as
+before that case had a name of its own. A confirmed replacement *is* a valid
+script, and a candidate who has one reads *Matched* and is not offered.
+Someone marked absent is offered after those expected present - the
+attendance list can be wrong, which is exactly what an absent-but-script-found
+exception is about."""
 
 LeadKey = tuple[int, int, int, int]
 
@@ -325,7 +333,7 @@ def script_leads(
             continue
         rank, reason = source
         for view in other.scripts:
-            if view.excluded:
+            if not view.counts_as_a_script:
                 continue
             consider(
                 rank,
@@ -373,7 +381,7 @@ def owner_leads(
     targets = [
         view.script.effective_candidate_id
         for view in entry.scripts
-        if not view.excluded and view.script.effective_candidate_id
+        if view.counts_as_a_script and view.script.effective_candidate_id
     ] or [entry.candidate_id]
     usual = _usual_length(entries)
     found: list[tuple[LeadKey, str, InvestigationLead]] = []
