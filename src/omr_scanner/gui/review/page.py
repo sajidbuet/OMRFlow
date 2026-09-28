@@ -122,7 +122,6 @@ from omr_scanner.services import (
     ReviewError,
     UndoTarget,
     accept_machine_value,
-    correct_field,
     correct_value,
     count_conflicts,
     count_conflicts_for_scan,
@@ -145,6 +144,19 @@ from omr_scanner.services import (
     undo_decision,
     undo_field_edit,
     undo_resolved_sheet,
+)
+from omr_scanner.services.field_edit import (
+    UNKNOWN_POSITION,
+    FieldEditPlan,
+    commit_field_edit,
+    machine_characters,
+    machine_observation_at,
+    override_warning_text,
+    plan_field_edit,
+    validate_field_value,
+)
+from omr_scanner.services.field_edit import (
+    current_field_values as field_values_now,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -258,20 +270,6 @@ name, then seven continuations, reads as one script with eight things wrong -
 which is what it is, and what decides how the operator works it. The full name
 stays in every cell's tooltip."""
 
-MAX_LISTED_SYMBOLS = 6
-"""How many symbols a validation message names before it stops listing them.
-
-"must contain exactly 6 digits" is more use to an operator than ten symbols
-written out; a four-option set code is worth naming."""
-
-UNKNOWN_POSITION = "?"
-"""What the whole-field editor shows for a position it cannot state a value for.
-
-A **display marker only.** It is the same character recognition uses in an
-assembled identifier, and it is refused as *input*: a reviewer who leaves it in
-the box is told to replace it rather than having it stored as somebody's
-student ID."""
-
 BLANK_BUTTON_TEXT = "Blank"
 """What the "no mark here" button says.
 
@@ -297,53 +295,6 @@ zero, and a reviewer who meant the digit must never get the blank."""
 FIELD_EDIT_APPLY_TEXT = "Apply"
 """The whole-field editor's commit button, when nothing it writes overrides a
 confident reading. It reads "Apply override..." when something does."""
-
-
-@dataclass(frozen=True, slots=True)
-class FieldEditPlan:
-    """What one typed whole-field value would do, before any of it is written.
-
-    Attributes:
-        current: The field as it reads now, one entry per printed position.
-        proposed: The value typed, split the same way.
-        changes: ``conflict_id -> value`` for positions that already have a
-            record - an unresolved conflict, or an earlier manual decision.
-        overrides: ``position -> (machine reading, typed value)`` for positions
-            the machine read **confidently** and nobody disputed. Writing these
-            overrides the machine, which is why they are kept apart: they are
-            the ones the operator is warned about.
-        positions: Every position the edit changes, in printed order.
-    """
-
-    current: tuple[str, ...]
-    proposed: tuple[str, ...]
-    changes: dict[int, str]
-    overrides: dict[int, tuple[str, str]]
-    positions: tuple[int, ...]
-
-    @property
-    def is_empty(self) -> bool:
-        """Whether applying this would change nothing."""
-        return not self.changes and not self.overrides
-
-
-def override_warning_text(field_label: str, overrides: dict[int, tuple[str, str]]) -> str:
-    """The body of the "you are overriding a confident reading" confirmation.
-
-    Pure, so a test can assert what an operator is told without a dialog.
-    Positions are printed one-based, as the sheet numbers them.
-    """
-    count = len(overrides)
-    noun = "value that was" if count == 1 else "values that were"
-    rows = "\n".join(
-        f"    Position {position + 1}     {machine or '(blank)'} → {typed or '(blank)'}"
-        for position, (machine, typed) in sorted(overrides.items())
-    )
-    return (
-        f"The entered {field_label} changes {count} {noun} read confidently:\n\n"
-        f"{rows}\n\n"
-        "These changes will override the machine result."
-    )
 
 
 @dataclass
@@ -2439,93 +2390,29 @@ class ResolvePage(WorkflowPage):
             return None
         return self.sheet_field_shape(conflict.field.kind)
 
+    def _sheet_records(self) -> list[ConflictRecord]:
+        """The review records of the sheet being worked, in every state."""
+        conflict = self.current_conflict()
+        scan_id = conflict.scan_id if conflict is not None else -1
+        return [item for item in self.state.sheet_conflicts if item.scan_id == scan_id]
+
     def current_field_values(self, shape: FieldShape) -> list[str]:
         """The field as it currently reads, one entry per printed position.
 
-        Built from the effective value of each position that has a conflict,
-        and from the engine's own reading everywhere else - so the editor
-        starts from what the sheet says rather than from an empty box.
-
-        A position nobody can currently put a value to - unresolved, or read as
-        two marks - contributes :data:`UNKNOWN_POSITION`, which is a *display*
-        marker. It is never accepted back as input; see
-        :meth:`_validate_field_value`.
+        See :func:`~omr_scanner.services.field_edit.current_field_values`,
+        which the Attendance stage's script inspector uses too.
         """
-        whole = self._whole_field_record(shape)
-        if whole is not None:
-            found = self.state.sheet_provenance.get(whole.conflict_id)
-            if found is not None and found.is_human_decided:
-                decided = split_field_value(shape, found.value)
-                if decided is not None:
-                    return decided
-        conflict = self.current_conflict()
-        scan_id = conflict.scan_id if conflict is not None else -1
-        by_position = {
-            item.field.group_key: item
-            for item in self.state.sheet_conflicts
-            if item.scan_id == scan_id
-            and item.field.zone_id == shape.zone_id
-            and not item.field.is_whole_field
-        }
-        machine = self._machine_characters(shape)
-
-        values: list[str] = []
-        for position in range(shape.length):
-            record = by_position.get(position)
-            if record is None:
-                values.append(machine.get(position, UNKNOWN_POSITION))
-                continue
-            found = self.state.sheet_provenance.get(record.conflict_id)
-            value = found.value if found is not None else record.observation.value
-            # A value the field cannot hold - a double mark - is not a reading
-            # the editor may offer back as text.
-            values.append(value if shape.accepts(position, value) else UNKNOWN_POSITION)
-        return values
+        return field_values_now(
+            shape,
+            self._sheet_records(),
+            self.state.sheet_provenance,
+            self._machine_characters(shape),
+        )
 
     def _machine_characters(self, shape: FieldShape) -> dict[int, str]:
-        """What the engine read at each position of one field.
-
-        From the freshly re-read result, which carries a
-        :class:`~omr_scanner.services.recognition_models.CharacterView` per
-        printed position - the same per-position reading the conflicts were
-        detected from.
-        """
+        """What the engine read at each position of one field, freshly re-read."""
         bundle = self.state.bundle
-        if bundle is None or bundle.result is None:
-            return {}
-        found = next(
-            (item for item in bundle.result.fields if item.zone_id == shape.zone_id),
-            None,
-        )
-        if found is None:
-            return {}
-        return {
-            character.position: character.value
-            if shape.accepts(character.position, character.value)
-            else UNKNOWN_POSITION
-            for character in found.characters
-        }
-
-    def _whole_field_record(self, shape: FieldShape) -> ConflictRecord | None:
-        """The live record disputing this field *as a whole*, if there is one.
-
-        A wholly blank Student ID is one record for the field rather than one
-        per position, so a typed value settles that record - it is not a set of
-        per-position overrides of a reading nobody made.
-        """
-        conflict = self.current_conflict()
-        scan_id = conflict.scan_id if conflict is not None else -1
-        return next(
-            (
-                item
-                for item in self.state.sheet_conflicts
-                if item.scan_id == scan_id
-                and item.field.zone_id == shape.zone_id
-                and item.field.is_whole_field
-                and item.state is not ConflictState.WITHDRAWN
-            ),
-            None,
-        )
+        return machine_characters(bundle.result if bundle is not None else None, shape)
 
     def _split_field_value(self, shape: FieldShape, text: str) -> list[str] | None:
         """Split typed text into one symbol per printed position, or ``None``.
@@ -2539,132 +2426,29 @@ class ResolvePage(WorkflowPage):
     def _validate_field_value(
         self, shape: FieldShape, text: str
     ) -> tuple[list[str] | None, str]:
-        """Check typed text against the template, and say why if it fails.
-
-        Every rule comes from the field definition - how many positions, and
-        which symbols each one prints - so a project with a five-digit roll
-        number or a two-position set code is validated against *its* field and
-        not against an assumption made here.
-
-        Nothing is padded, truncated or coerced: a value the field cannot hold
-        is refused with a reason, because quietly turning it into one the field
-        can hold would record an identifier nobody typed.
-        """
-        cleaned = text.strip()
-        if not cleaned:
-            return None, f"Enter the complete {shape.label}."
-        if UNKNOWN_POSITION in cleaned:
-            return None, (
-                f"'{UNKNOWN_POSITION}' marks a position the machine could not "
-                "read. Replace it with the value on the sheet."
-            )
-        values = self._split_field_value(shape, cleaned)
-        if values is None:
-            return None, _field_requirement(shape)
-        return values, ""
+        """Check typed text against the template; see ``validate_field_value``."""
+        return validate_field_value(shape, text)
 
     def _field_edit_plan(self, shape: FieldShape, values: Sequence[str]) -> FieldEditPlan:
         """Decide which positions a typed value would change, and how.
 
-        Three kinds of position can change, and the plan keeps them apart:
-
-        * an **unresolved conflict** - the ordinary case;
-        * a position with an **earlier manual decision**, which the new value
-          supersedes;
-        * a position the machine read **confidently**, with no conflict at all.
-          The explicit field editor is the operator saying "I can see the
-          whole number", so it may overrule such a reading - a clean ``9`` that
-          is an ``8`` on the paper - but only as a named override, after a
-          warning, and never as a disguised conflict. These are
-          :attr:`FieldEditPlan.overrides`.
-
-        Positions the machine already reads correctly are left alone, so a
-        roll number with two bad digits produces two corrections and not eight.
+        See :func:`~omr_scanner.services.field_edit.plan_field_edit`: disputed
+        positions, earlier decisions, and confident readings - the last kept
+        apart as overrides the operator is warned about.
         """
-        current = self.current_field_values(shape)
-        whole = self._whole_field_record(shape)
-        if whole is not None:
-            # Disputed as a whole: the typed value settles that one record.
-            proposed = join_field_value(values)
-            found = self.state.sheet_provenance.get(whole.conflict_id)
-            settled = found is not None and found.is_human_decided and (
-                found.value == proposed
-            )
-            return FieldEditPlan(
-                current=tuple(current),
-                proposed=tuple(values),
-                changes={} if settled else {whole.conflict_id: proposed},
-                overrides={},
-                positions=tuple(
-                    index
-                    for index, (before, after) in enumerate(
-                        zip(current, values, strict=True)
-                    )
-                    if before != after
-                ),
-            )
-        conflict = self.current_conflict()
-        scan_id = conflict.scan_id if conflict is not None else -1
-        by_position = {
-            item.field.group_key: item
-            for item in self.state.sheet_conflicts
-            if item.scan_id == scan_id
-            and item.field.zone_id == shape.zone_id
-            and not item.field.is_whole_field
-            and item.state is not ConflictState.WITHDRAWN
-        }
-        changes: dict[int, str] = {}
-        overrides: dict[int, tuple[str, str]] = {}
-        positions: list[int] = []
-        for position, wanted in enumerate(values):
-            record = by_position.get(position)
-            if record is None:
-                if current[position] != wanted:
-                    overrides[position] = (current[position], wanted)
-                    positions.append(position)
-                continue
-            found = self.state.sheet_provenance.get(record.conflict_id)
-            settled = found is not None and found.is_human_decided
-            if settled and found is not None and found.value == wanted:
-                continue
-            changes[record.conflict_id] = wanted
-            positions.append(position)
-        return FieldEditPlan(
-            current=tuple(current),
-            proposed=tuple(values),
-            changes=changes,
-            overrides=overrides,
-            positions=tuple(positions),
+        return plan_field_edit(
+            shape,
+            values,
+            self._sheet_records(),
+            self.state.sheet_provenance,
+            self._machine_characters(shape),
         )
 
     def _machine_observation_at(self, shape: FieldShape, position: int) -> MachineObservation:
-        """What the engine read at one position, as an override record keeps it.
-
-        Taken verbatim from the re-read result's
-        :class:`~omr_scanner.services.recognition_models.CharacterView`, the
-        same per-position reading conflicts are detected from, so an override
-        stores exactly what it overruled.
-        """
+        """What the engine read at one position, as an override record keeps it."""
         bundle = self.state.bundle
-        fields = bundle.result.fields if bundle is not None and bundle.result else ()
-        found = next((item for item in fields if item.zone_id == shape.zone_id), None)
-        character = next(
-            (
-                item
-                for item in (found.characters if found is not None else ())
-                if item.position == position
-            ),
-            None,
-        )
-        if character is None:
-            return MachineObservation(value=self._machine_characters(shape).get(position, ""))
-        return MachineObservation(
-            value=character.value,
-            status=character.status,
-            confidence=character.confidence,
-            top_fill=character.top_fill,
-            margin=character.margin,
-            detail="Read confidently; recognition raised no conflict here.",
+        return machine_observation_at(
+            bundle.result if bundle is not None else None, shape, position
         )
 
     def _confirm_override(
@@ -2875,34 +2659,23 @@ class ResolvePage(WorkflowPage):
             )
             return False
 
-        positions = {
-            self._position_of(conflict_id): value
-            for conflict_id, value in plan.changes.items()
-        }
-        positions.update(
-            {position: typed for position, (_machine, typed) in plan.overrides.items()}
-        )
         scan_id = conflict.scan_id
+        bundle = self.state.bundle
         try:
-            edit = correct_field(
+            edit = commit_field_edit(
                 database,
                 batch_id=self.state.batch_id,
                 scan_id=scan_id,
-                zone_id=shape.zone_id,
-                values=positions,
-                display_value=join_field_value(values),
-                field_label=shape.label,
+                shape=shape,
+                # The field being edited - not the selected record, which may
+                # belong to the other field on this sheet.
+                kind=self.state.editing_kind or conflict.field.kind,
+                plan=plan,
+                records=self._sheet_records(),
+                result=bundle.result if bundle is not None else None,
                 reviewer=self.state.reviewer,
                 reason=self._selected_reason(),
                 reason_text=self.reason_text.toPlainText(),
-                overrides={
-                    position: self._machine_observation_at(shape, position)
-                    for position in plan.overrides
-                },
-                # The field being edited - not the selected record, which may
-                # belong to the other field on this sheet.
-                field_kind=self.state.editing_kind or conflict.field.kind,
-                previous_value=join_field_value(plan.current),
             )
         except (ReviewError, OMRScannerError) as exc:
             report_error(self, exc, context="Conflict review (field edit)")
@@ -3632,28 +3405,6 @@ def _reason_or_other(stored: str) -> ReasonCode:
         return ReasonCode.OTHER
 
 
-def _field_requirement(shape: FieldShape) -> str:
-    """Say what a field will accept, in the template's own terms.
-
-    Derived from the field definition rather than written out, so a project
-    with a five-digit roll number or a two-position set code is told about
-    *its* field. The alphabet is named only when it is short enough to read -
-    "exactly 6 digits" is more use than ten symbols listed - and only when
-    every position offers the same one.
-    """
-    positions = f"exactly {shape.length} position(s)"
-    if not shape.is_uniform:
-        return f"{shape.label} must contain {positions}, each a symbol that position prints."
-    symbols = shape.positions[0]
-    if set(symbols) <= set("0123456789"):
-        kind = "digits"
-    elif len(symbols) <= MAX_LISTED_SYMBOLS:
-        kind = f"of {', '.join(symbols)}"
-    else:
-        kind = "symbols this field prints"
-    return f"{shape.label} must contain {positions}, {kind}."
-
-
 def _sheet_tooltip(
     conflict: ConflictRecord, queue: Sequence[ConflictRecord]
 ) -> str:
@@ -3833,4 +3584,10 @@ def _evidence_html(
     return "".join(lines)
 
 
-__all__ = ["ResolvePage", "ResolvePageState"]
+__all__ = [
+    "UNKNOWN_POSITION",
+    "FieldEditPlan",
+    "ResolvePage",
+    "ResolvePageState",
+    "override_warning_text",
+]

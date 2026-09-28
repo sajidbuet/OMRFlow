@@ -150,15 +150,11 @@ class ReconciliationStatus(StrEnum):
             ReconciliationStatus.MATCHED: "Matched",
             ReconciliationStatus.ABSENT_CONFIRMED: "Absent, confirmed",
             ReconciliationStatus.UNKNOWN_ID: "Unknown candidate ID",
-            ReconciliationStatus.DUPLICATE_SCRIPT: "Duplicate script",
-            ReconciliationStatus.PRESENT_WITHOUT_SCRIPT: (
-                "Present but no script found"
-            ),
-            ReconciliationStatus.ABSENT_WITH_SCRIPT: (
-                "Marked absent but script found"
-            ),
+            ReconciliationStatus.DUPLICATE_SCRIPT: "Duplicate scripts",
+            ReconciliationStatus.PRESENT_WITHOUT_SCRIPT: "Missing script",
+            ReconciliationStatus.ABSENT_WITH_SCRIPT: "Absent but script found",
             ReconciliationStatus.UNRESOLVED_CANDIDATE_ID: (
-                "Candidate ID not yet resolved"
+                "Student ID not yet resolved"
             ),
         }[self]
 

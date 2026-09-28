@@ -1069,6 +1069,7 @@ def correct_field(
     overrides: Mapping[int, MachineObservation] | None = None,
     field_kind: FieldKind | None = None,
     previous_value: str = "",
+    context: str = "",
 ) -> FieldEdit:
     """Decide several positions of one field as a single operator action.
 
@@ -1094,6 +1095,8 @@ def correct_field(
         field_kind: What kind of field this is, for a new override record.
             Taken from the field's existing conflicts when omitted.
         previous_value: The field as it read before the edit, for the history.
+        context: Where the edit was made and why, appended to every event's
+            detail so the ledger records the circumstances as well as the change.
 
     Returns:
         What was written, and what was deliberately not.
@@ -1202,7 +1205,11 @@ def correct_field(
                 reviewer=name,
                 reason=reason,
                 reason_text=text_value,
-                detail=f"{detail} {GROUP_MARKER}{group}]",
+                detail=(
+                    f"{detail} {context.strip()} {GROUP_MARKER}{group}]"
+                    if context.strip()
+                    else f"{detail} {GROUP_MARKER}{group}]"
+                ),
             )
             changed[position] = wanted
 

@@ -24,6 +24,7 @@ Why this is a package and not the single module it used to be:
 from __future__ import annotations
 
 from omr_scanner.gui.theme.stylesheet import (
+    ATTENDANCE_STAGE_STYLESHEET,
     CANDIDATE_CHOSEN,
     CANDIDATE_MACHINE,
     CANDIDATE_STATE_PROPERTY,
@@ -52,6 +53,7 @@ from omr_scanner.gui.theme.tokens import (
 )
 
 __all__ = [
+    "ATTENDANCE_STAGE_STYLESHEET",
     "CANDIDATE_CHOSEN",
     "CANDIDATE_MACHINE",
     "CANDIDATE_STATE_PROPERTY",

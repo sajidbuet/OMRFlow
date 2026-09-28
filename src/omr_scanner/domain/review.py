@@ -555,6 +555,11 @@ class ReasonCode(StrEnum):
     ALIGNMENT_ISSUE = "alignment_issue"
     STRAY_MARK = "stray_mark"
     MISCLASSIFICATION = "misclassification"
+    WRONG_ID_ENTERED = "wrong_id_entered"
+    """The candidate filled in a roll number that is not theirs - often a
+    neighbour's, or an absent candidate's. The marks were read correctly; the
+    person who made them wrote the wrong number. Distinct from
+    :attr:`MISCLASSIFICATION`, which says the machine misread the paper."""
     MACHINE_CONFIRMED = "machine_confirmed"
     """The default for accepting a machine value: no typing required, and the
     ledger still says why."""
@@ -582,6 +587,7 @@ _REASON_LABELS: dict[ReasonCode, str] = {
     ReasonCode.ALIGNMENT_ISSUE: "Alignment or crop issue",
     ReasonCode.STRAY_MARK: "Handwritten or stray mark",
     ReasonCode.MISCLASSIFICATION: "Machine misclassification",
+    ReasonCode.WRONG_ID_ENTERED: "Candidate entered a wrong roll number / ID",
     ReasonCode.MACHINE_CONFIRMED: "Machine result visually confirmed",
     ReasonCode.OTHER: "Other (explain below)",
 }

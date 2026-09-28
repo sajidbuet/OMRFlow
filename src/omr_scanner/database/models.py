@@ -512,6 +512,14 @@ class CandidateRoster(Base):
     """
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    source_path: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    """The full path of the file this roster was imported from, or ``""``.
+
+    :attr:`source_name` is what a table shows; this is what tells two files
+    of the same name in different folders apart. Empty for a roster imported
+    before migration 10, which recorded the name only."""
     source_sheet: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     source_format: Mapped[str] = mapped_column(String(10), nullable=False, default="")
     column_map: Mapped[str] = mapped_column(Text, nullable=False, default="")

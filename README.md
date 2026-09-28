@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 5,392 tests passing in the full local run of 2026-09-28 (3 skipped; 4 `stress` tests deselected by default), plus one test added after that run began, passing on its own; `ruff` and `mypy` clean |
+| Automated suite | 5,438 tests passing in the full local run of 2026-09-28 (3 skipped; 4 `stress` tests deselected by default); `ruff` and `mypy` clean |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -241,8 +241,80 @@ synthetically tested" to a qualified stable release.
 | Resolve stage UX & reversible decisions | 🟠 **Implemented — automated tests passing, not yet exercised by a real reviewer.** Whole-position lane overlay, keyboard-first operation, auto-advance, and undo / redo / undo-a-whole-sheet as persisted audit events. See below |
 | Resolve stage layout & workflow (2nd pass) | 🟠 **Implemented — automated tests passing; inspected in rendered screenshots, not yet worked by a real operator.** Space redistributed 29/71 and 70/30, ROI framing, machine-vs-operator colour semantics, pick-then-confirm, and an action that no longer offers to store an invalid reading. See below |
 | Resolve field-level entry & sheet-local progression | 🟠 **Implemented — automated tests passing; driven end to end in a rendered harness, not yet worked by a real operator.** A whole Student ID or Question Set typed once settles every position of it the sheet disputes; the queue is sheet-major and finishes a sheet before moving on. See below |
+| Attendance: reconciliation workstation | 🟠 **Implemented — automated tests passing; the 100-candidate acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Missing script and absent-but-script-found are investigated from the original scan; the complete Student ID or set code is corrected through the Resolve stage's own review ledger; suggestions of where to look; a compact layout usable at 1366×768; the Choose / Replace Attendance File defect fixed. See below |
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+
+#### Attendance as a reconciliation workstation
+
+Step 6 answers, for one set at a time: who was expected, whose script exists,
+which records contradict one another, and - new here - what the paper itself
+says.
+
+**States.** *Matched*, *Missing script* (expected present, no script),
+*Absent but script found* (a contradiction, never taken as proof of
+attendance), *Unknown candidate ID*, *Student ID not yet resolved*, *Duplicate
+scripts* and *Absent, confirmed* - each a word plus a symbol, never colour
+alone. The counts are a row of chips that filter the table.
+
+**Investigating.** Selecting an exception states the problem in labelled
+sentences and lists its scripts and **where to look**: for a missing script,
+the unread, unknown, duplicated or absent-filed scripts whose ID is within two
+digits; for an absent candidate's script, the candidates expected present with
+no script and a similar ID. These are suggestions only - nothing is reassigned
+by similarity, and attendance never changes a scan or vice versa.
+
+**Inspecting and correcting.** *Inspect / Correct Script* (or Enter) opens the
+**original scan** and the sheet as read, inside the Attendance pane, and takes
+the **complete** Student ID or set code. It is the Resolve stage's machinery,
+not a copy: the field-edit logic now lives in one shared service
+(`services/field_edit.py`) that both stages call, the inspector reuses
+Resolve's sheet loader, image view, decision lanes and override warning, and
+every correction is written by `review_store.correct_field` - machine value
+kept, operator value effective for Answer Key, Results and Reports, the reason
+(a new *Candidate entered a wrong roll number / ID* reason exists for this
+case) and the Attendance context recorded in the audit ledger, one-step undo.
+Reconciliation re-runs at once, the selection stays in place, and the table
+says where the script went.
+
+**Choose / Replace Attendance File.** Root cause: when a set's `.xlsx`
+attendance file was replaced by one that cannot be a result template (a CSV,
+or a workbook without a marks column), the **previous workbook stayed
+associated as the set's result template** - so the table's *Result template*
+column went on showing the old file's name, and Reports would have built the
+result on the superseded list. The replacement's blocker message also
+overwrote the line naming the new file, and rosters stored only a file name,
+so a same-named file from another folder was indistinguishable. Fixed: an
+auto-adopted (`attendance`) template is released when its attendance file is
+superseded (a template chosen on Reports is kept); migration 10 records the
+file's full path, shown as a tooltip; the template is reported on its own line.
+The *Result template* column was removed from the set table - it looked like a
+second attendance file - and the template is shown in the set's detail line
+and Status tooltip.
+
+**Layout.** No group box around every block: a compact set table (scrolls
+beyond four sets), one status line, the chips, then a resizable splitter with
+the exception table as the main area and a single scrollable detail pane, so
+every control needed to finish a correction is reachable at 1366×768
+(page minimum 733×322). Ctrl+F searches ID, name or recognised ID.
+
+**Testing.** 45 new tests: 27 Attendance-investigation GUI tests on real rendered scans (states, suggestions, original-scan inspection, full-ID correction with and without an override, cancel, undo, audit contents, selection kept, persistence across reopening, search by recognised ID, chips, Enter and Ctrl+F, every control reachable at 1920×1080 / 1600×900 / 1366×768, set isolation, set switching), 7 Choose / Replace regression tests, and 11 unit tests for the suggestions. Eight existing Attendance tests were updated for the new wording and layout; every existing Resolve-stage test passes unchanged over the shared field-edit service. Manual acceptance, driven in a rendered harness on
+a synthetic Set 10 of 100 candidates (95 present, 5 absent) with 95 real
+rendered scans: Reconcile gave Matched 93 · Missing script 2 · Absent + script
+1 · Unrecognised 1 · Duplicates 0; the absent candidate's script was
+inspected on its original scan, its full ID corrected 170596 → 170594 after
+the override warning; it moved to 170594 (Matched) and 170596 became Absent,
+confirmed; the ledger kept machine `6`, new `4`, the reviewer, the reason and
+the Attendance context; the incomplete ID was completed; every required
+control was reachable at 1366×768; a replacement attendance file and the
+correction both survived closing and reopening the project. **Not yet worked
+by an operator on real sheets.**
+
+**Remaining limits.** A set's reconciliation still reads every script of the
+batch, so in a batch mixing papers another set's scripts appear as unknown IDs
+(pre-existing). Suggestions compare IDs position by position. The app does not
+persist splitter positions, so neither does this page. See
+[Known Limitations](docs/wiki/Known-Limitations.md).
 
 #### Overriding a confidently read position
 

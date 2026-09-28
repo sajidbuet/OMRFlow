@@ -811,8 +811,43 @@ the brand, the selection, and a warning all at once. Here it is the accent tint
 with accent rules above and below, so the selection reads as a selection and
 red is left to mean something."""
 
+ATTENDANCE_STAGE_STYLESHEET: Final = f"""
+QLabel#attendanceSectionHeading {{
+    color: {Color.TEXT_TERTIARY};
+    font-weight: {FontWeight.SEMIBOLD};
+}}
+
+QPushButton#attendanceCountChip {{
+    text-align: left;
+    padding: 2px {Spacing.SM}px;
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-radius: {Radius.SM}px;
+    background: {Color.SURFACE};
+}}
+
+QPushButton#attendanceCountChip:checked {{
+    background: {Color.PRIMARY_SOFT};
+    border: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+}}
+
+QTableWidget#reconciliationTable::item:selected,
+QTableWidget#setAttendanceTable::item:selected {{
+    color: {Color.TEXT_PRIMARY};
+    background: {Color.PRIMARY_SOFT};
+    border-top: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border-bottom: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+}}
+"""
+"""Set on the Attendance stage.
+
+The section headings that replace a group box around every block, the count
+chips that filter the table, and the same narrowed selection the Resolve queue
+uses: the accent *tint* with accent rules, so a selected row reads as a
+selection and a wide table never turns into a solid red band."""
+
 
 __all__ = [
+    "ATTENDANCE_STAGE_STYLESHEET",
     "CANDIDATE_CHOSEN",
     "CANDIDATE_MACHINE",
     "CANDIDATE_STATE_PROPERTY",

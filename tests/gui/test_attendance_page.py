@@ -208,13 +208,21 @@ class TestImport:
         assert "Registered" in imported.summary_label.text()
 
     def test_the_summary_reports_every_count(self, imported: AttendancePage):
+        # The totals are one line; the categories are chips that filter.
         text = imported.summary_label.text()
         for label in (
             "Registered", "Expected present", "Marked absent", "Scripts",
-            "Matched", "Absent confirmed", "Unknown ID", "Duplicate script",
-            "Present without script", "Absent with script",
+            "Absent confirmed", "Resolved", "Accepted as-is",
         ):
             assert label in text
+        chips = {key: chip.text() for key, chip in imported._chips.items()}
+        assert chips == {
+            "matched": "Matched  1",
+            "missing": "Missing script  1",
+            "absent": "Absent + script  1",
+            "unrecognised": "Unrecognised  1",
+            "duplicate": "Duplicates  1",
+        }
 
     def test_the_summary_says_work_remains(self, imported: AttendancePage):
         assert "still need review" in imported.summary_label.text()
@@ -261,8 +269,8 @@ class TestReconciliationTable:
             imported.table.item(row, 0).text()
             for row in range(imported.table.rowCount())
         }
-        assert "Marked absent but script found" in texts
-        assert "Present but no script found" in texts
+        assert "! Absent but script found" in texts
+        assert "⚠ Missing script" in texts
         # ...and never the enum value.
         assert not any("_" in text for text in texts)
 
@@ -270,7 +278,7 @@ class TestReconciliationTable:
         imported.status_filter.setCurrentIndex(
             [imported.status_filter.itemText(i) for i in range(
                 imported.status_filter.count()
-            )].index("Unknown candidate ID")
+            )].index("Unrecognised ID")
         )
         assert [e.candidate_id for e in imported.state.entries] == ["999999"]
         assert imported.table.rowCount() == 1
@@ -310,8 +318,8 @@ class TestCoOccurringIssues:
         select(imported, "100005")
         row = imported.table.currentRow()
         text = imported.table.item(row, 0).text()
-        assert "Marked absent but script found" in text
-        assert "Duplicate script" in text, "the second problem must stay visible"
+        assert "Absent but script found" in text
+        assert "Duplicate scripts" in text, "the second problem must stay visible"
 
     def test_the_detail_panel_lists_every_issue(
         self, qtbot, imported: AttendancePage
@@ -346,13 +354,16 @@ class TestDetailPanel:
     def test_selecting_an_entry_describes_it(self, imported: AttendancePage):
         select(imported, "100004")
         text = imported.detail_label.text()
-        assert "Present but no script found" in text
+        assert "Missing script" in text
         assert "may be missing" in text
+        # Labelled sections, as the operator reads them.
+        for heading in ("Attendance:", "Script:", "Problem:", "Possible explanation:"):
+            assert heading in text
 
     def test_the_imported_attendance_is_shown_verbatim(self, imported: AttendancePage):
         select(imported, "100005")
         text = imported.detail_label.text()
-        assert "Candidate list said" in text
+        assert "on the candidate list" in text
         assert "Marked absent" in text
         # The raw cell, spacing trimmed - so an operator can see what was written.
         assert "cell read 'abs'" in text
@@ -368,7 +379,7 @@ class TestDetailPanel:
 
     def test_a_fresh_entry_says_no_decisions_yet(self, imported: AttendancePage):
         select(imported, "100004")
-        assert "No decisions" in imported.history_label.text()
+        assert "No reconciliation decisions" in imported.history_label.text()
 
 
 class TestResolution:
@@ -866,7 +877,7 @@ class TestSetsAreListed:
 
     def test_a_set_without_attendance_says_so(self, set_page: AttendancePage):
         assert set_page.set_table.item(0, 2).text() == "None assigned"
-        assert "No attendance file assigned" in set_page.set_table.item(0, 5).text()
+        assert "No attendance file assigned" in set_page.set_table.item(0, 6).text()
 
     def test_the_first_set_is_selected_to_begin_with(self, set_page: AttendancePage):
         chosen = set_page.selected_set()
@@ -1174,3 +1185,185 @@ class TestStableObjectNames:
             )
         finally:
             dialog.close()
+
+
+# ----------------------------------------------------------------------
+# Choose / Replace Attendance File - the reported defect
+# ----------------------------------------------------------------------
+def _accept_every_prompt(qtbot, monkeypatch) -> None:
+    """Drive `import_from` end to end: confirm, map, accept."""
+
+    def exec_(dialog: RosterImportDialog) -> int:
+        qtbot.waitUntil(lambda: dialog.validation is not None, timeout=10_000)
+        return RosterImportDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(RosterImportDialog, "exec", exec_)
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Yes),
+    )
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(_ignore))
+
+
+def _workbook(path: Path, first_roll: int) -> Path:
+    """A sample attendance workbook whose roll numbers start at ``first_roll``."""
+    import openpyxl
+
+    from omr_scanner.services.candidate_import import save_sample_template
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    save_sample_template(path, overwrite=True)
+    book = openpyxl.load_workbook(path)
+    offset = 0
+    for row in book.active.iter_rows():
+        for cell in row:
+            text = str(cell.value) if cell.value is not None else ""
+            if text.isdigit() and len(text) >= 5:
+                cell.value = str(first_roll + offset)
+                offset += 1
+    book.save(path)
+    return path
+
+
+def _csv(path: Path, rolls: tuple[str, ...]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "Roll No.,Name,Total\n" + "".join(f"{roll},NAME {roll},50\n" for roll in rolls),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _registered(page: AttendancePage) -> set[str]:
+    page.status_filter.setCurrentIndex(0)
+    return {entry.candidate_id for entry in page.state.entries if entry.is_registered}
+
+
+class TestReplacingAnAttendanceFile:
+    def test_the_replacement_is_shown_and_used_at_once(
+        self, qtbot, monkeypatch, set_page: AttendancePage, tmp_path, three_sets
+    ):
+        _accept_every_prompt(qtbot, monkeypatch)
+        first = _csv(tmp_path / "a" / "first.csv", ("100001", "100002"))
+        second = _csv(tmp_path / "b" / "second.csv", ("200001", "200002", "200003"))
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            assert set_page.import_from(first) is True
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            assert set_page.import_from(second) is True
+
+        assert set_page.set_table.item(0, 2).text() == "second.csv"
+        assert set_page.set_table.item(0, 3).text() == "3"
+        assert "second.csv" in set_page.roster_label.text()
+        assert set_page.state.roster.source_name == "second.csv"
+        active = reconciliation_store.active_roster(set_page.database, three_sets[0].set_id)
+        assert active.roster_id == set_page.state.roster.roster_id
+
+    def test_no_candidate_of_the_old_file_is_kept(
+        self, qtbot, monkeypatch, set_page: AttendancePage, tmp_path
+    ):
+        _accept_every_prompt(qtbot, monkeypatch)
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(_csv(tmp_path / "first.csv", ("100003", "100004")))
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(_csv(tmp_path / "second.csv", ("200001",)))
+        assert _registered(set_page) == {"200001"}
+
+    def test_a_same_named_file_from_another_folder_is_told_apart(
+        self, qtbot, monkeypatch, set_page: AttendancePage, tmp_path
+    ):
+        _accept_every_prompt(qtbot, monkeypatch)
+        first = _workbook(tmp_path / "morning" / "attendance.xlsx", 300001)
+        second = _workbook(tmp_path / "evening" / "attendance.xlsx", 400001)
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(first)
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(second)
+
+        # The name is the same; the stored path, and so the tooltip, is not.
+        assert set_page.set_table.item(0, 2).text() == "attendance.xlsx"
+        assert set_page.set_table.item(0, 2).toolTip() == str(second)
+        assert set_page.state.roster.source_path == str(second)
+        registered = _registered(set_page)
+        assert registered
+        assert all(roll.startswith("4000") for roll in registered)
+        association = set_page.selected_set_status().association
+        assert association is not None
+        assert association.template_path == str(second)
+
+    def test_a_superseded_attendance_workbook_stops_being_the_template(
+        self, qtbot, monkeypatch, set_page: AttendancePage, tmp_path
+    ):
+        # The root cause: an .xlsx replaced by a file that cannot be a template
+        # left the old workbook as the set's template - shown beside the new
+        # file, and used to build the set's result.
+        _accept_every_prompt(qtbot, monkeypatch)
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(_workbook(tmp_path / "first.xlsx", 300001))
+        assert set_page.selected_set_status().association is not None
+
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(_csv(tmp_path / "second.csv", ("200001",)))
+
+        assert set_page.selected_set_status().association is None
+        assert "first.xlsx" not in set_page.template_label.text()
+        assert "CSV" in set_page.template_label.text()
+        # ...and the new file's name is not hidden behind that message.
+        assert "second.csv" in set_page.roster_label.text()
+
+    def test_a_template_chosen_on_reports_is_kept(
+        self, qtbot, monkeypatch, set_page: AttendancePage, tmp_path, three_sets
+    ):
+        from omr_scanner.services import report_store
+        from omr_scanner.services.report_template import preview_template
+
+        _accept_every_prompt(qtbot, monkeypatch)
+        chosen = _workbook(tmp_path / "result_layout.xlsx", 500001)
+        preview = preview_template(chosen)
+        report_store.associate_template(
+            set_page.database,
+            "10",
+            chosen,
+            preview.suggestion.to_mapping(),
+            sheet_name=preview.sheet,
+            set_id=three_sets[0].set_id,
+            source_kind=set_attendance.SOURCE_KIND_MANUAL,
+        )
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(_csv(tmp_path / "list.csv", ("200001",)))
+        association = set_page.selected_set_status().association
+        assert association is not None
+        assert association.template_path == str(chosen)
+
+    def test_the_replacement_survives_reopening_the_project(
+        self, qtbot, monkeypatch, set_page: AttendancePage, project_session, tmp_path
+    ):
+        _accept_every_prompt(qtbot, monkeypatch)
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(_csv(tmp_path / "first.csv", ("100001",)))
+        second = _csv(tmp_path / "other" / "first.csv", ("200001", "200002"))
+        with qtbot.waitSignal(set_page.reconciled, timeout=10_000):
+            set_page.import_from(second)
+        root = project_session.root
+        set_page.close()
+        project_session.close()
+
+        with open_project(root) as reopened:
+            overview = {
+                status.exam_set.code: status
+                for status in set_attendance.attendance_overview(reopened.database)
+            }
+        assert overview["10"].roster.source_path == str(second)
+        assert overview["10"].candidate_count == 2
+        assert overview["11"].has_attendance is False
+
+    def test_the_result_template_is_not_a_set_table_column(self, set_page: AttendancePage):
+        headers = [
+            set_page.set_table.horizontalHeaderItem(column).text()
+            for column in range(set_page.set_table.columnCount())
+        ]
+        assert "Result template" not in headers
+        assert headers == [
+            "Set", "Description", "Attendance file", "Candidates", "Present",
+            "Absent", "Status",
+        ]

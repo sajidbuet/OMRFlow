@@ -82,6 +82,7 @@ from omr_scanner.services.review_store import effective_identifiers
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
+    from pathlib import Path
 
     from sqlalchemy.orm import Session
 
@@ -137,6 +138,9 @@ class RosterSummary:
     set_id: str | None = None
     """The examination set this roster belongs to, or ``None`` for a roster
     imported before attendance was per-set."""
+    source_path: str = ""
+    """The full path it was imported from, or ``""`` when that was not recorded
+    (a roster imported before migration 10, or through a path with no file)."""
 
     @property
     def describe(self) -> str:
@@ -274,6 +278,7 @@ def import_roster(
     imported_by: str = "",
     activate: bool = True,
     set_id: str | None = None,
+    source_path: Path | None = None,
 ) -> int:
     """Store a validated roster and, by default, make it the active one.
 
@@ -288,6 +293,8 @@ def import_roster(
             importing Set 11's list must never deactivate Set 10's. ``None``
             keeps the pre-Part-2 behaviour of one unscoped roster per project,
             which is what a project with no defined sets still uses.
+        source_path: The file it was read from, recorded in full so that two
+            files of the same name in different folders stay distinguishable.
 
     Returns:
         The new roster's id.
@@ -327,6 +334,7 @@ def import_roster(
             set_id=set_id,
             created_at=_now(),
             source_name=validation.source_name,
+            source_path=str(source_path) if source_path is not None else "",
             source_sheet=validation.sheet,
             source_format=validation.source_name.rsplit(".", 1)[-1].casefold()[:10],
             column_map=json.dumps(
@@ -508,6 +516,7 @@ def _roster_summary(row: CandidateRoster) -> RosterSummary:
         is_active=row.is_active,
         imported_by=row.imported_by,
         set_id=row.set_id,
+        source_path=row.source_path or "",
     )
 
 
@@ -1030,9 +1039,22 @@ def _apply_filters(statement: Any, rules: EntryFilter) -> Any:
     text = rules.search.strip()
     if text:
         pattern = f"%{text}%"
+        # A recognised ID is searchable too: an operator holding a sheet that
+        # reads "1805017" needs to find it whichever candidate it is filed
+        # under - and under a correction, whether they type what the machine
+        # read or what it reads as now.
+        recognised = (
+            select(ReconciliationScript.entry_id)
+            .where(
+                ReconciliationScript.machine_candidate_id.ilike(pattern)
+                | ReconciliationScript.effective_candidate_id.ilike(pattern)
+            )
+            .scalar_subquery()
+        )
         statement = statement.where(
             ReconciliationEntryRow.candidate_id.ilike(pattern)
             | ReconciliationEntryRow.display_name.ilike(pattern)
+            | ReconciliationEntryRow.entry_id.in_(recognised)
         )
     return statement
 

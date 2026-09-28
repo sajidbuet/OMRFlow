@@ -28,30 +28,71 @@ OMRFlow searches for the header row rather than assuming row 1.
 
 ## Reconciling
 
-**Reconcile** compares the roster against the scripts. The
-**Reconciliation summary** reports what matched and what did not:
+**Reconcile** compares the selected set's candidate list against the scanned
+scripts. A row of count chips shows the result; click a chip to show only
+those rows, and click it again to go back to every exception.
 
-| Exception | Meaning |
+| Status | Meaning |
 |---|---|
-| **Unknown candidate** | A script carries an ID that is not on the roster |
-| **Duplicate script** | Two scripts claim the same candidate |
-| **Missing script** | A candidate on the roster has no script |
-| **Absent with script** | A candidate marked absent nevertheless has one |
-| **Unknown or wrong set** | A script's set code is not one this project defines |
+| **Matched** | Expected present, exactly one script |
+| **Missing script** | Expected present, but no script matched |
+| **Absent but script found** | Marked absent, yet a script reads as this candidate - treated as a contradiction, never as proof of attendance |
+| **Unknown candidate ID** | A script carries an ID that is not on this set's list |
+| **Student ID not yet resolved** | Part of a script's ID could not be read |
+| **Duplicate scripts** | More than one script under one ID |
+| **Absent, confirmed** | Marked absent, and no script |
 
-## Deciding
+Every status is written as a word with a symbol beside it (✓ ⚠ ! ○); colour
+is only the third way of saying it. Search matches a candidate ID, a name, or
+the ID a script was **recognised** as - including the machine's reading of a
+script that has since been corrected.
 
-Select an entry under **Scripts**, then choose under **Your decision**:
+Replacing a set's attendance file takes effect at once: the old list's
+candidates are not kept, the full path of the file is shown in the tooltip
+(so two files with the same name in different folders are distinguishable),
+and a workbook that was only the set's result template *because* it was the
+previous attendance file stops being its template.
+
+## Investigating
+
+Select an exception. The right-hand pane states the problem - candidate,
+attendance, scripts, and a possible explanation - and lists:
+
+- **Scripts** - the scripts filed under this entry. **Inspect / Correct
+  Script** (or **Enter** on the table) opens one.
+- **Where to look** - for a *missing script*, scripts that might be the
+  candidate's: unread IDs, unknown IDs, scripts filed under an absent
+  candidate, and duplicates, ranked by how many digits differ. For an *absent
+  but script found*, the candidates expected present with no script whose ID
+  is similar - the people most likely to have filled in the wrong roll
+  number.
+
+These are **suggestions only**. Nothing is reassigned until you look at the
+scan and correct it.
+
+The **Scan** section shows the **original scan** as it arrived and, on a
+second tab, the sheet as it was read with the Student ID and set-code bubbles
+outlined. Below it, type the **complete** Student ID or set code and press
+**Apply**. Changing a position the machine read confidently asks for
+confirmation first. The correction is recorded in the same review ledger the
+Resolve stage uses: the machine's reading is kept, your value becomes the one
+every later stage uses, the reason and a note are recorded, and **Undo
+Correction** takes it back as one action. Reconciliation re-runs immediately
+and the table stays where you were.
+
+## Other decisions
 
 | Button | Meaning |
 |---|---|
-| **Assign Script** | This script belongs to this candidate |
-| **Set Script Aside** | Exclude it from results for now (**Put Back On The List** reverses this) |
+| **Confirm Script Assignment** | File this script under a candidate *without* changing its Student ID |
+| **Set Script Aside** | An accidental re-scan; it stops counting but is never deleted (**Bring Script Back** reverses this) |
 | **Override Attendance** | Record an attendance state different from the imported one |
-| **Accept As-Is** | The exception is understood and needs no change |
+| **Accept As-Is** | Investigated, nothing more can be done - for example, no scan was found |
 
 Every decision is recorded **beside** the imported and recognised values,
 never over them, and attributed to the operator named in *Settings*.
+
+**Ctrl+F** jumps to the search box.
 
 ## Why per-set
 
@@ -62,8 +103,10 @@ which paper a mark came from. See [Examination Sets](Examination-Sets).
 
 ## Status of this area
 
-🟡 **Per-set attendance is implemented and tested against synthetic rosters
-only.** Real institutional workbooks vary in ways synthetic ones do not.
+🟡 **Per-set attendance and the investigation workflow are implemented and
+tested against synthetic rosters and synthetic scans only.** Real
+institutional workbooks, and real sheets filled in by real candidates, vary in
+ways synthetic ones do not.
 Check the reconciliation summary carefully on your first real import, and
 please [report](https://github.com/sajidbuet/OMRFlow/issues/new/choose) a
 workbook that does not import — with names and roll numbers replaced. See

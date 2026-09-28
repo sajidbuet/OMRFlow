@@ -202,7 +202,11 @@ def assign_attendance_workbook(
 
     try:
         roster_id = reconciliation_store.import_roster(
-            database, validation, imported_by=imported_by, set_id=set_id
+            database,
+            validation,
+            imported_by=imported_by,
+            set_id=set_id,
+            source_path=source_path,
         )
     except OMRScannerError as exc:
         raise SetAttendanceError(
@@ -216,6 +220,10 @@ def assign_attendance_workbook(
         adopted, blocker = _adopt_as_result_template(
             database, exam_set, source_path, updated_by=imported_by
         )
+        if not adopted:
+            # The previous attendance workbook must not go on standing in as
+            # this set's template: it belongs to the list just replaced.
+            report_store.release_attendance_template(database, set_id)
     _LOGGER.info(
         "Attendance assigned: set=%s roster=%d candidates=%d template=%s",
         exam_set.code,

@@ -193,10 +193,10 @@ Two normal outcomes and five exceptions.
 | **Matched** | Expected to attend; exactly one script. |
 | **Absent, confirmed** | Recorded absent; no script. *Not an exception.* |
 | **Unknown candidate ID** | A script read as an ID that is not on the roster. |
-| **Duplicate script** | Two or more scripts for one candidate. |
-| **Present but no script found** | Expected to attend; nothing arrived. |
-| **Marked absent but script found** | Recorded absent; a script arrived anyway. |
-| **Candidate ID not yet resolved** | The sheet's roll number is still awaiting review on the **Resolve** stage. |
+| **Duplicate scripts** | Two or more scripts for one candidate. |
+| **Missing script** | Expected to attend; nothing arrived. |
+| **Absent but script found** | Recorded absent; a script arrived anyway. |
+| **Student ID not yet resolved** | Part of the sheet's roll number could not be read; complete it from the scan here or on the **Resolve** stage. |
 
 That last one exists so an unread identifier is never reported as an *unknown
 candidate*. The two need different actions: one is a recognition problem with
@@ -222,7 +222,7 @@ present but no script found     (often the consequence of one of the above)
 ```
 
 The precedence decides only what the *Status* column says. Every issue stays on
-the entry, the table appends `(+ Duplicate script)` to the headline, and the
+the entry, the table appends `(+ Duplicate scripts)` to the headline, and the
 detail panel lists them all. **A physical script must never disappear because
 another exception exists.**
 
@@ -235,11 +235,23 @@ name Phase 6 records) and appends an audit event.
 
 | Exception | What the operator can do |
 |---|---|
-| Unknown candidate ID | Assign the script to the right candidate; or accept it as-is with a reason. |
-| Duplicate script | Reassign a misidentified script; set one aside as an accidental re-scan; nominate the working script; or leave it. |
-| Present but no script | Override attendance to absent; accept that the script is missing; or assign an unplaced script to them. |
-| Marked absent but script found | Override attendance to present; reassign the script; or accept it. |
-| Candidate ID not yet resolved | Resolve it on the **Resolve** stage, then reconcile again. |
+| Unknown candidate ID | Inspect the scan and correct the Student ID; assign the script to the right candidate; or accept it as-is with a reason. |
+| Duplicate scripts | Inspect each scan and correct a misidentified Student ID; set one aside as an accidental re-scan; nominate the working script; or leave it. |
+| Missing script | Inspect the suggested scripts (*Where to look*) and correct the one that is theirs; override attendance to absent; accept that the script is missing; or assign an unplaced script to them. |
+| Absent but script found | Inspect the scan: if another candidate filled in this roll number, correct the Student ID (the likeliest owners are suggested); if the candidate did attend, override attendance to present; or accept it. |
+| Student ID not yet resolved | Inspect the scan and type the complete ID (or resolve it on the **Resolve** stage); reconciliation re-runs by itself. |
+
+### Correcting a Student ID from the scan
+
+*Inspect / Correct Script* opens the original scan and takes the complete
+Student ID or set code. The correction is written by the review ledger's
+`correct_field` - the same path as the Resolve stage's field editor
+(`services/field_edit.py`) - so the machine's reading is kept, the
+operator's value becomes effective for every later stage, a position read
+confidently is overridden only after a warning, and the event records the
+reviewer, the reason and that it was made from the Attendance stage.
+Reconciliation re-runs immediately. The suggestions under *Where to look*
+(`services/reconciliation_leads.py`) are never acted on automatically.
 
 ### Nothing is deleted, ever
 
@@ -256,7 +268,7 @@ Assigning a script to a candidate who already has one produces a duplicate
 
 ```text
 assign 999999 -> 100001   (who already had a script)
-    100001: Duplicate script, 2 scripts, needs review
+    100001: Duplicate scripts, 2 scripts, needs review
 ```
 
 An entry whose issues a decision did *not* clear stays **open**. Being touched

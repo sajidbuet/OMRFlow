@@ -435,6 +435,28 @@ def _migration_009_per_set_attendance(connection: Connection) -> None:
         )
 
 
+def _migration_010_roster_source_path(connection: Connection) -> None:
+    """Record the full path an attendance file was imported from.
+
+    One additive column, empty for every existing roster: a project imported
+    before this version recorded the file's *name* only, and nothing can
+    recover which folder it came from. Two files called ``attendance.xlsx`` in
+    different folders were therefore indistinguishable once imported - the
+    table showed the same name before and after a replacement.
+    """
+    existing = {
+        row[1]
+        for row in connection.execute(text("PRAGMA table_info(candidate_roster)")).all()
+    }
+    if "source_path" not in existing:
+        connection.execute(
+            text(
+                "ALTER TABLE candidate_roster ADD COLUMN source_path TEXT NOT NULL "
+                "DEFAULT ''"
+            )
+        )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -495,6 +517,11 @@ MIGRATIONS: tuple[Migration, ...] = (
             "report_template_association.set_id/source_kind"
         ),
         apply=_migration_009_per_set_attendance,
+    ),
+    Migration(
+        version=10,
+        description="Attendance file provenance: candidate_roster.source_path",
+        apply=_migration_010_roster_source_path,
     ),
 )
 

@@ -295,6 +295,37 @@ def associate_template(
     return stored
 
 
+def release_attendance_template(database: ProjectDatabase, set_id: str) -> bool:
+    """Forget a set's result template **if it arrived as its attendance file**.
+
+    Args:
+        database: The open project database.
+        set_id: The defined set.
+
+    Returns:
+        Whether an association was removed.
+
+    Called when that set's attendance file is replaced by one that cannot
+    itself serve as a template. The old workbook was adopted *because* it was
+    the attendance list; once another list replaces it, keeping it would build
+    the set's result on a superseded file - and the Attendance screen went on
+    showing the old file's name beside the new one, which is how the defect was
+    reported. A template an operator chose deliberately (``source_kind``
+    ``"manual"``) is left alone: it was never tied to the attendance file.
+    """
+    with database.session() as session:
+        row = session.scalars(
+            select(ReportTemplateAssociation).where(
+                ReportTemplateAssociation.set_id == set_id
+            )
+        ).first()
+        if row is None or row.source_kind != "attendance":
+            return False
+        session.delete(row)
+    _LOGGER.info("Superseded attendance template released for set %s", set_id)
+    return True
+
+
 def _hash_file(path: Path) -> str:
     """Return the SHA-256 of a file's bytes.
 

@@ -624,6 +624,25 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 | `project_set` | The project's own registry of examination sets: code, description, order, stable id. | Project configuration (migration 8) |
 | `candidate_roster.set_id` | Which set an attendance list belongs to. NULL for a roster imported before attendance was per-set. | Per-set attendance (migration 9) |
 | `report_template_association.set_id` / `source_kind` | Which set a result template belongs to, and whether it arrived as that set's attendance workbook. | Per-set attendance (migration 9) |
+| `candidate_roster.source_path` | The full path an attendance file was imported from. Empty for a roster imported before migration 10. | Attendance file provenance (migration 10) |
+
+### Schema version 10 (attendance file provenance)
+
+`_migration_010_roster_source_path` adds one column, `source_path TEXT NOT
+NULL DEFAULT ''`, to `candidate_roster`. Purely additive.
+
+- **An existing roster keeps an empty path.** Nothing recorded which folder an
+  earlier file came from, so nothing is invented; the interface falls back to
+  the file name it always showed.
+- **Why it exists.** A roster recorded only `source_name`, so replacing
+  `attendance.xlsx` with a different `attendance.xlsx` from another folder
+  looked like nothing had happened.
+- **Related, no schema change:** when an attendance file is replaced by one
+  that cannot serve as the set's result template, a template association
+  whose `source_kind` is `'attendance'` - adopted *because* it was the
+  previous attendance file - is removed
+  (`report_store.release_attendance_template`). A `'manual'` association is
+  never touched.
 
 ### Schema version 9 (per-set attendance and templates)
 

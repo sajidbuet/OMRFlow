@@ -87,6 +87,9 @@ Closing this is the whole purpose of
 | ✅ | Detecting unknown, duplicate and missing scripts, and absentees with a script |
 | 🟡 | **Per-set attendance** (*examination sets, Part 2*). Implemented and tested — with synthetic rosters only |
 | 🟠 | Real attendance workbooks. Institutional workbooks vary in ways synthetic ones do not: merged cells, multiple header rows, trailing totals, unexpected columns |
+| 🟡 | **Investigating an exception from the scan** - original scan, full Student ID / set-code correction through the review ledger, suggested scripts and candidates. Implemented and tested with synthetic scans; not yet used by an operator on real sheets |
+| 🟠 | A set's reconciliation reads **every** script of the batch, not only the scripts whose set code is that set's. In a batch mixing papers, another set's scripts appear as unknown candidate IDs. Reconcile one set's batch at a time until this is addressed |
+| 🟠 | Suggestions ("Where to look") compare IDs digit by digit, so a script whose ID has a missing or extra digit is only suggested when that ID is unread, not when it is simply a different length |
 
 ### Answer keys and scoring
 

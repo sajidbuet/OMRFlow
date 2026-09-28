@@ -364,7 +364,11 @@ class MainWindow(QMainWindow):
                 resolve_page.auto_advance_changed.connect(self._on_auto_advance_changed)
                 page = resolve_page
             elif spec.key == "attendance":
-                page = AttendancePage(spec)
+                attendance_page = AttendancePage(spec)
+                attendance_page.resolution_recorded.connect(
+                    self._on_attendance_decision
+                )
+                page = attendance_page
             elif spec.key == "answer_key":
                 answer_key_page = AnswerKeyPage(spec)
                 # A key is written on one stage and used on another. Without
@@ -1002,12 +1006,28 @@ class MainWindow(QMainWindow):
         answer_key = self._answer_key_page()
         if answer_key is not None:
             answer_key.set_template(template)  # type: ignore[arg-type]
+        attendance = self._attendance_page()
+        if attendance is not None:
+            # Its script inspector re-reads a sheet with it.
+            attendance.set_template(template)  # type: ignore[arg-type]
         results = self._results_page()
         if results is not None:
             results.set_template(template)  # type: ignore[arg-type]
         reports = self._reports_page()
         if reports is not None:
             reports.set_template(template)  # type: ignore[arg-type]
+
+    def _on_attendance_decision(self) -> None:
+        """Tell the Resolve stage that a sheet's review records may have moved.
+
+        A Student ID corrected from the Attendance stage is written to the same
+        review ledger the Resolve stage reads - it may settle a conflict there,
+        or add an operator override. The Resolve queue re-reads so it never
+        offers a decision that has already been made.
+        """
+        resolve = self._resolve_page()
+        if resolve is not None and resolve.state.batch_id is not None:
+            resolve.refresh_queue()
 
     def _on_answer_key_changed(self, _key_id: int) -> None:
         """Tell the Results and Reports stages that this project's keys have moved on.
