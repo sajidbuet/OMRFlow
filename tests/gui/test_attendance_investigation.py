@@ -20,18 +20,27 @@ for an operator.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import cv2
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 from tests.gui.test_resolve_page import sheet_marks
 
+from omr_scanner.config import AppConfig
+from omr_scanner.config.app_config import (
+    MAX_SPLIT_RATIO,
+    MIN_SPLIT_RATIO,
+    load_app_config,
+)
 from omr_scanner.domain.reconciliation import ReconciliationStatus
 from omr_scanner.domain.review import ConflictType, FieldKind, ReasonCode, ValueSource
-from omr_scanner.gui.attendance.page import AttendancePage
+from omr_scanner.gui.attendance.page import DEFAULT_SPLIT_RATIO, AttendancePage
+from omr_scanner.gui.main_window import MainWindow
 from omr_scanner.gui.pages import WORKFLOW_PAGES
 from omr_scanner.services import (
     batch_store,
@@ -210,7 +219,7 @@ class TestWhereToLook:
         assert page.scripts_list.count() == 1
         assert "SYN_000003.png" in page.scripts_list.item(0).text()
         leads = [page.leads_list.item(i).text() for i in range(page.leads_list.count())]
-        assert any(text.startswith("170503") and "1 digit" in text for text in leads)
+        assert any(text.startswith("170503") and "1 edit away" in text for text in leads)
         # 170505 also differs by one digit; both are suggestions, neither is chosen.
         assert status_of(page, "170503") is ReconciliationStatus.PRESENT_WITHOUT_SCRIPT
 
@@ -478,8 +487,11 @@ class TestSets:
     @pytest.fixture
     def two_sets(self, qtbot, project_session, template, batch, tmp_path):
         database = project_session.database
-        ten = project_sets.add_set(database, "10", "Assistant Engineer (Electrical)")
-        eleven = project_sets.add_set(database, "11", "Assistant Engineer (Civil)")
+        # The sets are coded "A" and "B" because the rendered sheets carry set
+        # code A: a set reconciles only the scripts whose set code is its own,
+        # so these four sheets belong to the first set and none to the second.
+        ten = project_sets.add_set(database, "A", "Assistant Engineer (Electrical)")
+        eleven = project_sets.add_set(database, "B", "Assistant Engineer (Civil)")
         attendance = _page(qtbot, project_session, template, batch)
         first = tmp_path / "set10.csv"
         first.write_text(ROSTER, encoding="utf-8")
@@ -527,3 +539,164 @@ class TestSets:
         names = {entry.display_name for entry in page.state.entries}
         assert "OTHER PERSON" in names
         assert "NADIA D" not in names
+
+
+# ----------------------------------------------------------------------
+# Next / previous unresolved, and the remembered divider
+# ----------------------------------------------------------------------
+def _activate(widget) -> None:
+    """Give a real key press somewhere to land, or skip on a headless plugin."""
+    widget.show()
+    widget.activateWindow()
+    widget.raise_()
+    QApplication.processEvents()
+    if not widget.isActiveWindow():
+        pytest.skip("this Qt platform plugin never activates a window")
+
+
+class TestAttendanceNavigation:
+    def outstanding(self, page: AttendancePage) -> list[str]:
+        return [entry.candidate_id for entry in page.state.entries if entry.needs_attention]
+
+    def test_next_walks_the_rows_needing_review_in_order(self, page: AttendancePage):
+        wanted = self.outstanding(page)
+        assert len(wanted) == 4
+        page.table.clearSelection()
+        page.table.setCurrentCell(-1, -1)
+        seen = []
+        for _ in wanted:
+            assert page.select_next_unresolved() is True
+            seen.append(page._selected_entry().candidate_id)
+        assert seen == wanted
+
+    def test_wrapping_is_announced_not_silent(self, page: AttendancePage):
+        wanted = self.outstanding(page)
+        select(page, wanted[-1])
+        assert page.select_next_unresolved() is True
+        assert page._selected_entry().candidate_id == wanted[0]
+        assert "continued from the top" in page.navigation_note.text()
+        assert page.navigation_note.isVisibleTo(page)
+        # An ordinary step clears the note.
+        assert page.select_next_unresolved() is True
+        assert page.navigation_note.text() == ""
+
+    def test_previous_from_the_first_wraps_to_the_last(self, page: AttendancePage):
+        wanted = self.outstanding(page)
+        select(page, wanted[0])
+        assert page.select_previous_unresolved() is True
+        assert page._selected_entry().candidate_id == wanted[-1]
+        assert "continued from the end" in page.navigation_note.text()
+
+    def test_it_stays_within_the_current_filter(self, page: AttendancePage):
+        page._chips["missing"].click()
+        visited = set()
+        for _ in range(6):
+            page.select_next_unresolved()
+            visited.add(page._selected_entry().candidate_id)
+        assert visited == {"170503", "170505"}
+
+    def test_a_row_already_dealt_with_is_passed_over(self, qtbot, page: AttendancePage):
+        select(page, "170505")
+        page.reason_combo.setCurrentIndex(page.reason_combo.findData("script_missing"))
+        with qtbot.waitSignal(page.resolution_recorded, timeout=TIMEOUT_MS):
+            assert page.toggle_dismissed() is True
+        page.resolution_filter.setCurrentIndex(0)
+        page.status_filter.setCurrentIndex(0)
+        visited = set()
+        for _ in range(8):
+            page.select_next_unresolved()
+            visited.add(page._selected_entry().candidate_id)
+        assert "170505" not in visited
+
+    def test_nothing_left_is_said_and_the_selection_stays(self, page: AttendancePage):
+        page.status_filter.setCurrentIndex(page.status_filter.findText("Matched"))
+        select(page, "170501")
+        assert page.select_next_unresolved() is False
+        assert page._selected_entry().candidate_id == "170501"
+        assert "Nothing in this view" in page.navigation_note.text()
+
+    def test_the_buttons_name_their_shortcuts(self, page: AttendancePage):
+        assert "Ctrl+Down" in page.next_unresolved_button.toolTip()
+        assert "Ctrl+Up" in page.previous_unresolved_button.toolTip()
+
+    def test_ctrl_down_and_ctrl_up(self, page: AttendancePage):
+        wanted = self.outstanding(page)
+        select(page, wanted[0])
+        _activate(page)
+        page.table.setFocus()
+        QTest.keyClick(page.table, Qt.Key.Key_Down, Qt.KeyboardModifier.ControlModifier)
+        assert page._selected_entry().candidate_id == wanted[1]
+        QTest.keyClick(page.table, Qt.Key.Key_Up, Qt.KeyboardModifier.ControlModifier)
+        assert page._selected_entry().candidate_id == wanted[0]
+
+
+class TestTheDividerIsRemembered:
+    def test_the_config_clamps_rather_than_rejects(self):
+        assert AppConfig().attendance_split_ratio is None
+        assert AppConfig().with_attendance_split_ratio(0.5).attendance_split_ratio == 0.5
+        assert AppConfig().with_attendance_split_ratio(0.99).attendance_split_ratio == (
+            MAX_SPLIT_RATIO
+        )
+        assert AppConfig().with_attendance_split_ratio(0.01).attendance_split_ratio == (
+            MIN_SPLIT_RATIO
+        )
+
+    def test_an_older_config_file_still_loads(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"config_version": 1, "reviewer_name": "X"}), "utf-8")
+        loaded = load_app_config(path, strict=True)
+        assert loaded.reviewer_name == "X"
+        assert loaded.attendance_split_ratio is None
+
+    def test_the_default_applies_when_nothing_is_saved(self, qtbot, page: AttendancePage):
+        page.resize(1400, 700)
+        page.show()
+        qtbot.waitExposed(page)
+        assert page.split_ratio() == pytest.approx(DEFAULT_SPLIT_RATIO, abs=0.03)
+
+    def test_an_unsuitable_ratio_leaves_the_detail_pane_its_minimum(
+        self, qtbot, page: AttendancePage
+    ):
+        page.set_split_ratio(5.0)
+        page.resize(900, 700)
+        page.show()
+        qtbot.waitExposed(page)
+        right = page.work_splitter.sizes()[1]
+        assert right >= page.detail_scroll.minimumWidth() - 2
+
+    def test_moving_the_divider_is_saved_and_restored_by_the_window(
+        self, qtbot, tmp_path
+    ):
+        config_path = tmp_path / "config.json"
+        window = MainWindow(AppConfig(), config_path=config_path)
+        qtbot.addWidget(window)
+        try:
+            window.resize(1500, 900)
+            window.show()
+            window.show_page("attendance")
+            attendance = window._attendance_page()
+            qtbot.waitExposed(attendance)
+            total = sum(attendance.work_splitter.sizes())
+            attendance.work_splitter.setSizes([int(total * 0.45), total - int(total * 0.45)])
+            attendance.work_splitter.splitterMoved.emit(int(total * 0.45), 1)
+            with qtbot.waitSignal(attendance.split_ratio_changed, timeout=5_000):
+                pass
+            qtbot.waitUntil(lambda: config_path.exists(), timeout=5_000)
+        finally:
+            window.close()
+
+        saved = load_app_config(config_path, strict=True).attendance_split_ratio
+        assert saved == pytest.approx(0.45, abs=0.02)
+
+        reopened = MainWindow(load_app_config(config_path), config_path=config_path)
+        qtbot.addWidget(reopened)
+        try:
+            reopened.resize(1500, 900)
+            reopened.show()
+            reopened.show_page("attendance")
+            attendance = reopened._attendance_page()
+            qtbot.waitExposed(attendance)
+            qtbot.waitUntil(lambda: attendance.split_ratio() is not None, timeout=5_000)
+            assert attendance.split_ratio() == pytest.approx(0.45, abs=0.03)
+        finally:
+            reopened.close()

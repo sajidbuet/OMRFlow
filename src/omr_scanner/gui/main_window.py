@@ -368,6 +368,10 @@ class MainWindow(QMainWindow):
                 attendance_page.resolution_recorded.connect(
                     self._on_attendance_decision
                 )
+                attendance_page.split_ratio_changed.connect(
+                    self._on_attendance_split_changed
+                )
+                attendance_page.set_split_ratio(self._config.attendance_split_ratio)
                 page = attendance_page
             elif spec.key == "answer_key":
                 answer_key_page = AnswerKeyPage(spec)
@@ -1016,6 +1020,15 @@ class MainWindow(QMainWindow):
         reports = self._reports_page()
         if reports is not None:
             reports.set_template(template)  # type: ignore[arg-type]
+
+    def _on_attendance_split_changed(self, ratio: float) -> None:
+        """Remember where the operator left the Attendance divider.
+
+        Persisted through the ordinary application configuration, like the
+        ribbon density - a layout preference follows the person, and no
+        project file is touched.
+        """
+        self.apply_config(self._config.with_attendance_split_ratio(ratio))
 
     def _on_attendance_decision(self) -> None:
         """Tell the Resolve stage that a sheet's review records may have moved.

@@ -58,6 +58,14 @@ it to a comment: a design system that added a sixth density level without
 widening this range would silently refuse to save it.
 """
 
+MIN_SPLIT_RATIO = 0.3
+MAX_SPLIT_RATIO = 0.8
+"""The share of the Attendance work area the exception table may be given.
+
+A stored ratio outside this range is clamped when it is applied, never
+rejected when the file is read: a preference file that failed validation would
+reset every *other* preference with it."""
+
 LogLevelName = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 
@@ -99,6 +107,10 @@ class AppConfig(BaseModel):
             examination. Stored here rather than in a project for exactly that
             reason - no project file gains a field, and every project opened
             in a previous build still loads unchanged.
+        attendance_split_ratio: The share of the Attendance stage's work area
+            the exception table takes, beside the detail pane. ``None`` until
+            the operator first moves the divider. A layout preference, kept
+            with the person like :attr:`ribbon_density`, not with a project.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -114,6 +126,7 @@ class AppConfig(BaseModel):
     ribbon_density: int = Field(
         default=DEFAULT_RIBBON_DENSITY, ge=MIN_RIBBON_DENSITY, le=MAX_RIBBON_DENSITY
     )
+    attendance_split_ratio: float | None = None
 
     def log_level_value(self) -> int:
         """Return :attr:`log_level` as a :mod:`logging` numeric level."""
@@ -162,6 +175,11 @@ class AppConfig(BaseModel):
         """
         clamped = max(MIN_RIBBON_DENSITY, min(MAX_RIBBON_DENSITY, level))
         return self.model_copy(update={"ribbon_density": clamped})
+
+    def with_attendance_split_ratio(self, ratio: float) -> AppConfig:
+        """Return a copy remembering the Attendance divider; clamped, never rejected."""
+        clamped = max(MIN_SPLIT_RATIO, min(MAX_SPLIT_RATIO, float(ratio)))
+        return self.model_copy(update={"attendance_split_ratio": round(clamped, 4)})
 
     def with_reviewer_name(self, name: str) -> AppConfig:
         """Return a copy remembering who is reviewing; the receiver is unchanged.

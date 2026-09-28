@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ColumnElement, and_, delete, func, select
@@ -78,7 +79,8 @@ from omr_scanner.services.reconciliation import (
     count_entries,
     reconcile,
 )
-from omr_scanner.services.review_store import effective_identifiers
+from omr_scanner.services.reconciliation_leads import OutOfSetScript
+from omr_scanner.services.review_store import effective_identifiers, effective_set_codes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -617,8 +619,185 @@ def candidate_exists(database: ProjectDatabase, roster_id: int, candidate_id: st
 # ----------------------------------------------------------------------
 # Reading the scripts a batch produced
 # ----------------------------------------------------------------------
-def batch_scripts(database: ProjectDatabase, batch_id: str) -> tuple[ScriptRecord, ...]:
-    """Return every script in a batch, carrying its post-review candidate ID.
+class ScriptSetPlacement(StrEnum):
+    """Where one script stands relative to a set's reconciliation.
+
+    What a set's reconciliation is allowed to see. **Only**
+    :attr:`IN_SET` is reconciled; every other script is counted and reported
+    rather than silently dropped, so an operator can see what is outside the
+    set and why.
+
+    Reject & Rescan is not implemented yet. When it is, a script rejected
+    pending a rescan and a superseded original are further placements outside
+    the set, and a verified replacement is simply :attr:`IN_SET` - which is
+    why this is an enumeration rather than a yes/no filter.
+    """
+
+    IN_SET = "in_set"
+    """The effective set code is this set's code."""
+
+    OTHER_SET = "other_set"
+    """The effective set code is another defined set's code. Outside this
+    set's reconciliation universe entirely: never an unknown ID here."""
+
+    UNRESOLVED = "unresolved"
+    """The set code is still in dispute (blank, double-marked, too faint, not
+    a defined set, or the sheet could not be read). Reviewed on the Resolve
+    stage; reconciled once it names a set."""
+
+    UNDEFINED = "undefined"
+    """The set code was read and settled, but names no defined set - a
+    decision somebody made on the Resolve stage that still names no set."""
+
+
+@dataclass(frozen=True, slots=True)
+class SetScriptScope:
+    """How a batch's scripts divide around one set.
+
+    Attributes:
+        set_code: The set, or ``""`` when reconciliation is unscoped.
+        in_set: Scripts reconciled for this set.
+        other_sets: Scripts belonging to another defined set, by that set's code.
+        unresolved: Scripts whose set code is still in dispute.
+        undefined: Scripts whose settled set code is no defined set.
+    """
+
+    set_code: str
+    in_set: int = 0
+    other_sets: dict[str, int] = field(default_factory=dict)
+    unresolved: int = 0
+    undefined: int = 0
+
+    @property
+    def other_set_total(self) -> int:
+        """How many scripts belong to other sets."""
+        return sum(self.other_sets.values())
+
+    @property
+    def needs_attention(self) -> int:
+        """Scripts no set can reconcile until their set code is settled."""
+        return self.unresolved + self.undefined
+
+
+def _placements(
+    database: ProjectDatabase, batch_id: str, set_code: str
+) -> dict[int, tuple[ScriptSetPlacement, str]]:
+    """Place every script of a batch relative to one set's code.
+
+    The single definition of "which scripts belong to a set", used both to
+    choose what is reconciled and to report what was left out. Decided on the
+    **effective** set code - after any Resolve-stage correction - never on
+    what the machine read.
+    """
+    from omr_scanner.services import project_sets
+
+    defined = {item.code for item in project_sets.list_sets(database)}
+    placements: dict[int, tuple[ScriptSetPlacement, str]] = {}
+    for scan_id, found in effective_set_codes(database, batch_id).items():
+        code = found.value
+        if found.unresolved or not code or "?" in code or "_" in code:
+            placements[scan_id] = (ScriptSetPlacement.UNRESOLVED, code)
+        elif code == set_code:
+            placements[scan_id] = (ScriptSetPlacement.IN_SET, code)
+        elif code in defined:
+            placements[scan_id] = (ScriptSetPlacement.OTHER_SET, code)
+        else:
+            placements[scan_id] = (ScriptSetPlacement.UNDEFINED, code)
+    return placements
+
+
+def _set_code_of_roster(database: ProjectDatabase, roster_id: int) -> str | None:
+    """The code of the set a roster belongs to, or ``None`` when unscoped."""
+    from omr_scanner.services import project_sets
+
+    with database.session() as session:
+        row = session.get(CandidateRoster, roster_id)
+        set_id = row.set_id if row is not None else None
+    if set_id is None:
+        return None
+    exam_set = project_sets.get_set(database, set_id)
+    return exam_set.code if exam_set is not None else None
+
+
+def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> SetScriptScope:
+    """Count how a batch's scripts divide around one roster's set.
+
+    For an unscoped roster (a project with no sets, or a list from before
+    attendance was per-set) every script is in scope, as it always was.
+    """
+    set_code = _set_code_of_roster(database, roster_id)
+    if set_code is None:
+        return SetScriptScope(set_code="", in_set=len(batch_scripts(database, batch_id)))
+    in_set = unresolved = undefined = 0
+    others: dict[str, int] = {}
+    for placement, code in _placements(database, batch_id, set_code).values():
+        if placement is ScriptSetPlacement.IN_SET:
+            in_set += 1
+        elif placement is ScriptSetPlacement.OTHER_SET:
+            others[code] = others.get(code, 0) + 1
+        elif placement is ScriptSetPlacement.UNRESOLVED:
+            unresolved += 1
+        else:
+            undefined += 1
+    return SetScriptScope(
+        set_code=set_code,
+        in_set=in_set,
+        other_sets=dict(sorted(others.items())),
+        unresolved=unresolved,
+        undefined=undefined,
+    )
+
+
+def out_of_set_scripts(
+    database: ProjectDatabase, roster_id: int, batch_id: str
+) -> tuple[OutOfSetScript, ...]:
+    """The scripts a set's reconciliation left out, as sources of leads.
+
+    A candidate reported *Missing script* may well have one: its set code is
+    unresolved, names no defined set, or was read as another set. These are
+    offered as leads (see
+    :func:`omr_scanner.services.reconciliation_leads.script_leads`) - another
+    set's script only for an identical ID, because the same roll number in two
+    sets is normally two different people. Empty for an unscoped roster.
+    """
+    set_code = _set_code_of_roster(database, roster_id)
+    if set_code is None:
+        return ()
+    placements = _placements(database, batch_id, set_code)
+    found: list[OutOfSetScript] = []
+    for script in batch_scripts(database, batch_id):
+        placement, code = placements.get(script.scan_id, (ScriptSetPlacement.IN_SET, ""))
+        if placement is ScriptSetPlacement.IN_SET:
+            continue
+        if placement is ScriptSetPlacement.OTHER_SET:
+            reason, exact = f"Read as set {code} - check its set code", True
+        elif placement is ScriptSetPlacement.UNDEFINED:
+            reason, exact = f"Set code '{code}' is not a defined set", False
+        else:
+            reason, exact = "Set code not yet resolved", False
+        found.append(
+            OutOfSetScript(
+                scan_id=script.scan_id,
+                source_name=script.source_name,
+                recognised_id=script.effective_candidate_id,
+                reason=reason,
+                exact_only=exact,
+            )
+        )
+    return tuple(found)
+
+
+def batch_scripts(
+    database: ProjectDatabase, batch_id: str, *, set_code: str | None = None
+) -> tuple[ScriptRecord, ...]:
+    """Return a batch's scripts, carrying their post-review candidate IDs.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch.
+        set_code: Keep only scripts whose **effective** set code is this set's
+            (see :class:`ScriptSetPlacement`). ``None`` returns every script -
+            what an unscoped roster reconciles against.
 
     The identifier comes from
     :func:`omr_scanner.services.review_store.effective_identifiers`, never from
@@ -627,6 +806,15 @@ def batch_scripts(database: ProjectDatabase, batch_id: str) -> tuple[ScriptRecor
     made on the Resolve stage.
     """
     identifiers = effective_identifiers(database, batch_id)
+    keep: set[int] | None = None
+    if set_code is not None:
+        keep = {
+            scan_id
+            for scan_id, (placement, _code) in _placements(
+                database, batch_id, set_code
+            ).items()
+            if placement is ScriptSetPlacement.IN_SET
+        }
     with database.session() as session:
         rows = session.scalars(
             select(BatchScan)
@@ -635,6 +823,8 @@ def batch_scripts(database: ProjectDatabase, batch_id: str) -> tuple[ScriptRecor
         ).all()
         scripts = []
         for row in rows:
+            if keep is not None and row.scan_id not in keep:
+                continue
             found = identifiers.get(row.scan_id)
             scripts.append(
                 ScriptRecord(
@@ -745,7 +935,12 @@ def reconcile_batch(
     Operator decisions are *not* touched: they are the input, not the output.
     """
     candidates = roster_candidates(database, roster_id)
-    scripts = batch_scripts(database, batch_id)
+    # A set's roster is reconciled against that set's scripts only. A script
+    # of another set is outside this universe - not an unknown candidate - and
+    # one whose set code is unsettled waits on the Resolve stage.
+    scripts = batch_scripts(
+        database, batch_id, set_code=_set_code_of_roster(database, roster_id)
+    )
 
     with database.session() as session:
         script_decisions, candidate_decisions = _decisions(session, roster_id, batch_id)

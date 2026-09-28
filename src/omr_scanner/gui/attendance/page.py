@@ -58,8 +58,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QKeyEvent,
+    QKeySequence,
+    QResizeEvent,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -82,6 +88,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.config.app_config import MAX_SPLIT_RATIO, MIN_SPLIT_RATIO
 from omr_scanner.domain.reconciliation import (
     AttendanceSource,
     AttendanceState,
@@ -117,6 +124,7 @@ from omr_scanner.services.candidate_import import (
 )
 from omr_scanner.services.reconciliation_leads import (
     InvestigationLead,
+    OutOfSetScript,
     owner_leads,
     script_leads,
 )
@@ -132,6 +140,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _LOGGER = logging.getLogger(__name__)
 
 SAMPLE_FILENAME = "candidate_attendance_sample.xlsx"
+
+DEFAULT_SPLIT_RATIO = 0.6
+"""The table's share of the work area until the operator moves the divider."""
+
+SPLIT_SETTLE_MS = 400
+"""How long the divider must be still before its position is remembered."""
 
 TABLE_COLUMNS: tuple[str, ...] = (
     "Status",
@@ -288,6 +302,9 @@ class AttendancePageState:
         all_entries: Every entry of the current reconciliation, unfiltered -
             what the investigation leads are drawn from. Re-read whenever the
             reconciliation changes, not on every filter change.
+        scope: How the batch's scripts divide around the selected set - in
+            it, in other sets, or with a set code still to settle. Cached on
+            the same terms as :attr:`all_entries`.
     """
 
     session: ProjectSession | None = None
@@ -299,6 +316,8 @@ class AttendancePageState:
     template: OmrTemplate | None = None
     entries: list[ReconciliationEntry] = field(default_factory=list)
     all_entries: list[ReconciliationEntry] | None = None
+    scope: reconciliation_store.SetScriptScope | None = None
+    outside: tuple[OutOfSetScript, ...] | None = None
 
     @property
     def has_sets(self) -> bool:
@@ -334,6 +353,11 @@ class AttendancePage(WorkflowPage):
     """Emitted after an operator decision has been stored - including a
     Student ID or set code corrected from the inspector."""
 
+    split_ratio_changed = Signal(float)
+    """Emitted, settled, after the operator moves the work-area divider: the
+    table's share of the width. The window persists it; the page never writes
+    a configuration file."""
+
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setStyleSheet(ATTENDANCE_STAGE_STYLESHEET)
@@ -363,6 +387,17 @@ class AttendancePage(WorkflowPage):
         work.setStretchFactor(1, 2)
         work.setSizes([600, 400])
         self.work_splitter = work
+        self._split_ratio: float | None = None
+        # The ratio is re-applied whenever the splitter itself is resized, so
+        # it holds from the first real layout and across window resizes.
+        work.installEventFilter(self)
+        # Dragging the divider emits a stream of moves; the preference is
+        # written once, when the operator lets go.
+        self._split_timer = QTimer(self)
+        self._split_timer.setSingleShot(True)
+        self._split_timer.setInterval(SPLIT_SETTLE_MS)
+        self._split_timer.timeout.connect(self._emit_split_ratio)
+        work.splitterMoved.connect(lambda *_args: self._split_timer.start())
 
         # The set section takes exactly the height it needs and no more; every
         # remaining pixel goes to the work area, which is where the work is.
@@ -573,11 +608,33 @@ class AttendancePage(WorkflowPage):
         self.table.doubleClicked.connect(lambda _index: self.inspect_primary())
         layout.addWidget(self.table, stretch=1)
 
+        footer = QHBoxLayout()
+        footer.setSpacing(Spacing.SM)
         self.table_count_label = QLabel("")
         self.table_count_label.setObjectName("reconciliationCountLabel")
         self.table_count_label.setTextFormat(Qt.TextFormat.RichText)
         self.table_count_label.setWordWrap(True)
-        layout.addWidget(self.table_count_label)
+        footer.addWidget(self.table_count_label, stretch=1)
+        self.previous_unresolved_button = QPushButton("Previous unresolved")
+        self.previous_unresolved_button.setObjectName("previousUnresolvedEntryButton")
+        self.previous_unresolved_button.setToolTip(
+            "Back to the previous row in this view that still needs review (Ctrl+Up)"
+        )
+        self.previous_unresolved_button.clicked.connect(self.select_previous_unresolved)
+        footer.addWidget(self.previous_unresolved_button)
+        self.next_unresolved_button = QPushButton("Next unresolved")
+        self.next_unresolved_button.setObjectName("nextUnresolvedEntryButton")
+        self.next_unresolved_button.setToolTip(
+            "On to the next row in this view that still needs review (Ctrl+Down)"
+        )
+        self.next_unresolved_button.clicked.connect(self.select_next_unresolved)
+        footer.addWidget(self.next_unresolved_button)
+        layout.addLayout(footer)
+        self.navigation_note = QLabel("")
+        self.navigation_note.setObjectName("reconciliationNavigationNote")
+        self.navigation_note.setStyleSheet(f"color: {Color.STATUS_BUSY};")
+        self.navigation_note.setVisible(False)
+        layout.addWidget(self.navigation_note)
         return panel
 
     def _build_detail_panel(self) -> QWidget:
@@ -757,13 +814,27 @@ class AttendancePage(WorkflowPage):
         find = QShortcut(QKeySequence.StandardKey.Find, self)
         find.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         find.activated.connect(self.focus_search)
+        # The same keys as the Resolve stage's next/previous unresolved.
+        for keys, slot in (
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Down), self.select_next_unresolved),
+            (QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Up), self.select_previous_unresolved),
+        ):
+            shortcut = QShortcut(keys, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
         # Enter is taken from the table's own key events rather than a
         # shortcut: a QTableWidget consumes Return itself, and a shortcut only
         # fires in an active window.
         self.table.installEventFilter(self)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        """Enter on the table inspects the selected entry's script."""
+        """Enter on the table inspects; a resized work area keeps its divider."""
+        if watched is self.work_splitter and event.type() == QEvent.Type.Resize:
+            handled = super().eventFilter(watched, event)
+            if isinstance(event, QResizeEvent):
+                handle = self.work_splitter.handleWidth()
+                self._apply_split_ratio(max(event.size().width() - handle, 0))
+            return handled
         if (
             watched is self.table
             and event.type() == QEvent.Type.KeyPress
@@ -774,6 +845,87 @@ class AttendancePage(WorkflowPage):
             self.inspect_primary()
             return True
         return super().eventFilter(watched, event)
+
+    # ------------------------------------------------------------------
+    # The work-area divider
+    # ------------------------------------------------------------------
+    def split_ratio(self) -> float | None:
+        """The table's current share of the work area, or ``None`` before layout."""
+        sizes = self.work_splitter.sizes()
+        total = sum(sizes)
+        return sizes[0] / total if total > 0 else None
+
+    def set_split_ratio(self, ratio: float | None) -> None:
+        """Adopt a remembered divider position; the default when there is none.
+
+        Clamped to :data:`~omr_scanner.config.app_config.MIN_SPLIT_RATIO` -
+        :data:`~omr_scanner.config.app_config.MAX_SPLIT_RATIO`, and applied once
+        the page has a width, so a ratio saved on a wide monitor still leaves
+        the detail pane its minimum on a narrow one.
+        """
+        self._split_ratio = (
+            None if ratio is None else max(MIN_SPLIT_RATIO, min(MAX_SPLIT_RATIO, ratio))
+        )
+        self._apply_split_ratio()
+
+    def _apply_split_ratio(self, total: int | None = None) -> None:
+        """Divide the work area by the remembered ratio - the default if none."""
+        width = total if total is not None else sum(self.work_splitter.sizes())
+        if width <= 0:
+            return
+        ratio = self._split_ratio if self._split_ratio is not None else DEFAULT_SPLIT_RATIO
+        right = max(width - int(width * ratio), self.detail_scroll.minimumWidth())
+        self.work_splitter.setSizes([max(width - right, 0), right])
+
+    def _emit_split_ratio(self) -> None:
+        ratio = self.split_ratio()
+        if ratio is not None:
+            self._split_ratio = ratio
+            self.split_ratio_changed.emit(ratio)
+
+    # ------------------------------------------------------------------
+    # Next / previous unresolved
+    # ------------------------------------------------------------------
+    def select_next_unresolved(self) -> bool:
+        """Select the next row in this view that still needs review."""
+        return self._select_unresolved(step=1)
+
+    def select_previous_unresolved(self) -> bool:
+        """Select the previous row in this view that still needs review."""
+        return self._select_unresolved(step=-1)
+
+    def _select_unresolved(self, *, step: int) -> bool:
+        """Move to the nearest row needing review, within the current filter.
+
+        The same rules as the Resolve stage: only rows the current filter and
+        search show are visited; a row whose exception has been dealt with
+        (resolved, or accepted as-is) is passed over; at the end of the view
+        the selection wraps and the page says so; with nothing left it stays
+        put and says that.
+        """
+        total = len(self.state.entries)
+        start = self.table.currentRow()
+        for offset in range(1, total + 1):
+            row = (start + step * offset) % total
+            if self.state.entries[row].needs_attention:
+                wrapped = (row <= start) if step > 0 else (row >= start)
+                self.table.selectRow(row)
+                self._note_navigation(
+                    (
+                        "Reached the end of this view - continued from the top."
+                        if step > 0
+                        else "Reached the top of this view - continued from the end."
+                    )
+                    if wrapped and start >= 0 and row != start
+                    else ""
+                )
+                return True
+        self._note_navigation("Nothing in this view still needs review.")
+        return False
+
+    def _note_navigation(self, text: str) -> None:
+        self.navigation_note.setText(text)
+        self.navigation_note.setVisible(bool(text))
 
     def focus_search(self) -> None:
         """Put the keyboard in the search box, selecting what is there."""
@@ -792,6 +944,8 @@ class AttendancePage(WorkflowPage):
         self.state.batch_id = None
         self.state.entries = []
         self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
         self.state.template = None
         if session is not None:
             self.state.batch_id = self._latest_batch()
@@ -941,6 +1095,8 @@ class AttendancePage(WorkflowPage):
                 self._adopt_selected_roster()
                 if changed:
                     self.state.all_entries = None
+                    self.state.scope = None
+                    self.state.outside = None
                     self.inspector.clear()
                 self.set_table.blockSignals(True)
                 self.set_table.selectRow(row)
@@ -958,6 +1114,8 @@ class AttendancePage(WorkflowPage):
             return
         self.state.selected_set_id = set_id
         self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
         self.inspector.clear()
         self._adopt_selected_roster()
         self.refresh_table()
@@ -1036,6 +1194,8 @@ class AttendancePage(WorkflowPage):
         """Reconcile a particular batch rather than the most recent one."""
         self.state.batch_id = batch_id
         self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
         self.inspector.clear()
         self._refresh_inspector_context()
         self.refresh_table()
@@ -1199,6 +1359,8 @@ class AttendancePage(WorkflowPage):
         # A new list is a new reconciliation: nothing from the previous one may
         # stand in for it, on screen or in the leads.
         self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
         self.state.entries = []
         self.inspector.clear()
         self.refresh_sets()
@@ -1252,6 +1414,8 @@ class AttendancePage(WorkflowPage):
             QMessageBox.warning(self, "Reconciliation failed", result.error)
             return
         self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
         pending = self._after_correction
         self._after_correction = None
         if pending is None:
@@ -1348,8 +1512,50 @@ class AttendancePage(WorkflowPage):
             + f" · Absent confirmed <b>{counts.absent_confirmed}</b>"
             f" · Resolved <b>{counts.resolved}</b>"
             f" · Accepted as-is <b>{counts.dismissed}</b></span>"
+            + self._scope_sentence()
         )
         self._refresh_roster_label(counts.outstanding)
+
+    def _script_scope(self) -> reconciliation_store.SetScriptScope | None:
+        """How the batch divides around the selected set, read once per change."""
+        database = self.database
+        roster = self.state.roster
+        if database is None or roster is None or self.state.batch_id is None:
+            return None
+        if self.state.scope is None:
+            self.state.scope = reconciliation_store.script_scope(
+                database, roster.roster_id, self.state.batch_id
+            )
+        return self.state.scope
+
+    def _scope_sentence(self) -> str:
+        """Say which of the batch's scripts this set's reconciliation left out, and why.
+
+        Nothing disappears silently: a script of another set is simply not
+        this set's, and a script whose set code is not settled is named, with
+        where to settle it.
+        """
+        scope = self._script_scope()
+        if scope is None or not scope.set_code:
+            return ""
+        parts = [f"This set reconciles <b>{scope.in_set}</b> script(s) of the batch"]
+        if scope.other_set_total:
+            others = ", ".join(
+                f"set {html.escape(code)}: {count}" for code, count in scope.other_sets.items()
+            )
+            parts.append(f"{scope.other_set_total} belong to other sets ({others})")
+        if scope.needs_attention:
+            waiting = []
+            if scope.unresolved:
+                waiting.append(f"{scope.unresolved} with a set code not yet resolved")
+            if scope.undefined:
+                waiting.append(f"{scope.undefined} whose set code is not a defined set")
+            parts.append(
+                f"<span style='color:{Color.STATUS_BUSY};'><b>"
+                + " and ".join(waiting)
+                + "</b> - settle them on the <b>Resolve</b> stage</span>"
+            )
+        return f"<br><span style='color:{Color.TEXT_TERTIARY};'>{' · '.join(parts)}.</span>"
 
     # ------------------------------------------------------------------
     # Filters
@@ -1616,6 +1822,20 @@ class AttendancePage(WorkflowPage):
     # ------------------------------------------------------------------
     # The detail panel
     # ------------------------------------------------------------------
+    def _outside_scripts(self) -> tuple[OutOfSetScript, ...]:
+        """Scripts this set's reconciliation left out, read once per change."""
+        if self.state.outside is None:
+            database = self.database
+            roster = self.state.roster
+            self.state.outside = (
+                reconciliation_store.out_of_set_scripts(
+                    database, roster.roster_id, self.state.batch_id
+                )
+                if database is not None and roster is not None and self.state.batch_id
+                else ()
+            )
+        return self.state.outside
+
     def _entries_for_leads(self) -> list[ReconciliationEntry]:
         """Every entry of the current reconciliation, read once per change."""
         if self.state.all_entries is None:
@@ -1678,7 +1898,7 @@ class AttendancePage(WorkflowPage):
 
         entries = self._entries_for_leads()
         if entry.status is ReconciliationStatus.PRESENT_WITHOUT_SCRIPT:
-            leads = script_leads(entry, entries)
+            leads = script_leads(entry, entries, outside=self._outside_scripts())
         elif entry.status in (
             ReconciliationStatus.ABSENT_WITH_SCRIPT,
             ReconciliationStatus.UNKNOWN_ID,
@@ -1925,6 +2145,8 @@ class AttendancePage(WorkflowPage):
             )
             return False
         self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
         self.refresh_table()
         self.resolution_recorded.emit()
         return True

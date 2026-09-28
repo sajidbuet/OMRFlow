@@ -541,6 +541,12 @@ class ResolvePage(WorkflowPage):
         self.summary_breakdown.setWordWrap(True)
         self.summary_breakdown.setTextFormat(Qt.TextFormat.RichText)
         layout.addWidget(self.summary_breakdown)
+
+        self.navigation_note = QLabel("")
+        self.navigation_note.setObjectName("queueNavigationNote")
+        self.navigation_note.setStyleSheet(f"color: {Color.STATUS_BUSY};")
+        self.navigation_note.setVisible(False)
+        layout.addWidget(self.navigation_note)
         return panel
 
     def _build_workspace(self) -> QWidget:
@@ -661,7 +667,8 @@ class ResolvePage(WorkflowPage):
         )
         self.previous_open_action.setObjectName("previousUnresolvedConflictButton")
         self.previous_open_action.setToolTip(
-            "Back to the previous conflict nobody has decided (Shift+Enter)"
+            "Back to the previous conflict nobody has decided in this view "
+            "(Ctrl+Up or Shift+Enter)"
         )
         self.previous_open_action.triggered.connect(self.select_previous_unresolved)
         toolbar.addAction(self.previous_open_action)
@@ -669,7 +676,8 @@ class ResolvePage(WorkflowPage):
         self.next_open_action = QAction(load_icon("list-checks"), "Next unresolved", self)
         self.next_open_action.setObjectName("nextUnresolvedConflictButton")
         self.next_open_action.setToolTip(
-            "Skip to the next conflict nobody has decided (Ctrl+Enter)"
+            "Skip to the next conflict nobody has decided in this view "
+            "(Ctrl+Down or Ctrl+Enter)"
         )
         self.next_open_action.triggered.connect(self.select_next_unresolved)
         toolbar.addAction(self.next_open_action)
@@ -1153,6 +1161,18 @@ class ResolvePage(WorkflowPage):
                 QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Return),
                 self.select_next_unresolved,
             ),
+            # Ctrl+Up / Ctrl+Down: the same two commands, on the keys a queue
+            # of thousands is walked with. Nothing else in the application
+            # binds them; the table's own Ctrl+arrow (move without selecting)
+            # is meaningless in a single-selection queue.
+            (
+                QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Down),
+                self.select_next_unresolved,
+            ),
+            (
+                QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Up),
+                self.select_previous_unresolved,
+            ),
             (
                 QKeySequence(Qt.Modifier.CTRL | Qt.Key.Key_Enter),
                 self.select_next_unresolved,
@@ -1512,23 +1532,49 @@ class ResolvePage(WorkflowPage):
     def _select_unresolved(self, *, step: int) -> bool:
         """Move to the nearest undecided conflict in one direction.
 
+        **Within the current view.** The queue already holds only what the
+        filters show, so a reviewer working one conflict type is never taken
+        into another.
+
         Deferred conflicts are passed over as well as decided ones: deferring
         is a reviewer saying "not this one, not now", and walking them back
         round on the next pass would make the button useless on a queue where
         somebody has postponed a few.
+
+        At the end of the view it **wraps** - this stage's convention, so a
+        pass ends by returning to whatever was skipped - and says so under
+        the queue rather than doing it silently. With nothing undecided in
+        view the selection stays put and that is said too.
         """
         if self._editing_text():
             return False
         total = len(self.state.conflicts)
         if not total:
+            self._note_navigation("Nothing is left undecided in this view.")
             return False
         start = self.queue_table.currentRow()
         for offset in range(1, total + 1):
             row = (start + step * offset) % total
             if self.state.conflicts[row].state is ConflictState.OPEN:
+                wrapped = (row <= start) if step > 0 else (row >= start)
                 self.queue_table.selectRow(row)
+                self._note_navigation(
+                    (
+                        "Reached the end of this view - continued from the top."
+                        if step > 0
+                        else "Reached the top of this view - continued from the end."
+                    )
+                    if wrapped and start >= 0 and row != start
+                    else ""
+                )
                 return True
+        self._note_navigation("Nothing is left undecided in this view.")
         return False
+
+    def _note_navigation(self, text: str) -> None:
+        """Say, under the queue, what the last unresolved-navigation did."""
+        self.navigation_note.setText(text)
+        self.navigation_note.setVisible(bool(text))
 
     def _on_queue_selection_changed(self) -> None:
         """React to the queue selection moving."""
@@ -3320,6 +3366,7 @@ _ISSUE_WORDING: dict[ConflictType, str] = {
     ConflictType.SET_CODE_UNCERTAIN: "Too faint, or too close to call",
     ConflictType.SET_CODE_UNREADABLE: "Could not be measured",
     ConflictType.SET_CODE_LOW_CONFIDENCE: "Below the template's confidence floor",
+    ConflictType.SET_CODE_UNDEFINED: "Not one of this project's sets",
     ConflictType.MANUAL_OVERRIDE: "Confident reading overridden by an operator",
 }
 """What each conflict means, in a reviewer's words rather than the taxonomy's.

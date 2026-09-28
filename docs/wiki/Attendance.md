@@ -42,6 +42,12 @@ those rows, and click it again to go back to every exception.
 | **Duplicate scripts** | More than one script under one ID |
 | **Absent, confirmed** | Marked absent, and no script |
 
+**Each set reconciles its own scripts.** Only scripts whose set code is the
+selected set's are compared with its list; another set's scripts are simply
+not part of it. A script whose set code is still unresolved - or was read as a
+set this project does not define - is counted in the summary and settled on
+the **Resolve** stage, then joins its set.
+
 Every status is written as a word with a symbol beside it (✓ ⚠ ! ○); colour
 is only the third way of saying it. Search matches a candidate ID, a name, or
 the ID a script was **recognised** as - including the machine's reading of a
@@ -62,7 +68,9 @@ attendance, scripts, and a possible explanation - and lists:
   Script** (or **Enter** on the table) opens one.
 - **Where to look** - for a *missing script*, scripts that might be the
   candidate's: unread IDs, unknown IDs, scripts filed under an absent
-  candidate, and duplicates, ranked by how many digits differ. For an *absent
+  candidate, duplicates, and scripts whose set code is unresolved - ranked by
+  how many digits differ, allowing one missing or extra digit. Equally likely
+  suggestions are marked *equally close*. For an *absent
   but script found*, the candidates expected present with no script whose ID
   is similar - the people most likely to have filled in the wrong roll
   number.
@@ -92,7 +100,11 @@ and the table stays where you were.
 Every decision is recorded **beside** the imported and recognised values,
 never over them, and attributed to the operator named in *Settings*.
 
-**Ctrl+F** jumps to the search box.
+**Ctrl+F** jumps to the search box. **Ctrl+Down** / **Ctrl+Up** (or the
+*Next unresolved* / *Previous unresolved* buttons) move to the next or
+previous row that still needs review in the current view; at the end they
+continue from the top and say so. The position of the divider between the
+table and the detail pane is remembered.
 
 ## Why per-set
 

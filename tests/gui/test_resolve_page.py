@@ -22,6 +22,9 @@ from typing import TYPE_CHECKING
 
 import cv2
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 
 from omr_scanner.config import AppConfig
@@ -3498,3 +3501,73 @@ class TestStableObjectNames:
         ]
         missing = [name for name in required if page.findChild(QObject, name) is None]
         assert not missing, missing
+
+
+# ----------------------------------------------------------------------
+# Next / previous unresolved from the keyboard
+# ----------------------------------------------------------------------
+def _activate_window(widget) -> None:
+    """Give a real key press somewhere to land, or skip on a headless plugin."""
+    widget.show()
+    widget.activateWindow()
+    widget.raise_()
+    QApplication.processEvents()
+    if not widget.isActiveWindow():
+        pytest.skip("this Qt platform plugin never activates a window")
+
+
+class TestResolveNavigation:
+    def open_rows(self, page) -> list[int]:
+        return [
+            item.conflict_id
+            for item in page.state.conflicts
+            if item.state is ConflictState.OPEN
+        ]
+
+    def test_ctrl_down_and_ctrl_up_move_between_unresolved(self, qtbot, busy_page):
+        busy_page.state_filter.setCurrentText("All")
+        rows = self.open_rows(busy_page)
+        assert len(rows) >= 3
+        busy_page.queue_table.selectRow(0)
+        start = busy_page.current_conflict().conflict_id
+        _activate_window(busy_page)
+        busy_page.queue_table.setFocus()
+        QTest.keyClick(
+            busy_page.queue_table, Qt.Key.Key_Down, Qt.KeyboardModifier.ControlModifier
+        )
+        after = busy_page.current_conflict().conflict_id
+        assert after != start and after in rows
+        QTest.keyClick(
+            busy_page.queue_table, Qt.Key.Key_Up, Qt.KeyboardModifier.ControlModifier
+        )
+        assert busy_page.current_conflict().conflict_id == start
+
+    def test_the_toolbar_names_the_shortcuts(self, busy_page):
+        assert "Ctrl+Down" in busy_page.next_open_action.toolTip()
+        assert "Ctrl+Up" in busy_page.previous_open_action.toolTip()
+
+    def test_it_stays_within_a_filtered_view(self, busy_page):
+        # Filter to set-code conflicts: the walk must never land on a roll number.
+        index = next(
+            i
+            for i in range(busy_page.type_filter.count())
+            if busy_page.type_filter.itemData(i) == ConflictType.SET_CODE_MULTIPLE.value
+        )
+        busy_page.type_filter.setCurrentIndex(index)
+        for _ in range(4):
+            busy_page.select_next_unresolved()
+            conflict = busy_page.current_conflict()
+            assert conflict is not None
+            assert conflict.conflict_type is ConflictType.SET_CODE_MULTIPLE
+
+    def test_wrapping_is_announced(self, busy_page):
+        rows = [
+            index
+            for index, item in enumerate(busy_page.state.conflicts)
+            if item.state is ConflictState.OPEN
+        ]
+        busy_page.queue_table.selectRow(rows[-1])
+        assert busy_page.select_next_unresolved() is True
+        assert "continued from the top" in busy_page.navigation_note.text()
+
+

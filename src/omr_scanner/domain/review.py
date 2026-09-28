@@ -100,6 +100,14 @@ class ConflictType(StrEnum):
     SET_CODE_UNCERTAIN = "set_code_uncertain"
     SET_CODE_UNREADABLE = "set_code_unreadable"
     SET_CODE_LOW_CONFIDENCE = "set_code_low_confidence"
+    SET_CODE_UNDEFINED = "set_code_undefined"
+    """The set code was read, but it is not one of this project's sets.
+
+    Raised by a batch-level pass (the project's sets are not known while one
+    sheet is being read), like :attr:`IDENTIFIER_DUPLICATE`. Without it such a
+    script belongs to no set's reconciliation and would simply vanish from the
+    Attendance stage. As a whole-field set-code record it is corrected with
+    the ordinary full set-code editor."""
 
     # -- operator-initiated ---------------------------------------------
     MANUAL_OVERRIDE = "manual_override"
@@ -310,6 +318,7 @@ _TYPE_LABELS: dict[ConflictType, str] = {
     ConflictType.SET_CODE_UNCERTAIN: "Set code uncertain",
     ConflictType.SET_CODE_UNREADABLE: "Set code unreadable",
     ConflictType.SET_CODE_LOW_CONFIDENCE: "Set code low confidence",
+    ConflictType.SET_CODE_UNDEFINED: "Set code not a defined set",
     ConflictType.MANUAL_OVERRIDE: "Operator field override",
     ConflictType.ANSWER_MULTIPLE: "Multiple answers marked",
     ConflictType.ANSWER_UNCERTAIN: "Answer uncertain",

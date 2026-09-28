@@ -97,6 +97,7 @@ from omr_scanner.domain.template import (
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.recognition.models import UNRESOLVED_CHARACTER
 from omr_scanner.services.conflict_policy import (
+    DetectedConflict,
     detect_conflicts,
     detect_duplicate_identifiers,
     join_field_value,
@@ -112,7 +113,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from omr_scanner.database.engine import ProjectDatabase
     from omr_scanner.domain.template import OmrTemplate
-    from omr_scanner.services.conflict_policy import ConflictPolicy, DetectedConflict
+    from omr_scanner.services.conflict_policy import ConflictPolicy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -623,6 +624,143 @@ def _withdraw_conflict(session: Session, row: ReviewConflict, moment: datetime) 
     )
     row.state = ConflictState.WITHDRAWN.value
     row.updated_at = moment
+
+
+UNREAD_SET_CODE_MARKERS = frozenset({"?", "_"})
+"""Characters recognition writes where a set-code position was not read."""
+
+
+def sync_undefined_set_codes(database: ProjectDatabase, batch_id: str) -> int:
+    """Raise a conflict for every script whose set code is not a defined set.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch to examine.
+
+    Returns:
+        How many scripts in the batch now carry such a conflict.
+
+    Run in the coordinator after a batch, and again before reconciling, for the
+    same reason :func:`sync_duplicate_identifiers` is: whether ``"D"`` is a
+    valid set is a fact about the *project*, not about the sheet, and the
+    project's set list can change after the batch was read.
+
+    Only a set code that was **read** and is not in the list takes part. A code
+    still in dispute already has its own open conflict, and a project that has
+    defined no sets has nothing to compare against. A conflict nobody acted on
+    is withdrawn when it no longer applies (the set was added, or another
+    correction made the code valid); one a person decided is left alone.
+    """
+    from omr_scanner.services import project_sets
+
+    defined = {item.code for item in project_sets.list_sets(database)}
+    effective = effective_set_codes(database, batch_id)
+    moment = _now()
+    with database.session() as session:
+        # "Still in dispute" is judged on every *other* set-code conflict. The
+        # one this function raises marks the code unknown too, and counting it
+        # would make a second run withdraw what the first one raised.
+        disputed = {
+            row.scan_id
+            for row in session.scalars(
+                select(ReviewConflict)
+                .where(ReviewConflict.batch_id == batch_id)
+                .where(
+                    ReviewConflict.state.in_(
+                        [ConflictState.OPEN.value, ConflictState.DEFERRED.value]
+                    )
+                )
+            ).all()
+            if ConflictType(row.conflict_type) is not ConflictType.SET_CODE_UNDEFINED
+            and (
+                ConflictType(row.conflict_type) in _SET_CODE_IS_UNKNOWN
+                or ConflictType(row.conflict_type).is_processing_failure
+            )
+        }
+        scans = {
+            row.scan_id: row
+            for row in session.scalars(
+                select(BatchScan).where(BatchScan.batch_id == batch_id)
+            ).all()
+        }
+        existing = {
+            row.scan_id: row
+            for row in session.scalars(
+                select(ReviewConflict)
+                .where(ReviewConflict.batch_id == batch_id)
+                .where(
+                    ReviewConflict.conflict_type == ConflictType.SET_CODE_UNDEFINED.value
+                )
+            ).all()
+        }
+        flagged: set[int] = set()
+        for scan_id, found in effective.items():
+            value = found.value
+            if (
+                not defined
+                or scan_id in disputed
+                or not value
+                or any(marker in value for marker in UNREAD_SET_CODE_MARKERS)
+                or value in defined
+            ):
+                continue
+            row = existing.get(scan_id)
+            if row is not None and ConflictState(row.state).is_human_touched:
+                # Somebody has already decided about this sheet's set code.
+                flagged.add(scan_id)
+                continue
+            zone_id, label = _set_code_zone(scans.get(scan_id))
+            detected = DetectedConflict(
+                conflict_type=ConflictType.SET_CODE_UNDEFINED,
+                field=FieldRef(
+                    zone_id=zone_id,
+                    group_key=WHOLE_FIELD,
+                    kind=FieldKind.SET_CODE,
+                    label=label,
+                ),
+                observation=MachineObservation(
+                    value=value,
+                    status="resolved",
+                    detail=(
+                        f"Read as '{value}', which is not one of this project's sets "
+                        f"({', '.join(sorted(defined))})."
+                    ),
+                ),
+                severity=1,
+            )
+            if row is None:
+                _insert_conflict(session, batch_id, scan_id, detected, moment)
+                flagged.add(scan_id)
+                continue
+            # An existing record is refreshed exactly as `sync_conflicts`
+            # refreshes one. A withdrawn record stays withdrawn - detection
+            # never reopens a conflict - and the script is still kept out of
+            # every set's reconciliation, because its code is still undefined.
+            _refresh_conflict(session, row, detected, moment)
+            if row.state != ConflictState.WITHDRAWN.value:
+                flagged.add(scan_id)
+
+        for scan_id, row in existing.items():
+            if scan_id in flagged or row.state == ConflictState.WITHDRAWN.value:
+                continue
+            if ConflictState(row.state).is_human_touched:
+                continue
+            _withdraw_conflict(session, row, moment)
+        session.flush()
+    return len(flagged)
+
+
+def _set_code_zone(scan: BatchScan | None) -> tuple[str, str]:
+    """The set-code zone and its label, from a sheet's stored result."""
+    if scan is None or not scan.result_json:
+        return "", "Set code"
+    try:
+        result = ScanResult.from_dict(json.loads(scan.result_json))
+    except (ValueError, KeyError, TypeError):  # pragma: no cover - defensive
+        return "", "Set code"
+    zone_id = result.set_code_zone_id or ""
+    field_view = next((item for item in result.fields if item.zone_id == zone_id), None)
+    return zone_id, (field_view.label if field_view is not None else "") or "Set code"
 
 
 def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
@@ -2664,6 +2802,7 @@ _SET_CODE_IS_UNKNOWN: frozenset[ConflictType] = frozenset(
         ConflictType.SET_CODE_UNCERTAIN,
         ConflictType.SET_CODE_UNREADABLE,
         ConflictType.SET_CODE_LOW_CONFIDENCE,
+        ConflictType.SET_CODE_UNDEFINED,
     }
 )
 """Conflicts that mean nobody yet knows which paper a sheet answers.
@@ -2884,6 +3023,7 @@ __all__ = [
     "standing_commands",
     "sync_conflicts",
     "sync_duplicate_identifiers",
+    "sync_undefined_set_codes",
     "undo_decision",
     "undo_field_edit",
     "undo_resolved_sheet",

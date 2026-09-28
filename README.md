@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 5,438 tests passing in the full local run of 2026-09-28 (3 skipped; 4 `stress` tests deselected by default); `ruff` and `mypy` clean |
+| Automated suite | 5,491 tests passing in the full local run of 2026-09-28 (3 skipped; 4 `stress` tests deselected by default); `ruff` and `mypy` clean |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -310,11 +310,39 @@ control was reachable at 1366×768; a replacement attendance file and the
 correction both survived closing and reopening the project. **Not yet worked
 by an operator on real sheets.**
 
-**Remaining limits.** A set's reconciliation still reads every script of the
-batch, so in a batch mixing papers another set's scripts appear as unknown IDs
-(pre-existing). Suggestions compare IDs position by position. The app does not
-persist splitter positions, so neither does this page. See
-[Known Limitations](docs/wiki/Known-Limitations.md).
+**Remaining limits** at the time; three of the four were addressed in the
+follow-up below.
+
+**Follow-up: set-scoped reconciliation, better suggestions, navigation, a
+remembered divider.**
+
+- *Set-scoped reconciliation - fixed.* A set now reconciles only the scripts
+  whose **effective** set code is its own; the rule lives in the service
+  (`ScriptSetPlacement`), not the GUI. Another set's scripts are outside it
+  and never unknown IDs. A script whose set code is unresolved stays on the
+  Resolve stage as before; one whose code was read but names no defined set
+  now raises a *Set code not a defined set* conflict there
+  (`sync_undefined_set_codes`, after every batch and before every
+  reconciliation). The Attendance summary says how many scripts the set left
+  out and why, and *Missing script* suggestions include those scripts.
+- *Suggestions - fixed.* A conservative edit-distance matcher on exact ID
+  strings: one wrong, missing or extra digit, up to two wrong digits at the
+  same length, unread positions matching anything, the roster as the candidate
+  space, at most five, ties shown as *equally close*. The rule is in
+  `docs/reconciliation.md`.
+- *Next / previous unresolved - fixed.* Ctrl+Down / Ctrl+Up and two buttons
+  on the Attendance stage; the same keys added to the Resolve stage's existing
+  commands (which keep Ctrl+Enter / Shift+Enter). Both stay within the current
+  filter, pass over rows already dealt with, and wrap at the end - the Resolve
+  stage's existing convention - with a note saying so.
+- *Divider - fixed for the Attendance stage.* Remembered in the ordinary
+  application configuration (like the ribbon density), restored on the next
+  start, clamped to 30-80 % and never allowed to squeeze the detail pane below
+  its minimum. The Resolve stage's own dividers are still not remembered.
+- *Reject & Rescan - not implemented*, so the combined scenario's reject /
+  replace / supersede steps are deferred with it.
+
+Testing: 53 new tests - 16 set-scoping tests over one batch of three sets (each set sees only its own scripts, unresolved / overridden / undefined set codes, idempotent sync, withdrawal when the set is added, the unscoped legacy path), 13 more suggestion tests (substitution, one missing digit, one extra digit, leading zeros, unrelated IDs, two equally close IDs shown as tied, a short list, out-of-set scripts), 17 navigation and divider tests (Ctrl+Down / Ctrl+Up on both stages, filtered walks, announced wrap, nothing-left, config round trip, clamping, restore through the window), and the 7-test combined three-set scenario including close-and-reopen. Three existing investigation tests were updated: two for set scoping (their sets now carry the sheets' set code) and one for the new suggestion wording. Full suite 5,491 passed, 3 skipped; `ruff` and `mypy` clean.
 
 #### Overriding a confidently read position
 

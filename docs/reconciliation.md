@@ -241,6 +241,60 @@ name Phase 6 records) and appends an audit event.
 | Absent but script found | Inspect the scan: if another candidate filled in this roll number, correct the Student ID (the likeliest owners are suggested); if the candidate did attend, override attendance to present; or accept it. |
 | Student ID not yet resolved | Inspect the scan and type the complete ID (or resolve it on the **Resolve** stage); reconciliation re-runs by itself. |
 
+### Which scripts a set reconciles
+
+A set's roster is reconciled against the scripts whose **effective** set
+code - after any Resolve-stage correction - is that set's code
+(`reconciliation_store.batch_scripts(..., set_code=...)`). Every script of the
+batch is placed exactly once (`ScriptSetPlacement`):
+
+| Placement | Meaning | In this set's reconciliation? |
+|---|---|---|
+| In set | Effective set code is this set's | Yes |
+| Other set | Effective set code is another defined set's | No - and never an unknown candidate ID here |
+| Unresolved | Set code blank, double-marked, too faint, not a defined set, or the sheet could not be read | No - counted, and reviewed on the **Resolve** stage |
+| Undefined | Set code settled by a person but naming no defined set | No - counted |
+
+A set code that was read but names no defined set raises a
+`Set code not a defined set` conflict on the Resolve stage
+(`review_store.sync_undefined_set_codes`, run after a batch and before every
+reconciliation), where the full set-code editor corrects it. The Attendance
+stage says how many scripts each set left out and why, and offers those
+scripts as leads for a *Missing script*. A roster with no set (a project
+without sets, or a list from before attendance was per-set) still reconciles
+every script, as before.
+
+*Reject & Rescan* is not implemented yet. When it is, a script rejected
+pending a rescan and a superseded original become further placements outside
+every set, and a verified replacement is simply *in set*.
+
+### Suggestions: the matching rule
+
+The *Where to look* suggestions (`services/reconciliation_leads.py`) are
+never acted on automatically. The rule, exactly:
+
+- IDs are compared as the exact strings recognised and imported - never as
+  numbers - so leading zeros are characters and `0012345` is not `12345`.
+- The distance is the Levenshtein edit distance (insertion, deletion,
+  substitution, each 1), except that a position recognition could not read
+  (`?`, `_`) matches any single character at no cost.
+- Two IDs are *similar* when their lengths are equal and the distance is at
+  most 2, or their lengths differ by one and the distance is exactly 1 (one
+  missing or one extra digit). Nothing else is offered.
+- For a script whose ID may not be its writer's, the candidate space is this
+  set's roster: candidates **without a script**, expected present first,
+  then marked absent. A candidate who already has their own script is not
+  offered.
+- For a candidate with no script, the sources are unread, unknown,
+  duplicated and absent-filed scripts of this set, scripts whose set code is
+  unresolved or undefined, and - for an identical ID only - another set's
+  scripts.
+- Ranking: distance; then the kind of evidence; then the common prefix plus
+  suffix; then closeness to the roster's usual ID length. At most five.
+- When the best suggestions share the same distance and kind of evidence,
+  all of them are marked *equally close*; none is preferred. No confidence
+  value is shown, because none is calibrated.
+
 ### Correcting a Student ID from the scan
 
 *Inspect / Correct Script* opens the original scan and takes the complete

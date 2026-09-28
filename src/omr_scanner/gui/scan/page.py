@@ -117,6 +117,7 @@ from omr_scanner.services import (
     sheet_resolutions,
     sync_conflicts,
     sync_duplicate_identifiers,
+    sync_undefined_set_codes,
 )
 from omr_scanner.services.recognition_models import utc_timestamp
 
@@ -1713,6 +1714,7 @@ class ScanPage(WorkflowPage):
                     template=template,
                 )
             duplicates = sync_duplicate_identifiers(database, batch_id)
+            sync_undefined_set_codes(database, batch_id)
         except OMRScannerError:
             _LOGGER.exception("Conflicts could not be recorded for batch %s", batch_id)
             self.conflict_label.setText(
