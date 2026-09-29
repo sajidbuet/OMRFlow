@@ -371,8 +371,15 @@ class TestCrossBatchReplacement:
 
     def test_no_schema_change_was_needed(self):
         # The replacement link was scan-to-scan from the start; cross-batch
-        # support is service logic only.
-        assert SCHEMA_VERSION == 11
+        # support is service logic only. Later migrations exist (12 is
+        # answer-key provenance), but none of them touches rejection or
+        # replacement.
+        from omr_scanner.database.migrations import MIGRATIONS
+
+        assert SCHEMA_VERSION >= 11
+        assert MIGRATIONS[10].version == 11
+        later = " ".join(item.description.lower() for item in MIGRATIONS[11:])
+        assert "reject" not in later and "rescan" not in later and "scan_" not in later
 
 
 # ----------------------------------------------------------------------

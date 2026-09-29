@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from omr_scanner.domain.scoring import (
@@ -38,7 +39,7 @@ from omr_scanner.domain.template import QuestionBlockFieldDefinition
 from omr_scanner.errors import OMRScannerError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
 
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services.recognition_models import ScanResult
@@ -316,9 +317,16 @@ def read_key(
     if len(cleaned) != expected:
         issues.append(KeyIssue(_length_message(cleaned, plan)))
 
+    withdrawn = set(wrong_questions)
     for offset, character in enumerate(cleaned[:expected]):
         number = plan.first_question + offset
         if character in labels:
+            continue
+        if character == BLANK and number in withdrawn:
+            # A withdrawn question is marked full credit before its key answer
+            # is ever consulted (see `score_answers`), so leaving it unanswered
+            # is honest: a solution sheet that left it blank is not made to
+            # carry an answer nobody gave.
             continue
         if character == BLANK:
             issues.append(
@@ -414,7 +422,8 @@ def parse_wrong_questions(text: str, plan: QuestionPlan) -> tuple[frozenset[int]
     """
     numbers: set[int] = set()
     bad: list[str] = []
-    for chunk in text.replace(";", ",").split(","):
+    repeated: list[int] = []
+    for chunk in text.replace(";", ",").replace(" ", ",").split(","):
         token = chunk.strip()
         if not token:
             continue
@@ -426,18 +435,135 @@ def parse_wrong_questions(text: str, plan: QuestionPlan) -> tuple[frozenset[int]
         if value not in plan.numbers:
             bad.append(token)
             continue
+        if value in numbers:
+            repeated.append(value)
         numbers.add(value)
     if bad:
         return frozenset(numbers), (
             f"Not a question number in this template: {', '.join(bad[:6])}. "
             f"Questions run {plan.first_question}-{plan.numbers[-1]}."
         )
+    if repeated:
+        # Reported, not merged: a number typed twice is usually a different
+        # number typed wrongly, and merging it hides the one that was meant.
+        return frozenset(numbers), (
+            "Listed more than once as a full-credit question: "
+            f"{', '.join(str(n) for n in sorted(set(repeated))[:6])}."
+        )
     return frozenset(numbers), ""
+
+
+def format_question_numbers(numbers: Iterable[int]) -> str:
+    """Write question numbers the way :func:`parse_wrong_questions` reads them."""
+    return ", ".join(str(number) for number in sorted(set(numbers)))
+
+
+def draft_from_key(key: AnswerKey, plan: QuestionPlan) -> KeyDraft:
+    """Re-read a stored key against the current template.
+
+    A stored key is shown through the same validation as a typed one, so a key
+    written for a template that has since changed reports exactly what no
+    longer fits - rather than being trusted because it was once valid.
+    """
+    return read_key(
+        key.answers,
+        plan,
+        key.set_code,
+        wrong_questions=sorted(key.wrong_questions),
+        source=key.source,
+    )
+
+
+# ----------------------------------------------------------------------
+# Whether a stored key still fits the active template
+# ----------------------------------------------------------------------
+def compatibility_issues(key: AnswerKey, plan: QuestionPlan) -> tuple[str, ...]:
+    """Everything that stops ``key`` being used with the template behind ``plan``.
+
+    Empty when the key fits. A key is **never** truncated, padded or relabelled
+    to make it fit: a key with 50 answers against a 100-question paper is a key
+    for a different paper, and marking the overlap would produce marks that
+    look ordinary and are wrong for everybody.
+    """
+    issues: list[str] = []
+    if key.question_count != plan.question_count:
+        issues.append(
+            f"This key has {key.question_count} answer(s); the active template "
+            f"defines {plan.question_count} questions."
+        )
+    elif key.first_question != plan.first_question:
+        issues.append(
+            f"This key numbers its questions from {key.first_question}; the "
+            f"active template numbers them from {plan.first_question}."
+        )
+    unknown = sorted(
+        {character for character in key.answers if character not in plan.labels}
+        - {BLANK}
+    )
+    if unknown:
+        issues.append(
+            "This key uses answer choices the active template does not offer: "
+            f"{', '.join(unknown)} (allowed: {', '.join(plan.labels)})."
+        )
+    outside = sorted(number for number in key.wrong_questions if number not in plan.numbers)
+    if outside:
+        issues.append(
+            "Full-credit question(s) outside the active template's range: "
+            f"{format_question_numbers(outside)}."
+        )
+    return tuple(issues)
 
 
 # ----------------------------------------------------------------------
 # Reading a key off a scanned solution sheet
 # ----------------------------------------------------------------------
+class ReadingKind(StrEnum):
+    """What recognition found for one question of a solution sheet."""
+
+    CLEAR = "clear"
+    BLANK = "blank"
+    MULTIPLE = "multiple"
+    UNREADABLE = "unreadable"
+
+    @property
+    def label(self) -> str:
+        """Operator-facing wording."""
+        return {
+            ReadingKind.CLEAR: "Clear mark",
+            ReadingKind.BLANK: "No mark detected",
+            ReadingKind.MULTIPLE: "Multiple marks",
+            ReadingKind.UNREADABLE: "Not recognised",
+        }[self]
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionReading:
+    """One question as a solution sheet was read.
+
+    Attributes:
+        number: The printed question number.
+        raw: What the engine returned, uppercased - ``"B"``, ``"B-C"``, ``""``.
+        kind: How that reads as an answer-key entry.
+        confidence: The engine's own confidence for the question.
+        low_confidence: A single clear mark the engine still flagged for review.
+    """
+
+    number: int
+    raw: str
+    kind: ReadingKind
+    confidence: float = 0.0
+    low_confidence: bool = False
+
+    @property
+    def describe(self) -> str:
+        """``"Multiple marks B + C"``, ``"No mark detected"``, ``"B"``."""
+        if self.kind is ReadingKind.MULTIPLE:
+            return f"Multiple marks {' + '.join(part for part in self.raw.split('-') if part)}"
+        if self.kind is ReadingKind.CLEAR:
+            return self.raw + (" (low confidence)" if self.low_confidence else "")
+        return self.kind.label
+
+
 @dataclass(frozen=True, slots=True)
 class ScannedKey:
     """What a solution sheet was read as, and why it may not be usable.
@@ -460,6 +586,25 @@ class ScannedKey:
     unreadable: tuple[int, ...] = ()
     registered: bool = True
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    readings: tuple[QuestionReading, ...] = ()
+    registration_message: str = ""
+
+    @property
+    def blanks(self) -> tuple[int, ...]:
+        """Questions on which no mark was detected."""
+        return tuple(item.number for item in self.readings if item.kind is ReadingKind.BLANK)
+
+    @property
+    def multiples(self) -> tuple[int, ...]:
+        """Questions carrying more than one mark."""
+        return tuple(
+            item.number for item in self.readings if item.kind is ReadingKind.MULTIPLE
+        )
+
+    @property
+    def low_confidence(self) -> tuple[int, ...]:
+        """Single, readable marks the engine nonetheless flagged for review."""
+        return tuple(item.number for item in self.readings if item.low_confidence)
 
     @property
     def is_clean(self) -> bool:
@@ -495,24 +640,41 @@ def key_from_scan(result: ScanResult, plan: QuestionPlan) -> ScannedKey:
     from omr_scanner.services.recognition_models import RegistrationStatus
 
     registered = result.registration != RegistrationStatus.FAILED.value
-    responses = {item.number: item.value for item in result.answers}
+    views = {item.number: item for item in result.answers}
     known = set(plan.labels)
 
     characters: list[str] = []
     unreadable: list[int] = []
+    readings: list[QuestionReading] = []
     for number in plan.numbers:
-        raw = (responses.get(number) or "").strip().upper()
-        if not raw:
-            characters.append(BLANK)
-            unreadable.append(number)
+        view = views.get(number)
+        raw = ((view.value if view is not None else "") or "").strip().upper()
+        confidence = float(view.confidence) if view is not None else 0.0
+        flagged = bool(view.needs_review) if view is not None else False
+        if not registered:
+            kind = ReadingKind.UNREADABLE
+        elif not raw:
+            kind = ReadingKind.BLANK
         elif "-" in raw or len(raw) > 1:
-            characters.append(MULTIPLE)
-            unreadable.append(number)
+            kind = ReadingKind.MULTIPLE
         elif raw in known:
+            kind = ReadingKind.CLEAR
+        else:
+            kind = ReadingKind.UNREADABLE
+        if kind is ReadingKind.CLEAR:
             characters.append(raw)
         else:
-            characters.append(MULTIPLE)
+            characters.append(BLANK if kind is ReadingKind.BLANK else MULTIPLE)
             unreadable.append(number)
+        readings.append(
+            QuestionReading(
+                number=number,
+                raw=raw,
+                kind=kind,
+                confidence=confidence,
+                low_confidence=kind is ReadingKind.CLEAR and flagged,
+            )
+        )
 
     _LOGGER.info(
         "Solution sheet read for an answer key: questions=%d unreadable=%d "
@@ -528,4 +690,145 @@ def key_from_scan(result: ScanResult, plan: QuestionPlan) -> ScannedKey:
         unreadable=tuple(unreadable),
         registered=registered,
         warnings=tuple(result.warnings),
+        readings=tuple(readings),
+        registration_message=result.registration_message,
+    )
+
+
+# ----------------------------------------------------------------------
+# Whether a solution sheet's printed set agrees with the chosen one
+# ----------------------------------------------------------------------
+class SetCodeCheck(StrEnum):
+    """How the set code read off a solution sheet relates to the chosen set."""
+
+    MATCH = "match"
+    """The sheet reads the set the operator chose."""
+
+    BLANK = "blank"
+    """Nothing, or nothing legible, in the sheet's set field."""
+
+    MISMATCH = "mismatch"
+    """The sheet reads a different set. Needs an explicit decision."""
+
+    UNREPRESENTABLE = "unrepresentable"
+    """The template's set field cannot print the chosen code at all.
+
+    A project may number its sets 10/11/12 while the sheet's set field only
+    offers A-D, or have no set field. The sheet's answers are still valid
+    evidence; only the set cannot be confirmed from the paper.
+    """
+
+    @property
+    def blocks_without_decision(self) -> bool:
+        """Whether importing needs the operator to choose a set explicitly."""
+        return self is SetCodeCheck.MISMATCH
+
+
+@dataclass(frozen=True, slots=True)
+class SetCodeVerdict:
+    """The outcome of comparing a sheet's set field with the chosen set."""
+
+    check: SetCodeCheck
+    selected: str
+    read: str
+    read_is_defined: bool = False
+    message: str = ""
+
+
+def set_field_symbols(template: OmrTemplate) -> tuple[tuple[str, ...], int] | None:
+    """The set-code field's symbols and position count, or ``None`` without one."""
+    from omr_scanner.domain.template import FieldType, GridFieldDefinition
+
+    for zone in template.zones:
+        field_def = zone.field
+        if isinstance(field_def, GridFieldDefinition) and field_def.type is FieldType.SET_CODE:
+            return tuple(field_def.symbols), field_def.character_count
+    return None
+
+
+def can_print_set_code(template: OmrTemplate, code: str) -> bool:
+    """Whether the template's set field can physically carry ``code``.
+
+    True when ``code`` splits into at most as many of the field's symbols as it
+    has positions - ``"10"`` on a two-position digit field, or on a
+    one-position field whose symbols include ``"10"``.
+    """
+    found = set_field_symbols(template)
+    if found is None or not code:
+        return False
+    symbols, positions = found
+    wanted = code.strip().upper()
+    options = {symbol.upper() for symbol in symbols}
+
+    def fits(rest: str, remaining: int) -> bool:
+        if not rest:
+            return True
+        if remaining == 0:
+            return False
+        return any(
+            rest.startswith(symbol) and fits(rest[len(symbol):], remaining - 1)
+            for symbol in options
+            if symbol
+        )
+
+    return fits(wanted, positions)
+
+
+def check_sheet_set(
+    template: OmrTemplate,
+    *,
+    selected: str,
+    read: str,
+    defined: Sequence[str] = (),
+) -> SetCodeVerdict:
+    """Compare the set read off a solution sheet with the set the operator chose.
+
+    The operator's choice is authoritative for a solution sheet - they are
+    telling OMRFlow which paper this key answers - but a sheet that clearly
+    says otherwise must not be filed silently under the chosen set.
+    """
+    chosen = selected.strip()
+    seen = read.strip()
+    if seen and set(seen) <= RESERVED_SYMBOLS:
+        # Every position blank ("__") or unresolved ("??"): nothing legible.
+        seen = ""
+    known = {code.strip().upper() for code in defined}
+    is_defined = seen.upper() in known
+    if not can_print_set_code(template, chosen):
+        return SetCodeVerdict(
+            SetCodeCheck.UNREPRESENTABLE,
+            chosen,
+            seen,
+            is_defined,
+            message=(
+                f"This template's set field cannot print Set {chosen}, so the "
+                "set marked on the sheet could not be used to confirm it"
+                + (f" (the sheet reads '{seen}')" if seen else "")
+                + ". The answers are imported into the set you selected."
+            ),
+        )
+    if not seen:
+        return SetCodeVerdict(
+            SetCodeCheck.BLANK,
+            chosen,
+            seen,
+            message=(
+                "No set is marked on this sheet (or it could not be read). The "
+                f"answers are imported into Set {chosen}, the set you selected."
+            ),
+        )
+    if seen.upper() == chosen.upper():
+        return SetCodeVerdict(
+            SetCodeCheck.MATCH, chosen, seen, is_defined,
+            message=f"The sheet is marked Set {seen}, matching your selection.",
+        )
+    return SetCodeVerdict(
+        SetCodeCheck.MISMATCH,
+        chosen,
+        seen,
+        is_defined,
+        message=(
+            f"This sheet appears to be Set {seen}, but you selected Set {chosen}."
+            + ("" if is_defined else f" Set {seen} is not one of this project's sets.")
+        ),
     )

@@ -33,10 +33,12 @@ Privacy:
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
@@ -70,7 +72,7 @@ from omr_scanner.services import (
     review_store,
     scan_lifecycle,
 )
-from omr_scanner.services.answer_key import QuestionPlan, plan_for
+from omr_scanner.services.answer_key import QuestionPlan, compatibility_issues, plan_for
 from omr_scanner.services.scoring import (
     CandidateAnswers,
     CandidateScore,
@@ -136,7 +138,11 @@ def _to_key(row: AnswerKeyRevision) -> AnswerKey:
 
 @dataclass(frozen=True, slots=True)
 class StoredKey:
-    """One answer-key revision, with the row id a result references."""
+    """One answer-key revision, with the row id a result references.
+
+    The provenance fields (``created_by`` onward) are empty on a revision
+    stored before migration 12; nothing fills them in retrospectively.
+    """
 
     key_id: int
     key: AnswerKey
@@ -145,6 +151,12 @@ class StoredKey:
     verified_by: str = ""
     source_scan: str = ""
     notes: str = ""
+    created_by: str = ""
+    template_id: str = ""
+    template_name: str = ""
+    template_fingerprint: str = ""
+    source_sha256: str = ""
+    source_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def set_code(self) -> str:
@@ -161,6 +173,17 @@ class StoredKey:
         return self.key.describe()
 
 
+def _load_metadata(payload: str) -> dict[str, Any]:
+    """Read a stored metadata blob; a damaged one reads as empty, never raises."""
+    if not payload:
+        return {}
+    try:
+        value = json.loads(payload)
+    except ValueError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _stored(row: AnswerKeyRevision) -> StoredKey:
     return StoredKey(
         key_id=row.key_id,
@@ -170,6 +193,12 @@ def _stored(row: AnswerKeyRevision) -> StoredKey:
         verified_by=row.verified_by,
         source_scan=row.source_scan,
         notes=row.notes,
+        created_by=row.created_by,
+        template_id=row.template_id,
+        template_name=row.template_name,
+        template_fingerprint=row.template_fingerprint,
+        source_sha256=row.source_sha256,
+        source_metadata=_load_metadata(row.source_metadata_json),
     )
 
 
@@ -179,6 +208,10 @@ def save_key(
     *,
     source_scan: str = "",
     notes: str = "",
+    created_by: str = "",
+    template: OmrTemplate | None = None,
+    source_sha256: str = "",
+    source_metadata: dict[str, Any] | None = None,
 ) -> StoredKey:
     """Store a new draft revision of a set's answer key.
 
@@ -190,6 +223,14 @@ def save_key(
         source_scan: The solution sheet's file name, when the key was read from
             one. A name, not a path.
         notes: Free text.
+        created_by: Who entered or imported the key.
+        template: The template the key was written against; its id, name and
+            geometry fingerprint are recorded so a later template change can be
+            recognised.
+        source_sha256: SHA-256 of the solution-sheet image, when there is one.
+            Recorded because the file may later be moved or deleted.
+        source_metadata: JSON-serialisable facts about how a scanned key was
+            read (registration, set-code check, questions corrected by hand).
 
     Returns:
         The stored revision, with the id a result will reference.
@@ -217,6 +258,16 @@ def save_key(
             source_scan=source_scan,
             notes=notes,
             created_at=_now(),
+            created_by=created_by.strip(),
+            template_id=template.template_id if template is not None else "",
+            template_name=template.name if template is not None else "",
+            template_fingerprint=(
+                template.geometry_fingerprint() if template is not None else ""
+            ),
+            source_sha256=source_sha256,
+            source_metadata_json=(
+                json.dumps(source_metadata, sort_keys=True) if source_metadata else ""
+            ),
         )
         session.add(row)
         session.flush()
@@ -234,7 +285,11 @@ def save_key(
 
 
 def verify_key(
-    database: ProjectDatabase, key_id: int, *, verified_by: str
+    database: ProjectDatabase,
+    key_id: int,
+    *,
+    verified_by: str,
+    plan: QuestionPlan | None = None,
 ) -> StoredKey:
     """Mark one revision verified, superseding the set's previous verified one.
 
@@ -244,10 +299,15 @@ def verify_key(
         verified_by: Who checked it. Required - a key is the standard every
             candidate is measured against, and an unattributed one is not a
             standard.
+        plan: The active template's questions. When given, a revision that no
+            longer fits it (see
+            :func:`~omr_scanner.services.answer_key.compatibility_issues`) is
+            refused: verifying a key for a different paper would let it mark
+            candidates.
 
     Raises:
-        ScoringError: No such revision, no name given, or the revision is
-            already superseded.
+        ScoringError: No such revision, no name given, the revision is already
+            superseded, or it does not fit ``plan``.
 
     Superseding rather than deleting: results computed under the previous
     revision still point at it, and must still be able to say what they were
@@ -278,6 +338,16 @@ def verify_key(
                     "replaced by a later revision and cannot be verified again."
                 ),
             )
+        if plan is not None:
+            problems = compatibility_issues(_to_key(row), plan)
+            if problems:
+                raise ScoringError(
+                    "Refusing to verify a key that does not fit the template",
+                    user_message=(
+                        f"Set {row.set_code} revision {row.revision} does not fit "
+                        f"the active template: {problems[0]}"
+                    ),
+                )
         for other in session.scalars(
             select(AnswerKeyRevision)
             .where(AnswerKeyRevision.set_code == row.set_code)
@@ -358,6 +428,122 @@ def known_set_codes(database: ProjectDatabase) -> tuple[str, ...]:
                 }
             )
         )
+
+
+class SetKeyState(StrEnum):
+    """Whether one set has a key Results can mark with."""
+
+    MISSING = "missing"
+    """No revision has ever been stored for the set."""
+
+    DRAFT = "draft"
+    """Revisions exist, none verified. Results will not mark with it."""
+
+    VERIFIED = "verified"
+    """A verified revision that fits the active template."""
+
+    STALE = "stale"
+    """The revision that would be used no longer fits the active template."""
+
+    @property
+    def label(self) -> str:
+        """Operator-facing wording."""
+        return {
+            SetKeyState.MISSING: "Missing",
+            SetKeyState.DRAFT: "Draft",
+            SetKeyState.VERIFIED: "Verified",
+            SetKeyState.STALE: "Incompatible",
+        }[self]
+
+
+@dataclass(frozen=True, slots=True)
+class SetKeyOverview:
+    """One set's answer-key position, for the overview and the pre-Results check.
+
+    Attributes:
+        set_code: The set.
+        state: See :class:`SetKeyState`.
+        verified: The verified revision - the one Results marks with - if any.
+        latest: The newest revision, whatever its status.
+        issues: Why the revision that would be used does not fit the template.
+    """
+
+    set_code: str
+    state: SetKeyState
+    verified: StoredKey | None = None
+    latest: StoredKey | None = None
+    issues: tuple[str, ...] = ()
+
+    @property
+    def has_pending_draft(self) -> bool:
+        """Whether a draft newer than the verified revision is waiting."""
+        return (
+            self.latest is not None
+            and self.latest.key.status is AnswerKeyStatus.DRAFT
+            and (self.verified is None or self.latest.revision > self.verified.revision)
+        )
+
+    @property
+    def is_ready(self) -> bool:
+        """Whether Results can mark this set's candidates."""
+        return self.state is SetKeyState.VERIFIED
+
+    def describe(self) -> str:
+        """``"Set C: saved as a draft, not verified"``-style sentence."""
+        name = f"Set {self.set_code}"
+        if self.state is SetKeyState.MISSING:
+            return f"{name}: no answer key."
+        if self.state is SetKeyState.DRAFT:
+            return f"{name}: answer key saved but not verified."
+        if self.state is SetKeyState.STALE:
+            reason = f" {self.issues[0]}" if self.issues else ""
+            return f"{name}: answer key does not fit the active template.{reason}"
+        pending = (
+            f" (a newer draft, revision {self.latest.revision}, is not verified)"
+            if self.has_pending_draft and self.latest is not None
+            else ""
+        )
+        revision = self.verified.revision if self.verified is not None else 0
+        return f"{name}: verified revision {revision}{pending}."
+
+
+def key_overview(
+    database: ProjectDatabase,
+    set_codes: Sequence[str],
+    plan: QuestionPlan | None,
+) -> tuple[SetKeyOverview, ...]:
+    """Every listed set's key position, in the order given.
+
+    Read in one pass over the revisions. The key that *would* be used is the
+    verified one when there is one, else the newest draft; it is that key
+    which is checked against ``plan``, so a verified key that no longer fits
+    reads as :attr:`SetKeyState.STALE` and is never reported as ready.
+    """
+    by_set: dict[str, list[StoredKey]] = {}
+    for stored in list_keys(database):
+        by_set.setdefault(stored.set_code, []).append(stored)
+
+    overview: list[SetKeyOverview] = []
+    for code in set_codes:
+        revisions = by_set.get(code, [])
+        if not revisions:
+            overview.append(SetKeyOverview(code, SetKeyState.MISSING))
+            continue
+        latest = max(revisions, key=lambda item: item.revision)
+        verified = next(
+            (item for item in revisions if item.key.status is AnswerKeyStatus.VERIFIED),
+            None,
+        )
+        used = verified or latest
+        issues = compatibility_issues(used.key, plan) if plan is not None else ()
+        if issues:
+            state = SetKeyState.STALE
+        elif verified is not None:
+            state = SetKeyState.VERIFIED
+        else:
+            state = SetKeyState.DRAFT
+        overview.append(SetKeyOverview(code, state, verified, latest, issues))
+    return tuple(overview)
 
 
 # ----------------------------------------------------------------------

@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | Last full local runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). The merged tree has not yet had a full run. 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
+| Automated suite | Full local run after the Answer Key (Step 7) rework, 2026-09-29: **5,878 passed, 15 skipped, 0 failed** (32 min 40 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -246,6 +246,7 @@ synthetically tested" to a qualified stable release.
 | Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
+| Answer Key stage (Step 7) rework | 🟠 **Implemented — automated tests passing; rendered acceptance scripted in the real window at 1366×768 and 1100×680 (screenshots inspected), not yet worked by an operator or on a real solution sheet.** The stage reads the project's own template (Scan need not be visited), shows every defined set's key state, keeps the key string and question table in step, reviews a marked solution sheet before anything is saved, records per-revision provenance (migration 12), and never uses a key that no longer fits the template. See below |
 | Synthetic written Student ID & set code; used-reference cleanup | 🟠 **Implemented — automated tests passing; inspected visually on generated sheets and a real used sample form, not yet used in a real session.** The *intended* Student ID and set code (not the bubbled ones) are written in the boxes above their bubbles; a used reference form has its old writing **and its old bubble marks** removed first, keeping the printed rings, labels and borders. On the sample: 110/110 filled bubbles removed, none of the 390 unfilled touched; generated sheets read back 100/100. Full suite after the set-code and cleanup work: 5817 passed, 15 skipped, 0 failed. See below |
 
 #### Answer keys, solution sheets and key-relative candidate performance
@@ -348,6 +349,93 @@ always clean. A logical set code the template's set-code field cannot spell
 candidates' sheets: nothing crashes, the operator must choose the set, and such
 candidates are held as *No question-paper set was read* rather than marked
 against another set's key. No logical-to-physical set mapping exists.
+
+#### Answer Key stage (Step 7): project template, set-centric workflow, solution-sheet review
+
+**Root cause fixed.** The stage learned the template only from the Scan
+stage's `template_changed` signal (the relay added in the pass above), so a
+Scan load that failed, a template re-saved in place on the Template stage, or a
+template loaded ad hoc on Scan all left Answer Key wrong or empty — and its
+message sent the operator to Scan. It now reads the project's persisted active
+template through `services.project_template.load_project_template`, which
+distinguishes *no template*, *file missing*, *newer format*, *damaged*, *no
+question regions* and *unusable question regions*. The Scan stage no longer
+feeds it; an in-place re-save is re-read. Results also takes the project's
+template on open.
+
+**Implemented.**
+
+- **Set-centric.** Every set Project Configuration defines (multi-digit and
+  multi-character codes included) is a tile with its state in words, glyph and
+  colour — Verified, Draft, Missing, Incompatible, Unsaved — and a summary
+  *N of M verified*. A project without defined sets can still type a code.
+- **Manual entry.** *Enter / Paste Key*; `ABCD…`, `A B C D`, `A,B,C,D` and
+  line breaks read the same; a count line (*98 of 100 answers entered.
+  Questions 99-100 are missing.* / *101 answers entered; the template defines
+  100 questions.*); invalid symbols named with question and allowed options;
+  nothing truncated or normalised away.
+- **Question table** (Q / Key / Full credit / Note) edits the same model:
+  double-click for a choice list, or select a row and type the option; *Full
+  credit* checkboxes keep the text list in step; duplicate or out-of-range
+  numbers are reported. A blank key answer is accepted only on a full-credit
+  question (scoring gives it full credit before the key is consulted).
+- **Solution sheets.** *Read Marked Solution Sheet…* (chooser opens in the
+  project folder) reads the image with the ordinary engine and the project
+  template, then opens a review dialog: sheet preview with the selected
+  question outlined, per-question reading (clear / no mark / multiple marks
+  B + C / low confidence), registration and set-code status. Blanks and
+  multiples stay unanswered until chosen; an unregistered sheet cannot be
+  imported; a sheet reading a different defined set cannot be accepted until
+  the operator chooses the set; a blank set field, or a set the template's
+  field cannot print (Set 10 on an A–D field, or Set B on a digit field), is a
+  notice, not a block. The result is an **unsaved draft** — never a verified
+  key, never a candidate script, attendance entry or scan count.
+- **Revisions, provenance, verification.** Saving always creates a new draft
+  revision with creator, template id/name/fingerprint, source file name,
+  SHA-256 and read metadata (questions blank/multiple at read, corrected by the
+  operator, set-code decision). Older revisions stay viewable without becoming
+  active. Verify is enabled only for the newest saved, unedited, complete,
+  template-compatible revision with a reviewer name; every blocking reason is
+  listed beside the button. Editing a verified key shows *Unsaved changes* and
+  saves a new unverified revision; Results keeps using the verified one and the
+  stage says so.
+- **Template changes.** A key whose question count, numbering or options no
+  longer match the active template is shown *Incompatible*, cannot be
+  verified, and is never truncated, padded or deleted; Results already refuses
+  to mark with it.
+- **Unsaved edits** survive leaving the stage; switching set or revision, File
+  > Close/Open/New Project, recent projects and Exit offer Save / Discard /
+  Cancel.
+- **Results.** *Check Before Scoring* now says why a set cannot be marked (no
+  key / saved but not verified / does not fit the template). Scoring still
+  uses the verified key of each candidate's **effective** set code; this path
+  was traced, not changed.
+- **Schema migration 12** adds six provenance columns to
+  `answer_key_revision`, with no backfill: older revisions show *creator not
+  recorded*.
+
+**Tested.** `tests/integration/test_answer_key_stage_services.py` (36 tests)
+and `tests/gui/test_answer_key_stage.py` (24 tests) are new;
+`tests/gui/test_scoring_pages.py` and `tests/gui/test_generated_key_workflow.py`
+were updated where the intended behaviour changed (the review dialog, the
+project-template rule, reopening restores the stored key). The generated
+three-set examination still scores 45/45 with each candidate marked against
+their own set's key. A scripted rendered run (1366×768 and 1100×680, real
+Windows platform at 175 % scaling) on the OMR-Scan template (100 questions,
+sets A–D) opened the project straight onto Answer Key, entered Set A by hand,
+read Set B from a rendered solution sheet with one double mark and one blank,
+verified A and D, reopened the project and found every set, source and
+full-credit list restored. Full suite afterwards: **5,878 passed, 15 skipped,
+0 failed**; ruff and mypy clean.
+
+**Pending / limitations.** No operator has used the new stage, and no real
+(photographed or scanned) solution sheet has been read — only rendered ones.
+The Scan stage still does not re-read a template re-saved in place at the same
+path (outside this stage's scope). Verification remains a prerequisite for
+scoring, as before. There is still no logical-to-physical set mapping, so a
+set the sheet cannot print is imported under the operator's choice with the
+check recorded as *not confirmable*. With many sets the tiles scroll
+horizontally; this was checked with four.
 
 #### Written Student ID and set code, and used reference forms cleaned first
 

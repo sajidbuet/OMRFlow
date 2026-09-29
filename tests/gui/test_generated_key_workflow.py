@@ -91,6 +91,7 @@ class Scenario:
     template_reached_key_page: bool
     roster_ids_before_reopen: tuple[int, ...]
     mismatch_warning: list[str]
+    mismatch_blocked: bool
 
 
 @pytest.fixture(scope="module")
@@ -107,6 +108,27 @@ def scenario(qapp, tmp_path_factory) -> Iterator[Scenario]:
             QMessageBox, name,
             staticmethod(lambda *a, **_k: messages.append(str(a[2]) if len(a) > 2 else "")),
         )
+
+    # The review dialog is modal; drive it the way an operator would. A clean
+    # sheet for the selected set is accepted as read. A sheet whose set field
+    # disagrees with the selection is recorded, shown to be un-acceptable
+    # until a set is chosen, and then filed under the set the sheet reads.
+    dialogs: list[dict[str, Any]] = []
+
+    def review(_page: Any, dialog: Any) -> bool:
+        seen = {
+            "message": dialog.reading.verdict.message,
+            "blocked_before_choice": not dialog.accept_button.isEnabled(),
+        }
+        if dialog.reading.verdict.check.value == "mismatch":
+            dialog.choose_set(dialog.reading.verdict.read)
+        seen["accepted"] = dialog.accept_button.isEnabled()
+        dialogs.append(seen)
+        return bool(seen["accepted"])
+
+    from omr_scanner.gui.answer_key.page import AnswerKeyPage
+
+    patch.setattr(AnswerKeyPage, "_run_solution_dialog", review)
 
     template = build_answer_sheet_template(
         name="Generated key workflow",
@@ -170,15 +192,17 @@ def scenario(qapp, tmp_path_factory) -> Iterator[Scenario]:
             (solution / "Set_10_Answer_Key.txt").read_text(encoding="utf-8")
         )
         assert key_page.save_key() and key_page.verify_key()
-        # Set 11: Read From Solution Sheet.
+        # Set 11: Read Marked Solution Sheet.
         key_page.set_combo.setCurrentText("11")
         assert key_page.read_from_scan(solution / "Set_11_Solution.png")
         assert key_page.save_key() and key_page.verify_key()
-        # Set 12's sheet, read while Set 11 is still selected.
-        before = len(messages)
+        # Set 12's sheet, read while Set 11 is still selected: the operator
+        # is stopped and chooses Set 12 in the review dialog.
+        before = len(dialogs)
         assert key_page.read_from_scan(solution / "Set_12_Solution.png")
-        state.mismatch_warning = messages[before:]
-        key_page.set_combo.setCurrentText("12")
+        state.mismatch_warning = [item["message"] for item in dialogs[before:]]
+        state.mismatch_blocked = all(item["blocked_before_choice"] for item in dialogs[before:])
+        assert key_page.state.set_code == "12"
         assert key_page.save_key() and key_page.verify_key()
 
         results = window._results_page()
@@ -222,11 +246,12 @@ class TestTheAnswerKeyStage:
     def test_a_sheet_for_another_set_is_named_before_it_can_be_saved(
         self, scenario: Scenario
     ):
-        """D3."""
+        """D3: named, and not acceptable until the operator chooses a set."""
         assert any(
-            "marked Set 12, but Set 11 is selected" in text
+            "appears to be Set 12, but you selected Set 11" in text
             for text in scenario.mismatch_warning
         )
+        assert scenario.mismatch_blocked
 
 
 class TestTheResultsStage:
@@ -279,9 +304,16 @@ class TestReopening:
         window.close_project()
         assert window.open_project_at(root)
         key_page = window._answer_key_page()
-        assert key_page.key_edit.toPlainText() == ""
         assert key_page.state.plan is not None
-        assert set(scoring_store.verified_keys(window.session.database)) == set(SETS)
+        stored = scoring_store.verified_keys(window.session.database)
+        assert set(stored) == set(SETS)
+        # Reopened, the editor shows the first set's *stored* key - read back
+        # from the project, not text left over from before - and nothing is
+        # pending.
+        assert key_page.state.set_code == SETS[0]
+        assert key_page.key_edit.toPlainText() == stored[SETS[0]].key.answers
+        assert key_page.is_dirty() is False
+        assert key_page.set_state(SETS[0]) == "verified"
         results = window._results_page()
         results.refresh_table()
         assert results.state.counts == before
@@ -375,10 +407,15 @@ class TestEachDefect:
         cv2.imwrite(str(path), render_case(template, solution_case(key, layout, index=1)).image)
 
         warned: list[str] = []
-        monkeypatch.setattr(
-            "omr_scanner.gui.answer_key.page.QMessageBox.warning",
-            staticmethod(lambda *a, **_k: warned.append(str(a[2]))),
-        )
+        accept: list[bool] = []
+
+        def review(_page: object, dialog: object) -> bool:
+            warned.append(dialog.reading.verdict.message)  # type: ignore[attr-defined]
+            enabled = dialog.accept_button.isEnabled()  # type: ignore[attr-defined]
+            accept.append(enabled)
+            return enabled
+
+        monkeypatch.setattr(AnswerKeyPage, "_run_solution_dialog", review)
         spec = next(item for item in WORKFLOW_PAGES if item.key == "answer_key")
         page = AnswerKeyPage(spec)
         qtbot.addWidget(page)
@@ -386,14 +423,18 @@ class TestEachDefect:
         page.set_template(template)
 
         page.set_combo.setCurrentText("A")
-        assert page.read_from_scan(path)
+        # The mismatch is named, and the answers cannot be taken until the
+        # operator decides which set the sheet is for.
+        assert page.read_from_scan(path) is False
         assert page.state.set_code == "A"  # never switched behind the operator's back
-        assert any("marked Set B, but Set A is selected" in text for text in warned)
+        assert any("appears to be Set B, but you selected Set A" in text for text in warned)
+        assert accept == [False]
+        assert page.key_edit.toPlainText() == ""
 
         warned.clear()
         page.set_combo.setCurrentText("B")
         assert page.read_from_scan(path)
-        assert warned == []
+        assert warned and "matching your selection" in warned[0]
         assert page.state.draft is not None and page.state.draft.answers == key.key_string
 
     def test_d4_the_editor_is_cleared_for_a_new_project_only(

@@ -308,7 +308,7 @@ class MainWindow(QMainWindow):
         self.chrome.density_changed.connect(self._on_ribbon_density_changed)
         self.chrome.minimise_requested.connect(self.showMinimized)
         self.chrome.maximise_toggled.connect(self.toggle_maximised)
-        self.chrome.close_requested.connect(self.close)
+        self.chrome.close_requested.connect(self._request_exit)
         outer_layout.addWidget(self.chrome)
 
         outer_layout.addWidget(self._build_pages(), stretch=1)
@@ -343,7 +343,7 @@ class MainWindow(QMainWindow):
                 project_page.project_info_requested.connect(
                     self._prompt_project_configuration
                 )
-                project_page.recent_project_requested.connect(self.open_project_at)
+                project_page.recent_project_requested.connect(self._open_recent_project)
                 project_page.view_all_recent_requested.connect(
                     self.show_recent_projects_menu
                 )
@@ -507,7 +507,7 @@ class MainWindow(QMainWindow):
 
         self.close_project_action = QAction("&Close Project", self)
         self.close_project_action.setEnabled(False)
-        self.close_project_action.triggered.connect(self.close_project)
+        self.close_project_action.triggered.connect(self._prompt_close_project)
         file_menu.addAction(self.close_project_action)
 
         file_menu.addSeparator()
@@ -525,7 +525,7 @@ class MainWindow(QMainWindow):
 
         self.exit_action = QAction("E&xit", self)
         self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        self.exit_action.triggered.connect(self.close)
+        self.exit_action.triggered.connect(self._request_exit)
         file_menu.addAction(self.exit_action)
 
         tools_menu = self.menuBar().addMenu("&Tools")
@@ -819,6 +819,8 @@ class MainWindow(QMainWindow):
         is configured in one continuous flow rather than left half-described
         until somebody finds the menu item.
         """
+        if not self.confirm_unsaved_work("create another project"):
+            return
         start_dir = self._config.default_projects_root or Path.home()
         parent_directory = QFileDialog.getExistingDirectory(
             self, "Select the folder that will contain the project", str(start_dir)
@@ -843,6 +845,8 @@ class MainWindow(QMainWindow):
         of modal dialogs and safe to call directly from a test (see the
         module docstring's "Testability" section).
         """
+        if not self.confirm_unsaved_work("open another project"):
+            return
         start_dir = self._config.default_projects_root or Path.home()
         directory = QFileDialog.getExistingDirectory(
             self, "Open project folder", str(start_dir)
@@ -1021,17 +1025,19 @@ class MainWindow(QMainWindow):
         return page if isinstance(page, ReportsPage) else None
 
     def broadcast_template(self, template: object | None) -> None:
-        """Tell the scoring stages which template the batch was read with.
+        """Tell the stages that re-read sheets which template the batch was read with.
 
-        Phase 8 needs the template for its question count and answer labels,
-        and the Scan stage is where one is loaded. Routed through the window
-        rather than page-to-page, for the same reason every other cross-page
-        message is: a page that reached into another would have to know it
-        exists.
+        Routed through the window rather than page-to-page, for the same reason
+        every other cross-page message is: a page that reached into another
+        would have to know it exists.
+
+        The Answer Key stage is deliberately **not** told. It reads the
+        project's own active template (see
+        :func:`omr_scanner.services.project_template.load_project_template`)
+        so that opening a project is enough to write a key, and so that a
+        template loaded ad hoc on the Scan stage can never change how many
+        questions a key has.
         """
-        answer_key = self._answer_key_page()
-        if answer_key is not None:
-            answer_key.set_template(template)  # type: ignore[arg-type]
         attendance = self._attendance_page()
         if attendance is not None:
             # Its script inspector re-reads a sheet with it.
@@ -1640,6 +1646,10 @@ class MainWindow(QMainWindow):
         # project.json and stops broadcast -> open -> announce -> broadcast
         # from running forever.
         if resolve_active_template(self._session.project) == template_path:
+            # The same file, possibly re-saved with different questions. The
+            # pages that read the project's template re-read it; nothing else
+            # is re-broadcast, which is what keeps this from looping.
+            self._refresh_project_template_readers()
             return
         try:
             set_active_template(self._session, template_path)
@@ -1648,6 +1658,41 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Project template", exc.user_message)
             return
         self._broadcast_project_change()
+
+    def _refresh_project_template_readers(self) -> None:
+        """Let pages that read the project's template see an in-place re-save."""
+        answer_key = self._answer_key_page()
+        if answer_key is not None:
+            answer_key.refresh_project_template()
+
+    def confirm_unsaved_work(self, action: str) -> bool:
+        """Offer to save unsaved answer-key edits before ``action``.
+
+        Returns:
+            ``False`` when the operator cancelled, and ``action`` must not
+            happen. Only the interactive commands ask - a programmatic close
+            (tests, the application shutting down under a script) never opens
+            a modal.
+        """
+        answer_key = self._answer_key_page()
+        if answer_key is None:
+            return True
+        return answer_key.resolve_unsaved(action)
+
+    def _request_exit(self) -> None:
+        """The chrome's close button and File > Exit: offer to save, then close."""
+        if self.confirm_unsaved_work("exit OMRFlow"):
+            self.close()
+
+    def _prompt_close_project(self) -> None:
+        """File > Close Project, after offering to save unsaved key edits."""
+        if self.confirm_unsaved_work("close the project"):
+            self.close_project()
+
+    def _open_recent_project(self, directory: Path) -> None:
+        """Open a recent project, after offering to save unsaved key edits."""
+        if self.confirm_unsaved_work("open another project"):
+            self.open_project_at(directory)
 
     def _recover_interrupted_batches(self, session: ProjectSession) -> None:
         """Repair batch state left behind by a run that never finished.
@@ -1738,7 +1783,7 @@ class MainWindow(QMainWindow):
             for directory in self._config.recent_projects:
                 action = QAction(str(directory), self)
                 action.triggered.connect(
-                    lambda _checked=False, path=directory: self.open_project_at(path)
+                    lambda _checked=False, path=directory: self._open_recent_project(path)
                 )
                 self.recent_menu.addAction(action)
 
@@ -1898,6 +1943,12 @@ class MainWindow(QMainWindow):
         Releasing the handle here rather than in ``__del__`` is what guarantees
         the project folder is not locked once the window is gone.
         """
+        # Only a close the operator asked for (the title bar, Alt+F4) offers
+        # to save an unsaved answer key; a programmatic close never opens a
+        # modal, which is what keeps a headless run from hanging.
+        if event.spontaneous() and not self.confirm_unsaved_work("exit OMRFlow"):
+            event.ignore()
+            return
         if self.batch_is_running():
             answer = QMessageBox.question(
                 self,

@@ -845,8 +845,92 @@ chips that filter the table, and the same narrowed selection the Resolve queue
 uses: the accent *tint* with accent rules, so a selected row reads as a
 selection and a wide table never turns into a solid red band."""
 
+ANSWER_KEY_STATE_PROPERTY: Final = "keyState"
+"""Dynamic property on an Answer Key set tile / status label naming its state:
+``verified``, ``draft``, ``missing``, ``stale``, ``unsaved`` or ``invalid``."""
+
+ANSWER_KEY_STAGE_STYLESHEET: Final = f"""
+QLabel#answerKeySectionHeading {{
+    color: {Color.TEXT_TERTIARY};
+    font-weight: {FontWeight.SEMIBOLD};
+}}
+
+QFrame#answerKeySetsBar, QFrame#answerKeySetBox, QFrame#answerKeyActionBar {{
+    background: {Color.SURFACE};
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-radius: {Radius.MD}px;
+}}
+
+QToolButton#answerKeySetTile {{
+    text-align: left;
+    padding: 2px {Spacing.SM}px;
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-radius: {Radius.SM}px;
+    background: {Color.SURFACE};
+    color: {Color.TEXT_PRIMARY};
+}}
+
+QToolButton#answerKeySetTile:hover {{
+    background: {Color.SURFACE_HOVER};
+}}
+
+QToolButton#answerKeySetTile:checked {{
+    background: {Color.PRIMARY_SOFT};
+    border: {Stroke.FOCUS_RING}px solid {Color.PRIMARY};
+}}
+
+QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="verified"],
+QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="verified"] {{
+    color: {Color.STATUS_READY};
+}}
+
+QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="draft"],
+QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="unsaved"],
+QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="draft"],
+QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="unsaved"] {{
+    color: {Color.STATUS_BUSY};
+}}
+
+QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="missing"],
+QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="stale"],
+QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="invalid"],
+QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="missing"],
+QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="stale"],
+QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="invalid"] {{
+    color: {Color.STATUS_ERROR};
+}}
+
+QLabel#answerKeyStatusLabel {{
+    font-weight: {FontWeight.SEMIBOLD};
+    padding: {Spacing.XXS}px {Spacing.SM}px;
+    border: {Stroke.HAIRLINE}px solid {Color.BORDER_STRONG};
+    border-radius: {Radius.SM}px;
+    background: {Color.SURFACE_MUTED};
+}}
+
+QPlainTextEdit#answerKeyTextEdit {{
+    font-family: "Consolas", "Cascadia Mono", monospace;
+}}
+
+QTableWidget#answerKeyTable::item:selected,
+QTableWidget#solutionSheetTable::item:selected {{
+    color: {Color.TEXT_PRIMARY};
+    background: {Color.PRIMARY_SOFT};
+    border-top: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border-bottom: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+}}
+"""
+"""Set on the Answer Key stage and its solution-sheet review dialog.
+
+Set tiles and the status label take their colour from the key's state - and
+always carry the state in words and a glyph as well, so colour is never the
+only carrier. The selected-row narrowing is the one the Attendance and
+Resolve stages already use."""
+
 
 __all__ = [
+    "ANSWER_KEY_STAGE_STYLESHEET",
+    "ANSWER_KEY_STATE_PROPERTY",
     "ATTENDANCE_STAGE_STYLESHEET",
     "CANDIDATE_CHOSEN",
     "CANDIDATE_MACHINE",

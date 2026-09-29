@@ -476,6 +476,36 @@ def _migration_011_reject_and_rescan(connection: Connection) -> None:
     )
 
 
+ANSWER_KEY_PROVENANCE_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("created_by", "VARCHAR(200) NOT NULL DEFAULT ''"),
+    ("template_id", "VARCHAR(100) NOT NULL DEFAULT ''"),
+    ("template_name", "VARCHAR(200) NOT NULL DEFAULT ''"),
+    ("template_fingerprint", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ("source_sha256", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ("source_metadata_json", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _migration_012_answer_key_provenance(connection: Connection) -> None:
+    """Record who created an answer-key revision, against which template, from what.
+
+    Six additive columns on ``answer_key_revision`` and **no backfill**. A
+    revision stored by an earlier build recorded none of this, and inventing
+    a creator or a template for it would put provenance on a key that has
+    none; the interface says "not recorded" instead. Every existing revision
+    keeps its answers, status, verification and the results that point at it.
+    """
+    existing = {
+        row[1]
+        for row in connection.execute(text("PRAGMA table_info(answer_key_revision)")).all()
+    }
+    for name, ddl in ANSWER_KEY_PROVENANCE_COLUMNS:
+        if name not in existing:
+            connection.execute(
+                text(f"ALTER TABLE answer_key_revision ADD COLUMN {name} {ddl}")
+            )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -546,6 +576,14 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=11,
         description="Reject & Rescan: scan_rejection",
         apply=_migration_011_reject_and_rescan,
+    ),
+    Migration(
+        version=12,
+        description=(
+            "Answer-key provenance: answer_key_revision.created_by, template "
+            "identity, source hash and metadata"
+        ),
+        apply=_migration_012_answer_key_provenance,
     ),
 )
 

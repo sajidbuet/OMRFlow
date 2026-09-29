@@ -67,6 +67,7 @@ from omr_scanner.services import (
     scoring,
     scoring_store,
 )
+from omr_scanner.services.answer_key import AnswerKeyError, QuestionPlan, plan_for
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.scoring import ResultCounts
@@ -76,6 +77,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.services.scoring_store import StoredResult
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def plan_or_none(template: OmrTemplate | None) -> QuestionPlan | None:
+    """The template's question plan, or ``None`` when it has no usable one."""
+    if template is None:
+        return None
+    try:
+        return plan_for(template)
+    except AnswerKeyError:
+        return None
+
 
 RESULT_COLUMNS: tuple[str, ...] = (
     "Candidate",
@@ -322,6 +334,14 @@ class ResultsPage(WorkflowPage):
             self.state.roster_ids = scoring_store.scoring_rosters(session.database)
             batches = batch_store.list_batches(session.database, limit=1)
             self.state.batch_id = batches[0].batch_id if batches else None
+            # The project's own template, so Results can mark a reopened
+            # project without the Scan stage having been visited. A template
+            # the Scan stage loads later still arrives through set_template.
+            from omr_scanner.services.project_template import load_project_template
+
+            found = load_project_template(session.project).template
+            if found is not None:
+                self.state.template = found
         self._refresh_policy_label()
         self.refresh_table()
         self._update_enabled()
@@ -418,7 +438,10 @@ class ResultsPage(WorkflowPage):
         if self.state.batch_id is None:
             return ("No batch has been processed in this project yet.",)
         if self.state.template is None:
-            return ("No template is loaded. Load it on the Scan stage.",)
+            return (
+                "This project does not yet have an active OMR template. Create or "
+                "load one on the Template stage.",
+            )
 
         issues: list[str] = []
         missing: set[str] = set()
@@ -444,8 +467,30 @@ class ResultsPage(WorkflowPage):
                         f"Candidate {entry.candidate_id or '(unknown)'}: "
                         f"{outcome.describe_blocks()}"
                     )
+        # Say *why* each set has no usable key - missing, draft only, or a key
+        # for a different paper - rather than "invalid".
+        overview = {
+            item.set_code: item
+            for item in scoring_store.key_overview(
+                database, sorted(missing), plan_or_none(self.state.template)
+            )
+        }
+        reasons = {
+            scoring_store.SetKeyState.MISSING: "no key has been entered",
+            scoring_store.SetKeyState.DRAFT: "a key is saved but not verified",
+            scoring_store.SetKeyState.STALE: "its key does not fit the active template",
+            scoring_store.SetKeyState.VERIFIED: "",
+        }
         return (
-            *(f"Set {code} has no verified answer key." for code in sorted(missing)),
+            *(
+                f"Set {code} has no verified answer key"
+                + (
+                    f" ({reasons[overview[code].state]})."
+                    if code in overview and reasons[overview[code].state]
+                    else "."
+                )
+                for code in sorted(missing)
+            ),
             *issues,
         )
 

@@ -222,6 +222,8 @@ extend-ignore-names = [
     # layout, so the calibration status strip provides one.
     "addItem", "itemAt", "takeAt", "setGeometry", "minimumSize",
     "expandingDirections", "hasHeightForWidth",
+    # `QStyledItemDelegate` overrides, for the Answer Key table's option picker.
+    "createEditor", "setEditorData", "setModelData",
 ]
 
 [tool.ruff.lint.per-file-ignores]

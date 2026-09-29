@@ -853,6 +853,16 @@ class AnswerKeyRevision(Base):
         DateTime(timezone=True), nullable=True
     )
     verified_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # Provenance (migration 12). Empty on a revision stored by an earlier
+    # build, which recorded none of it - shown as "not recorded", never guessed.
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    template_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    template_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    template_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=""
+    )
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    source_metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     def __repr__(self) -> str:
         """Return a debugging representation. Names no candidate, and no answers."""

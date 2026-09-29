@@ -406,6 +406,15 @@ stylesheet.
     answer(s), but this template contains 100 questions. Please add answers for
     Questions 99-100."* Every problem is reported at once, and a stray
     character is reported rather than silently dropped;
+  - **Step 7 rework (2026-09-29; implemented — automated tests passing,
+    rendered acceptance scripted at 1366×768 and 1100×680, not yet worked by
+    an operator):** the stage reads the project's own active template (no
+    dependency on Scan), is set-centric with per-set status, synchronises the
+    sequence and the question table, reviews solution sheets in a dialog with a
+    preview before anything is saved, records provenance per revision (creator,
+    template identity, source hash, read metadata — schema migration 12), and
+    marks a key that no longer fits the template *Incompatible* instead of
+    using it;
   - **verification before scoring.** A key is a draft until a named person
     checks it — including one read off a solution sheet, because recognition
     completing does not make a key right. Only a verified key produces marks;
@@ -1389,17 +1398,24 @@ Still open, and why Phase 8 is not marked complete:
 After the conflict queue is clear and the batch is reconciled. Full detail is
 in [`docs/scoring.md`](../../docs/scoring.md).
 
-1. Open **Answer Key**. Choose the question-paper **set**.
-2. Type or paste the correct answers, one character per question — or press
-   **Read From Solution Sheet…** to recognise a filled solution sheet. Spaces,
-   line breaks and commas are ignored; anything else is reported.
-3. Flag any **wrong questions** for this set. Every scored candidate gets full
-   credit for those, whatever they marked.
-4. Check the validation line, then **Save As New Revision**.
-5. **Verify Answer Key**. Nothing is marked against a draft. Put your name in
-   *File > Settings > Reviewer* first.
-6. Repeat for every set. Sets are independent — Set A's wrong questions need
-   not be Set B's.
+1. Open **Answer Key** — straight from the project; the Scan stage need not
+   have been visited. The row at the top lists every set Project Configuration
+   defines, each with its state (✓ Verified, ● Draft, ○ Missing, ⚠
+   Incompatible, ✎ Unsaved). Choose a **set**.
+2. Press **Enter / Paste Key** and type or paste the correct answers, one per
+   question — or press **Read Marked Solution Sheet…**, choose the image, and
+   review what was read (blank and multiple marks are left unanswered until you
+   choose; a sheet marked with a different set must be assigned explicitly).
+   Spaces, line breaks and commas are ignored; anything else is reported. One
+   answer can be corrected in the question table without retyping the string.
+3. Tick **Full credit** for any withdrawn question of this set (or list them).
+   Every scored candidate gets full credit for those, whatever they marked.
+4. Check the *Checks* list, then **Save as New Revision**.
+5. **Verify Answer Key**. Nothing is marked against a draft; the reasons Verify
+   is unavailable are listed beside it. Put your name in *File > Settings >
+   Reviewer* first.
+6. Repeat for every set until the summary reads *N of N verified*. Sets are
+   independent — Set A's full-credit questions need not be Set B's.
 7. Open **Results**. Press **Scoring Configuration…** and set the marks, the
    negative-marking mode and the minimum total. The preview shows a worked
    example so a misplaced decimal point is visible before it is applied.

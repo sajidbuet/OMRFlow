@@ -20,7 +20,7 @@ from fractions import Fraction
 from typing import TYPE_CHECKING
 
 import pytest
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QMessageBox
 from sqlalchemy import select
 
@@ -201,6 +201,14 @@ def results_page(qtbot, project_session: ProjectSession, template, prepared):
     page.close()
 
 
+def give_project_template(session: ProjectSession, template) -> None:
+    """Make ``template`` the project's own active template, as the Template stage does."""
+    from omr_scanner.services import save_template, set_active_template
+
+    written = save_template(template, session.project.layout.templates_dir / "key.omrt")
+    set_active_template(session, written)
+
+
 def verified_key_for(database, plan, set_code: str = "A", *, wrong=()) -> int:
     """Store and verify a key of all-A answers."""
     stored = scoring_store.save_key(
@@ -266,8 +274,10 @@ class TestAnswerKeyEntry:
         key_page.key_edit.setPlainText("A" * plan.question_count)
         key_page.wrong_edit.setText("2, 5")
         assert key_page.state.draft.wrong_questions == {2, 5}
-        assert "full credit" in key_page.table.item(1, 2).text()
+        assert "full credit" in key_page.table.item(1, 2).text().lower()
+        assert key_page.table.item(1, 2).checkState() == Qt.CheckState.Checked
         assert key_page.table.item(0, 2).text() == ""
+        assert key_page.table.item(0, 2).checkState() == Qt.CheckState.Unchecked
 
     def test_unflagging_a_wrong_question_clears_the_table(
         self, key_page: AnswerKeyPage, plan
@@ -275,7 +285,7 @@ class TestAnswerKeyEntry:
         key_page.set_combo.setCurrentText("A")
         key_page.key_edit.setPlainText("A" * plan.question_count)
         key_page.wrong_edit.setText("2")
-        assert "full credit" in key_page.table.item(1, 2).text()
+        assert "full credit" in key_page.table.item(1, 2).text().lower()
         key_page.wrong_edit.setText("")
         assert key_page.table.item(1, 2).text() == ""
 
@@ -290,13 +300,19 @@ class TestAnswerKeyEntry:
     def test_the_canonical_string_is_shown(self, key_page: AnswerKeyPage, plan):
         key_page.set_combo.setCurrentText("A")
         key_page.key_edit.setPlainText("A" * plan.question_count)
-        assert "A" * plan.question_count in key_page.summary_label.text()
+        # Shown in groups of ten so a 200-question key wraps and can be read
+        # against question numbers; the characters are the canonical key.
+        shown = key_page.summary_label.text().replace(" ", "")
+        assert "A" * plan.question_count in shown
 
     def test_without_a_template_nothing_can_be_entered(self, key_page: AnswerKeyPage):
         key_page.set_template(None)
         assert key_page.key_edit.isEnabled() is False
         assert key_page.save_button.isEnabled() is False
-        assert "No template is loaded" in key_page.validation_label.text()
+        text = key_page.validation_label.text()
+        assert "does not yet have an active OMR template" in text
+        # The template belongs to the project, not to the Scan stage.
+        assert "Scan" not in text
 
 
 class TestAnswerKeyVerification:
@@ -850,13 +866,29 @@ class TestWindowIntegration:
         finally:
             window.close()
 
-    def test_the_template_reaches_both(self, qtbot, tmp_path, template):
+    def test_a_scan_stage_template_reaches_results_but_not_answer_key(
+        self, qtbot, tmp_path, template
+    ):
+        """The Answer Key stage reads the project's template, never Scan's."""
         window = MainWindow(AppConfig(), config_path=tmp_path / "config.json")
         qtbot.addWidget(window)
         try:
             window.broadcast_template(template)
-            assert window._answer_key_page().state.plan is not None
+            assert window._answer_key_page().state.plan is None
             assert window._results_page().state.template is template
+        finally:
+            window.close()
+
+    def test_the_project_template_reaches_both_without_the_scan_stage(
+        self, qtbot, tmp_path, template, project_session
+    ):
+        give_project_template(project_session, template)
+        window = MainWindow(AppConfig(), config_path=tmp_path / "config.json")
+        qtbot.addWidget(window)
+        try:
+            window._adopt_session(project_session)
+            assert window._answer_key_page().state.plan == plan_for(template)
+            assert window._results_page().state.template is not None
         finally:
             window.close()
 
@@ -1054,6 +1086,7 @@ class TestCrossStageWiring:
     def test_verifying_a_key_refreshes_the_results_stage(
         self, qtbot, project_session: ProjectSession, template, prepared, plan
     ):
+        give_project_template(project_session, template)
         window = MainWindow(AppConfig(reviewer_name=OPERATOR))
         qtbot.addWidget(window)
         window._adopt_session(project_session)
