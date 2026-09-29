@@ -12,7 +12,9 @@ Responsibilities:
       a renderable page.
     * :func:`render_case` - one planned case to one image plus its truth.
     * :func:`generate_dataset` - the whole dataset, with progress and
-      cancellation.
+      cancellation, including one answer key and solution sheet per set
+      (:mod:`omr_scanner.evaluation.answer_keys`) and candidate answers decided
+      against those keys (:mod:`omr_scanner.evaluation.performance`).
 
 What does NOT belong here:
     * Deciding *what* to test - that is `case_plans`, and keeping the two
@@ -90,12 +92,27 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import random
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from omr_scanner.domain.template import IgnoredFieldDefinition
+from omr_scanner.evaluation.answer_keys import (
+    SOLUTION_DIRNAME,
+    SOLUTION_ROLE,
+    SolutionFiles,
+    SyntheticAnswerKey,
+    clear_stale_solutions,
+    describe_solutions,
+    generate_answer_keys,
+    planned_set_codes,
+    serialise_answer_key,
+    set_code_markable,
+    solution_case,
+    solution_file_names,
+)
 from omr_scanner.evaluation.attendance_dataset import (
     ATTENDANCE_DIRNAME,
     Population,
@@ -127,6 +144,12 @@ from omr_scanner.evaluation.ground_truth import (
     SheetGroundTruth,
     save_ground_truth,
     save_manifest,
+)
+from omr_scanner.evaluation.performance import (
+    DEFAULT_PERFORMANCE,
+    PerformancePolicy,
+    apply_performance,
+    summarise_scores,
 )
 from omr_scanner.evaluation.reference_scan import (
     ReferenceScan,
@@ -163,17 +186,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from numpy.typing import NDArray
 
     from omr_scanner.domain.template import OmrTemplate
+    from omr_scanner.evaluation.attendance_dataset import SyntheticCandidate
 
 _LOGGER = logging.getLogger(__name__)
 
-GENERATOR_VERSION = "2.2"
+GENERATOR_VERSION = "2.3"
 """Version of this generator, recorded in every manifest.
 
 Changing how a defect is drawn changes what a dataset means, so a benchmark
 result that does not say which generator produced its data is not comparable
 with anything. Bumped to 2.0 when named test cases, DPI-based rendering and
 JPEG output arrived, to 2.1 when the reference-scan rendering mode and the
-colour modes did, and to 2.2 for physical corner folds."""
+colour modes did, to 2.2 for physical corner folds, and to 2.3 when answer
+keys, solution sheets and key-relative candidate performance arrived."""
 
 DATASET_SCHEMA_VERSION = "1.0"
 """Version of the dataset *layout* - the directories and the manifest."""
@@ -673,6 +698,12 @@ def render_case(
         },
         "mark_styles": _mark_styles(effective),
     }
+    if effective.intended is not None:
+        # The candidate's intended answers against their own set's key, before
+        # any test condition was laid over them. Present only when the
+        # performance model decided them, so a legacy-random dataset carries
+        # exactly the metadata it always did.
+        metadata["performance"] = effective.intended.describe()
     if effective.folds:
         # Present only when there is something to say. A sheet that was not
         # folded carries no fold record at all, so a dataset generated with
@@ -924,6 +955,8 @@ def generate_dataset(
     reference_scan: Path | None = None,
     color_mode: ColorMode = ColorMode.GRAYSCALE,
     fold_policy: FoldPolicy | None = None,
+    generate_solutions: bool = True,
+    performance: PerformancePolicy | None = None,
     on_progress: Callable[[GenerationProgress], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> DatasetManifest:
@@ -971,6 +1004,16 @@ def generate_dataset(
             when omitted, and a disabled policy leaves every sheet exactly as
             it would have been - which is what keeps every existing caller and
             every existing dataset unaffected.
+        generate_solutions: Also write ``solution/``: one clean solution OMR
+            sheet, one answer-key text file and one ground-truth document per
+            set. On by default. The keys are drawn either way - candidates'
+            answers are decided against them - so turning this off changes
+            which files are written and nothing about any candidate's sheet.
+        performance: How each candidate's share of correct answers is decided;
+            see :mod:`omr_scanner.evaluation.performance`. A truncated normal
+            distribution (mean 65 %, SD 15 %) when omitted;
+            :data:`~omr_scanner.evaluation.performance.LEGACY_RANDOM` restores
+            answers chosen independently of any key.
         on_progress: Called after each sheet is written. Runs on the calling
             thread, so a GUI caller must marshal to the main thread.
         should_cancel: Polled before each sheet; returning ``True`` stops the
@@ -981,8 +1024,10 @@ def generate_dataset(
 
     Raises:
         ValueError: ``count`` is not positive, the format is unsupported, the
-            template declares no bubble grids to fill in, or
-            :attr:`RenderMode.REFERENCE_SCAN` was asked for without a scan.
+            template declares no bubble grids to fill in,
+            :attr:`RenderMode.REFERENCE_SCAN` was asked for without a scan, the
+            performance settings are impossible, the template's questions are
+            malformed, or a set code cannot be marked on its set-code field.
         ReferenceScanError: The reference scan could not be decoded or could
             not be registered against ``template``.
 
@@ -1011,6 +1056,8 @@ def generate_dataset(
             "Rendering onto a real scanned sheet needs a reference scan; "
             "pass reference_scan=..."
         )
+    policy = performance if performance is not None else DEFAULT_PERFORMANCE
+    policy.validate()
 
     reference = (
         load_reference_scan(reference_scan, template, color_mode=color_mode)
@@ -1041,15 +1088,35 @@ def generate_dataset(
         profile=profile,
         custom_families=custom_families,
     )
+    layout = FieldLayout.of(template)
     if population is not None:
         # Identity is overlaid onto the planned cases rather than planned
         # twice. See `attendance_dataset.bind_case` for why the two concerns
         # are split this way.
-        layout = FieldLayout.of(template)
         cases = [
             bind_case(case, candidate, layout)
             for case, candidate in zip(cases, sheets, strict=True)
         ]
+
+    # One canonical key per set, before anything is drawn. Candidates answer
+    # against it, the solution sheets show it, the text files state it and the
+    # manifest records it - four readers of one object, never four draws.
+    key_sets, answer_sets = _answer_key_sets(cases, population, sheets, seed=seed)
+    keys = generate_answer_keys(template, layout, key_sets, seed=seed)
+    solution_files: dict[str, SolutionFiles] = {}
+    if generate_solutions and keys:
+        # Named now rather than after the candidate sheets are written, so two
+        # set codes that sanitise to one file name are refused before any work.
+        solution_files = solution_file_names(list(keys), chosen_format.suffix)
+        for code in keys:
+            if code and not set_code_markable(layout, code):
+                _LOGGER.warning(
+                    "Set code '%s' cannot be marked on this template's set-code "
+                    "field; its solution sheet leaves the field blank, as the "
+                    "candidate sheets for that set do",
+                    code,
+                )
+    cases = apply_performance(cases, answer_sets, keys, layout, policy, seed=seed)
 
     # Read once for the whole run, never per sheet: the template's markers do
     # not move between sheets, and re-deriving them a hundred thousand times
@@ -1136,6 +1203,32 @@ def generate_dataset(
         if on_progress is not None:
             on_progress(GenerationProgress(position, len(cases), sheet.truth.scan))
 
+    # A solution file from an earlier run into this folder must never survive
+    # beside this run's - a leftover key looks exactly as valid as a new one.
+    # Cleared even when solutions are off, for the same reason.
+    solution_dir = output_dir / SOLUTION_DIRNAME
+    clear_stale_solutions(solution_dir)
+    solutions = (
+        _write_solutions(
+            solution_dir,
+            template,
+            keys,
+            solution_files,
+            layout=layout,
+            render=render,
+            image_format=chosen_format,
+            encode_params=encode_params,
+            dataset_version=version,
+            seed=seed,
+            render_mode=render_mode,
+            reference=reference,
+            color_mode=color_mode,
+            outlines=outlines,
+        )
+        if solution_files
+        else None
+    )
+
     manifest = DatasetManifest(
         name=name,
         version=version,
@@ -1166,6 +1259,15 @@ def generate_dataset(
             # a reader sees "this was not done" rather than a block of defaults
             # describing folds that never happened.
             "folds": folds.describe() if folds.active else None,
+            # The canonical keys, whether or not their solution files were
+            # written: they are what every candidate's intended answers were
+            # decided against.
+            "answer_keys": [key.describe() for key in keys.values()],
+            "solutions": solutions,
+            "performance": {
+                **policy.describe(),
+                "observed": summarise_scores(cases),
+            },
             "image_format": chosen_format.value,
             "jpeg_quality": jpeg_quality if chosen_format is ImageFormat.JPEG else None,
             "cancelled": cancelled,
@@ -1196,6 +1298,103 @@ def generate_dataset(
         " (cancelled)" if cancelled else "",
     )
     return manifest
+
+
+def _answer_key_sets(
+    cases: Sequence[SheetCase],
+    population: Population | None,
+    sheets: Sequence[SyntheticCandidate],
+    *,
+    seed: int,
+) -> tuple[tuple[str, ...], list[str]]:
+    """Which sets get a key, and which key each case's candidate answered.
+
+    With a roster, the sets are the roster's and a candidate answered the paper
+    they are registered for - which is deliberately not always the set code
+    marked on their sheet, since a wrong or blank set code is one of the
+    staged conflicts.
+
+    Without one, the sets are the ones the planned sheets carry. A sheet whose
+    set code is a test case (blank, double-marked, faint) still sat *some*
+    paper; which one is drawn from its own stream, so the choice moves nothing
+    else. A template with no set-code field has one paper, keyed as ``""``.
+    """
+    if population is not None:
+        return population.set_codes, [candidate.set_code for candidate in sheets]
+
+    key_sets = planned_set_codes(cases) or ("",)
+    rng = random.Random(f"{seed}:answer-set")
+    answer_sets = [
+        case.set_code if case.set_code in key_sets else rng.choice(list(key_sets))
+        for case in cases
+    ]
+    return key_sets, answer_sets
+
+
+def _write_solutions(
+    directory: Path,
+    template: OmrTemplate,
+    keys: Mapping[str, SyntheticAnswerKey],
+    files: Mapping[str, SolutionFiles],
+    *,
+    layout: FieldLayout,
+    render: PageRender,
+    image_format: ImageFormat,
+    encode_params: Sequence[int],
+    dataset_version: str,
+    seed: int,
+    render_mode: RenderMode,
+    reference: ReferenceScan | None,
+    color_mode: ColorMode,
+    outlines: Sequence[MarkerOutline],
+) -> dict[str, Any]:
+    """Render and write every set's solution sheet, key text and ground truth.
+
+    The solution sheet is an ordinary planned case drawn by :func:`render_case`
+    - the same page, markers, bubbles, fill renderer, colour mode, resolution
+    and reference scan as every candidate's script - with no degradation, so it
+    serves as a clean reference.
+
+    Returns:
+        The manifest's ``solutions`` block.
+    """
+    import cv2
+
+    directory.mkdir(parents=True, exist_ok=True)
+    for index, (code, key) in enumerate(keys.items(), start=1):
+        names = files[code]
+        sheet = render_case(
+            template,
+            solution_case(key, layout, index=index),
+            render=render,
+            image_format=image_format,
+            dataset_version=dataset_version,
+            seed=seed,
+            render_mode=render_mode,
+            reference=reference,
+            color_mode=color_mode,
+            outlines=outlines,
+        )
+        success, buffer = cv2.imencode(image_format.suffix, sheet.image, list(encode_params))
+        if not success:  # pragma: no cover - encoding a valid array
+            raise OSError(f"Could not encode {names.sheet}")
+        (directory / names.sheet).write_bytes(buffer.tobytes())
+        (directory / names.answer_key).write_text(
+            serialise_answer_key(key), encoding="utf-8", newline="\n"
+        )
+        truth = replace(
+            sheet.truth,
+            scan=names.sheet,
+            metadata={
+                **sheet.truth.metadata,
+                "role": SOLUTION_ROLE,
+                "answer_key": key.describe(),
+                "answer_key_file": names.answer_key,
+            },
+        )
+        save_ground_truth(truth, directory / names.ground_truth)
+    _LOGGER.info("Solution sheets written: %d set(s) in %s", len(keys), directory)
+    return describe_solutions(keys, files, layout)
 
 
 def _dataset_caveat(render_mode: RenderMode) -> str:
@@ -1333,6 +1532,7 @@ __all__ = [
     "MANIFEST_FILENAME",
     "MARKER_DEFECT_TAGS",
     "RENDER_FROM_REFERENCE_SCAN",
+    "SOLUTION_DIRNAME",
     "SUMMARY_FILENAME",
     "UNDECLARED_DPI",
     "CaseFamily",

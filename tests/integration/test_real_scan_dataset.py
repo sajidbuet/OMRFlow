@@ -782,7 +782,7 @@ class TestTheReferenceIsPreparedOncePerJob:
             return sheet
 
         monkeypatch.setattr(module, "render_case", spy)
-        generate(
+        manifest = generate(
             tmp_path / "dataset",
             template,
             blank_scan if blank else None,
@@ -790,7 +790,11 @@ class TestTheReferenceIsPreparedOncePerJob:
         )
 
         gc.collect()
-        assert len(rendered) == 6
+        # Six candidate sheets and one solution sheet per set, every one of
+        # them drawn through the same renderer and released the same way.
+        solutions = len(manifest.generator["solutions"]["sets"])
+        assert solutions >= 1
+        assert len(rendered) == 6 + solutions
         survivors = [index for index, ref in enumerate(rendered) if ref() is not None]
         assert survivors == [], f"sheet image(s) {survivors} were still reachable"
 

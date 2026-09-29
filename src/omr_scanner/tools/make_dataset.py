@@ -41,9 +41,19 @@ Output::
 
     <out>/images/SYN_000001.png ...
     <out>/ground_truth/SYN_000001.json ...
+    <out>/solution/Set_<code>_Solution.png ...   one clean solution sheet per set
+    <out>/solution/Set_<code>_Answer_Key.txt ... its key, as the Answer Key stage reads it
     <out>/manifest.json
     <out>/manifest.csv
     <out>/dataset_summary.json
+
+Answer keys and candidate performance:
+    One key is drawn per set and every candidate answers against the key of the
+    paper they sat: a target score from a truncated normal distribution
+    (``--mean-correct 0.65 --sd-correct 0.15 --min-correct 0 --max-correct 1``
+    by default), exactly that many answers right, the rest valid but wrong.
+    ``--performance-distribution random`` restores answers chosen independently
+    of any key; ``--no-solutions`` skips writing ``solution/``.
 
 Exit codes:
     ``0`` written, ``1`` the template could not be used, ``2`` bad arguments.
@@ -71,6 +81,11 @@ from omr_scanner.evaluation.attendance_dataset import (
     plan_population,
 )
 from omr_scanner.evaluation.fold_plans import FoldCorner, FoldPolicy, FoldSeverity
+from omr_scanner.evaluation.performance import (
+    DEFAULT_PERFORMANCE,
+    PerformanceDistribution,
+    PerformancePolicy,
+)
 from omr_scanner.evaluation.reference_scan import ReferenceScanError
 from omr_scanner.evaluation.synthetic_dataset import (
     DEFAULT_DPI,
@@ -262,6 +277,48 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not force one of every reconciliation conflict into the roster.",
     )
+    parser.add_argument(
+        "--no-solutions",
+        action="store_true",
+        help=(
+            "Do not write solution/ (one solution sheet and answer-key text file "
+            "per set). The keys are still drawn: candidates answer against them."
+        ),
+    )
+    parser.add_argument(
+        "--performance-distribution",
+        choices=[distribution.value for distribution in PerformanceDistribution],
+        default=DEFAULT_PERFORMANCE.distribution.value,
+        help=(
+            "How many questions each candidate gets right: 'normal' samples a "
+            "truncated normal score per candidate (the default); 'random' picks "
+            "every answer independently of the key, as before keys existed."
+        ),
+    )
+    parser.add_argument(
+        "--mean-correct",
+        type=float,
+        default=DEFAULT_PERFORMANCE.mean,
+        help="Mean share of questions answered correctly, as a fraction (0.65).",
+    )
+    parser.add_argument(
+        "--sd-correct",
+        type=float,
+        default=DEFAULT_PERFORMANCE.stddev,
+        help="Standard deviation of that share, as a fraction (0.15).",
+    )
+    parser.add_argument(
+        "--min-correct",
+        type=float,
+        default=DEFAULT_PERFORMANCE.minimum,
+        help="Lowest possible share, as a fraction; the distribution is truncated here.",
+    )
+    parser.add_argument(
+        "--max-correct",
+        type=float,
+        default=DEFAULT_PERFORMANCE.maximum,
+        help="Highest possible share, as a fraction; the distribution is truncated here.",
+    )
     parser.add_argument("--name", default="synthetic", help="Dataset name for the manifest.")
     parser.add_argument("--version", default="1", help="Dataset revision for the manifest.")
     parser.add_argument(
@@ -323,6 +380,19 @@ def main(argv: list[str] | None = None) -> int:
         )
     except ValueError as exc:
         print(f"Those fold settings cannot be used: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+
+    performance = PerformancePolicy(
+        distribution=PerformanceDistribution(arguments.performance_distribution),
+        mean=arguments.mean_correct,
+        stddev=arguments.sd_correct,
+        minimum=arguments.min_correct,
+        maximum=arguments.max_correct,
+    )
+    try:
+        performance.validate()
+    except ValueError as exc:
+        print(f"Those performance settings cannot be used: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
     set_codes = tuple(
@@ -410,6 +480,8 @@ def main(argv: list[str] | None = None) -> int:
             reference_scan=arguments.reference_scan,
             color_mode=color_mode,
             fold_policy=fold_policy,
+            generate_solutions=not arguments.no_solutions,
+            performance=performance,
             on_progress=None if arguments.quiet else report,
         )
     except ReferenceScanError as exc:
@@ -426,6 +498,12 @@ def main(argv: list[str] | None = None) -> int:
         f"{len(manifest.entries)} sheet(s) written to {arguments.output} "
         f"(profile '{arguments.profile}', seed {arguments.seed}, template '{template.name}')"
     )
+    solutions = manifest.generator.get("solutions")
+    if solutions:
+        print(
+            f"{len(solutions['sets'])} solution sheet(s) and answer-key file(s) "
+            f"written to {arguments.output / solutions['directory']}"
+        )
     print(manifest.notes)
     return EXIT_OK
 

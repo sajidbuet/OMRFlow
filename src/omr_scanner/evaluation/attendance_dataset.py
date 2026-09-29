@@ -399,6 +399,11 @@ class Population:
             grouped.setdefault(candidate.set_code, []).append(candidate)
         return grouped
 
+    @property
+    def set_codes(self) -> tuple[str, ...]:
+        """Every set the roster uses, in the order candidates were assigned to them."""
+        return tuple(dict.fromkeys(candidate.set_code for candidate in self.candidates))
+
     def sheets_to_render(self) -> tuple[SyntheticCandidate, ...]:
         """Every script the image generator should draw, in order."""
         return tuple(
@@ -965,9 +970,17 @@ def bind_case(
         ambiguous = False
 
     set_code = candidate.observed_set or ""
-    set_marks: tuple[tuple[str, ...], ...] = (
-        () if candidate.observed_set is None else tuple((ch,) for ch in set_code)
-    )
+    set_marks: tuple[tuple[str, ...], ...]
+    if candidate.observed_set is None:
+        set_marks = ()
+    elif layout.set_columns == 1 and set_code in layout.set_symbols:
+        # A single printed position whose bubbles carry whole codes - "10",
+        # "X1" - is one mark, not one mark per character. The same rule
+        # `SheetBuilder.set_code` applies, so a candidate's script and the
+        # solution sheet for the same set are marked identically.
+        set_marks = ((set_code,),)
+    else:
+        set_marks = tuple((ch,) for ch in set_code)
 
     # The marks that are actually drawn. Rebuilt from the same tuples the
     # ground truth records, so the image and the truth cannot drift apart.
