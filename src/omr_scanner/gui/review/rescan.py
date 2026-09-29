@@ -71,7 +71,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         ReplacementCandidate,
         RescanCase,
     )
-    from omr_scanner.services.scan_lifecycle import LifecycleEvent
+    from omr_scanner.services.scan_lifecycle import LifecycleEvent, ProcessedSheet
 
 UNKNOWN_SET = "(not known)"
 """The set-code choice meaning "the operator does not know"."""
@@ -227,6 +227,7 @@ class RescanPanel(QWidget):
     import_requested = Signal()
     compare_toggled = Signal(bool)
     history_requested = Signal()
+    search_changed = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -282,16 +283,35 @@ class RescanPanel(QWidget):
         self.candidates_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.candidates_list.setMinimumHeight(40)
         self.candidates_list.setMaximumHeight(64)
+        # Wrapped, never scrolled sideways: the batch a rescan came from ends
+        # the line, and at 1366 px it would otherwise be out of sight.
+        self.candidates_list.setWordWrap(True)
+        self.candidates_list.setResizeMode(QListWidget.ResizeMode.Adjust)
+        self.candidates_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.candidates_list.itemSelectionChanged.connect(self._refresh_use_button)
         actions.addWidget(self.candidates_list)
 
-        self.show_all_button = QPushButton("Show every scan in this batch")
+        self.show_all_button = QPushButton("Choose from all scans...")
         self.show_all_button.setObjectName("rescanShowAllButton")
         self.show_all_button.setCheckable(True)
         self.show_all_button.setToolTip(
-            "For a sheet whose Student ID could not be read: list every other "
-            "scan in the batch so the rescan can be linked by hand."
+            "For a sheet whose Student ID could not be read: search every read "
+            "scan in the project - any batch - and link the rescan by hand."
         )
+        # Filtered in SQL as the operator types a file name or Student ID, and
+        # capped: a project of a hundred thousand scans never fills a widget.
+        self.association_search = QLineEdit()
+        self.association_search.setObjectName("rescanAssociationSearch")
+        self.association_search.setPlaceholderText(
+            "Search all scans in this project by file name or Student ID..."
+        )
+        self.association_search.setClearButtonEnabled(True)
+        self.association_search.setVisible(False)
+        self.association_search.editingFinished.connect(
+            lambda: self.search_changed.emit(self.association_search.text())
+        )
+        self.show_all_button.toggled.connect(self.association_search.setVisible)
+        actions.addWidget(self.association_search)
 
         row = QHBoxLayout()
         row.setSpacing(Spacing.SM)
@@ -340,6 +360,12 @@ class RescanPanel(QWidget):
         row2.addWidget(self.history_button)
         row2.addStretch(1)
         actions.addLayout(row2)
+        # Said in words beside the disabled actions, not left to a tooltip.
+        self.unavailable_label = QLabel("")
+        self.unavailable_label.setObjectName("rescanImageUnavailableLabel")
+        self.unavailable_label.setWordWrap(True)
+        self.unavailable_label.setVisible(False)
+        actions.addWidget(self.unavailable_label)
         actions.addStretch(1)
         layout.addStretch(1)
 
@@ -370,6 +396,7 @@ class RescanPanel(QWidget):
             ):
                 button.setEnabled(False)
             self.show_all_button.setEnabled(False)
+            self.unavailable_label.setVisible(False)
             return
 
         self.state_label.setText(state_html(case))
@@ -394,7 +421,7 @@ class RescanPanel(QWidget):
             for candidate in candidates:
                 item = QListWidgetItem(candidate_text(case, candidate))
                 item.setData(Qt.ItemDataRole.UserRole, candidate.scan_id)
-                item.setToolTip(candidate.evidence)
+                item.setToolTip(candidate_tooltip(candidate))
                 self.candidates_list.addItem(item)
         self.import_button.setEnabled(can_decide and outstanding)
         self.undo_button.setVisible(outstanding)
@@ -405,12 +432,14 @@ class RescanPanel(QWidget):
         self.unlink_button.setEnabled(
             can_decide and superseded and case.file_state is FileState.PRESENT
         )
+        note = case.file_state.unavailable_note
         self.unlink_button.setToolTip(
-            "Withdraw a mistaken link. The original goes back to awaiting a "
+            note
+            or "Withdraw a mistaken link. The original goes back to awaiting a "
             "rescan; it is not reactivated."
-            if case.file_state is FileState.PRESENT
-            else "The original's image has been removed, so the link is kept."
         )
+        self.unavailable_label.setText(note)
+        self.unavailable_label.setVisible(bool(note))
         self.compare_button.setVisible(superseded)
         self.compare_button.setEnabled(superseded)
         self.history_button.setEnabled(True)
@@ -489,10 +518,15 @@ def details_html(case: RescanCase) -> str:
             )
         )
     if case.state is LifecycleState.SUPERSEDED_BY_REPLACEMENT:
+        elsewhere = (
+            f" (read in batch {case.replacement_batch_id[:8]})"
+            if case.replacement_batch_id and case.replacement_batch_id != case.batch_id
+            else ""
+        )
         rows.append(
             (
                 "Replacement",
-                f"{case.replacement_name or case.replacement_scan_id} - confirmed "
+                f"{case.replacement_name or case.replacement_scan_id}{elsewhere} - confirmed "
                 f"{case.replaced_at:%Y-%m-%d %H:%M} by {case.replaced_by or '-'}"
                 if case.replaced_at
                 else str(case.replacement_name or case.replacement_scan_id),
@@ -514,7 +548,13 @@ def details_html(case: RescanCase) -> str:
 
 
 def candidate_text(case: RescanCase, candidate: ReplacementCandidate) -> str:
-    """One list row: the brief's *Possible rescan of rejected sheet*."""
+    """One list row: the brief's *Possible rescan of rejected sheet*.
+
+    A candidate read into another batch says so, and which one, so the
+    operator knows where it came from. The batch is never evidence either
+    way - only the Student ID is.
+    """
+    where = f" · {candidate.batch_label}" if candidate.other_batch else ""
     if candidate.candidate_id == case.identity and case.identity:
         return (
             f"Possible rescan: {candidate.source_name} · Student ID "
@@ -526,11 +566,24 @@ def candidate_text(case: RescanCase, candidate: ReplacementCandidate) -> str:
                 if candidate.set_code_agrees is False
                 else ""
             )
+            + where
         )
     return (
         f"{candidate.source_name} · read as {candidate.candidate_id or '(not read)'}"
-        f" · set {candidate.set_code or '?'}"
+        f" · set {candidate.set_code or '?'}{where}"
     )
+
+
+def candidate_tooltip(candidate: ReplacementCandidate) -> str:
+    """Everything known about a candidate, for its tooltip."""
+    lines = [candidate.evidence] if candidate.candidate_id else []
+    lines.append(
+        f"Read in {candidate.batch_label or 'this batch'}"
+        + (" - a different batch from the rejected sheet" if candidate.other_batch else "")
+    )
+    if candidate.read_at is not None:
+        lines.append(f"Read at {candidate.read_at:%Y-%m-%d %H:%M}")
+    return "\n".join(lines)
 
 
 def render_lifecycle_history(case: RescanCase, events: Sequence[LifecycleEvent]) -> str:
@@ -577,6 +630,110 @@ class LifecycleHistoryDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+
+# ----------------------------------------------------------------------
+# Inspecting any processed sheet
+# ----------------------------------------------------------------------
+class SheetPanel(QWidget):
+    """What the workspace shows for one sheet of *All processed sheets*.
+
+    The way to a sheet recognition had no doubt about. It states what the
+    sheet reads as and where it stands, and offers the ordinary *Reject /
+    Rescan…* - the same dialog, the same service, the same rules as rejecting
+    from a conflict.
+
+    Signals:
+        reject_requested: The operator asked to reject this sheet.
+    """
+
+    reject_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("sheetInspectPanel")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
+        layout.setSpacing(Spacing.XS)
+        self.state_label = QLabel("Select a sheet from the list.")
+        self.state_label.setObjectName("sheetStateLabel")
+        self.state_label.setTextFormat(Qt.TextFormat.RichText)
+        self.state_label.setWordWrap(True)
+        layout.addWidget(self.state_label)
+        self.details_label = QLabel("")
+        self.details_label.setObjectName("sheetDetailsLabel")
+        self.details_label.setTextFormat(Qt.TextFormat.RichText)
+        self.details_label.setWordWrap(True)
+        layout.addWidget(self.details_label)
+        row = QHBoxLayout()
+        self.reject_button = QPushButton("Reject / Rescan...")
+        self.reject_button.setObjectName("sheetRejectButton")
+        self.reject_button.setProperty(VARIANT_PROPERTY, VARIANT_DESTRUCTIVE)
+        self.reject_button.setToolTip(
+            "This sheet is unusable although it was read - reject it pending a "
+            "rescan (R). Nothing is deleted."
+        )
+        self.reject_button.clicked.connect(self.reject_requested)
+        row.addWidget(self.reject_button)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self.note_label = QLabel(
+            "Every read sheet of the batch is listed here, whether or not "
+            "recognition raised anything. Nothing here counts as unresolved."
+        )
+        self.note_label.setWordWrap(True)
+        self.note_label.setStyleSheet(f"color: {Color.TEXT_TERTIARY};")
+        layout.addWidget(self.note_label)
+        layout.addStretch(1)
+
+    def show_sheet(
+        self,
+        sheet: ProcessedSheet | None,
+        *,
+        effective_id: str = "",
+        effective_set: str = "",
+        can_decide: bool = False,
+    ) -> None:
+        """Display one sheet, or the empty state."""
+        if sheet is None:
+            self.state_label.setText("Select a sheet from the list.")
+            self.details_label.setText("")
+            self.reject_button.setEnabled(False)
+            return
+        state = sheet.state
+        colour = Color.DESTRUCTIVE if state.is_outstanding else Color.TEXT_PRIMARY
+        self.state_label.setText(
+            f"<span style='font-size:12pt;color:{colour};'><b>{state.marker} "
+            f"{html.escape(state.label)}</b></span>"
+        )
+        conflicts = (
+            f"{sheet.open_conflicts} awaiting a decision"
+            if sheet.open_conflicts
+            else "none awaiting a decision"
+        )
+        rows = (
+            ("Sheet", sheet.filename or f"scan {sheet.scan_id}"),
+            ("Student ID", f"{effective_id or '(not read)'} (read as {sheet.identifier or '-'})"),
+            ("Set code", f"{effective_set or '(not read)'} (read as {sheet.set_code or '-'})"),
+            ("Processing", sheet.status),
+            ("Resolve records", conflicts),
+        )
+        self.details_label.setText(
+            "<table>"
+            + "".join(
+                f"<tr><td style='color:{Color.TEXT_TERTIARY};padding-right:10px;'>"
+                f"{name}</td><td>{html.escape(value)}</td></tr>"
+                for name, value in rows
+            )
+            + "</table>"
+        )
+        self.reject_button.setEnabled(can_decide and state.is_result_eligible)
+        self.reject_button.setToolTip(
+            "This sheet is unusable although it was read - reject it pending a "
+            "rescan (R). Nothing is deleted."
+            if state.is_result_eligible
+            else "Already rejected - see Rejected / Rescan."
+        )
 
 
 # ----------------------------------------------------------------------
@@ -700,7 +857,9 @@ __all__ = [
     "PurgeRejectsDialog",
     "RejectScanDialog",
     "RescanPanel",
+    "SheetPanel",
     "candidate_text",
+    "candidate_tooltip",
     "details_html",
     "purge_summary",
     "render_lifecycle_history",

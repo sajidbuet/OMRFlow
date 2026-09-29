@@ -1205,9 +1205,10 @@ class MainWindow(QMainWindow):
         if reports is not None:
             reports.set_batch(batch_id)
         resolve = self._resolve_page()
-        if resolve is not None and resolve.state.batch_id == batch_id:
-            # A rescan read into the batch under review is now offered as a
-            # possible replacement - listed, never linked.
+        if resolve is not None and resolve.state.batch_id is not None:
+            # A rescan read into any batch of the project - this one or a
+            # later one - is now offered as a possible replacement for a
+            # sheet rejected in the batch under review. Listed, never linked.
             resolve.refresh_queue()
         answer_key = self._answer_key_page()
         session = self._session

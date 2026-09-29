@@ -708,7 +708,9 @@ class TestReplacement:
             LifecycleState.SUPERSEDED_BY_REPLACEMENT
         )
 
-    def test_the_rescan_must_be_in_the_same_batch(self, world, tmp_path):
+    def test_an_unread_scan_in_another_batch_is_still_refused(self, world, tmp_path):
+        # Another batch is fine now (tests/integration/
+        # test_reject_and_rescan_cross_batch.py); an unread scan never is.
         reject(world, "s2b.png")
         other = batch_store.create_batch(
             world.database, [tmp_path / "elsewhere.png"], identity=batch_store.BatchIdentity()

@@ -28,6 +28,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
+from sqlalchemy import select as sql_select
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 from tests.gui.test_resolve_page import sheet_marks
 
@@ -37,8 +38,10 @@ from omr_scanner.config.app_config import (
     MIN_SPLIT_RATIO,
     load_app_config,
 )
+from omr_scanner.database.models import AuditEvent, ReviewConflict
 from omr_scanner.domain.reconciliation import ReconciliationStatus
 from omr_scanner.domain.review import ConflictType, FieldKind, ReasonCode, ValueSource
+from omr_scanner.domain.scan_lifecycle import RejectionReason
 from omr_scanner.gui.attendance.page import DEFAULT_SPLIT_RATIO, AttendancePage
 from omr_scanner.gui.main_window import MainWindow
 from omr_scanner.gui.pages import WORKFLOW_PAGES
@@ -48,6 +51,7 @@ from omr_scanner.services import (
     project_sets,
     reconciliation_store,
     review_store,
+    scan_lifecycle,
 )
 from omr_scanner.services.batch_processor import process_batch
 from omr_scanner.services.candidate_import import read_roster
@@ -426,6 +430,148 @@ class TestCompletingAnUnreadId:
         correct_id(qtbot, page, "170505")
         assert confirmed == [], "the blank position was in dispute; nothing overridden"
         assert status_of(page, "170505") is ReconciliationStatus.MATCHED
+
+
+def read_batch(project_session, template, folder: Path, sheets) -> str:
+    """Render, read, store and conflict-check a batch - as the ``batch`` fixture."""
+    folder.mkdir()
+    paths = []
+    for name, roll in sheets:
+        path = folder / name
+        cv2.imwrite(str(path), render_marked_sheet(template, sheet_marks(roll)))
+        paths.append(path)
+    database = project_session.database
+    batch_id = batch_store.create_batch(
+        database, paths, identity=batch_store.BatchIdentity.of(template)
+    )
+    recorder = batch_store.BatchRecorder(database=database, batch_id=batch_id)
+    report = process_batch(paths, template, on_result=recorder.record, workers=1)
+    recorder.flush()
+    batch_store.finalise_batch(database, batch_id)
+    ids = batch_store.scan_ids_by_path(database, batch_id)
+    for item in report.processed:
+        review_store.sync_conflicts(
+            database, batch_id=batch_id, scan_id=ids[item.source_path],
+            result=item.result, template=template,
+        )
+    scan_lifecycle.sync_reimports(database, batch_id)
+    review_store.sync_duplicate_identifiers(database, batch_id)
+    return batch_id
+
+
+def ledger(database, **where: object) -> list[AuditEvent]:
+    """The review ledger's conflict events matching ``where``."""
+    query = sql_select(AuditEvent).where(AuditEvent.conflict_id != 0)
+    for column, value in where.items():
+        query = query.where(getattr(AuditEvent, column) == value)
+    with database.session() as session:
+        return list(session.scalars(query.order_by(AuditEvent.event_id)).all())
+
+
+class TestCorrectingACrossBatchReplacement:
+    """A cross-batch rescan corrected from its original's Attendance.
+
+    Read in batch B, confirmed for an original of batch A, corrected from batch
+    A's Attendance: the correction belongs to the rescan, in batch B.
+    """
+
+    def test_the_correction_is_filed_under_the_rescan_and_its_own_batch(
+        self, qtbot, page: AttendancePage, project_session, template, batch, tmp_path,
+        confirmed,
+    ):
+        database = project_session.database
+        original = scan_id_of(database, batch, "SYN_000001.png")
+        scan_lifecycle.reject_scan(
+            database, original, reviewer=OPERATOR, reason=RejectionReason.FOLDED,
+            declared_candidate_id="170501",
+        )
+        # Another day, another scanner: two roll positions left blank.
+        later = read_batch(
+            project_session, template, tmp_path / "scanner_b", [("SCN_000913.png", "1705")]
+        )
+        rescan = scan_id_of(database, later, "SCN_000913.png")
+        scan_lifecycle.confirm_replacement(database, original, rescan, reviewer=OPERATOR)
+        batch_a_rows = [event.event_id for event in ledger(database, batch_id=batch)]
+        others_before = {
+            scan: len(ledger(database, scan_id=scan))
+            for scan in batch_store.scan_ids_by_path(database, batch).values()
+        }
+
+        # From batch A's Attendance: the rescan's entry, its script, the inspector.
+        with qtbot.waitSignal(page.reconciled, timeout=TIMEOUT_MS):
+            assert page.reconcile()
+        page.status_filter.setCurrentIndex(0)
+        row = next(
+            index for index, entry in enumerate(page.state.entries)
+            if any(view.script.scan_id == rescan for view in entry.scripts)
+        )
+        page.table.selectRow(row)
+        page.scripts_list.setCurrentRow(next(
+            index for index in range(page.scripts_list.count())
+            if page.scripts_list.item(index).data(Qt.ItemDataRole.UserRole) == rescan
+        ))
+        inspect(qtbot, page)
+        assert page.inspector.scan_id == rescan
+        assert page.inspector.editor(FieldKind.IDENTIFIER).text() == "1705??"
+        correct_id(qtbot, page, "170501")
+        assert confirmed == [], "the blank positions were in dispute; nothing overridden"
+
+        # Stored against the rescan, in batch B - where its ledger is.
+        corrections = ledger(database, scan_id=rescan, action="corrected")
+        assert corrections and {event.batch_id for event in corrections} == {later}
+        assert {event.reviewer for event in corrections} == {OPERATOR}
+        with database.session() as session:
+            filed = session.scalars(
+                sql_select(ReviewConflict.batch_id).where(ReviewConflict.scan_id == rescan)
+            ).all()
+        assert set(filed) == {later}
+        effective = review_store.effective_identifiers(database, later)[rescan]
+        assert effective.value == "170501" and effective.source is ValueSource.HUMAN
+        # Nothing written in batch A, nor to the original or any other scan.
+        assert [event.event_id for event in ledger(database, batch_id=batch)] == batch_a_rows
+        assert ledger(database, batch_id=batch, scan_id=rescan) == []
+        assert rescan not in review_store.effective_identifiers(database, batch)
+        assert {
+            scan: len(ledger(database, scan_id=scan)) for scan in others_before
+        } == others_before
+        assert review_store.effective_identifiers(database, batch)[original].value == "170501"
+        # And Attendance agrees: 170501 is matched by the rescan alone.
+        entry = next(
+            item for item in reconciliation_store.list_entries(
+                database, page.state.roster.roster_id, batch
+            ) if item.candidate_id == "170501"
+        )
+        assert entry.status is ReconciliationStatus.MATCHED
+        assert [view.script.scan_id for view in entry.scripts] == [rescan]
+
+        # Close and reopen: still the rescan's, still batch B's.
+        root, roster = project_session.root, page.state.roster.roster_id
+        page.close()
+        project_session.close()
+        with open_project(root) as reopened:
+            assert review_store.effective_identifiers(reopened.database, later)[rescan].value == (
+                "170501"
+            )
+            assert rescan not in review_store.effective_identifiers(reopened.database, batch)
+            assert {
+                event.batch_id
+                for event in ledger(reopened.database, scan_id=rescan, action="corrected")
+            } == {later}
+            reconciliation_store.reconcile_batch(reopened.database, roster, batch)
+            again = next(
+                item for item in reconciliation_store.list_entries(
+                    reopened.database, roster, batch
+                ) if item.candidate_id == "170501"
+            )
+            assert [view.script.scan_id for view in again.scripts] == [rescan]
+
+
+def scan_id_of(database, batch_id: str, name: str) -> int:
+    return next(
+        scan_id
+        for path, scan_id in batch_store.scan_ids_by_path(database, batch_id).items()
+        if path.name == name
+    )
 
 
 class TestFindingThings:

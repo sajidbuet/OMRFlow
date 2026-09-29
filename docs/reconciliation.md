@@ -283,9 +283,15 @@ set code:
 | Rejected | Rejected pending a rescan; its set (declared, else effective) is this set | Listed under its candidate as *rescan required*; **never counted** |
 | Rejected, unplaced | Rejected pending a rescan with no known set | No - counted as outstanding for **every** set, and reported by each set's export readiness |
 | Superseded | A rejected original whose rescan is confirmed, or an exact re-import of rejected content | No - counted |
+| Counted elsewhere | A confirmed replacement read in this batch for an original of **another** batch | No - counted; it is reconciled in the original's batch |
 
 A confirmed replacement is an ordinary active script: *in set* by its own
-effective set code. A rejected script is filed only under a **registered**
+effective set code. Reconciliation, scoring and reports are per batch, so a
+replacement read in a **different batch** from its original is *adopted* by
+the original's batch - reconciled there with its own effective Student ID and
+set code, and scored there from its own batch's recognition result and review
+ledger - and is placed *counted elsewhere* in its own batch. It is counted
+exactly once, and removing the link returns it to its own batch. A rejected script is filed only under a **registered**
 candidate - by the operator's declared Student ID when one was given, else its
 effective one - and never becomes an *unknown ID* entry of its own. The
 Resolve stage's *Rejected / Rescan* view lists every rejected scan.
@@ -294,7 +300,10 @@ Even a reconciliation computed *before* a scan was rejected cannot count it:
 when stored entries are read back, each script's current lifecycle is looked
 up (`_ineligible_among`), and scoring drops a rejected scan's answers
 regardless (`scoring_store.gather_inputs`). A lifecycle change also re-runs
-every stored reconciliation of its batch.
+the canonical duplicate-ID pass and every stored reconciliation of each batch
+it touches (both batches, for a cross-batch link), so after *Undo Reject* or
+removing a link a pair of sheets with one ID is *Duplicate scripts* here and
+an open duplicate record on Resolve at the same time.
 
 ### Suggestions: the matching rule
 

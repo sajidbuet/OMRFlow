@@ -116,6 +116,27 @@ class FileState(StrEnum):
             FileState.PURGED: "Image permanently removed",
         }[self]
 
+    @property
+    def unavailable_note(self) -> str:
+        """Why nothing can reactivate the scan, for an image that is gone.
+
+        One sentence, shown by the case panel beside the disabled actions and
+        returned by the service when either action is attempted anyway. Empty
+        for :attr:`PRESENT`. Restoring a quarantined file by hand does not
+        change the recorded state; that restoration is not supported yet.
+        """
+        where = {
+            FileState.PRESENT: "",
+            FileState.QUARANTINED: "it was moved to the project's quarantine folder",
+            FileState.PURGED: "it was permanently deleted",
+        }[self]
+        if not where:
+            return ""
+        return (
+            f"Original image is no longer available ({where}); the rejection "
+            "cannot be undone and the replacement link is kept."
+        )
+
 
 class RejectionReason(StrEnum):
     """Why an operator judged a scan unusable."""
@@ -254,6 +275,8 @@ class RescanCase:
         rejected_by / rejected_at: Who and when.
         replacement_scan_id: The confirmed rescan, when there is one.
         replacement_name: That rescan's file name.
+        replacement_batch_id: The batch it was read into - possibly not this
+            case's own; it counts in this case's batch either way.
         replaced_by / replaced_at: Who confirmed it, and when.
         reimport_of_scan_id: For a :attr:`LifecycleState.REIMPORT_OF_REJECTED`
             record, the rejected scan whose bytes it repeats.
@@ -277,6 +300,7 @@ class RescanCase:
     rejected_at: datetime | None = None
     replacement_scan_id: int | None = None
     replacement_name: str = ""
+    replacement_batch_id: str = ""
     replaced_by: str = ""
     replaced_at: datetime | None = None
     reimport_of_scan_id: int | None = None
@@ -349,6 +373,12 @@ class ReplacementCandidate:
         set_code: Its effective set code.
         set_code_agrees: Whether that set code matches the case's, or ``None``
             when either is unknown. Additional evidence only.
+        batch_id: The batch the scan was read into.
+        batch_label: That batch as an operator reads it.
+        other_batch: Whether it is a different batch from the rejected
+            sheet's. Said on screen so the operator knows where it came from -
+            never used as evidence either way.
+        read_at: When it was read, when known.
     """
 
     scan_id: int
@@ -356,6 +386,10 @@ class ReplacementCandidate:
     candidate_id: str
     set_code: str = ""
     set_code_agrees: bool | None = None
+    batch_id: str = ""
+    batch_label: str = ""
+    other_batch: bool = False
+    read_at: datetime | None = None
 
     @property
     def evidence(self) -> str:

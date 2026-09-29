@@ -358,8 +358,10 @@ class TestAnUnscopedRosterIsUnchanged:
 
 
 def test_placement_is_an_enumeration_ready_for_rescan():
-    # Reject & Rescan added three placements, as this enumeration anticipated.
+    # Reject & Rescan added four placements, as this enumeration anticipated:
+    # three lifecycle ones and, for a rescan read into another batch,
+    # counted_elsewhere.
     assert {item.value for item in ScriptSetPlacement} == {
         "in_set", "other_set", "unresolved", "undefined",
-        "rejected", "rejected_unplaced", "superseded",
+        "rejected", "rejected_unplaced", "superseded", "counted_elsewhere",
     }

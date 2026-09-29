@@ -492,6 +492,16 @@ class ReviewAction(StrEnum):
     WITHDRAWN = "withdrawn"
     """The machine no longer reports this conflict."""
 
+    REDETECTED = "redetected"
+    """The machine reports, again, a conflict it had itself withdrawn.
+
+    Machine-authored, like :attr:`WITHDRAWN`, and its mirror image: a
+    duplicate Student ID that stopped being one when a sheet was rejected
+    becomes one again when the rejection is undone. The detection pass that
+    withdrew it raises it again, returning it to ``OPEN``. Only ever applied
+    to a conflict **no person has decided** - a human decision is never
+    reopened by the machine."""
+
     @property
     def is_human(self) -> bool:
         """Whether this action was taken by a person.
@@ -523,6 +533,7 @@ class ReviewAction(StrEnum):
             ReviewAction.DEFERRED,
             ReviewAction.REOPENED,
             ReviewAction.WITHDRAWN,
+            ReviewAction.REDETECTED,
         )
 
     @property

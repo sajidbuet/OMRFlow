@@ -60,6 +60,7 @@ from omr_scanner.services import (
     join_field_value,
     list_conflicts,
     provenance_for_scan,
+    scan_lifecycle,
     scan_source_path,
     undo_field_edit,
 )
@@ -106,6 +107,7 @@ class ScriptInspector(QWidget):
         self.setObjectName("scriptInspector")
         self._database: ProjectDatabase | None = None
         self._batch_id: str | None = None
+        self._scan_batch_id: str | None = None
         self._template: OmrTemplate | None = None
         self._reviewer = ""
         self._context = ""
@@ -282,6 +284,11 @@ class ScriptInspector(QWidget):
         if database is None or self._batch_id is None:
             return False
         self._scan_id = scan_id
+        # The scan's own batch, which is where its review records live. Not
+        # always the page's: a confirmed rescan read into a later batch is
+        # reconciled in its original's batch, and a correction to it must be
+        # filed where the rest of its ledger is.
+        self._scan_batch_id = scan_lifecycle.batch_of(database, scan_id) or self._batch_id
         self._bundle = None
         self._last_edit = None
         self._reload_records()
@@ -333,17 +340,18 @@ class ScriptInspector(QWidget):
     def _reload_records(self) -> None:
         """Re-read this sheet's review records and where their values come from."""
         database = self._database
-        if database is None or self._batch_id is None or self._scan_id is None:
+        batch_id = self._scan_batch_id or self._batch_id
+        if database is None or batch_id is None or self._scan_id is None:
             self._records, self._provenance = [], {}
             return
         self._records = list(
             list_conflicts(
                 database,
-                self._batch_id,
+                batch_id,
                 filters=ConflictFilter(scan_id=self._scan_id, include_withdrawn=True),
             )
         )
-        self._provenance = provenance_for_scan(database, self._batch_id, self._scan_id)
+        self._provenance = provenance_for_scan(database, batch_id, self._scan_id)
 
     # ------------------------------------------------------------------
     # Drawing
@@ -622,7 +630,7 @@ class ScriptInspector(QWidget):
         try:
             edit = commit(
                 database,
-                batch_id=self._batch_id,
+                batch_id=self._scan_batch_id or self._batch_id,
                 scan_id=self._scan_id,
                 shape=shape,
                 kind=kind,
@@ -663,7 +671,10 @@ class ScriptInspector(QWidget):
             return False
         try:
             undone = undo_field_edit(
-                database, batch_id=self._batch_id, group=edit.group, reviewer=self._reviewer
+                database,
+                batch_id=self._scan_batch_id or self._batch_id,
+                group=edit.group,
+                reviewer=self._reviewer,
             )
         except OMRScannerError as exc:
             QMessageBox.warning(self, "Nothing undone", exc.user_message or str(exc))

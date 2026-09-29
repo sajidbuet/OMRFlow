@@ -668,14 +668,71 @@ class ScriptSetPlacement(StrEnum):
     """A rejected original whose rescan has been confirmed, or an exact
     re-import of rejected content. Outside every set's reconciliation."""
 
+    COUNTED_ELSEWHERE = "counted_elsewhere"
+    """A confirmed rescan of a sheet from **another** batch. It counts there,
+    in its original's place, and so is left out here - a rescan counts once."""
+
 
 _LIFECYCLE_PLACEMENTS = frozenset(
     {
         ScriptSetPlacement.REJECTED,
         ScriptSetPlacement.REJECTED_UNPLACED,
         ScriptSetPlacement.SUPERSEDED,
+        ScriptSetPlacement.COUNTED_ELSEWHERE,
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchReadings:
+    """A batch's scripts' effective values, including adopted replacements.
+
+    Attributes:
+        identifiers / set_codes: The review ledger's effective values for
+            every scan of the batch **and** for every replacement from another
+            batch that stands in for one of its originals (read from that
+            replacement's own batch, where its review records live).
+        adopted: ``replacement scan id -> original scan id`` for those.
+        elsewhere: This batch's scans that count in another batch instead.
+    """
+
+    identifiers: dict[int, EffectiveIdentifier]
+    set_codes: dict[int, EffectiveIdentifier]
+    adopted: dict[int, int]
+    elsewhere: dict[int, str]
+
+
+def _batch_readings(database: ProjectDatabase, batch_id: str) -> _BatchReadings:
+    """Read a batch's effective values, adopting cross-batch replacements.
+
+    Reconciliation, scoring and reporting all work per batch, and a sheet's
+    candidate lives in the batch the sheet was first read in. A rescan read
+    into a later batch therefore **stands in for its original in the
+    original's batch** - that is where it is reconciled and marked - and is
+    left out of its own batch's reconciliation so it counts exactly once.
+    """
+    identifiers = dict(effective_identifiers(database, batch_id))
+    set_codes = dict(effective_set_codes(database, batch_id))
+    adopted = scan_lifecycle.adopted_replacements(database, batch_id)
+    by_batch: dict[str, list[int]] = {}
+    for scan_id in adopted:
+        other = scan_lifecycle.batch_of(database, scan_id)
+        if other is not None:
+            by_batch.setdefault(other, []).append(scan_id)
+    for other, scan_ids in by_batch.items():
+        theirs = effective_identifiers(database, other)
+        codes = effective_set_codes(database, other)
+        for scan_id in scan_ids:
+            if scan_id in theirs:
+                identifiers[scan_id] = theirs[scan_id]
+            if scan_id in codes:
+                set_codes[scan_id] = codes[scan_id]
+    return _BatchReadings(
+        identifiers=identifiers,
+        set_codes=set_codes,
+        adopted=adopted,
+        elsewhere=scan_lifecycle.counted_elsewhere(database, batch_id),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -692,6 +749,8 @@ class SetScriptScope:
             set or to no known set.
         superseded: Superseded originals and re-imports of rejected content
             belonging to this set (or, unscoped, to the batch).
+        counted_elsewhere: This batch's scans that are confirmed rescans of
+            sheets in another batch, and are counted there instead.
     """
 
     set_code: str
@@ -701,6 +760,7 @@ class SetScriptScope:
     undefined: int = 0
     rescan_required: int = 0
     superseded: int = 0
+    counted_elsewhere: int = 0
 
     @property
     def other_set_total(self) -> int:
@@ -727,9 +787,13 @@ def _placements(
 
     defined = {item.code for item in project_sets.list_sets(database)}
     cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
+    readings = _batch_readings(database, batch_id)
     placements: dict[int, tuple[ScriptSetPlacement, str]] = {}
-    for scan_id, found in effective_set_codes(database, batch_id).items():
+    for scan_id, found in readings.set_codes.items():
         code = found.value
+        if scan_id in readings.elsewhere:
+            placements[scan_id] = (ScriptSetPlacement.COUNTED_ELSEWHERE, code)
+            continue
         case = cases.get(scan_id)
         if case is not None:
             # A lifecycle decision outranks the set code: a rejected or
@@ -820,8 +884,9 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
                 for item in states.values()
                 if item is not LifecycleState.REJECTED_PENDING_RESCAN
             ),
+            counted_elsewhere=len(scan_lifecycle.counted_elsewhere(database, batch_id)),
         )
-    in_set = unresolved = undefined = rescan = superseded = 0
+    in_set = unresolved = undefined = rescan = superseded = elsewhere = 0
     others: dict[str, int] = {}
     for placement, code in _placements(database, batch_id, set_code).values():
         if placement is ScriptSetPlacement.IN_SET:
@@ -835,6 +900,8 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
         elif placement is ScriptSetPlacement.SUPERSEDED:
             if code == set_code or not code:
                 superseded += 1
+        elif placement is ScriptSetPlacement.COUNTED_ELSEWHERE:
+            elsewhere += 1
         else:
             undefined += 1
     return SetScriptScope(
@@ -845,6 +912,7 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
         undefined=undefined,
         rescan_required=rescan,
         superseded=superseded,
+        counted_elsewhere=elsewhere,
     )
 
 
@@ -914,7 +982,8 @@ def batch_scripts(
     identity (the operator's declared Student ID, else its effective one);
     it never counts. See :mod:`omr_scanner.services.scan_lifecycle`.
     """
-    identifiers = effective_identifiers(database, batch_id)
+    readings = _batch_readings(database, batch_id)
+    identifiers = readings.identifiers
     cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
     keep: set[int] | None = None
     if set_code is not None:
@@ -931,8 +1000,22 @@ def batch_scripts(
             .where(BatchScan.batch_id == batch_id)
             .order_by(BatchScan.batch_index)
         ).all()
+        # Replacements read into other batches stand in for this batch's
+        # originals, after its own scans; this batch's scans that stand in
+        # for another's originals are counted there, not here.
+        if readings.adopted:
+            rows = [
+                *rows,
+                *session.scalars(
+                    select(BatchScan)
+                    .where(BatchScan.scan_id.in_(list(readings.adopted)))
+                    .order_by(BatchScan.scan_id)
+                ).all(),
+            ]
         scripts = []
         for row in rows:
+            if row.scan_id in readings.elsewhere:
+                continue
             if keep is not None and row.scan_id not in keep:
                 continue
             found = identifiers.get(row.scan_id)
@@ -987,7 +1070,7 @@ def _set_unresolved_ids(
     if not unsettled:
         return frozenset()
     found: set[str] = set()
-    for scan_id, item in effective_identifiers(database, batch_id).items():
+    for scan_id, item in _batch_readings(database, batch_id).identifiers.items():
         value = item.value
         if (
             scan_id in unsettled

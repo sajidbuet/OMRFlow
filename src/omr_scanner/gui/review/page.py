@@ -112,6 +112,7 @@ from omr_scanner.gui.review.rescan import (
     LifecycleHistoryDialog,
     RejectScanDialog,
     RescanPanel,
+    SheetPanel,
 )
 from omr_scanner.gui.review.worker import OriginalImageWorker, SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
@@ -187,6 +188,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         ProjectDatabase,
         ProjectSession,
     )
+    from omr_scanner.services.scan_lifecycle import ProcessedSheet
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -264,6 +266,13 @@ FILTER_RESCAN = "Rejected / Rescan"
 Part of the ordinary status filter rather than a panel of its own: the same
 queue, the same search box, the same Ctrl+Up / Ctrl+Down - which here walk the
 cases still awaiting a rescan, passing over the completed ones."""
+
+FILTER_SHEETS = "All processed sheets"
+"""The inspection view: every read sheet of the batch, conflict or not.
+
+The way to a sheet recognition had no doubt about, so it can be rejected when
+the paper says otherwise. It lists sheets, not problems: nothing in it counts
+as unresolved, and unresolved navigation does not walk it."""
 
 REJECT_KEY = Qt.Key.Key_R
 """The key that opens *Reject / Rescan* for the sheet being reviewed. Free on
@@ -398,6 +407,7 @@ class ResolvePageState:
     editing_kind: FieldKind | None = None
     last_field_edit: FieldEdit | None = None
     rescan_cases: list[RescanCase] = field(default_factory=list)
+    sheet_rows: list[ProcessedSheet] = field(default_factory=list)
     rescan_candidates: dict[int, tuple[ReplacementCandidate, ...]] = field(
         default_factory=dict
     )
@@ -508,6 +518,7 @@ class ResolvePage(WorkflowPage):
                 FILTER_DEFERRED,
                 FILTER_WITHDRAWN,
                 FILTER_RESCAN,
+                FILTER_SHEETS,
             ]
         )
         self.state_filter.setToolTip(
@@ -643,7 +654,11 @@ class ResolvePage(WorkflowPage):
         self.rescan_panel.compare_toggled.connect(self.show_replacement_image)
         self.rescan_panel.history_requested.connect(self.show_case_history)
         self.rescan_panel.show_all_button.toggled.connect(self._on_show_all_scans)
+        self.rescan_panel.search_changed.connect(self._on_association_search)
         self.decision_stack.addWidget(self.rescan_panel)
+        self.sheet_panel = SheetPanel()
+        self.sheet_panel.reject_requested.connect(self.prompt_reject_current_sheet)
+        self.decision_stack.addWidget(self.sheet_panel)
         decisions = self.decision_stack
         decisions.setMinimumHeight(RESOLUTION_MIN_HEIGHT)
         self.workspace_splitter.addWidget(views)
@@ -1399,6 +1414,11 @@ class ResolvePage(WorkflowPage):
         """Whether the queue is showing *Rejected / Rescan* cases."""
         return self.state_filter.currentText() == FILTER_RESCAN
 
+    @property
+    def sheets_mode(self) -> bool:
+        """Whether the queue is showing *All processed sheets*."""
+        return self.state_filter.currentText() == FILTER_SHEETS
+
     def refresh_queue(self) -> None:
         """Re-read the queue from the database and rebuild the table."""
         database = self.database
@@ -1406,18 +1426,24 @@ class ResolvePage(WorkflowPage):
             self.queue_table.setRowCount(0)
             self.state.conflicts = []
             self.state.rescan_cases = []
+            self.state.sheet_rows = []
             self._refresh_summary()
             self._refresh_controls()
             return
         if self.rescan_mode:
             self._refresh_rescan_queue()
             return
-        if self.decision_stack.currentWidget() is self.rescan_panel:
-            # Back from the Rejected / Rescan view: the conflict workspace
-            # returns, and the banner about a rejected sheet goes with it.
+        if self.sheets_mode:
+            self._refresh_sheet_queue()
+            return
+        if self.decision_stack.currentIndex() != 0:
+            # Back from the Rejected / Rescan or sheet view: the conflict
+            # workspace returns, and the banner about a rejected sheet goes
+            # with it.
             self.decision_stack.setCurrentIndex(0)
             self.lifecycle_banner.setVisible(False)
             self.state.rescan_cases = []
+            self.state.sheet_rows = []
             self._loaded_scan_id = None
             self.state.bundle = None
 
@@ -1644,7 +1670,11 @@ class ResolvePage(WorkflowPage):
 
     def _row_count(self) -> int:
         """How many rows the queue holds, in whichever view it is showing."""
-        return len(self.state.rescan_cases) if self.rescan_mode else len(self.state.conflicts)
+        if self.rescan_mode:
+            return len(self.state.rescan_cases)
+        if self.sheets_mode:
+            return len(self.state.sheet_rows)
+        return len(self.state.conflicts)
 
     def select_next_unresolved(self) -> bool:
         """Skip forward to the next conflict nobody has decided.
@@ -1679,6 +1709,14 @@ class ResolvePage(WorkflowPage):
         view the selection stays put and that is said too.
         """
         if self._editing_text():
+            return False
+        if self.sheets_mode:
+            # Sheets are not problems: this view has nothing "unresolved" to
+            # walk. The arrow keys move through it as through any list.
+            self._note_navigation(
+                "This view lists every read sheet; nothing in it is unresolved. "
+                "Use the arrow keys, or a conflict view to walk what is left."
+            )
             return False
         rescan = self.rescan_mode
         total = self._row_count()
@@ -1727,6 +1765,9 @@ class ResolvePage(WorkflowPage):
             return
         if self.rescan_mode:
             self._show_case(self.current_case())
+            return
+        if self.sheets_mode:
+            self._show_sheet(self.current_sheet())
             return
         conflict = self.current_conflict()
         if conflict is None:
@@ -3303,7 +3344,7 @@ class ResolvePage(WorkflowPage):
         # The type filter names conflict types, which the Rejected / Rescan
         # view does not list.
         self.type_filter.setEnabled(not rescan)
-        self.reject_button.setEnabled(can_decide and not rescan)
+        self.reject_button.setEnabled(named and not rescan and self._reject_target() is not None)
         self.reject_button.setToolTip(
             "This scan is unusable - folded, clipped, skewed, the wrong page. "
             "Reject it pending a rescan (R). Nothing is deleted."
@@ -3481,10 +3522,11 @@ class ResolvePage(WorkflowPage):
         """
         if self._editing_text() or self.rescan_mode:
             return False
-        conflict = self.current_conflict()
+        target = self._reject_target()
         database = self.database
-        if conflict is None or database is None or self.state.batch_id is None:
+        if target is None or database is None or self.state.batch_id is None:
             return False
+        scan_id, scan_name = target
         if not self.state.reviewer:
             QMessageBox.information(
                 self,
@@ -3493,9 +3535,9 @@ class ResolvePage(WorkflowPage):
                 "recorded against the person who made it.",
             )
             return False
-        identity = scan_lifecycle.current_identity(database, conflict.scan_id)
+        identity = scan_lifecycle.current_identity(database, scan_id)
         dialog = RejectScanDialog(
-            conflict.scan_name,
+            scan_name,
             identity[0],
             identity[1],
             [item.code for item in project_sets.list_sets(database)],
@@ -3516,18 +3558,23 @@ class ResolvePage(WorkflowPage):
         declared_candidate_id: str = "",
         declared_set_code: str = "",
     ) -> bool:
-        """Reject the sheet the selected conflict is on, pending a rescan.
+        """Reject the sheet on screen, pending a rescan.
+
+        The sheet the selected conflict is on - or, in *All processed sheets*,
+        the selected sheet, which need have no conflict at all. Either way it
+        is one rule and one service call.
 
         The sheet leaves the working queue at once - its conflicts are kept,
         not withdrawn, and come back exactly as they were if the rejection is
         undone - and, with auto-advance on, the next unresolved conflict is
-        selected as after any decision that settles a sheet.
+        selected as after any decision that settles a sheet. In the sheet view
+        the selection stays on the sheet just rejected, which now says so.
         """
-        conflict = self.current_conflict()
+        target = self._reject_target()
         database = self.database
-        if conflict is None or database is None or self.state.batch_id is None:
+        if target is None or database is None or self.state.batch_id is None:
             return False
-        scan_id = conflict.scan_id
+        scan_id = target[0]
         try:
             scan_lifecycle.reject_scan(
                 database,
@@ -3545,7 +3592,9 @@ class ResolvePage(WorkflowPage):
         self.close_field_editor()
         self.clear_pending()
         self.refresh_queue()
-        if self.state.auto_advance:
+        if self.sheets_mode:
+            self.select_sheet(scan_id)
+        elif self.state.auto_advance:
             # The rejected sheet's rows are gone, and the selection has moved
             # to what now occupies their place. Stay there when that is work
             # to do; otherwise go on to the next unresolved conflict.
@@ -3554,6 +3603,139 @@ class ResolvePage(WorkflowPage):
                 self.select_next_unresolved()
         self.lifecycle_changed.emit(scan_id)
         return True
+
+    def _reject_target(self) -> tuple[int, str] | None:
+        """``(scan id, file name)`` of the sheet *Reject / Rescan* would act on."""
+        if self.sheets_mode:
+            sheet = self.current_sheet()
+            if sheet is None or not sheet.state.is_result_eligible:
+                return None
+            return sheet.scan_id, sheet.filename
+        conflict = self.current_conflict()
+        if conflict is None:
+            return None
+        return conflict.scan_id, conflict.scan_name
+
+    def show_processed_sheets(self) -> None:
+        """Switch the queue to the *All processed sheets* inspection view."""
+        self.state_filter.setCurrentText(FILTER_SHEETS)
+
+    def current_sheet(self) -> ProcessedSheet | None:
+        """The sheet selected in *All processed sheets*, or ``None``."""
+        if not self.sheets_mode:
+            return None
+        row = self.queue_table.currentRow()
+        if 0 <= row < len(self.state.sheet_rows):
+            return self.state.sheet_rows[row]
+        return None
+
+    def select_sheet(self, scan_id: int) -> bool:
+        """Select one sheet in the sheet view, if it is listed."""
+        for row, sheet in enumerate(self.state.sheet_rows):
+            if sheet.scan_id == scan_id:
+                self.queue_table.selectRow(row)
+                return True
+        return False
+
+    def _refresh_sheet_queue(self) -> None:
+        """Re-read *All processed sheets*: one SQL page, filtered by the search box.
+
+        The same page size as the conflict queue, and the same "filter in SQL,
+        hold detached values" rule: a batch of a hundred thousand sheets costs
+        one indexed query per refresh, and no image is loaded until a row is
+        selected.
+        """
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is None or batch_id is None:  # pragma: no cover - checked by caller
+            return
+        selected = self.current_sheet()
+        self.state.conflicts = []
+        self.state.sheet_rows = list(
+            scan_lifecycle.processed_sheets(
+                database, batch_id, search=self.search_box.text(), limit=QUEUE_PAGE_SIZE
+            )
+        )
+        self._suppress_selection = True
+        self.queue_table.setUpdatesEnabled(False)
+        try:
+            self.queue_table.clearSelection()
+            self.queue_table.setCurrentCell(-1, -1)
+            self.queue_table.setRowCount(len(self.state.sheet_rows))
+            for row, sheet in enumerate(self.state.sheet_rows):
+                issue = (
+                    f"{sheet.open_conflicts} awaiting a decision"
+                    if sheet.open_conflicts
+                    else "No open conflict"
+                )
+                values = (
+                    sheet.filename or f"scan {sheet.scan_id}",
+                    sheet.identifier,
+                    issue,
+                    f"{sheet.state.marker} {sheet.state.label}",
+                )
+                colour = (
+                    _RESCAN_PENDING_COLOR
+                    if sheet.state.is_outstanding
+                    else _RESCAN_DONE_COLOR
+                    if not sheet.state.is_result_eligible
+                    else QColor(255, 255, 255)
+                )
+                for column, text in enumerate(values):
+                    item = QTableWidgetItem(text)
+                    item.setBackground(colour)
+                    item.setToolTip(text)
+                    self.queue_table.setItem(row, column, item)
+        finally:
+            self.queue_table.setUpdatesEnabled(True)
+            self._suppress_selection = False
+        self._refresh_summary()
+        if self.decision_stack.currentWidget() is not self.sheet_panel:
+            self.decision_stack.setCurrentWidget(self.sheet_panel)
+            self._loaded_scan_id = None
+            self._note_navigation("")
+        if not self.state.sheet_rows:
+            self._show_sheet(None)
+        else:
+            # Select quietly, then show once: one image load per refresh.
+            self._suppress_selection = True
+            try:
+                if selected is None or not self.select_sheet(selected.scan_id):
+                    self.queue_table.selectRow(0)
+            finally:
+                self._suppress_selection = False
+            self._on_queue_selection_changed()
+        self._refresh_controls()
+
+    def _show_sheet(self, sheet: ProcessedSheet | None) -> None:
+        """Show one processed sheet: as it arrived, what it reads as, where it stands."""
+        self.clear_pending()
+        database = self.database
+        if sheet is None or database is None:
+            self.sheet_panel.show_sheet(None)
+            self.lifecycle_banner.setVisible(False)
+            self._clear_views()
+            self._refresh_controls()
+            return
+        effective_id, effective_set = scan_lifecycle.current_identity(database, sheet.scan_id)
+        self.sheet_panel.show_sheet(
+            sheet,
+            effective_id=effective_id,
+            effective_set=effective_set,
+            can_decide=bool(self.state.reviewer),
+        )
+        if sheet.state.is_result_eligible:
+            self.lifecycle_banner.setVisible(False)
+        else:
+            colour = Color.DESTRUCTIVE if sheet.state.is_outstanding else Color.TEXT_TERTIARY
+            self.lifecycle_banner.setText(
+                f"<span style='color:{colour};'><b>{sheet.state.marker} "
+                f"{html.escape(sheet.state.label)}</b> &mdash; "
+                f"{html.escape(sheet.filename)} does not count towards any result</span>"
+            )
+            self.lifecycle_banner.setVisible(True)
+        self._load_image(Path(scan_source_path(database, sheet.scan_id)))
+        self._refresh_controls()
 
     def show_rejected_rescans(self) -> None:
         """Switch the queue to the *Rejected / Rescan* view."""
@@ -3664,8 +3846,17 @@ class ResolvePage(WorkflowPage):
         if database is None or not case.is_outstanding:
             return ()
         if self.rescan_panel.show_all_button.isChecked():
-            return scan_lifecycle.association_choices(database, case.scan_id)
+            # Project-wide, filtered in SQL by the search box and capped.
+            return scan_lifecycle.association_choices(
+                database,
+                case.scan_id,
+                search=self.rescan_panel.association_search.text(),
+            )
         return self.state.rescan_candidates.get(case.scan_id, ())
+
+    def _on_association_search(self, _text: str) -> None:
+        """Re-query the manual association list for what was typed."""
+        self._on_show_all_scans(True)
 
     def _on_show_all_scans(self, _shown: bool) -> None:
         case = self.current_case()
@@ -3734,9 +3925,21 @@ class ResolvePage(WorkflowPage):
         )
         if not source:
             return
+        self._load_image(Path(source))
+
+    def _load_image(self, path: Path) -> None:
+        """Decode one scan for inspection, off the GUI thread.
+
+        No template and no re-read: the Rejected / Rescan and sheet views show
+        a scan as it arrived. Supersedes any loader still running.
+        """
+        if not str(path) or str(path) == ".":
+            return
+        for view in (self.zoom_view, self.normalised_view, self.original_view):
+            view.clear()
         if self._worker is not None and self._worker.isRunning():
             self._worker.ready.disconnect()
-        worker = OriginalImageWorker(Path(source), self)
+        worker = OriginalImageWorker(path, self)
         worker.ready.connect(self._on_case_image_ready)
         self._worker = worker
         self._workers = [item for item in self._workers if item.isRunning()]
@@ -3745,11 +3948,15 @@ class ResolvePage(WorkflowPage):
 
     def _on_case_image_ready(self, bundle: SheetBundle) -> None:
         """Draw a decoded case image. Runs on the GUI thread."""
-        if not self.rescan_mode or self.current_case() is None:
+        shown = self.current_case() if self.rescan_mode else self.current_sheet()
+        if shown is None:
             self.sheet_ready.emit()
             return
         message = (
             "A rejected sheet is inspected as it arrived - see the Original scan tab."
+            if self.rescan_mode
+            else "Shown as it arrived - see the Original scan tab. Its conflicts, if "
+            "any, are in the conflict views."
         )
         for view in (self.normalised_view, self.zoom_view):
             view.clear()

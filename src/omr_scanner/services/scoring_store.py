@@ -584,6 +584,23 @@ def gather_inputs(
     }
     decisions = review_store.effective_answers(database, batch_id, template)
     set_codes = review_store.effective_set_codes(database, batch_id)
+    # A confirmed rescan read into another batch stands in for its original
+    # here; its result, its reviewed answers and its set come from its own
+    # batch, where they were recorded.
+    adopted = scan_lifecycle.adopted_replacements(database, batch_id)
+    for other in {scan_lifecycle.batch_of(database, scan_id) for scan_id in adopted}:
+        if other is None:
+            continue
+        theirs = batch_store.results_by_scan(database, other)
+        their_answers = review_store.effective_answers(database, other, template)
+        their_codes = review_store.effective_set_codes(database, other)
+        for scan_id in adopted:
+            if scan_id in theirs:
+                results[scan_id] = theirs[scan_id]
+            if scan_id in their_answers:
+                decisions[scan_id] = their_answers[scan_id]
+            if scan_id in their_codes:
+                set_codes[scan_id] = their_codes[scan_id]
 
     answers: dict[int, CandidateAnswers] = {}
     for scan_id, result in results.items():

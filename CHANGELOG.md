@@ -29,8 +29,33 @@ produced them, because that is how the work was sequenced and how
   audit ledger.
 - Attendance distinguishes **Script found — set unresolved** and **Script
   received but rejected — rescan required** from *Missing script*.
+- **Reject & Rescan across batches.** Rescan suggestions and *Choose from all
+  scans…* (SQL-searched, capped) cover the whole project; a candidate from
+  another batch is labelled with it. A confirmed cross-batch replacement stands
+  in for its original in the original's batch and is placed *counted
+  elsewhere* (`ScriptSetPlacement.COUNTED_ELSEWHERE`) in its own, so it counts
+  once; scoring reads its answers from its own batch. No schema change.
+- **All processed sheets** view on Resolve: every read sheet of the batch,
+  paged and searched in SQL, from which a sheet with no conflict can be
+  rejected. It adds nothing to the unresolved counts and is not walked by
+  Ctrl+Up / Ctrl+Down.
+- Machine review event **`redetected`** (*Detected again*): re-opens a
+  duplicate-ID record the machine had withdrawn once both sheets count again.
 
 ### Fixed
+
+- Undo Reject, and removing a replacement link, left a duplicate-ID record that
+  had been withdrawn when its partner was rejected withdrawn; every lifecycle
+  change now ends with the canonical duplicate pass for each batch concerned,
+  and Resolve, Attendance and scoring agree.
+- The field inspector opened from Attendance on a cross-batch replacement read
+  its review records from the viewed batch - so it saw none, treated disputed
+  positions as confident readings and would have filed the correction there;
+  it now uses the scan's own batch.
+- *Undo Reject* on an original whose image had been quarantined or purged was
+  refused with advice to remove the replacement link first, which is refused
+  too. Both refusals now give one explicit reason, and the case panel shows it
+  beside the disabled action.
 
 - A scan added to the Scan stage's list after its batch had been registered was
   read but never stored; it is now registered in the batch

@@ -656,6 +656,37 @@ def _withdraw_conflict(session: Session, row: ReviewConflict, moment: datetime) 
     row.updated_at = moment
 
 
+def _redetect_conflict(session: Session, row: ReviewConflict, moment: datetime) -> None:
+    """Raise again a conflict the machine had withdrawn, now that it applies again.
+
+    Used by duplicate detection, whose facts change without any sheet being
+    re-read: two sheets stop being duplicates when one is rejected, and are
+    duplicates again when the rejection is undone or a replacement link is
+    removed. Leaving the withdrawn record withdrawn would under-report the
+    batch's actionable state - Resolve would show one side, or neither.
+
+    **Only a machine withdrawal is reversed.** A record whose standing command
+    is a person's decision is left exactly as it is: the machine may take back
+    its own complaint and raise it again, never override somebody's decision.
+    The event is machine-authored (no reviewer), so the undo stack, which
+    replays people's commands, never sees it.
+    """
+    stack = standing_commands(
+        [_to_audit(item) for item in _ordered_events(session, row.conflict_id)]
+    )
+    if not stack or stack[-1].action is not ReviewAction.WITHDRAWN:
+        return
+    _append_event(
+        session,
+        conflict=row,
+        action=ReviewAction.REDETECTED,
+        new_value=row.machine_value,
+        detail="Detected again: the sheets concerned are both in play once more.",
+    )
+    row.state = ConflictState.OPEN.value
+    row.updated_at = moment
+
+
 UNREAD_SET_CODE_MARKERS = frozenset({"?", "_"})
 """Characters recognition writes where a set-code position was not read."""
 
@@ -855,6 +886,8 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
             else:
                 row.related_scan_ids = _dump_related(found.related_scan_ids)
                 _refresh_conflict(session, row, found, moment)
+                if row.state == ConflictState.WITHDRAWN.value:
+                    _redetect_conflict(session, row, moment)
 
         ineligible = set(session.scalars(_ineligible_scans_select()).all())
         for scan_id, row in existing.items():
@@ -2096,7 +2129,9 @@ def _standing_decision(stack: Sequence[AuditRecord]) -> AuditRecord | None:
     for event in reversed(stack):
         if event.action.sets_effective_value:
             return event
-        if event.action is ReviewAction.REOPENED:
+        if event.action in (ReviewAction.REOPENED, ReviewAction.REDETECTED):
+            # A re-detected conflict is an open question again, as a
+            # reopened one is.
             return None
     return None
 
@@ -2135,6 +2170,7 @@ _STATE_AFTER: dict[ReviewAction, ConflictState] = {
     ReviewAction.DEFERRED: ConflictState.DEFERRED,
     ReviewAction.REOPENED: ConflictState.OPEN,
     ReviewAction.WITHDRAWN: ConflictState.WITHDRAWN,
+    ReviewAction.REDETECTED: ConflictState.OPEN,
 }
 """Where each command leaves a conflict. One entry per
 :attr:`~omr_scanner.domain.review.ReviewAction.is_command` action, so a new

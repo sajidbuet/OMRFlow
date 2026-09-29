@@ -465,3 +465,128 @@ class TestRejectAndRescan:
                 assert not any(key.startswith(("1001", "3001")) for key in again)
             finally:
                 fresh.close()
+
+    def test_the_rescan_arrives_in_a_later_batch(
+        self, qtbot, scenario, project_session, tmp_path
+    ):
+        """Batch A, reject, reopen, Batch B, offer, confirm, unlink, undo, reopen."""
+        page, batch_a = scenario
+        database = project_session.database
+        original = _scan_id(page, "s2b.png")
+        partner = _scan_id(page, "s2a.png")
+        roster = page.state.roster.roster_id
+        scan_lifecycle.reject_scan(
+            database, original, reviewer=OPERATOR, reason=RejectionReason.POOR_QUALITY
+        )
+        root = project_session.root
+        page.close()
+        project_session.close()
+
+        with open_project(root) as session:
+            database = session.database
+            # Batch B: another day, another scanner, another folder and name.
+            folder = tmp_path / "scanner_b"
+            folder.mkdir()
+            path = folder / "SCN_000913.tif"
+            path.write_bytes(b"rescan:SCN_000913.tif")
+            batch_b = batch_store.new_batch_id()
+            now = datetime.now(UTC)
+            with database.session() as db:
+                db.add(
+                    ScanBatch(
+                        batch_id=batch_b, created_at=now, updated_at=now,
+                        source_folder=str(folder), status="completed", total_scans=1,
+                    )
+                )
+                db.flush()
+                db.add(
+                    BatchScan(
+                        batch_id=batch_b, batch_index=0, source_path=str(path),
+                        filename=path.name, status="completed", identifier_value="200122",
+                        set_code_value="2",
+                        result_json=_result_json(path, "200122", "2", 17),
+                    )
+                )
+            scan_provenance.compute_hashes_for_batch(database, batch_b)
+            scan_lifecycle.sync_reimports(database, batch_b)
+            review_store.sync_duplicate_identifiers(database, batch_b)
+            rescan = batch_store.scan_ids_by_path(database, batch_b)[path]
+
+            # Offered from the other batch - labelled so - and never linked.
+            resolve = _resolve_page(qtbot, session, batch_a)
+            try:
+                resolve.state_filter.setCurrentText(FILTER_RESCAN)
+                panel = resolve.rescan_panel
+                assert panel.select_candidate(rescan)
+                text = panel.candidates_list.currentItem().text()
+                assert "SCN_000913.tif" in text and f"batch {batch_b[:8]}" in text
+                assert scan_lifecycle.state_of(database, original) is (
+                    LifecycleState.REJECTED_PENDING_RESCAN
+                )
+                assert resolve.confirm_replacement_for_case(rescan)
+            finally:
+                resolve.close()
+
+            # Only the Batch-B scan counts, and it counts once.
+            reconciliation_store.reconcile_batch(database, roster, batch_a)
+            entries = {
+                e.candidate_id: e
+                for e in reconciliation_store.list_entries(database, roster, batch_a)
+            }
+            assert entries["200122"].status is ReconciliationStatus.MATCHED
+            assert [view.script.scan_id for view in entries["200122"].scripts] == [rescan]
+            assert not any(key.startswith(("1001", "3001")) for key in entries)
+            assert entries["20123"].status is ReconciliationStatus.UNKNOWN_ID
+            scope = reconciliation_store.script_scope(database, roster, batch_b)
+            assert (scope.in_set, scope.counted_elsewhere) == (0, 1)
+
+            _verify_key(session, "2")
+            scoring_store.score_batch(database, roster, batch_a, TEMPLATE, computed_by=OPERATOR)
+            results = {
+                item.candidate_id: item
+                for item in scoring_store.list_results(database, roster, batch_a, TEMPLATE)
+            }
+            assert results["200122"].scan_id == rescan
+            assert results["200122"].correct_count == 17
+
+            with database.session() as db:
+                trail = [
+                    (row.action, row.batch_id)
+                    for row in db.scalars(
+                        select(AuditEvent)
+                        .where(AuditEvent.entity_type == LIFECYCLE_ENTITY)
+                        .order_by(AuditEvent.event_id)
+                    ).all()
+                ]
+            assert trail == [
+                ("rejected", batch_a), ("replaced", batch_a), ("linked_replacement", batch_b),
+            ]
+            plan = scan_lifecycle.plan_purge(database, session.root)
+            assert [item.case.scan_id for item in plan.eligible] == [original]
+
+            # Unlink, then Undo Reject: every stage agrees with a fresh detection.
+            scan_lifecycle.remove_replacement(database, original, reviewer=OPERATOR)
+            reconciliation_store.reconcile_batch(database, roster, batch_a)
+            assert {
+                e.candidate_id: e
+                for e in reconciliation_store.list_entries(database, roster, batch_a)
+            }["200122"].status is ReconciliationStatus.RESCAN_REQUIRED
+            scan_lifecycle.undo_reject(database, original, reviewer=OPERATOR)
+            assert scan_lifecycle.state_of(database, original) is LifecycleState.ACTIVE
+            assert partner != original
+            for batch in (batch_a, batch_b):
+                before = review_store.count_conflicts(database, batch)
+                review_store.sync_duplicate_identifiers(database, batch)
+                after = review_store.count_conflicts(database, batch)
+                assert (before.total, before.unresolved) == (after.total, after.unresolved)
+
+        # Reopen: the restored state holds.
+        with open_project(root) as reopened:
+            assert scan_lifecycle.state_of(reopened.database, original) is LifecycleState.ACTIVE
+            assert scan_lifecycle.state_of(reopened.database, rescan) is LifecycleState.ACTIVE
+            reconciliation_store.reconcile_batch(reopened.database, roster, batch_a)
+            entry = {
+                e.candidate_id: e
+                for e in reconciliation_store.list_entries(reopened.database, roster, batch_a)
+            }["200122"]
+            assert [view.script.scan_id for view in entry.scripts] == [original]

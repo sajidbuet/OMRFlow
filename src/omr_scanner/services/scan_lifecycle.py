@@ -58,17 +58,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from omr_scanner.database.models import (
     AuditEvent,
     BatchScan,
     CandidateRoster,
     ReconciliationRun,
+    ReviewConflict,
+    ScanBatch,
     ScanJobStatus,
     ScanRejection,
 )
 from omr_scanner.domain.project import ProjectLayout
+from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState
 from omr_scanner.domain.scan_lifecycle import (
     EXPORT_ENTITY,
     LIFECYCLE_ENTITY,
@@ -90,7 +93,7 @@ from omr_scanner.services import review_store
 from omr_scanner.services.scan_provenance import hash_file, is_virtual_source
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Iterable, Mapping, Sequence
+    from collections.abc import Iterable, Sequence
 
     from sqlalchemy.orm import Session
 
@@ -197,6 +200,7 @@ def _to_case(
     row: ScanRejection,
     *,
     replacement_name: str = "",
+    replacement_batch: str = "",
     live_id: EffectiveIdentifier | None = None,
     live_set: EffectiveIdentifier | None = None,
 ) -> RescanCase:
@@ -238,6 +242,7 @@ def _to_case(
         rejected_at=row.rejected_at,
         replacement_scan_id=row.replacement_scan_id,
         replacement_name=replacement_name,
+        replacement_batch_id=replacement_batch,
         replaced_by=row.replaced_by,
         replaced_at=row.replaced_at,
         reimport_of_scan_id=row.reimport_of_scan_id,
@@ -269,15 +274,31 @@ def cases_by_scan(
             .order_by(ScanRejection.rejected_at, ScanRejection.scan_id)
         ).all()
         names = _names(session, [row.replacement_scan_id for row in rows])
+        batches = _batches(session, [row.replacement_scan_id for row in rows])
         return {
             row.scan_id: _to_case(
                 row,
                 replacement_name=names.get(row.replacement_scan_id or -1, ""),
+                replacement_batch=batches.get(row.replacement_scan_id or -1, ""),
                 live_id=identifiers.get(row.scan_id),
                 live_set=set_codes.get(row.scan_id),
             )
             for row in rows
         }
+
+
+def _batches(session: Session, scan_ids: Iterable[int | None]) -> dict[int, str]:
+    wanted = [item for item in scan_ids if item is not None]
+    if not wanted:
+        return {}
+    return {
+        int(scan_id): str(batch_id)
+        for scan_id, batch_id in session.execute(
+            select(BatchScan.scan_id, BatchScan.batch_id).where(
+                BatchScan.scan_id.in_(wanted)
+            )
+        ).all()
+    }
 
 
 def _names(session: Session, scan_ids: Iterable[int | None]) -> dict[int, str]:
@@ -675,6 +696,14 @@ def undo_reject(
                 f"Scan {scan_id} is not rejected",
                 user_message="That scan is not rejected, so there is nothing to undo.",
             )
+        # Checked first: for an original whose image is gone, "remove the
+        # replacement link first" would send the operator to an action that is
+        # refused too.
+        if row.file_state != FileState.PRESENT.value:
+            raise LifecycleError(
+                f"Scan {scan_id} image is {row.file_state}",
+                user_message=FileState(row.file_state).unavailable_note,
+            )
         if state is LifecycleState.SUPERSEDED_BY_REPLACEMENT:
             raise LifecycleError(
                 f"Scan {scan_id} has a confirmed replacement",
@@ -692,11 +721,6 @@ def undo_reject(
                     "This scan is byte-for-byte the same file as a rejected scan. "
                     "Importing it again does not make it usable."
                 ),
-            )
-        if row.file_state != FileState.PRESENT.value:
-            raise LifecycleError(
-                f"Scan {scan_id} image is {row.file_state}",
-                user_message="This scan's image has been removed; it cannot be reactivated.",
             )
         batch_id = row.batch_id
         row.state = LifecycleState.ACTIVE.value
@@ -735,97 +759,167 @@ def _replacement_ids(session: Session) -> set[int]:
     }
 
 
-def _candidates_for(
+@dataclass(frozen=True, slots=True)
+class _ProjectReadings:
+    """Every scan's effective Student ID and set code, across the project.
+
+    Read batch by batch through the review ledger's own projections - one
+    pair of queries per batch - because the ledger is organised per batch and
+    a rescan may arrive in any of them.
+    """
+
+    identifiers: dict[int, EffectiveIdentifier]
+    set_codes: dict[int, EffectiveIdentifier]
+    batch_labels: dict[str, str]
+
+
+def _batch_label(batch: ScanBatch) -> str:
+    """How a batch is named to an operator: short id and when it was made."""
+    return f"batch {batch.batch_id[:8]} ({batch.created_at:%Y-%m-%d})"
+
+
+def _project_readings(
+    database: ProjectDatabase, batch_ids: Iterable[str] | None = None
+) -> _ProjectReadings:
+    """Effective identities for every scan of the given batches (default: all)."""
+    with database.session() as session:
+        batches = session.scalars(select(ScanBatch)).all()
+        labels = {batch.batch_id: _batch_label(batch) for batch in batches}
+    wanted = list(batch_ids) if batch_ids is not None else list(labels)
+    identifiers: dict[int, EffectiveIdentifier] = {}
+    set_codes: dict[int, EffectiveIdentifier] = {}
+    for batch_id in dict.fromkeys(wanted):
+        identifiers.update(review_store.effective_identifiers(database, batch_id))
+        set_codes.update(review_store.effective_set_codes(database, batch_id))
+    return _ProjectReadings(identifiers=identifiers, set_codes=set_codes, batch_labels=labels)
+
+
+def _project_ineligible(session: Session) -> frozenset[int]:
+    """Every scan in the project that is not active."""
+    return frozenset(
+        int(item)
+        for item in session.scalars(
+            select(ScanRejection.scan_id).where(
+                ScanRejection.state != LifecycleState.ACTIVE.value
+            )
+        ).all()
+    )
+
+
+def _candidate(
     case: RescanCase,
-    scans: Sequence[BatchScan],
+    scan: BatchScan,
+    readings: _ProjectReadings,
     *,
-    identifiers: Mapping[int, EffectiveIdentifier],
-    set_codes: Mapping[int, EffectiveIdentifier],
+    wanted_set: str = "",
+) -> ReplacementCandidate:
+    """Describe one scan as a possible replacement for ``case``."""
+    read = readings.identifiers.get(scan.scan_id)
+    code = readings.set_codes.get(scan.scan_id)
+    code_value = "" if code is None or code.unresolved else code.value
+    agrees = None if not (wanted_set and code_value) else code_value == wanted_set
+    return ReplacementCandidate(
+        scan_id=scan.scan_id,
+        source_name=scan.filename or "",
+        candidate_id=read.value if read is not None else "",
+        set_code=code_value,
+        set_code_agrees=agrees,
+        batch_id=scan.batch_id,
+        batch_label=readings.batch_labels.get(scan.batch_id, scan.batch_id[:8]),
+        other_batch=scan.batch_id != case.batch_id,
+        read_at=scan.finished_at,
+    )
+
+
+def _refusable(
+    case: RescanCase,
+    scan: BatchScan,
+    *,
     ineligible: frozenset[int],
     taken: set[int],
-) -> tuple[ReplacementCandidate, ...]:
-    """Scans that might be ``case``'s rescan. See :func:`replacement_candidates`."""
-    identity = case.identity
-    if not identity:
-        return ()
-    wanted_set = case.set_code
-    found: list[ReplacementCandidate] = []
-    for scan in scans:
-        if (
-            scan.scan_id == case.scan_id
-            or scan.scan_id in ineligible
-            or scan.scan_id in taken
-            or scan.status not in _PROCESSED
-        ):
-            continue
-        if case.content_sha256 and scan.content_sha256 == case.content_sha256:
-            continue  # the same file again is not a rescan
-        read = identifiers.get(scan.scan_id)
-        if read is None or read.unresolved or read.value != identity:
-            continue
-        code = set_codes.get(scan.scan_id)
-        code_value = "" if code is None or code.unresolved else code.value
-        agrees = None if not (wanted_set and code_value) else code_value == wanted_set
-        found.append(
-            ReplacementCandidate(
-                scan_id=scan.scan_id,
-                source_name=scan.filename or "",
-                candidate_id=read.value,
-                set_code=code_value,
-                set_code_agrees=agrees,
-            )
-        )
-    # Agreeing set code first, then the newest scan - a rescan arrives after
-    # the sheet it replaces.
-    found.sort(key=lambda item: (item.set_code_agrees is not True, -item.scan_id))
-    return tuple(found)
+) -> bool:
+    """Whether a scan can never be this case's replacement.
+
+    The same rules :func:`confirm_replacement` enforces.
+    """
+    return (
+        scan.scan_id == case.scan_id
+        or scan.scan_id in ineligible
+        or scan.scan_id in taken
+        or scan.status not in _PROCESSED
+        or bool(case.content_sha256 and scan.content_sha256 == case.content_sha256)
+    )
 
 
 def possible_rescans(
     database: ProjectDatabase, batch_id: str
 ) -> dict[int, tuple[ReplacementCandidate, ...]]:
-    """Every outstanding case's possible rescans, read once for the batch."""
-    identifiers = review_store.effective_identifiers(database, batch_id)
-    set_codes = review_store.effective_set_codes(database, batch_id)
-    cases = cases_by_scan(database, batch_id)
-    ineligible = frozenset(cases)
+    """Every outstanding case of a batch, and its possible rescans.
+
+    **Project-wide.** A sheet rejected while one batch was being processed is
+    often rescanned later - another batch, another scanner, another computer,
+    a file name nothing like the original's - so candidates are looked for in
+    every batch of the project. Batch numbers, like file names, are never
+    evidence: only the effective Student ID is. Each candidate says which
+    batch it came from.
+    """
+    cases = {
+        scan_id: case
+        for scan_id, case in cases_by_scan(database, batch_id).items()
+        if case.is_outstanding
+    }
+    identities = {case.identity for case in cases.values() if case.identity}
+    if not identities:
+        return dict.fromkeys(cases, ())
+    readings = _project_readings(database)
+    wanted = {
+        scan_id
+        for scan_id, read in readings.identifiers.items()
+        if not read.unresolved and read.value in identities
+    }
     with database.session() as session:
-        scans = session.scalars(
-            select(BatchScan)
-            .where(BatchScan.batch_id == batch_id)
-            .order_by(BatchScan.batch_index)
-        ).all()
         taken = _replacement_ids(session)
-        return {
-            scan_id: _candidates_for(
-                case,
-                scans,
-                identifiers=identifiers,
-                set_codes=set_codes,
-                ineligible=ineligible,
-                taken=taken,
-            )
-            for scan_id, case in cases.items()
-            if case.is_outstanding
-        }
+        ineligible = _project_ineligible(session)
+        scans = (
+            session.scalars(
+                select(BatchScan)
+                .where(BatchScan.scan_id.in_(list(wanted)))
+                .order_by(BatchScan.scan_id)
+            ).all()
+            if wanted
+            else []
+        )
+        found: dict[int, tuple[ReplacementCandidate, ...]] = {}
+        for scan_id, case in cases.items():
+            rows = [
+                _candidate(case, scan, readings, wanted_set=case.set_code)
+                for scan in scans
+                if not _refusable(case, scan, ineligible=ineligible, taken=taken)
+                and readings.identifiers[scan.scan_id].value == case.identity
+            ]
+            # Agreeing set code first, then the newest scan - a rescan arrives
+            # after the sheet it replaces.
+            rows.sort(key=lambda item: (item.set_code_agrees is not True, -item.scan_id))
+            found[scan_id] = tuple(rows)
+        return found
 
 
 def replacement_candidates(
     database: ProjectDatabase, scan_id: int
 ) -> tuple[ReplacementCandidate, ...]:
-    """Scans in the same batch that might be one rejected sheet's rescan.
+    """Scans anywhere in the project that might be one rejected sheet's rescan.
 
     **Conservative, by construction.** A scan is suggested only when its
     *effective* Student ID - after every Resolve-stage correction - is fully
     read and equals the case's identity (the operator's declared ID, or the
     rejected scan's own). Set code is further evidence, reported but never
-    required. **File names are never compared**: scanners, computers and
-    watched folders name files however they like.
+    required. **File names and batches are never compared**: scanners,
+    computers and watched folders name files and batches however they like.
 
     Excluded: the rejected scan itself, scans not yet read, scans that are
     themselves rejected or superseded, scans already confirmed as another
     case's replacement, and a scan with the rejected scan's exact bytes (a
-    re-import, not a rescan).
+    re-import, not a rescan) - in whichever batch it arrived.
 
     An unknown-identity case has no candidates; :func:`association_choices`
     lists what an operator may link by hand.
@@ -838,55 +932,67 @@ def replacement_candidates(
     return possible_rescans(database, batch_id).get(scan_id, ())
 
 
+ASSOCIATION_LIMIT = 200
+"""How many scans the manual association list holds at once.
+
+A project may hold a hundred thousand scans; the list is filtered in SQL by
+what the operator types and capped, so it never pulls the project into a
+widget."""
+
+
 def association_choices(
-    database: ProjectDatabase, scan_id: int
+    database: ProjectDatabase,
+    scan_id: int,
+    *,
+    search: str = "",
+    limit: int = ASSOCIATION_LIMIT,
 ) -> tuple[ReplacementCandidate, ...]:
-    """Every scan an operator could link to a rejected case by hand.
+    """Scans an operator could link to a rejected case by hand, project-wide.
+
+    Args:
+        database: The open project database.
+        scan_id: The rejected scan.
+        search: Case-insensitive text matched against file names and machine
+            Student IDs, in SQL. Empty lists the newest scans.
+        limit: At most this many rows.
 
     For the case the matcher cannot help with - an unreadable Student ID - an
     operator holding the physical sheet can still say which new scan is its
-    rescan. Every active, read scan of the batch that is not already a
-    replacement is offered; suggestions come first. The choice is never made
-    here.
+    rescan. Every active, read scan of the **project** that is not already a
+    replacement is eligible; suggestions come first. The choice is never made
+    here, and every refusal rule of :func:`confirm_replacement` applies.
     """
     with database.session() as session:
         row = _row_for(session, scan_id)
         if row is None or _state(row) is not LifecycleState.REJECTED_PENDING_RESCAN:
             return ()
-        batch_id = row.batch_id
-    suggested = {item.scan_id: item for item in replacement_candidates(database, scan_id)}
-    identifiers = review_store.effective_identifiers(database, batch_id)
-    set_codes = review_store.effective_set_codes(database, batch_id)
-    ineligible = ineligible_scan_ids(database, batch_id)
-    choices: list[ReplacementCandidate] = list(suggested.values())
+    case = get_case(database, scan_id)
+    if case is None:  # pragma: no cover - checked above
+        return ()
+    suggested = list(replacement_candidates(database, scan_id))
+    seen = {item.scan_id for item in suggested}
+    text = search.strip()
     with database.session() as session:
         taken = _replacement_ids(session)
-        original_hash = row.content_sha256
-        for scan in session.scalars(
-            select(BatchScan)
-            .where(BatchScan.batch_id == batch_id)
-            .order_by(BatchScan.batch_index.desc())
-        ).all():
-            if (
-                scan.scan_id in suggested
-                or scan.scan_id == scan_id
-                or scan.scan_id in ineligible
-                or scan.scan_id in taken
-                or scan.status not in _PROCESSED
-                or (original_hash and scan.content_sha256 == original_hash)
-            ):
-                continue
-            read = identifiers.get(scan.scan_id)
-            code = set_codes.get(scan.scan_id)
-            choices.append(
-                ReplacementCandidate(
-                    scan_id=scan.scan_id,
-                    source_name=scan.filename or "",
-                    candidate_id=read.value if read is not None else "",
-                    set_code=code.value if code is not None else "",
-                )
+        ineligible = _project_ineligible(session)
+        statement = select(BatchScan).where(
+            BatchScan.status.in_(sorted(_PROCESSED))
+        )
+        if text:
+            pattern = f"%{text}%"
+            statement = statement.where(
+                BatchScan.filename.ilike(pattern) | BatchScan.identifier_value.ilike(pattern)
             )
-    return tuple(choices)
+        rows = [
+            scan
+            for scan in session.scalars(
+                statement.order_by(BatchScan.scan_id.desc()).limit(limit + len(seen) + 1)
+            ).all()
+            if scan.scan_id not in seen
+            and not _refusable(case, scan, ineligible=ineligible, taken=taken)
+        ][: max(0, limit - len(suggested))]
+    readings = _project_readings(database, {scan.batch_id for scan in rows})
+    return tuple(suggested) + tuple(_candidate(case, scan, readings) for scan in rows)
 
 
 def confirm_replacement(
@@ -904,7 +1010,8 @@ def confirm_replacement(
         original_scan_id: The rejected scan.
         replacement_scan_id: Its rescan. Need not be a suggested candidate -
             an unknown-identity case is linked by hand - but it must be an
-            active, read scan in the same batch.
+            active, read scan of this project. **Any batch**: a sheet is often
+            rescanned later, elsewhere, under an unrelated file name.
         reviewer: Who confirmed it. Required.
         note: Optional words.
 
@@ -913,7 +1020,7 @@ def confirm_replacement(
 
     Raises:
         LifecycleError: The original is not awaiting a rescan; the replacement
-            is the original, is in another batch, has not been read, is itself
+            is the original, is not in this project, has not been read, is itself
             rejected or superseded, already replaces another sheet, or has the
             original's exact bytes.
 
@@ -937,14 +1044,14 @@ def confirm_replacement(
                 "A scan cannot replace itself",
                 user_message="Choose the new scan, not the rejected one.",
             )
+        # Project-scoped: any batch of this project will do. The project
+        # boundary is the database itself - a scan of another project has no
+        # row here, and `_require_scan` refuses it.
         replacement = _require_scan(session, replacement_scan_id)
-        if replacement.batch_id != row.batch_id:
+        if session.get(ScanBatch, replacement.batch_id) is None:  # pragma: no cover
             raise LifecycleError(
-                "The replacement belongs to another batch",
-                user_message=(
-                    "The rescan must be read into the same batch as the rejected "
-                    "sheet, so that attendance and results count it."
-                ),
+                f"Scan {replacement_scan_id} has no batch in this project",
+                user_message="That scan does not belong to this project.",
             )
         if _state(_row_for(session, replacement_scan_id)) is not LifecycleState.ACTIVE:
             raise LifecycleError(
@@ -974,15 +1081,22 @@ def confirm_replacement(
                 ),
             )
         batch_id = row.batch_id
+        replacement_batch = replacement.batch_id
         row.state = LifecycleState.SUPERSEDED_BY_REPLACEMENT.value
         row.replacement_scan_id = replacement_scan_id
         row.replaced_by = name
         row.replaced_at = moment
         row.updated_at = moment
+        where = (
+            f" from batch {replacement_batch[:8]}"
+            if replacement_batch != batch_id
+            else ""
+        )
         detail = (
-            f"Scan {replacement_scan_id} ({replacement.filename}) confirmed as the "
-            f"rescan of scan {original_scan_id} ({row.source_name}). The original "
-            "stays ineligible and is kept for provenance."
+            f"Scan {replacement_scan_id} ({replacement.filename}){where} confirmed as "
+            f"the rescan of scan {original_scan_id} ({row.source_name}, batch "
+            f"{batch_id[:8]}). The original stays ineligible and is kept for "
+            "provenance; the rescan counts in the original's place."
         )
         _append_event(
             session,
@@ -998,7 +1112,7 @@ def confirm_replacement(
         _append_event(
             session,
             scan_id=replacement_scan_id,
-            batch_id=batch_id,
+            batch_id=replacement_batch,
             action=LifecycleAction.LINKED_AS_REPLACEMENT,
             reviewer=name,
             previous_value=LifecycleState.ACTIVE.value,
@@ -1006,14 +1120,18 @@ def confirm_replacement(
             reason_text=note.strip(),
             detail=detail,
         )
-        case = _to_case(row, replacement_name=replacement.filename or "")
+        case = _to_case(
+            row,
+            replacement_name=replacement.filename or "",
+            replacement_batch=replacement_batch,
+        )
     _LOGGER.info(
         "Scan %d confirmed as the replacement of scan %d by %s",
         replacement_scan_id,
         original_scan_id,
         name,
     )
-    _after_change(database, batch_id)
+    _after_change(database, batch_id, replacement_batch)
     return case
 
 
@@ -1042,13 +1160,12 @@ def remove_replacement(
         if row.file_state != FileState.PRESENT.value:
             raise LifecycleError(
                 f"Scan {original_scan_id} image is {row.file_state}",
-                user_message=(
-                    "The rejected scan's image has already been removed, so its "
-                    "replacement link is kept."
-                ),
+                user_message=FileState(row.file_state).unavailable_note,
             )
         batch_id = row.batch_id
         former = row.replacement_scan_id
+        former_scan = session.get(BatchScan, former) if former is not None else None
+        former_batch = former_scan.batch_id if former_scan is not None else batch_id
         row.state = LifecycleState.REJECTED_PENDING_RESCAN.value
         row.replacement_scan_id = None
         row.replaced_by = ""
@@ -1058,13 +1175,13 @@ def remove_replacement(
             f"Replacement link to scan {former} withdrawn; scan {original_scan_id} "
             "awaits a rescan again."
         )
-        for target in (original_scan_id, former):
+        for target, target_batch in ((original_scan_id, batch_id), (former, former_batch)):
             if target is None:
                 continue
             _append_event(
                 session,
                 scan_id=target,
-                batch_id=batch_id,
+                batch_id=target_batch,
                 action=LifecycleAction.REPLACEMENT_REMOVED,
                 reviewer=name,
                 previous_value=LifecycleState.SUPERSEDED_BY_REPLACEMENT.value,
@@ -1073,7 +1190,9 @@ def remove_replacement(
                 detail=detail,
             )
     _LOGGER.info("Scan %d: replacement link removed by %s", original_scan_id, name)
-    _after_change(database, batch_id)
+    # The former replacement returns to counting in its own batch, so both
+    # batches' duplicate state and reconciliation are re-derived.
+    _after_change(database, batch_id, former_batch)
 
 
 # ----------------------------------------------------------------------
@@ -1173,37 +1292,198 @@ def _scan_hash(session: Session, scan_id: int) -> str:
 # ----------------------------------------------------------------------
 # Consequences of a transition
 # ----------------------------------------------------------------------
-def _after_change(database: ProjectDatabase, batch_id: str) -> None:
-    """Re-derive everything a lifecycle change affects.
+def _after_change(database: ProjectDatabase, *batch_ids: str) -> None:
+    """Re-derive everything a lifecycle change affects, in every batch it touches.
 
-    Duplicate-ID conflicts are re-synced, because an ineligible scan no longer
-    takes part in them. Every reconciliation already run for this batch
-    against an active roster is re-run, so no screen or count goes on showing
-    a rejected script as valid. Scores are not recomputed here - that is the
-    Results stage's explicit action - but they are reported stale
-    (:func:`~omr_scanner.services.scoring_store.stale_reasons_for`).
+    Nothing here is decided afresh: each consequence is produced by the
+    machinery that owns it, exactly as if the scans concerned had simply been
+    in their new state when that machinery last ran.
+
+    * Duplicate-ID conflicts are recomputed by
+      :func:`~omr_scanner.services.review_store.sync_duplicate_identifiers` -
+      the canonical engine - for each batch. An ineligible scan takes no part,
+      and a duplicate that becomes real again (after *Undo Reject*, say) is
+      raised again by that same function.
+    * Every reconciliation already run for each batch against an active roster
+      is re-run, so no screen or count goes on showing a rejected script as
+      valid, or missing a replacement that now stands in for one.
+
+    Scores are not recomputed here - that is the Results stage's explicit
+    action - but they are reported stale
+    (:func:`~omr_scanner.services.scoring_store.stale_reasons_for`). A cross-
+    batch replacement touches two batches, which is why this takes several.
     """
     from omr_scanner.services import reconciliation_store
 
-    try:
-        review_store.sync_duplicate_identifiers(database, batch_id)
-        with database.session() as session:
-            rosters = [
-                int(item)
-                for item in session.scalars(
-                    select(ReconciliationRun.roster_id)
-                    .join(
-                        CandidateRoster,
-                        CandidateRoster.roster_id == ReconciliationRun.roster_id,
-                    )
-                    .where(ReconciliationRun.batch_id == batch_id)
-                    .where(CandidateRoster.is_active.is_(True))
-                ).all()
-            ]
-        for roster_id in rosters:
-            reconciliation_store.reconcile_batch(database, roster_id, batch_id)
-    except OMRScannerError:
-        _LOGGER.exception("Could not refresh batch %s after a lifecycle change", batch_id)
+    for batch_id in dict.fromkeys(item for item in batch_ids if item):
+        try:
+            review_store.sync_duplicate_identifiers(database, batch_id)
+            with database.session() as session:
+                rosters = [
+                    int(item)
+                    for item in session.scalars(
+                        select(ReconciliationRun.roster_id)
+                        .join(
+                            CandidateRoster,
+                            CandidateRoster.roster_id == ReconciliationRun.roster_id,
+                        )
+                        .where(ReconciliationRun.batch_id == batch_id)
+                        .where(CandidateRoster.is_active.is_(True))
+                    ).all()
+                ]
+            for roster_id in rosters:
+                reconciliation_store.reconcile_batch(database, roster_id, batch_id)
+        except OMRScannerError:
+            _LOGGER.exception("Could not refresh batch %s after a lifecycle change", batch_id)
+
+
+# ----------------------------------------------------------------------
+# Where a cross-batch replacement counts
+# ----------------------------------------------------------------------
+def adopted_replacements(database: ProjectDatabase, batch_id: str) -> dict[int, int]:
+    """Replacements from **other** batches that stand in for this batch's originals.
+
+    Returns:
+        ``replacement scan id -> original scan id``.
+
+    A confirmed rescan counts in the batch of the sheet it replaces - that is
+    where its candidate's attendance, marks and report live - wherever it was
+    itself read. Reconciliation and scoring of ``batch_id`` include these.
+    """
+    with database.session() as session:
+        rows = session.execute(
+            select(ScanRejection.replacement_scan_id, ScanRejection.scan_id)
+            .join(BatchScan, BatchScan.scan_id == ScanRejection.replacement_scan_id)
+            .where(ScanRejection.batch_id == batch_id)
+            .where(ScanRejection.state == LifecycleState.SUPERSEDED_BY_REPLACEMENT.value)
+            .where(BatchScan.batch_id != batch_id)
+        ).all()
+    return {int(replacement): int(original) for replacement, original in rows}
+
+
+def counted_elsewhere(database: ProjectDatabase, batch_id: str) -> dict[int, str]:
+    """This batch's scans that count in another batch, as a replacement there.
+
+    Returns:
+        ``scan id -> the batch it counts in``.
+
+    Their own batch's reconciliation leaves them out, so a rescan counts once.
+    """
+    with database.session() as session:
+        rows = session.execute(
+            select(ScanRejection.replacement_scan_id, ScanRejection.batch_id)
+            .join(BatchScan, BatchScan.scan_id == ScanRejection.replacement_scan_id)
+            .where(ScanRejection.state == LifecycleState.SUPERSEDED_BY_REPLACEMENT.value)
+            .where(BatchScan.batch_id == batch_id)
+            .where(ScanRejection.batch_id != batch_id)
+        ).all()
+    return {int(scan_id): str(original_batch) for scan_id, original_batch in rows}
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessedSheet:
+    """One read sheet, as the Resolve stage's *All processed sheets* view lists it.
+
+    Deliberately what the batch row already holds - the machine's readings,
+    not the review ledger's effective values - so that a page of the list
+    costs one indexed query however large the batch is. The effective
+    identity of the one sheet selected is read on selection
+    (:func:`current_identity`).
+
+    Attributes:
+        scan_id: The scan.
+        filename: Its file name.
+        identifier: The Student ID as recognition read it.
+        set_code: The set code as recognition read it.
+        status: Its processing status (completed, warning, failed).
+        state: Its lifecycle state.
+        open_conflicts: How many of its Resolve records still need a decision.
+    """
+
+    scan_id: int
+    filename: str
+    identifier: str
+    set_code: str
+    status: str
+    state: LifecycleState
+    open_conflicts: int = 0
+
+
+PROCESSED_STATUSES = frozenset(
+    {ScanJobStatus.COMPLETED.value, ScanJobStatus.WARNING.value, ScanJobStatus.FAILED.value}
+)
+"""What *processed* means for the inspection view: recognition has run."""
+
+
+def processed_sheets(
+    database: ProjectDatabase,
+    batch_id: str,
+    *,
+    search: str = "",
+    limit: int | None = 500,
+    offset: int = 0,
+) -> tuple[ProcessedSheet, ...]:
+    """Every read sheet of a batch, conflict or not, filtered and paged in SQL.
+
+    What makes a **cleanly read** sheet reachable for Reject & Rescan: a scan
+    that raised no conflict appears in no conflict queue, yet an operator
+    holding the paper may know it is folded, clipped or the wrong page. This
+    lists sheets, not problems, and counts nothing as unresolved.
+    """
+    text = search.strip()
+    with database.session() as session:
+        open_count = (
+            select(func.count())
+            .select_from(ReviewConflict)
+            .where(ReviewConflict.scan_id == BatchScan.scan_id)
+            .where(ReviewConflict.conflict_type.in_([item.value for item in RESOLUTION_TYPES]))
+            .where(
+                ReviewConflict.state.in_(
+                    [ConflictState.OPEN.value, ConflictState.DEFERRED.value]
+                )
+            )
+            .scalar_subquery()
+        )
+        statement = (
+            select(BatchScan, ScanRejection.state, open_count)
+            .join(ScanRejection, ScanRejection.scan_id == BatchScan.scan_id, isouter=True)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.status.in_(sorted(PROCESSED_STATUSES)))
+        )
+        if text:
+            pattern = f"%{text}%"
+            statement = statement.where(
+                BatchScan.filename.ilike(pattern) | BatchScan.identifier_value.ilike(pattern)
+            )
+        statement = statement.order_by(BatchScan.batch_index)
+        if limit is not None:
+            statement = statement.limit(limit).offset(offset)
+        found: list[ProcessedSheet] = []
+        for scan, state, conflicts in session.execute(statement).all():
+            try:
+                lifecycle = LifecycleState(state) if state else LifecycleState.ACTIVE
+            except ValueError:  # pragma: no cover - a state from a newer build
+                lifecycle = LifecycleState.REJECTED_PENDING_RESCAN
+            found.append(
+                ProcessedSheet(
+                    scan_id=scan.scan_id,
+                    filename=scan.filename or "",
+                    identifier=scan.identifier_value or "",
+                    set_code=scan.set_code_value or "",
+                    status=scan.status,
+                    state=lifecycle,
+                    open_conflicts=int(conflicts or 0),
+                )
+            )
+        return tuple(found)
+
+
+def batch_of(database: ProjectDatabase, scan_id: int) -> str | None:
+    """The batch a scan was read into, or ``None`` when it is not in the project."""
+    with database.session() as session:
+        scan = session.get(BatchScan, scan_id)
+        return scan.batch_id if scan is not None else None
+
 
 
 # ----------------------------------------------------------------------
@@ -1685,13 +1965,19 @@ def with_live_identity(case: RescanCase, database: ProjectDatabase) -> RescanCas
 
 
 __all__ = [
+    "ASSOCIATION_LIMIT",
+    "PROCESSED_STATUSES",
     "QUARANTINE_DIR_NAME",
     "LifecycleError",
     "LifecycleEvent",
+    "ProcessedSheet",
+    "adopted_replacements",
     "association_choices",
+    "batch_of",
     "cases_by_scan",
     "confirm_replacement",
     "count_cases",
+    "counted_elsewhere",
     "current_identity",
     "execute_purge",
     "get_case",
@@ -1705,6 +1991,7 @@ __all__ = [
     "owned_path",
     "plan_purge",
     "possible_rescans",
+    "processed_sheets",
     "quarantine_root",
     "record_incomplete_export",
     "reject_scan",

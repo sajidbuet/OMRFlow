@@ -592,9 +592,13 @@ That is also what let Phase 7 start auditing candidates and scripts here without
 touching a constraint.
 
 `action` for a conflict is one of `detected`, `re_recognised`, `accepted`,
-`corrected`, `deferred`, `reopened`, `withdrawn`. The first two are the
-machine's; the rest require a named reviewer, and `corrected` additionally
-requires a reason. Phase 7 adds its own actions under `entity_type` of
+`corrected`, `deferred`, `reopened`, `withdrawn`, `redetected`. `detected`,
+`re_recognised`, `withdrawn` and `redetected` are the machine's; the rest
+require a named reviewer, and `corrected` additionally requires a reason. `redetected` re-opens a
+duplicate-ID record that the machine withdrew when one of its sheets stopped
+counting, once both count again (Undo Reject, removing a replacement link); it
+is a command in the state fold, clears no human decision - it is appended only
+when the standing command is a machine `withdrawn` - and is not undoable. Phase 7 adds its own actions under `entity_type` of
 `candidate` or `script` — see [`reconciliation.md`](reconciliation.md).
 
 ## Persistence strategy
@@ -634,7 +638,11 @@ requires a reason. Phase 7 adds its own actions under `entity_type` of
 because no earlier build could reject a scan and **no row means active**.
 
 - **One row per scan** (`UNIQUE(scan_id)`), never deleted: an undone
-  rejection rests with `state='active'`. `UNIQUE(replacement_scan_id)` - a scan
+  rejection rests with `state='active'`. The replacement may be a scan of
+  **any batch of the project** (no schema change was needed for that: the
+  link was always scan-to-scan); a cross-batch replacement is reconciled and
+  scored in its original's batch - see [`reconciliation.md`](reconciliation.md).
+  `UNIQUE(replacement_scan_id)` - a scan
   replaces at most one original (SQLite treats NULLs as distinct).
 - **Logical state and file state are separate columns.** `state` decides
   result eligibility (only `active` is eligible);

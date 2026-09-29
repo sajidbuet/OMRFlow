@@ -14,6 +14,7 @@ Why every wait is on a signal:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import cv2
@@ -23,6 +24,7 @@ from PySide6.QtTest import QTest
 from tests.conftest import build_answer_sheet_template, render_marked_sheet
 
 from omr_scanner.config import AppConfig
+from omr_scanner.database.models import BatchScan
 from omr_scanner.domain.reporting import ReadinessIssue, ReadinessIssueKind, ReadinessReport
 from omr_scanner.domain.scan_lifecycle import LifecycleState, PurgeMode, RejectionReason
 from omr_scanner.gui.main_window import MainWindow
@@ -34,7 +36,6 @@ from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.services import review_store, save_template, scan_lifecycle
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pathlib import Path
 
     from omr_scanner.services import ProjectSession
 
@@ -429,6 +430,226 @@ class TestReportsAskBeforeAnIncompleteExport:
             lambda _text: pytest.fail("must not ask"),
         )
         assert page._acknowledge_if_needed([SetRow(set_id="s3", set_code="3")]) is False
+
+
+class TestAnOriginalWhoseImageIsGone:
+    """After *Purge Rejects*, nothing on the panel offers to reactivate the original."""
+
+    @pytest.mark.parametrize(
+        ("mode", "where"),
+        [(PurgeMode.QUARANTINE, "quarantine"), (PurgeMode.DELETE, "permanently deleted")],
+    )
+    def test_undo_and_unlink_are_unavailable_and_say_why(
+        self, qtbot, resolve: ResolvePage, scan_page: ScanPage, project_session,
+        processed, write_sheet, mode, where,
+    ):
+        database = project_session.database
+        damaged = scan_id_of(project_session, processed, "damaged.png")
+        # The original lives in project storage, so a purge really removes it.
+        stored = project_session.project.layout.scans_original_dir / "damaged.png"
+        stored.parent.mkdir(parents=True, exist_ok=True)
+        with database.session() as session:
+            row = session.get(BatchScan, damaged)
+            stored.write_bytes(Path(row.source_path).read_bytes())
+            row.source_path = str(stored)
+        select_first_conflict(qtbot, resolve)
+        resolve.reject_current_sheet(RejectionReason.FOLDED, declared_candidate_id="170503")
+        rescan_path = write_sheet("IMG_8888.png", "170503")
+        with qtbot.waitSignal(scan_page.batch_finished, timeout=TIMEOUT_MS):
+            assert scan_page.import_rescans(processed, [rescan_path]) is True
+        rescan = scan_id_of(project_session, processed, "IMG_8888.png")
+        scan_lifecycle.confirm_replacement(database, damaged, rescan, reviewer=REVIEWER)
+        outcome = scan_lifecycle.execute_purge(
+            database, project_session.root, mode=mode, reviewer=REVIEWER
+        )
+        assert outcome.files_moved == 1 and not stored.exists()
+
+        # No image to decode, so no loader and no sheet_ready: the view shows
+        # a placeholder at once.
+        resolve.state_filter.setCurrentText(FILTER_RESCAN)
+        assert resolve.current_case().scan_id == damaged
+        assert "The scan's record, its rejection" in resolve.original_note.text()
+        panel = resolve.rescan_panel
+        # Undo is not offered at all for a replaced sheet, and unlinking -
+        # the only road back - is disabled, with the reason in words.
+        assert not panel.undo_button.isVisibleTo(resolve)
+        assert panel.unlink_button.isVisibleTo(resolve)
+        assert not panel.unlink_button.isEnabled()
+        assert panel.unavailable_label.isVisibleTo(resolve)
+        note = panel.unavailable_label.text()
+        assert note.startswith("Original image is no longer available")
+        assert where in note and "cannot be undone" in note
+        assert panel.unlink_button.toolTip() == note
+        # The service refuses the same way, whatever calls it.
+        with pytest.raises(scan_lifecycle.LifecycleError):
+            scan_lifecycle.undo_reject(database, damaged, reviewer=REVIEWER)
+        # The replacement is untouched.
+        assert scan_lifecycle.state_of(database, rescan) is LifecycleState.ACTIVE
+        case = scan_lifecycle.get_case(database, damaged)
+        assert case is not None and case.replacement_scan_id == rescan
+
+    def test_no_note_while_the_image_is_present(self, qtbot, resolve: ResolvePage):
+        select_first_conflict(qtbot, resolve)
+        resolve.reject_current_sheet(RejectionReason.FOLDED)
+        open_rescan_view(qtbot, resolve)
+        assert not resolve.rescan_panel.unavailable_label.isVisibleTo(resolve)
+        assert resolve.rescan_panel.undo_button.isEnabled()
+
+
+class TestAllProcessedSheets:
+    """Rejecting a sheet that raised no conflict, from the inspection view."""
+
+    def open_sheets(self, qtbot, page: ResolvePage) -> None:
+        with qtbot.waitSignal(page.sheet_ready, timeout=TIMEOUT_MS):
+            page.show_processed_sheets()
+
+    def test_every_read_sheet_is_listed_including_clean_ones(self, qtbot, resolve):
+        self.open_sheets(qtbot, resolve)
+        names = [resolve.queue_table.item(row, 0).text() for row in range(3)]
+        assert sorted(names) == ["clean_a.png", "clean_b.png", "damaged.png"]
+        assert resolve.decision_stack.currentWidget() is resolve.sheet_panel
+        assert resolve.original_view.has_page  # the scan as it arrived
+        assert resolve.state.conflicts == []
+
+    def test_a_clean_sheet_shows_its_identity_and_can_be_rejected(
+        self, qtbot, resolve: ResolvePage, project_session, processed
+    ):
+        self.open_sheets(qtbot, resolve)
+        clean = scan_id_of(project_session, processed, "clean_a.png")
+        if resolve.current_sheet().scan_id != clean:
+            with qtbot.waitSignal(resolve.sheet_ready, timeout=TIMEOUT_MS):
+                assert resolve.select_sheet(clean)
+        panel = resolve.sheet_panel
+        assert "170504" in panel.details_label.text()
+        assert "No open conflict" in resolve.queue_table.item(
+            resolve.queue_table.currentRow(), 2
+        ).text()
+        assert panel.reject_button.isEnabled() and resolve.reject_button.isEnabled()
+        before = review_store.count_conflicts(project_session.database, processed)
+
+        with qtbot.waitSignal(resolve.lifecycle_changed, timeout=TIMEOUT_MS):
+            assert resolve.reject_current_sheet(
+                RejectionReason.WRONG_DOCUMENT, declared_candidate_id="170504"
+            )
+        assert scan_lifecycle.state_of(project_session.database, clean) is (
+            LifecycleState.REJECTED_PENDING_RESCAN
+        )
+        # Still selected, now saying so; and not rejectable twice.
+        assert resolve.current_sheet().scan_id == clean
+        assert "REJECTED — RESCAN REQUIRED" in resolve.lifecycle_banner.text()
+        assert not panel.reject_button.isEnabled()
+        assert not resolve.reject_button.isEnabled()
+        # The conflict counts are unchanged: a clean sheet had none.
+        after = review_store.count_conflicts(project_session.database, processed)
+        assert (after.total, after.unresolved) == (before.total, before.unresolved)
+        # And the case is in Rejected / Rescan like any other.
+        open_rescan_view(qtbot, resolve)
+        assert [case.scan_id for case in resolve.state.rescan_cases] == [clean]
+
+    def test_ctrl_navigation_does_not_walk_the_sheet_list(self, qtbot, resolve):
+        self.open_sheets(qtbot, resolve)
+        row = resolve.queue_table.currentRow()
+        assert resolve.select_next_unresolved() is False
+        assert resolve.select_previous_unresolved() is False
+        assert resolve.queue_table.currentRow() == row
+        assert "nothing in it is unresolved" in resolve.navigation_note.text()
+        # Back in the queue, Ctrl+Down means what it always meant.
+        resolve.state_filter.setCurrentText(FILTER_OPEN)
+        assert resolve.select_next_unresolved() is True
+        assert resolve.current_conflict().scan_name == "damaged.png"
+
+    def test_the_view_is_searched_in_sql_and_loads_one_image(
+        self, qtbot, resolve: ResolvePage, monkeypatch
+    ):
+        loaded: list[str] = []
+        original = ResolvePage._load_image
+
+        def spy(page: ResolvePage, path: Path) -> None:
+            loaded.append(path.name)
+            return original(page, path)
+
+        monkeypatch.setattr(ResolvePage, "_load_image", spy)
+        self.open_sheets(qtbot, resolve)
+        assert len(loaded) == 1  # the selected row only, not every sheet
+        seen: list[str] = []
+        real = scan_lifecycle.processed_sheets
+        monkeypatch.setattr(
+            scan_lifecycle, "processed_sheets",
+            lambda *args, **kw: seen.append(kw.get("search", "")) or real(*args, **kw),
+        )
+        resolve.search_box.setText("clean_b")
+        resolve.refresh_queue()
+        assert seen and seen[-1] == "clean_b"
+        assert resolve.queue_table.rowCount() == 1
+
+    def test_the_summary_is_not_inflated(self, qtbot, resolve: ResolvePage):
+        before = resolve.summary_label.text()
+        self.open_sheets(qtbot, resolve)
+        resolve.state_filter.setCurrentText(FILTER_OPEN)
+        assert resolve.summary_label.text() == before
+
+
+class TestCrossBatchRescan:
+    def test_a_rescan_read_in_a_later_batch_is_offered_and_confirmed(
+        self, qtbot, resolve: ResolvePage, project_session, processed,
+        template_path, write_sheet,
+    ):
+        database = project_session.database
+        damaged = scan_id_of(project_session, processed, "damaged.png")
+        select_first_conflict(qtbot, resolve)
+        resolve.reject_current_sheet(RejectionReason.FOLDED, declared_candidate_id="170503")
+
+        # Days later, on another scanner: a new batch, not an import into this one.
+        spec = next(item for item in WORKFLOW_PAGES if item.key == "scan")
+        later_page = ScanPage(spec)
+        qtbot.addWidget(later_page)
+        later_page.on_project_changed(project_session)
+        assert later_page.load_template_from(template_path) is True
+        later_page.add_scan_paths([write_sheet("SCN_000913.tif", "170503")])
+        with qtbot.waitSignal(later_page.batch_finished, timeout=TIMEOUT_MS):
+            assert later_page.process_all() is True
+        later = later_page.state.batch_id
+        assert later is not None and later != processed
+        rescan = scan_id_of(project_session, later, "SCN_000913.tif")
+
+        open_rescan_view(qtbot, resolve)
+        panel = resolve.rescan_panel
+        texts = [panel.candidates_list.item(i).text() for i in range(panel.candidates_list.count())]
+        assert len(texts) == 1
+        assert "SCN_000913.tif" in texts[0] and f"batch {later[:8]}" in texts[0]
+        # Offered, not linked.
+        assert scan_lifecycle.state_of(database, damaged) is LifecycleState.REJECTED_PENDING_RESCAN
+        assert panel.select_candidate(rescan)
+        with qtbot.waitSignal(resolve.lifecycle_changed, timeout=TIMEOUT_MS):
+            panel.use_button.click()
+        case = scan_lifecycle.get_case(database, damaged)
+        assert case is not None and case.replacement_batch_id == later
+        assert f"batch {later[:8]}" in panel.details_label.text()
+        with qtbot.waitSignal(resolve.sheet_ready, timeout=TIMEOUT_MS):
+            panel.compare_button.click()
+        assert "Showing the replacement" in resolve.lifecycle_banner.text()
+
+    def test_manual_association_searches_the_whole_project(
+        self, qtbot, resolve: ResolvePage, project_session, processed, monkeypatch
+    ):
+        select_first_conflict(qtbot, resolve)
+        resolve.reject_current_sheet(RejectionReason.FOLDED)
+        open_rescan_view(qtbot, resolve)
+        panel = resolve.rescan_panel
+        assert not panel.association_search.isVisibleTo(resolve)
+        seen: list[str] = []
+        real = scan_lifecycle.association_choices
+        monkeypatch.setattr(
+            scan_lifecycle, "association_choices",
+            lambda *args, **kw: seen.append(kw.get("search", "")) or real(*args, **kw),
+        )
+        panel.show_all_button.setChecked(True)
+        assert panel.association_search.isVisibleTo(resolve)
+        panel.association_search.setText("clean_b")
+        panel.association_search.editingFinished.emit()  # queried on Enter, not per key
+        assert seen[-1] == "clean_b"
+        texts = [panel.candidates_list.item(i).text() for i in range(panel.candidates_list.count())]
+        assert len(texts) == 1 and "clean_b.png" in texts[0]
 
 
 class TestTheWindow:

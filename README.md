@@ -243,7 +243,7 @@ synthetically tested" to a qualified stable release.
 | Resolve field-level entry & sheet-local progression | 🟠 **Implemented — automated tests passing; driven end to end in a rendered harness, not yet worked by a real operator.** A whole Student ID or Question Set typed once settles every position of it the sheet disputes; the queue is sheet-major and finishes a sheet before moving on. See below |
 | Attendance: reconciliation workstation | 🟠 **Implemented — automated tests passing; the 100-candidate acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Missing script and absent-but-script-found are investigated from the original scan; the complete Student ID or set code is corrected through the Resolve stage's own review ledger; suggestions of where to look; a compact layout usable at 1366×768; the Choose / Replace Attendance File defect fixed. See below |
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
-| Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. See below |
+| Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 
 #### Reject & Rescan
@@ -271,13 +271,15 @@ the scan on screen does not count. The case panel (two columns, so every
 control fits at 1366×768) lists what is recorded - file, Student ID, set,
 reason, who and when, replacement, image state - and offers *Import rescan…*,
 **Possible rescan: … · Student ID … · original …** candidates with *Use as
-replacement*, *Show every scan in this batch* for an unknown-identity case,
+replacement*, *Choose from all scans…* (project-wide, searched) for an unknown-identity case,
 *Undo Reject*, *Remove replacement link…* (asks first), *Show replacement /
 original* to compare, and *History…*. The summary under the queue counts
 *N rescan required* beside the conflicts.
 
 **Rescans.** *Import rescan…* reads the file into **the rejected sheet's own
-batch** through the Scan stage, like any scan. (A defect fixed on the way: a
+batch** through the Scan stage, like any scan; a rescan read in **any other
+batch of the project** - another day, another scanner - is found just the same
+(see *Follow-up hardening* below). (A defect fixed on the way: a
 file added to a batch that had already been registered was read but silently
 never stored - `batch_store.add_scans_to_batch` now registers it.) Candidates
 are suggested only by an **effective** Student ID that is fully read and equals
@@ -298,8 +300,8 @@ reported stale; duplicate-ID detection ignores ineligible scans; the review
 queue and counts hide them; the recognition CSV leaves them out. Undo Reject
 is refused while a replacement is linked - remove the link first, which
 returns the original to *awaiting rescan*, never to active; undoing then makes
-two active scans with one ID, which the ordinary duplicate detection and
-scoring refuse to resolve silently. An exact re-import of a rejected scan's
+two active scans with one ID, which the ordinary duplicate detection raises
+again on both sheets and scoring refuses to resolve silently. An exact re-import of a rejected scan's
 bytes (content hash) is linked back to it as a re-import: never counted, never
 offered as a rescan, never able to resurrect it. Every transition is an
 append-only audit event (`entity_type='scan_lifecycle'`).
@@ -369,17 +371,84 @@ navigation note carried into the view; a rejected script's declared identity
 also read as a correction on Attendance and now reads *(rejected; case …)*.
 **Not yet worked by an operator, and not on real damaged sheets.**
 
-**Known limits.** A rescan must be read into the same batch as the rejected
-sheet (reconciliation and scoring are per batch); linking across batches is
-refused with that message. Reject is offered for a sheet that has a Resolve
-record; a scan read cleanly with no conflict can be rejected through the
-service but has no Resolve row to act from yet. A duplicate-ID record that was
-*withdrawn* when its partner was rejected is not re-opened by *Undo Reject*
-(detection never re-opens a withdrawn conflict); the rejected scan's own
-record, and reconciliation's *Duplicate scripts*, do come back. A
-quarantined image can be restored only by hand, and an original whose image
-was quarantined or purged cannot be un-rejected. The Resolve stage's dividers
-are still not remembered.
+**Follow-up hardening.** Three limits of the first version are removed. No
+schema change was needed (still schema 11): the replacement link was always
+scan-to-scan.
+
+* **A rescan from another batch.** Suggestions are drawn from the whole project
+  by effective Student ID, with set code as supporting evidence; file name,
+  folder, scanner and batch are never evidence. A candidate from another batch
+  says so - *… · batch 1a2b3c4d (2026-09-28)* - and the confirmed case reads
+  *SCN_… (read in batch 1a2b3c4d)*. *Choose from all scans…* searches the whole
+  project in SQL (file name or Student ID as read, on Enter, capped at 200). All
+  refusals stand: the rescan must be active, not the original, not already a
+  replacement, not an exact re-import of rejected bytes (in any batch), and in
+  this project. Reconciliation, scoring and reports stay per batch: a confirmed
+  cross-batch replacement **stands in for its original in the original's
+  batch**, and in its own batch is placed *counted elsewhere* - so it is
+  counted exactly once. Each audit event is recorded under its own scan's batch.
+* **Rejecting a sheet with no conflict.** Resolve's status filter has an
+  **All processed sheets** view: every read sheet of the batch, one SQL page at
+  a time, searchable, loading only the selected sheet's image. The sheet panel
+  shows the file, its effective Student ID and set, and its lifecycle state,
+  with the same *Reject / Rescan…* action and dialog. The view counts nothing
+  as unresolved and Ctrl+Up / Ctrl+Down do not walk it (a note says so).
+* **Duplicates after Undo Reject or unlinking.** Every lifecycle change ends in
+  the canonical duplicate pass for each batch concerned. A duplicate-ID record
+  the machine had *withdrawn* because its partner stopped counting is
+  re-opened by a new machine event, *Detected again*, when both sheets count
+  once more; a record a person had decided is never re-opened by the machine.
+  Resolve, Attendance (*Duplicate scripts*) and scoring (*blocked*) agree, and
+  running the pass again changes nothing.
+
+**Which batch a replacement belongs to.** Physically, a rescan belongs to
+the batch it was read in: its recognition result, its review records and any
+correction made to it are stored there - including a correction made from the
+original's Attendance, whose inspector files it under the rescan's own batch.
+Academically it belongs to its original's batch: that is where it is
+reconciled, scored and exported. No report combines batches, so a student
+has one mark - from the replacement, in the original's batch - and the
+replacement's own batch never scores it.
+
+**An original whose image is gone.** Once *Purge Rejects* has quarantined or
+deleted a superseded original, *Undo Reject* is not offered, *Remove
+replacement link…* is disabled, and the case panel says why: *Original image
+is no longer available (…); the rejection cannot be undone and the
+replacement link is kept.* The service refuses both actions with the same
+sentence whatever calls it, and the replacement is untouched.
+
+Tests: 43 new - 31 service-level (14 cross-batch, 3 exactly-once counting
+and export, 3 processed-sheet, 8 duplicate-reconstruction, 3 image-gone Undo
+safety), 11 GUI (5 on the new view, 2 cross-batch, 3 on the image-gone case
+panel, 1 correcting a cross-batch replacement from Attendance and reopening),
+and the three-set scenario extended with Batch A → reject → reopen → Batch B
+rescan → offered → confirmed → counted once → results, audit, purge → unlink
+→ Undo → reopen. Two existing tests were updated for intended changes (the
+same-batch refusal test now checks an unread scan of another batch is still
+refused; the placement enumeration lists *counted elsewhere*). **Full suite:
+5,617 passed, 15 skipped, 0 failed** (local run of 2026-09-29, 31 min 37 s; 4
+`stress` tests deselected by default; the same 15 skips as before). `ruff` and
+`mypy` clean.
+
+Scripted in the real window at 1366×768, screenshots inspected: a clean sheet
+rejected from *All processed sheets* (conflict counts unchanged, Ctrl+Down
+declined with its note); a duplicate pair withdrawn by rejecting one sheet and
+both re-opened by Undo Reject, agreeing on Attendance and in scoring; a rescan
+read in a fresh window as a new batch, offered with its batch, confirmed,
+counted and scored only in the original's batch, and still linked after
+reopening. The screenshots found one defect, fixed: the candidate line was cut
+off before its batch at 1366 px (it now wraps). A second scripted run: a
+rescan with two blank roll positions, read as a new batch, linked by hand
+through *Choose from all scans…*, then corrected to its student's ID from the
+original batch's Attendance inspector - the correction was stored in the
+rescan's batch only, the candidate became *Matched* by the rescan, and both
+held after reopening; after a quarantine the case panel offered no Undo,
+disabled the unlink, and gave the reason.
+
+**Known limits.** A quarantined image can be restored only by hand, and an
+original whose image was quarantined or purged cannot be un-rejected. The
+Resolve stage's dividers are still not remembered. Not yet worked by an
+operator on real damaged sheets.
 
 #### Attendance as a reconciliation workstation
 

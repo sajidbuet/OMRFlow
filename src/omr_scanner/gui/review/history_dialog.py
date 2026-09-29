@@ -47,6 +47,7 @@ _ACTION_HEADINGS: dict[ReviewAction, str] = {
     ReviewAction.REOPENED: "Reopened",
     ReviewAction.UNDONE: "Undone",
     ReviewAction.WITHDRAWN: "Withdrawn by the machine",
+    ReviewAction.REDETECTED: "Detected again by the machine",
 }
 
 
