@@ -360,6 +360,10 @@ class MainWindow(QMainWindow):
                 scan_page = ScanPage(spec)
                 scan_page.review_requested.connect(self.review_batch)
                 scan_page.batch_finished.connect(self._on_batch_finished)
+                # The scoring stages read with the Scan stage's template. Without
+                # this the project's template reached Scan and nothing else, and
+                # the Answer Key stage asked for a template it had been given.
+                scan_page.template_changed.connect(self.broadcast_template)
                 scan_page.processing_changed.connect(self._on_processing_changed)
                 page = scan_page
             elif spec.key == "resolve":
@@ -376,6 +380,9 @@ class MainWindow(QMainWindow):
                 attendance_page.split_ratio_changed.connect(
                     self._on_attendance_split_changed
                 )
+                # A candidate list imported or re-reconciled here is what the
+                # Results stage scores; it re-reads its lists when told.
+                attendance_page.reconciled.connect(self._on_attendance_reconciled)
                 attendance_page.set_split_ratio(self._config.attendance_split_ratio)
                 page = attendance_page
             elif spec.key == "answer_key":
@@ -1149,6 +1156,12 @@ class MainWindow(QMainWindow):
 
         dialog.purge_requested.connect(run)
         dialog.exec()
+
+    def _on_attendance_reconciled(self) -> None:
+        """Let the Results stage see a candidate list reconciled on Attendance."""
+        results = self._results_page()
+        if results is not None:
+            results.refresh_table()
 
     def _on_answer_key_changed(self, _key_id: int) -> None:
         """Tell the Results and Reports stages that this project's keys have moved on.

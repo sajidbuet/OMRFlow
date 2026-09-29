@@ -247,6 +247,10 @@ class ScanPage(WorkflowPage):
             navigation, so this page asks rather than reaching into another
             stage.
         scan_selected: ``int`` row index whenever the shown scan changes.
+        template_changed: the loaded ``OmrTemplate``, or ``None`` when it is
+            dropped. The Answer Key, Attendance, Results and Reports stages
+            need the same template this stage reads with, and the main window
+            relays it to them from here.
         benchmark_finished: ``BenchmarkReport`` when a run in benchmark mode has
             been scored. Emitted before the results dialog opens, so a test can
             read the numbers without a dialog on screen.
@@ -258,6 +262,7 @@ class ScanPage(WorkflowPage):
 
     batch_finished = Signal(object)
     scan_selected = Signal(int)
+    template_changed = Signal(object)
     benchmark_finished = Signal(object)
     review_requested = Signal(str)
 
@@ -877,8 +882,11 @@ class ScanPage(WorkflowPage):
 
     def _clear_template(self) -> None:
         """Forget the loaded template, because the open project does not name it."""
+        had_template = self.state.template is not None
         self.state.template = None
         self.state.template_path = None
+        if had_template:
+            self.template_changed.emit(None)
 
     # ------------------------------------------------------------------
     # Durable batches (Phase 5)
@@ -1125,6 +1133,7 @@ class ScanPage(WorkflowPage):
         )
         _LOGGER.info("Scan page loaded template '%s' from %s", template.name, path)
         self._refresh_controls()
+        self.template_changed.emit(template)
         return True
 
     def _default_template_dir(self) -> Path:

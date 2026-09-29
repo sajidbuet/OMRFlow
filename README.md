@@ -220,7 +220,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | 5,574 tests passing in the full local run of 2026-09-28 after Reject & Rescan (15 skipped - 10 of them local real-scan fixtures absent on the machine; 4 `stress` tests deselected by default); `ruff` and `mypy` clean |
+| Automated suite | Last full local runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). The merged tree has not yet had a full run. 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -245,6 +245,108 @@ synthetically tested" to a qualified stable release.
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
 | Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
+| Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
+
+#### Answer keys, solution sheets and key-relative candidate performance
+
+A synthetic examination can now test **scoring** end to end, not only
+recognition.
+
+**One key per set, stated three ways.** The generator draws one canonical key
+per set from its own seeded stream and derives everything else from that one
+object:
+
+```text
+dataset/
+└── solution/
+    ├── Set_10_Solution.png      a clean solution OMR sheet: same template, markers,
+    ├── Set_10_Answer_Key.txt    bubbles, renderer and colour mode as the candidates
+    ├── Set_10_Solution.json     its ground truth (role = "solution")
+    ├── Set_11_…                 … one of each per set
+    └── Set_12_…
+```
+
+The `.txt` file is **OMRFlow's existing answer-key text format** — the answer
+string the Answer Key stage's *Answers* field reads through
+`services.answer_key.read_key` (one option label per question, in question
+order) — on one line, UTF-8, `\n`. It can be pasted into the stage unchanged,
+and the solution sheet can be read with **Read From Solution Sheet…**. The
+manifest records the same key (`generator.answer_keys`, `generator.solutions`).
+Solution sheets are clean — no degradation, no folds — and leave the Student ID
+blank, so a solution sheet scanned into a batch by mistake can never match a
+candidate.
+
+**Candidates answer their own set's key.** Each candidate's target share of
+correct answers is drawn from a truncated normal distribution (inverse-CDF
+sampling, standard library only), exactly that many questions — chosen
+uniformly over the whole paper — take the key's answer, and the rest take a
+uniformly chosen *other* option. The case plan's deliberate test conditions
+(blanks, double marks, faint, erased and offset marks, mark styles, the
+intensity sweep) are laid over that intended response unchanged, and the
+intended answers are recorded per sheet (`metadata.performance`) so scoring and
+recognition can be tested separately. **Fully random (legacy)** restores the
+old key-independent answers exactly.
+
+**Settings.** *Tools → Developer / Testing → Generate Synthetic Test Dataset… →
+Answer keys and candidate performance* (folded by default); on the command line
+`--no-solutions`, `--performance-distribution normal|random`, `--mean-correct`,
+`--sd-correct`, `--min-correct`, `--max-correct`; programmatically
+`generate_dataset(generate_solutions=…, performance=PerformancePolicy(…))`. One
+default everywhere: solutions on, normal, mean 65 %, SD 15 %, 0–100 %.
+
+**Isolation.** The keys (`"{seed}:answer-key:{set}"`) and the performance model
+(`"{seed}:performance"`) use their own seeded streams, so switching solutions
+off leaves every candidate image and ground-truth file byte-identical, and
+changing the performance settings moves answers and nothing else. The generator
+version is now **2.3**.
+
+**Verified.** On a 3-set, 100-question, 500-candidate dataset (469 scripts):
+OMRFlow's scorer gives every candidate exactly its target number of correct
+answers (469/469); observed mean 64.4 %, SD 15.3 %, median 65 %, range
+16–100 %, against a truncated-normal expectation of 64.6 % / 14.5 %; every
+solution sheet read back by the recognition engine as its set code and its key.
+Details and limitations: [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md#answer-keys-and-solution-sheets).
+
+**Through the Answer Key and Results stages (2026-09-29).** A generated
+examination — 3 sets (`10`, `11`, `12`, marked on a two-digit set field), 24
+questions, 45 candidates, seed 20260930 — was taken through the real
+application window: project created, template and sets defined, the images
+read on **Scan**, each set's generated workbook imported on **Attendance**,
+Set 10's key **pasted from its `.txt`**, Sets 11 and 12 read with **Read From
+Solution Sheet…**, all three verified, then **Calculate Results**. No file was
+edited. All three verified keys equal the manifest and the `.txt`; Results
+scored 45/45 (15 per set, none blocked) and each candidate's mark came from
+their own set's key; the correct-answer count shown equals the ground truth's
+for 44 of 45 — the exception is the deliberate *undersized mark*, which the
+engine declined to read as a single answer and marked as a multiple, per the
+scoring rules. Keys and results survived closing and reopening the project.
+The stages were driven through the window's own methods, offscreen, with the
+same files an operator would choose — not clicked through by a person.
+
+That pass found and fixed five defects in the operator path:
+
+- **The project's template never reached the Answer Key, Attendance, Results
+  or Reports stages** — only Scan — so no key could be entered in the running
+  application. The Scan stage now announces its template and the window
+  relays it.
+- **Results could not score a project with per-set attendance.** It read only
+  the project-wide candidate list, which such a project does not have; it now
+  scores every defined set's list (and a pre-sets project's single list, as
+  before).
+- **Results learned its candidate list only when the project opened**, so a
+  list imported during the session was invisible until reopening.
+- **Reading one set's solution sheet with another set selected said nothing**,
+  and saving filed the key under the wrong set. It now warns, naming both.
+- **The key editor kept the previous project's key** across a project change,
+  one click from being saved into the new project.
+
+**Pending.** A person working the same path by hand on a real screen, and on
+real scans. Degrading solution sheets on request is not implemented — they are
+always clean. A logical set code the template's set-code field cannot spell
+(`10` on an `A`–`D` field) is left blank on the solution sheet and the
+candidates' sheets: nothing crashes, the operator must choose the set, and such
+candidates are held as *No question-paper set was read* rather than marked
+against another set's key. No logical-to-physical set mapping exists.
 
 #### Reject & Rescan
 

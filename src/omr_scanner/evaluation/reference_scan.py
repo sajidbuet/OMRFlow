@@ -66,6 +66,11 @@ import cv2
 import numpy as np
 
 from omr_scanner.errors import ImagingError, OMRScannerError
+from omr_scanner.evaluation.write_in import (
+    WriteInPreparation,
+    prepare_reference_write_in,
+    write_in_rows,
+)
 from omr_scanner.imaging.alignment import align_sheet
 from omr_scanner.imaging.models import warnings_as_strings
 from omr_scanner.imaging.synthetic import ColorMode, capture_channels, composite_marks
@@ -166,6 +171,10 @@ class ReferenceScan:
         mark_layer_scale: Integer supersampling factor for the mark layer; see
             :data:`MAX_MARK_LAYER_SCALE` and the module docstring.
         registration: How well it registered.
+        write_in: The write-in boxes located on this scan, and what was
+            erased from them; ``None`` when the template has none, or when
+            preparing them was turned off. When present, :attr:`image` is the
+            scan with those boxes emptied.
     """
 
     name: str
@@ -175,6 +184,7 @@ class ReferenceScan:
     canonical_height: int
     mark_layer_scale: int
     registration: ReferenceRegistration
+    write_in: WriteInPreparation | None = None
 
     @property
     def width(self) -> int:
@@ -217,6 +227,7 @@ class ReferenceScan:
             "canonical_page": [self.canonical_width, self.canonical_height],
             "mark_layer_scale": self.mark_layer_scale,
             "registration": self.registration.describe(),
+            "write_in": self.write_in.describe() if self.write_in is not None else None,
         }
 
 
@@ -226,8 +237,17 @@ def load_reference_scan(
     *,
     color_mode: ColorMode = ColorMode.GRAYSCALE,
     max_mark_layer_scale: int = MAX_MARK_LAYER_SCALE,
+    prepare_write_in: bool = True,
 ) -> ReferenceScan:
     """Decode a blank scan and register it against the template.
+
+    Also locates the write-in boxes above the identifier and set-code fields
+    and erases any handwriting already in them
+    (:func:`~omr_scanner.evaluation.write_in.prepare_reference_write_in`). A
+    "blank" reference is often a used script, and the number somebody once
+    wrote on it would otherwise sit under - and contradict - every identifier
+    this run writes. Done here, once, because the reference is shared by every
+    sheet of the run.
 
     Args:
         path: The blank, unmarked scan of the printed form.
@@ -240,6 +260,9 @@ def load_reference_scan(
             black-and-white dataset is captured in grey and quantised at the
             very end (see :class:`~omr_scanner.imaging.synthetic.ColorMode`).
         max_mark_layer_scale: Ceiling on the mark layer's supersampling.
+        prepare_write_in: Locate and empty the write-in boxes. ``False`` keeps
+            the scan exactly as decoded, and sheets written onto it fall back
+            to write-in boxes derived from the template alone.
 
     Returns:
         The registered reference, ready to be reused for every sheet.
@@ -316,14 +339,27 @@ def load_reference_scan(
         ", ".join(registration.warnings) or "none",
     )
 
+    canonical_to_scan = np.asarray(result.inverse_transform_matrix, dtype=np.float64)
+    preparation: WriteInPreparation | None = None
+    rows = write_in_rows(template) if prepare_write_in else ()
+    if rows:
+        image, preparation = prepare_reference_write_in(
+            image,
+            canonical_to_scan,
+            rows,
+            canonical_width=config.canonical_width,
+            canonical_height=config.canonical_height,
+        )
+
     return ReferenceScan(
         name=path.name,
         image=image,
-        canonical_to_scan=result.inverse_transform_matrix,
+        canonical_to_scan=canonical_to_scan,
         canonical_width=config.canonical_width,
         canonical_height=config.canonical_height,
         mark_layer_scale=scale,
         registration=registration,
+        write_in=preparation,
     )
 
 

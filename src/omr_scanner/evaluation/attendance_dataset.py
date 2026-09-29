@@ -399,6 +399,11 @@ class Population:
             grouped.setdefault(candidate.set_code, []).append(candidate)
         return grouped
 
+    @property
+    def set_codes(self) -> tuple[str, ...]:
+        """Every set the roster uses, in the order candidates were assigned to them."""
+        return tuple(dict.fromkeys(candidate.set_code for candidate in self.candidates))
+
     def sheets_to_render(self) -> tuple[SyntheticCandidate, ...]:
         """Every script the image generator should draw, in order."""
         return tuple(
@@ -965,9 +970,17 @@ def bind_case(
         ambiguous = False
 
     set_code = candidate.observed_set or ""
-    set_marks: tuple[tuple[str, ...], ...] = (
-        () if candidate.observed_set is None else tuple((ch,) for ch in set_code)
-    )
+    set_marks: tuple[tuple[str, ...], ...]
+    if candidate.observed_set is None:
+        set_marks = ()
+    elif layout.set_columns == 1 and set_code in layout.set_symbols:
+        # A single printed position whose bubbles carry whole codes - "10",
+        # "X1" - is one mark, not one mark per character. The same rule
+        # `SheetBuilder.set_code` applies, so a candidate's script and the
+        # solution sheet for the same set are marked identically.
+        set_marks = ((set_code,),)
+    else:
+        set_marks = tuple((ch,) for ch in set_code)
 
     # The marks that are actually drawn. Rebuilt from the same tuples the
     # ground truth records, so the image and the truth cannot drift apart.
@@ -983,6 +996,7 @@ def bind_case(
         case,
         marks=rendered,
         roll=roll,
+        intended_roll=written_roll(candidate),
         roll_marks=marks,
         roll_ambiguous=ambiguous,
         set_code=set_code,
@@ -998,6 +1012,25 @@ def bind_case(
         ),
         notes=f"{candidate.candidate_uid} {conflict.value}",
     )
+
+
+def written_roll(candidate: SyntheticCandidate) -> str:
+    """The identifier this script's candidate wrote in the write-in boxes.
+
+    Their registered roll, whatever the bubbles say - a blank, partial,
+    double-marked or wrongly bubbled identifier is a bubbling mistake by
+    someone who knows their own number, and the written number is exactly what
+    an operator uses to resolve it. Both scripts of a duplicate pair carry it
+    too, as the same candidate wrote both.
+
+    The one exception is :attr:`ConflictKind.UNKNOWN_CANDIDATE_ID`: a script
+    from another hall, whose writer's number is the unknown one it carries.
+    Writing a roster number on it would invent a match the case exists to
+    prevent.
+    """
+    if candidate.conflict is ConflictKind.UNKNOWN_CANDIDATE_ID:
+        return candidate.observed_roll or ""
+    return candidate.roll
 
 
 def _column_plans(
@@ -1077,6 +1110,7 @@ __all__ = [
     "summarise",
     "write_ground_truth",
     "write_workbooks",
+    "written_roll",
 ]
 
 

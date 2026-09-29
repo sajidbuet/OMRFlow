@@ -73,6 +73,11 @@ from omr_scanner.evaluation.attendance_dataset import (
     plan_population,
 )
 from omr_scanner.evaluation.fold_plans import NO_FOLDS
+from omr_scanner.evaluation.performance import (
+    DEFAULT_PERFORMANCE,
+    PerformanceDistribution,
+    PerformancePolicy,
+)
 from omr_scanner.evaluation.synthetic_dataset import (
     DEFAULT_DPI,
     DEFAULT_JPEG_QUALITY,
@@ -185,6 +190,12 @@ DEFAULT_MAX_FOLDS_PER_SHEET = 1
 """Defaults for the fold controls. One corner per affected sheet because more
 than one is genuinely uncommon on real paper."""
 
+DISTRIBUTION_LABELS: dict[PerformanceDistribution, str] = {
+    PerformanceDistribution.NORMAL: "Normal (Gaussian)",
+    PerformanceDistribution.RANDOM: "Fully random (legacy)",
+}
+"""How each candidate-performance model is named to an operator."""
+
 PROFILE_DESCRIPTIONS: dict[DatasetProfile, str] = {
     DatasetProfile.BASELINE: "Clean, valid sheets only. Anything failing here is a defect.",
     DatasetProfile.RECOGNITION: (
@@ -241,6 +252,11 @@ class GenerationRequest:
             :attr:`conflict_profile` is ``CUSTOM``.
         include_reconciliation_edge_cases: Guarantee one of every conflict,
             whatever the rates work out to at this roster size.
+        generate_solutions: Also write ``solution/`` - one clean solution
+            sheet and answer-key text file per set. On here and in the dialog
+            alike, because it only adds files and changes no candidate's sheet.
+        performance: How many questions each candidate answers correctly
+            against their set's key. The same default as the generator's own.
     """
 
     template_path: Path
@@ -276,6 +292,8 @@ class GenerationRequest:
     conflict_profile: ConflictProfile = ConflictProfile.NORMAL
     conflict_rates: ConflictRates | None = None
     include_reconciliation_edge_cases: bool = True
+    generate_solutions: bool = True
+    performance: PerformancePolicy = DEFAULT_PERFORMANCE
 
     def population(self) -> Population | None:
         """The candidate roster this request implies, or ``None``.
@@ -357,6 +375,13 @@ class GenerateDatasetDialog(QDialog):
             self._build_attendance_box(),
             expanded=True,
         )
+        # Folded like the two below it: the defaults are what almost every run
+        # wants, and the summary beside the title says what they are.
+        self.answer_key_section = self._section(
+            "Answer keys and candidate performance",
+            self._build_answer_key_box(),
+            expanded=False,
+        )
         # Folded by default, both of them: the format, quality and resolution
         # are the settings a developer changes least often, and physical
         # deformation is off unless somebody has come looking for it. Folding
@@ -432,6 +457,7 @@ class GenerateDatasetDialog(QDialog):
             self.source_section,
             self.content_section,
             self.attendance_section,
+            self.answer_key_section,
             self.deformation_section,
             self.output_section,
         )
@@ -554,6 +580,56 @@ class GenerateDatasetDialog(QDialog):
         self.attendance_summary.setObjectName("datasetAttendanceSummary")
         self.attendance_summary.setWordWrap(True)
         form.addRow("", self.attendance_summary)
+        return box
+
+    def _build_answer_key_box(self) -> QGroupBox:
+        """The key each set is marked against, and how well candidates do on it.
+
+        Four rows. The solution sheets are on by default; the performance model
+        decides how many questions each candidate answers correctly against the
+        key of the paper they sat, from a truncated normal distribution.
+        """
+        box = QGroupBox("Answer keys and candidate performance")
+        form = QFormLayout(box)
+
+        self.solutions_checkbox = QCheckBox("Generate solution sheets and answer keys")
+        self.solutions_checkbox.setObjectName("datasetSolutionsCheckBox")
+        self.solutions_checkbox.setChecked(True)
+        self.solutions_checkbox.setToolTip(
+            "Writes solution/ with one clean solution OMR sheet and one answer-key "
+            "text file per set, both from the same key. The text file can be "
+            "pasted into the Answer Key stage; the sheet can be read with Read "
+            "From Solution Sheet. The keys are drawn either way."
+        )
+        form.addRow("", self.solutions_checkbox)
+
+        self.distribution_combo = QComboBox()
+        self.distribution_combo.setObjectName("datasetPerformanceDistributionCombo")
+        for distribution in PerformanceDistribution:
+            self.distribution_combo.addItem(DISTRIBUTION_LABELS[distribution], distribution)
+        self.distribution_combo.setCurrentIndex(
+            self.distribution_combo.findData(DEFAULT_PERFORMANCE.distribution)
+        )
+        self.distribution_combo.setToolTip(
+            "Normal: each candidate's share of correct answers is drawn from a "
+            "truncated normal distribution, and exactly that many answers match "
+            "their set's key. Fully random: answers are chosen independently of "
+            "any key, as before keys existed."
+        )
+        self.distribution_combo.currentIndexChanged.connect(self._on_distribution_changed)
+        form.addRow("Distribution:", self.distribution_combo)
+
+        self.mean_spin = _percent_spin("datasetMeanCorrectSpin", DEFAULT_PERFORMANCE.mean)
+        self.mean_spin.setToolTip("Mean share of questions answered correctly.")
+        self.sd_spin = _percent_spin("datasetSdCorrectSpin", DEFAULT_PERFORMANCE.stddev)
+        self.sd_spin.setToolTip("Standard deviation of that share, before truncation.")
+        form.addRow("Mean correct:", _paired(self.mean_spin, "SD:", self.sd_spin))
+
+        self.min_spin = _percent_spin("datasetMinCorrectSpin", DEFAULT_PERFORMANCE.minimum)
+        self.min_spin.setToolTip("No candidate scores below this.")
+        self.max_spin = _percent_spin("datasetMaxCorrectSpin", DEFAULT_PERFORMANCE.maximum)
+        self.max_spin.setToolTip("No candidate scores above this.")
+        form.addRow("Minimum:", _paired(self.min_spin, "Maximum:", self.max_spin))
         return box
 
     def _build_deformation_box(self) -> QGroupBox:
@@ -924,6 +1000,23 @@ class GenerateDatasetDialog(QDialog):
             widget.setEnabled(enabled)
         self._refresh_summaries()
 
+    def performance_policy(self) -> PerformancePolicy:
+        """The candidate-performance settings, as fractions. Not validated here."""
+        return PerformancePolicy(
+            distribution=PerformanceDistribution(self.distribution_combo.currentData()),
+            mean=self.mean_spin.value() / 100.0,
+            stddev=self.sd_spin.value() / 100.0,
+            minimum=self.min_spin.value() / 100.0,
+            maximum=self.max_spin.value() / 100.0,
+        )
+
+    def _on_distribution_changed(self) -> None:
+        """The four figures mean nothing to the legacy model; disable them to say so."""
+        active = self.performance_policy().active
+        for spin in (self.mean_spin, self.sd_spin, self.min_spin, self.max_spin):
+            spin.setEnabled(active)
+        self._refresh_summaries()
+
     def _on_render_mode_changed(self) -> None:
         """Offer the reference scan only when it is used, and say what changes.
 
@@ -1013,6 +1106,16 @@ class GenerateDatasetDialog(QDialog):
                 f"{self.selected_conflict_profile().value} conflicts"
             )
         )
+        solutions = (
+            "solution sheets" if self.solutions_checkbox.isChecked() else "no solution sheets"
+        )
+        performance = (
+            f"mean {self.mean_spin.value():.0f}% +/- {self.sd_spin.value():.0f}% "
+            f"({self.min_spin.value():.0f}-{self.max_spin.value():.0f}%)"
+            if self.performance_policy().active
+            else "fully random answers"
+        )
+        self.answer_key_section.set_summary(f"{solutions} - {performance}")
         quality = (
             f" {self.quality_spin.value()}%"
             if self.selected_format() is ImageFormat.JPEG
@@ -1055,6 +1158,9 @@ class GenerateDatasetDialog(QDialog):
         self.color_combo.currentIndexChanged.connect(self._refresh_summaries)
         self.absentee_spin.valueChanged.connect(self._refresh_summaries)
         self.attendance_checkbox.toggled.connect(self._refresh_summaries)
+        self.solutions_checkbox.toggled.connect(self._refresh_summaries)
+        for spin in (self.mean_spin, self.sd_spin, self.min_spin, self.max_spin):
+            spin.valueChanged.connect(self._refresh_summaries)
 
     def _on_focus_changed(self, _old: QWidget | None, new: QWidget | None) -> None:
         """Scroll a newly focused control into view.
@@ -1258,6 +1364,8 @@ class GenerateDatasetDialog(QDialog):
             conflict_profile=ConflictProfile.CUSTOM,
             conflict_rates=rates,
             include_reconciliation_edge_cases=self.edge_case_checkbox.isChecked(),
+            generate_solutions=self.solutions_checkbox.isChecked(),
+            performance=self.performance_policy(),
         )
 
     def _on_accept(self) -> None:
@@ -1302,6 +1410,13 @@ class GenerateDatasetDialog(QDialog):
             return
         if not self.output_edit.text().strip():
             self._complain("Choose a folder for the dataset.", self.output_edit)
+            return
+        try:
+            self.performance_policy().validate()
+        except ValueError as exc:
+            self._complain(
+                f"{exc}. Adjust the candidate performance settings.", self.mean_spin
+            )
             return
         if self.selected_profile() is DatasetProfile.CUSTOM and not self.selected_families():
             self._complain(
@@ -1352,6 +1467,17 @@ def _with_button(widget: QWidget, button: QPushButton) -> QWidget:
     return container
 
 
+def _percent_spin(name: str, fraction: float) -> QDoubleSpinBox:
+    """A 0-100 % field for one candidate-performance figure."""
+    spin = QDoubleSpinBox()
+    spin.setObjectName(name)
+    spin.setRange(0.0, 100.0)
+    spin.setDecimals(1)
+    spin.setSuffix(" %")
+    spin.setValue(fraction * 100.0)
+    return spin
+
+
 def _paired(first: QWidget, label: str, second: QWidget) -> QWidget:
     """Put a second labelled field beside the first, on one form row.
 
@@ -1380,6 +1506,7 @@ def _paired(first: QWidget, label: str, second: QWidget) -> QWidget:
 __all__ = [
     "COLOR_MODE_LABELS",
     "CORNER_LABELS",
+    "DISTRIBUTION_LABELS",
     "PROFILE_DESCRIPTIONS",
     "RANDOM_SEVERITY",
     "RENDER_MODE_DESCRIPTIONS",

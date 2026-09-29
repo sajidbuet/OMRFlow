@@ -13,6 +13,17 @@ On the **Answer Key** stage:
   using the same recognition path as a candidate's sheet.
 - **Save As New Revision.**
 
+The **Answers** field takes one option label per question, in question order —
+`BDBDBADACB…` — and ignores spaces, tabs, line breaks, `,`, `;` and `|`, so a
+key copied from a spreadsheet or an email pastes as it is. Any other character
+is reported with its question number, never dropped.
+
+Synthetic datasets (**Tools → Developer / Testing → Generate Synthetic Test
+Dataset…**) write every set's key in exactly this form, as
+`solution/Set_<code>_Answer_Key.txt`, beside a filled solution sheet
+`solution/Set_<code>_Solution.png` that **Read From Solution Sheet…** reads
+back as the same key. See `docs/testing/SYNTHETIC_DATA.md`.
+
 ## Revisions
 
 Keys are versioned. Saving creates a new revision rather than overwriting the

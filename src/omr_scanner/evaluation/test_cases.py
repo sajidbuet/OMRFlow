@@ -257,6 +257,13 @@ class MarkPlan:
             correct behaviour, and the benchmark scores it that way.
         residue: The mark is erasure residue: too light to be an answer, and
             the expected reading of the group is *blank*.
+        free: Which option is marked was left to chance -
+            :meth:`SheetBuilder.answer_all` filled the question in, and no case
+            asked for this particular option. The candidate-performance model
+            (:mod:`omr_scanner.evaluation.performance`) may therefore choose the
+            option against the answer key; a plan a case stated explicitly - a
+            blank, a double mark, the first option on the first question - is
+            never ``free`` and is never changed.
     """
 
     labels: tuple[str, ...] = ()
@@ -268,6 +275,7 @@ class MarkPlan:
     size_scale: float = 1.0
     ambiguous: bool = False
     residue: bool = False
+    free: bool = False
 
     @property
     def effective_labels(self) -> tuple[str, ...]:
@@ -283,6 +291,45 @@ class MarkPlan:
     def value(self) -> str:
         """The ground-truth value this plan produces (``""``, ``"B"``, ``"B-D"``)."""
         return MULTIPLE_MARK_SEPARATOR.join(self.effective_labels)
+
+
+@dataclass(frozen=True, slots=True)
+class IntendedResponse:
+    """What a candidate meant to answer, before any test condition was applied.
+
+    The performance model decides this against the answer key of the
+    candidate's own set; a case's explicit marks - a blank, a double mark, a
+    faint pencil - are then laid over it. Recording it separately is what lets
+    a test check *scoring* (intended answers against the key) apart from
+    *recognition* (the rendered state against the engine).
+
+    Attributes:
+        answer_key_set: The set whose key the candidate answered against - the
+            paper they sat, which is not always the set code marked on the sheet.
+        target_fraction: The sampled share of questions answered correctly.
+        target_correct: ``round(target_fraction * scored_questions)``, clamped.
+        scored_questions: How many questions the key covers.
+        answers: The intended option per question, template spelling. Exactly
+            ``target_correct`` of them equal the key.
+    """
+
+    answer_key_set: str
+    target_fraction: float
+    target_correct: int
+    scored_questions: int
+    answers: dict[int, str]
+
+    def describe(self) -> dict[str, Any]:
+        """As ground-truth metadata."""
+        return {
+            "answer_key_set": self.answer_key_set,
+            "target_fraction": round(self.target_fraction, 6),
+            "target_correct": self.target_correct,
+            "scored_questions": self.scored_questions,
+            "intended_answers": {
+                str(number): value for number, value in sorted(self.answers.items())
+            },
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +365,15 @@ class SheetCase:
         duplicate_group: Identifier shared with other sheets in this dataset,
             or ``""``.
         notes: Free text for a human reading the ground truth.
+        intended: The candidate's intended answers against their set's key,
+            when the performance model produced them; ``None`` otherwise.
+        intended_roll: The identifier the candidate *meant* - what they wrote
+            in the write-in boxes - as opposed to :attr:`roll`, which is what
+            the bubbles read. The two differ exactly when a case stages an
+            identifier defect: a blank, partial, double-marked or wrongly
+            bubbled number is still written correctly above the grid, which is
+            what lets an operator resolve it. ``""`` when there is no intended
+            identifier (a solution sheet), and then nothing is written.
     """
 
     index: int
@@ -342,6 +398,8 @@ class SheetCase:
     expect_failure: bool = False
     duplicate_group: str = ""
     notes: str = ""
+    intended: IntendedResponse | None = None
+    intended_roll: str = ""
 
     @property
     def tag_values(self) -> tuple[str, ...]:
@@ -497,6 +555,7 @@ class SheetBuilder:
         self._id_plans: dict[int, MarkPlan] = {}
         self._set_plans: dict[int, MarkPlan] = {}
         self._question_plans: dict[int, MarkPlan] = {}
+        self._intended_roll = ""
         self.notes = ""
 
     # -- tagging -------------------------------------------------------
@@ -514,9 +573,15 @@ class SheetBuilder:
         A character that is not one of the field's symbols is skipped, leaving
         that column blank - which is how a shorter value than the field, or an
         alphanumeric field asked for a digit, degrades sensibly.
+
+        ``value`` is also what the candidate *intended*, and is written in the
+        write-in boxes. Column calls made afterwards - blanking one, marking
+        two bubbles in another - change the bubbles and never that, which is
+        the point: the defect is in the bubbling, not in the number.
         """
         if not self.layout.has_identifier:
             return self
+        self._intended_roll = value[: self.layout.identifier_columns]
         for position, character in enumerate(value[: self.layout.identifier_columns]):
             if character in self.layout.identifier_symbols:
                 self._id_plans[position] = MarkPlan(labels=(character,), **kwargs)
@@ -576,11 +641,18 @@ class SheetBuilder:
         return self
 
     def answer_all(self, **kwargs: Any) -> SheetBuilder:
-        """Answer every question with a randomly chosen option."""
+        """Answer every question with a randomly chosen option.
+
+        The choice is marked ``free`` - see :attr:`MarkPlan.free` - so the
+        performance model may replace it with one decided against the answer
+        key. The random draw is still made, so every later decision this
+        builder's generator makes is exactly what it was before that model
+        existed.
+        """
         for number in self.layout.questions:
             labels = self.layout.labels_for(number)
             if labels:
-                self.answer(number, (self.rng.choice(list(labels)),), **kwargs)
+                self.answer(number, (self.rng.choice(list(labels)),), free=True, **kwargs)
         return self
 
     def blank_all(self) -> SheetBuilder:
@@ -629,6 +701,7 @@ class SheetBuilder:
             set_code=set_value,
             set_marks=set_marks,
             set_ambiguous=set_ambiguous,
+            intended_roll=self._intended_roll,
             # A note passed here wins over one set on the builder, so a caller
             # can describe the finished case without having to clear the
             # builder's own note first.
@@ -677,6 +750,7 @@ __all__ = [
     "WEAK_FILL",
     "CaseFamily",
     "FieldLayout",
+    "IntendedResponse",
     "MarkPlan",
     "SheetBuilder",
     "SheetCase",

@@ -42,6 +42,28 @@ produced them, because that is how the work was sequenced and how
 - Machine review event **`redetected`** (*Detected again*): re-opens a
   duplicate-ID record the machine had withdrawn once both sheets count again.
 
+- **Answer keys and solution sheets in generated datasets.** Every synthetic
+  dataset now has `solution/` with, per set, a clean solution OMR sheet
+  (`Set_<code>_Solution.png|jpg`, drawn by the ordinary renderer from the real
+  template, Student ID blank), the key as text (`Set_<code>_Answer_Key.txt`, the
+  answer string `services.answer_key.read_key` and the Answer Key stage already
+  accept) and the sheet's ground truth (`Set_<code>_Solution.json`,
+  `role = "solution"`). All are derived from one canonical key per set,
+  recorded in the manifest as `generator.answer_keys` and
+  `generator.solutions`. On by default; **Generate solution sheets and answer
+  keys** in the dialog, `--no-solutions`, `generate_dataset(generate_solutions=)`.
+  Stale solution files from an earlier run into the same folder are removed.
+- **Candidate answers decided against their own set's key.** Each candidate's
+  target share of correct answers is drawn from a truncated normal distribution
+  (default mean 65 %, SD 15 %, 0–100 %), exactly that many questions take the
+  key's answer and the rest a different valid option; the case plan's
+  deliberate test conditions are laid over that unchanged. Intended answers and
+  targets are recorded per sheet in `metadata.performance`, and the cohort's
+  observed distribution in `generator.performance.observed`. **Fully random
+  (legacy)** / `--performance-distribution random` reproduces the previous
+  answers exactly. `omr_scanner.evaluation.performance`,
+  `omr_scanner.evaluation.answer_keys`; generator version **2.3**.
+
 ### Fixed
 
 - Undo Reject, and removing a replacement link, left a duplicate-ID record that
@@ -150,6 +172,25 @@ produced them, because that is how the work was sequenced and how
 
 ### Fixed
 
+- **The Answer Key, Attendance, Results and Reports stages never received the
+  project's template** in the running application — only the Scan stage did
+  (`MainWindow.broadcast_template` had no caller outside the tests) — so no
+  answer key could be entered. The Scan stage now emits `template_changed`
+  and the window relays it.
+- **Results could not score a project with per-set attendance.** It read only
+  the project-wide candidate list, which a project with defined sets does not
+  have. It now scores every defined set's active list, then any project-wide
+  one (`scoring_store.scoring_rosters`), each against the key of the set read
+  from the candidate's own script.
+- **Results picked up its candidate list only when a project was opened**; a
+  list imported or re-reconciled on the Attendance stage is now seen at once.
+- **Read From Solution Sheet… with another set selected** silently kept the
+  selected set, so saving filed the key under the wrong set. It now warns,
+  naming both sets, and still does not switch the set by itself. Its file
+  chooser now opens on the project folder rather than the working directory.
+- **The answer-key editor kept the previous project's key** when another
+  project was opened; it is cleared on a project change (not when the same
+  project is re-announced).
 - A project scanned by an earlier build keeps its stored `answer_*` conflicts
   and any decisions recorded against them, but they no longer appear in the
   queue or in any count, and a re-read withdraws the untouched ones. Nothing is

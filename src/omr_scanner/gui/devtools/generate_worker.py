@@ -132,6 +132,8 @@ class DatasetWorker(QThread):
                 reference_scan=request.reference_scan,
                 color_mode=request.color_mode,
                 fold_policy=request.fold_policy,
+                generate_solutions=request.generate_solutions,
+                performance=request.performance,
                 on_progress=self._on_sheet,
                 should_cancel=lambda: self._cancelled,
             )

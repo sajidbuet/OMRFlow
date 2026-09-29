@@ -231,8 +231,29 @@ class GenerationSummaryDialog(QDialog):
             else ""
         )
 
+        # Absent from a manifest written before solution sheets existed, and
+        # null when they were switched off - both read as "none".
+        solutions = generator.get("solutions") or {}
+        solution_sets = len(solutions.get("sets") or ())
+        observed = (generator.get("performance") or {}).get("observed") or {}
+        solution_line = (
+            f"Sets: {solution_sets} · Solution sheets: {solution_sets} · "
+            f"Answer-key files: {solution_sets} "
+            f"(in {solutions.get('directory', 'solution')}/)<br>"
+            if solution_sets
+            else ""
+        )
+        score_line = (
+            f"Candidate scores: mean {observed['mean']:.0%}, "
+            f"SD {observed['stddev']:.0%} over {observed['candidates']} sheet(s)<br>"
+            if observed
+            else ""
+        )
+
         details = QLabel(
             f"Folder: {output_dir}<br>"
+            f"{solution_line}"
+            f"{score_line}"
             f"Template: {generator.get('template_name', '-')}<br>"
             f"{source}"
             f"Profile: {generator.get('profile', '-')} · Seed: {generator.get('seed', '-')}<br>"
