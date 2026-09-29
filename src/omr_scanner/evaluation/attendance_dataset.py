@@ -996,6 +996,7 @@ def bind_case(
         case,
         marks=rendered,
         roll=roll,
+        intended_roll=written_roll(candidate),
         roll_marks=marks,
         roll_ambiguous=ambiguous,
         set_code=set_code,
@@ -1011,6 +1012,25 @@ def bind_case(
         ),
         notes=f"{candidate.candidate_uid} {conflict.value}",
     )
+
+
+def written_roll(candidate: SyntheticCandidate) -> str:
+    """The identifier this script's candidate wrote in the write-in boxes.
+
+    Their registered roll, whatever the bubbles say - a blank, partial,
+    double-marked or wrongly bubbled identifier is a bubbling mistake by
+    someone who knows their own number, and the written number is exactly what
+    an operator uses to resolve it. Both scripts of a duplicate pair carry it
+    too, as the same candidate wrote both.
+
+    The one exception is :attr:`ConflictKind.UNKNOWN_CANDIDATE_ID`: a script
+    from another hall, whose writer's number is the unknown one it carries.
+    Writing a roster number on it would invent a match the case exists to
+    prevent.
+    """
+    if candidate.conflict is ConflictKind.UNKNOWN_CANDIDATE_ID:
+        return candidate.observed_roll or ""
+    return candidate.roll
 
 
 def _column_plans(
@@ -1090,6 +1110,7 @@ __all__ = [
     "summarise",
     "write_ground_truth",
     "write_workbooks",
+    "written_roll",
 ]
 
 

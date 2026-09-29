@@ -98,6 +98,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from omr_scanner.domain.geometry import NormalizedPoint
 from omr_scanner.domain.template import IgnoredFieldDefinition
 from omr_scanner.evaluation.answer_keys import (
     SOLUTION_DIRNAME,
@@ -163,13 +164,16 @@ from omr_scanner.evaluation.test_cases import (
     SheetCase,
     TestCaseTag,
 )
+from omr_scanner.evaluation.write_in import WriteInRow, identifier_row, write_in_rows
 from omr_scanner.imaging.folds import PagePlacement, apply_corner_folds
 from omr_scanner.imaging.synthetic import (
     AnswerBubbleSpec,
     ColorMode,
     DistortionSpec,
     MarkStyle,
+    PrintedBoxSpec,
     SyntheticSheetSpec,
+    WrittenCharacterSpec,
     capture_channels,
     distort_image,
     quantise_to_output,
@@ -190,15 +194,29 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _LOGGER = logging.getLogger(__name__)
 
-GENERATOR_VERSION = "2.3"
+GENERATOR_VERSION = "2.4"
 """Version of this generator, recorded in every manifest.
 
 Changing how a defect is drawn changes what a dataset means, so a benchmark
 result that does not say which generator produced its data is not comparable
 with anything. Bumped to 2.0 when named test cases, DPI-based rendering and
 JPEG output arrived, to 2.1 when the reference-scan rendering mode and the
-colour modes did, to 2.2 for physical corner folds, and to 2.3 when answer
-keys, solution sheets and key-relative candidate performance arrived."""
+colour modes did, to 2.2 for physical corner folds, to 2.3 when answer keys,
+solution sheets and key-relative candidate performance arrived, and to 2.4
+when the intended identifier began to be written in the write-in boxes."""
+
+_WRITTEN_JITTER_X = 0.04
+"""Largest horizontal displacement of a written character, in box widths."""
+
+_WRITTEN_JITTER_Y = 0.03
+"""Largest vertical displacement, in box heights."""
+
+_WRITTEN_SIZE_JITTER = 0.06
+"""Largest relative change in a written character's size.
+
+All three are small on purpose: enough that eight characters do not sit on
+one ruler line, never enough to push a character towards a neighbouring box
+or make it ambiguous."""
 
 DATASET_SCHEMA_VERSION = "1.0"
 """Version of the dataset *layout* - the directories and the manifest."""
@@ -391,6 +409,8 @@ def sheet_spec_from_template(
     omit_orientation: bool = False,
     faint_orientation: bool = False,
     render: PageRender | None = None,
+    write_in_boxes: Sequence[PrintedBoxSpec] = (),
+    written_characters: Sequence[WrittenCharacterSpec] = (),
 ) -> SyntheticSheetSpec:
     """Return a renderable page carrying every bubble ``template`` declares.
 
@@ -413,12 +433,14 @@ def sheet_spec_from_template(
         faint_orientation: Print the orientation mark pale.
         render: Pixel size to render at; the template's canonical size when
             omitted.
+        write_in_boxes: Printed write-in boxes to draw; see
+            :func:`written_identifier`.
+        written_characters: What the candidate wrote in them.
 
     Returns:
         A specification whose page size, markers, orientation mark and bubbles
         all come from the template.
     """
-    from omr_scanner.domain.geometry import NormalizedPoint
     from omr_scanner.domain.template import MarkerRole
 
     chosen = marks or {}
@@ -495,7 +517,95 @@ def sheet_spec_from_template(
         faint_orientation_marker=faint_orientation,
         omit_orientation_marker=omit_orientation,
         answer_bubbles=tuple(bubbles),
+        write_in_boxes=tuple(write_in_boxes),
+        written_characters=tuple(written_characters),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenIdentifier:
+    """What goes into the identifier's write-in boxes on one sheet.
+
+    Attributes:
+        value: The characters actually written - the case's intended
+            identifier, cut to the number of boxes. ``""`` when nothing is.
+        boxes: The printed boxes, for a page drawn from the template.
+        characters: The written characters, one per box used.
+    """
+
+    value: str
+    boxes: tuple[PrintedBoxSpec, ...]
+    characters: tuple[WrittenCharacterSpec, ...]
+
+
+NOTHING_WRITTEN = WrittenIdentifier(value="", boxes=(), characters=())
+
+
+def written_identifier(
+    case: SheetCase,
+    rows: Sequence[WriteInRow],
+    *,
+    seed: int,
+    print_boxes: bool,
+) -> WrittenIdentifier:
+    """Decide what the candidate wrote above the identifier bubbles, and where.
+
+    Always the case's :attr:`~omr_scanner.evaluation.test_cases.SheetCase.intended_roll`
+    - never the bubbles' reading - so a wrongly bubbled, blank or double-marked
+    identifier still carries the correct number above it. That is the
+    evidence an operator resolves such a sheet with, and the reason the two
+    values are held separately.
+
+    The small unevenness of each character is drawn from a generator keyed on
+    the dataset seed and the written value, and deliberately *not* on the
+    sheet's index: a stress run's exact-duplicate scan relies on the index
+    never reaching the pixels. No other random stream is touched, so every
+    other decision about the sheet is unchanged.
+
+    Args:
+        case: The planned sheet.
+        rows: The template's write-in rows, from
+            :func:`~omr_scanner.evaluation.write_in.write_in_rows` or, on a
+            reference scan, as located there.
+        seed: The dataset's master seed.
+        print_boxes: Also return the printed boxes, for a page that is drawn
+            from nothing. A reference scan's boxes are already printed.
+
+    Returns:
+        :data:`NOTHING_WRITTEN` when the template has no identifier row.
+    """
+    row = identifier_row(rows)
+    if row is None:
+        return NOTHING_WRITTEN
+    boxes = (
+        tuple(
+            PrintedBoxSpec(x=cell.x, y=cell.y, width=cell.width, height=cell.height)
+            for cell in row.cells
+        )
+        if print_boxes
+        else ()
+    )
+    value = case.intended_roll[: len(row.cells)]
+    if not value:
+        return WrittenIdentifier(value="", boxes=boxes, characters=())
+
+    rng = random.Random(f"{seed}:write-in:{value}")
+    characters = tuple(
+        WrittenCharacterSpec(
+            center=NormalizedPoint(
+                x=min(max(cell.center_x, 0.0), 1.0), y=min(max(cell.center_y, 0.0), 1.0)
+            ),
+            width=cell.width,
+            height=cell.height,
+            character=character,
+            offset_x=rng.uniform(-_WRITTEN_JITTER_X, _WRITTEN_JITTER_X),
+            offset_y=rng.uniform(-_WRITTEN_JITTER_Y, _WRITTEN_JITTER_Y),
+            size_scale=1.0 + rng.uniform(-_WRITTEN_SIZE_JITTER, _WRITTEN_SIZE_JITTER),
+        )
+        for cell, character in zip(row.cells, value, strict=False)
+        if character.strip()
+    )
+    return WrittenIdentifier(value=value, boxes=boxes, characters=characters)
 
 
 def _marker_extent(template: OmrTemplate, *, axis: str) -> float:
@@ -622,6 +732,8 @@ def render_case(
     reference: ReferenceScan | None = None,
     color_mode: ColorMode = ColorMode.GRAYSCALE,
     outlines: Sequence[MarkerOutline] | None = None,
+    write_in: Sequence[WriteInRow] | None = None,
+    render_student_id_text: bool = True,
 ) -> GeneratedSheet:
     """Render one planned case and return it with its ground truth.
 
@@ -652,6 +764,14 @@ def render_case(
             per-sheet reparsing this generator exists without. Derived from
             ``template`` when omitted, so a single-sheet caller need not supply
             it.
+        write_in: The template's write-in rows, computed once per run by
+            :func:`generate_dataset` for the same reason as ``outlines``, and
+            derived from ``template`` when omitted. Ignored on a reference scan
+            whose boxes were located when it was loaded - those are more exact.
+        render_student_id_text: Write the case's intended identifier in the
+            identifier's write-in boxes (and, on a page drawn from the
+            template, print the boxes). On by default; off reproduces a page
+            without either, as generator 2.3 drew it.
 
     Returns:
         The image and the ground truth, which is copied from the case rather
@@ -676,12 +796,22 @@ def render_case(
     source = reference if render_mode is RenderMode.REFERENCE_SCAN else None
     effective = case if source is None else strip_unrenderable_defects(case)
 
+    rows: Sequence[WriteInRow] = ()
+    if render_student_id_text:
+        if source is not None and source.write_in is not None:
+            rows = source.write_in.rows
+        else:
+            rows = write_in if write_in is not None else write_in_rows(template)
+    written = written_identifier(
+        effective, rows, seed=seed, print_boxes=source is None
+    )
+
     if source is not None:
         size = reference_page_render(source)
-        image = _render_onto_scan(template, effective, source, color_mode)
+        image = _render_onto_scan(template, effective, source, color_mode, written)
     else:
         size = render if render is not None else page_render_size(template)
-        image = _render_from_template(template, effective, size, color_mode)
+        image = _render_from_template(template, effective, size, color_mode, written)
 
     metadata: dict[str, Any] = {
         "generator_version": GENERATOR_VERSION,
@@ -698,6 +828,12 @@ def render_case(
         },
         "mark_styles": _mark_styles(effective),
     }
+    if identifier_row(rows) is not None:
+        # What the candidate wrote above the bubbles, which a staged identifier
+        # defect deliberately makes differ from `roll`. Null when nothing was
+        # written because the sheet has no intended identifier (a solution
+        # sheet); absent when there were no boxes to write in at all.
+        metadata["written_student_id"] = written.value or None
     if effective.intended is not None:
         # The candidate's intended answers against their own set's key, before
         # any test condition was laid over them. Present only when the
@@ -776,8 +912,14 @@ def _render_from_template(
     case: SheetCase,
     size: PageRender,
     color_mode: ColorMode,
+    written: WrittenIdentifier = NOTHING_WRITTEN,
 ) -> NDArray[np.uint8]:
-    """Draw the whole page, then degrade it: the original rendering mode."""
+    """Draw the whole page, then degrade it: the original rendering mode.
+
+    The written identifier is part of the page before anything else happens
+    to it, so the folds, blur, noise, JPEG and bilevel quantisation that act
+    on the bubbles act on the handwriting identically.
+    """
     spec = sheet_spec_from_template(
         template,
         case.marks,
@@ -788,6 +930,8 @@ def _render_from_template(
         omit_orientation=case.omit_orientation,
         faint_orientation=case.faint_orientation,
         render=size,
+        write_in_boxes=written.boxes,
+        written_characters=written.characters,
     )
     sheet = render_sheet(spec)
     # Colour before degradation, bilevel after it - see `ColorMode`. With the
@@ -803,8 +947,13 @@ def _render_onto_scan(
     case: SheetCase,
     reference: ReferenceScan,
     color_mode: ColorMode,
+    written: WrittenIdentifier = NOTHING_WRITTEN,
 ) -> NDArray[np.uint8]:
     """Draw only the marks, lay them on the real scan, then degrade the result.
+
+    The written identifier travels in the mark layer - it is the candidate's
+    ink, and the boxes it goes in are already printed on the scan - so it is
+    composited, folded and degraded exactly as the bubble marks are.
 
     The mark layer is rendered at the size the reference asks for rather than
     at the DPI-derived page size, because it is about to be warped into that
@@ -821,6 +970,7 @@ def _render_onto_scan(
             dpi=UNDECLARED_DPI,
             derived_from=RENDER_FROM_REFERENCE_SCAN,
         ),
+        written_characters=written.characters,
     )
     composited = render_onto_reference(reference, render_mark_layer(spec))
     folded = _apply_folds(composited, case, template, reference=reference)
@@ -956,6 +1106,7 @@ def generate_dataset(
     color_mode: ColorMode = ColorMode.GRAYSCALE,
     fold_policy: FoldPolicy | None = None,
     generate_solutions: bool = True,
+    render_student_id_text: bool = True,
     performance: PerformancePolicy | None = None,
     on_progress: Callable[[GenerationProgress], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
@@ -1014,6 +1165,11 @@ def generate_dataset(
             distribution (mean 65 %, SD 15 %) when omitted;
             :data:`~omr_scanner.evaluation.performance.LEGACY_RANDOM` restores
             answers chosen independently of any key.
+        render_student_id_text: Write each script's *intended* identifier in
+            the write-in boxes above the identifier bubbles - see
+            :func:`written_identifier`. On by default. It changes pixels only:
+            no identifier, answer, set code, tag or expected reading changes
+            either way.
         on_progress: Called after each sheet is written. Runs on the calling
             thread, so a GUI caller must marshal to the main thread.
         should_cancel: Polled before each sheet; returning ``True`` stops the
@@ -1123,6 +1279,7 @@ def generate_dataset(
     # would be the per-sheet reparsing this generator is built without.
     page_width, page_height = _canonical_page(template)
     outlines = marker_outlines(template, width=page_width, height=page_height)
+    write_in = write_in_rows(template)
     folds = fold_policy if fold_policy is not None else NO_FOLDS
     if folds.active:
         # Assigned after identity, so a folded sheet is still whoever the
@@ -1180,6 +1337,8 @@ def generate_dataset(
             reference=reference,
             color_mode=color_mode,
             outlines=outlines,
+            write_in=write_in,
+            render_student_id_text=render_student_id_text,
         )
         success, buffer = cv2.imencode(chosen_format.suffix, sheet.image, encode_params)
         if not success:  # pragma: no cover - encoding a valid array
@@ -1224,6 +1383,8 @@ def generate_dataset(
             reference=reference,
             color_mode=color_mode,
             outlines=outlines,
+            write_in=write_in,
+            render_student_id_text=render_student_id_text,
         )
         if solution_files
         else None
@@ -1259,6 +1420,7 @@ def generate_dataset(
             # a reader sees "this was not done" rather than a block of defaults
             # describing folds that never happened.
             "folds": folds.describe() if folds.active else None,
+            "written_student_id": render_student_id_text and identifier_row(write_in) is not None,
             # The canonical keys, whether or not their solution files were
             # written: they are what every candidate's intended answers were
             # decided against.
@@ -1347,6 +1509,8 @@ def _write_solutions(
     reference: ReferenceScan | None,
     color_mode: ColorMode,
     outlines: Sequence[MarkerOutline],
+    write_in: Sequence[WriteInRow],
+    render_student_id_text: bool,
 ) -> dict[str, Any]:
     """Render and write every set's solution sheet, key text and ground truth.
 
@@ -1374,6 +1538,8 @@ def _write_solutions(
             reference=reference,
             color_mode=color_mode,
             outlines=outlines,
+            write_in=write_in,
+            render_student_id_text=render_student_id_text,
         )
         success, buffer = cv2.imencode(image_format.suffix, sheet.image, list(encode_params))
         if not success:  # pragma: no cover - encoding a valid array

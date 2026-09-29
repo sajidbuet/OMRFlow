@@ -48,6 +48,11 @@ The mark layer, and why it is a separate render:
     this module drew, which is the only way a generated dataset carries real
     paper texture, real print and real scanner behaviour under known answers.
 
+    It also carries what the candidate *wrote* - see
+    :attr:`SyntheticSheetSpec.written_characters` - because handwriting in a
+    write-in box is the candidate's ink exactly as a bubble mark is, while the
+    printed boxes are already on the paper.
+
     It deliberately shares :func:`_draw_mark` with the full render rather than
     reimplementing the shapes. A second copy of the mark geometry would drift,
     and a dataset whose two rendering modes disagreed about where ``fill=0.35``
@@ -73,6 +78,7 @@ Status:
 
 from __future__ import annotations
 
+import functools
 import math
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -268,6 +274,48 @@ class AnswerBubbleSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class PrintedBoxSpec:
+    """One printed write-in box, as a rectangle in normalised coordinates.
+
+    Part of the *form*, not of the candidate's ink: drawn by
+    :func:`render_sheet` and never by :func:`render_mark_layer`, because a real
+    blank sheet already has its boxes printed on it.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenCharacterSpec:
+    """One character the candidate wrote in a write-in box.
+
+    Attributes:
+        center: Normalised centre of the box it is written in.
+        width: The box's width, as a fraction of page width.
+        height: The box's height, as a fraction of page height.
+        character: What was written.
+        offset_x: Displacement of the character from the box centre, as a
+            fraction of the box width - the small unevenness of handwriting.
+        offset_y: The same, vertically, as a fraction of the box height.
+        size_scale: Multiplies the character's size.
+        intensity: Darkness, ``0`` to ``1``, as for a bubble mark. Slightly
+            short of solid black by default: a pen, not a printer.
+    """
+
+    center: NormalizedPoint
+    width: float
+    height: float
+    character: str
+    offset_x: float = 0.0
+    offset_y: float = 0.0
+    size_scale: float = 1.0
+    intensity: float = 0.86
+
+
+@dataclass(frozen=True, slots=True)
 class SyntheticSheetSpec:
     """What a synthetic canonical page contains.
 
@@ -297,6 +345,10 @@ class SyntheticSheetSpec:
         answer_bubbles: Printed answer bubbles at explicit positions, optionally
             shaded - see :class:`AnswerBubbleSpec`. Empty by default, so every
             existing geometry test renders exactly the page it did before.
+        write_in_boxes: Printed write-in boxes, drawn as part of the form.
+        written_characters: What the candidate wrote in them - ink, drawn by
+            both renders. Both empty by default, for the same reason as
+            ``answer_bubbles``.
     """
 
     width: int = DEFAULT_CANONICAL_WIDTH_PX
@@ -318,6 +370,8 @@ class SyntheticSheetSpec:
     faint_orientation_marker: bool = False
     omit_orientation_marker: bool = False
     answer_bubbles: tuple[AnswerBubbleSpec, ...] = ()
+    write_in_boxes: tuple[PrintedBoxSpec, ...] = ()
+    written_characters: tuple[WrittenCharacterSpec, ...] = ()
 
     def __post_init__(self) -> None:
         """Reject a specification that could not be rendered."""
@@ -487,6 +541,10 @@ def render_sheet(spec: SyntheticSheetSpec | None = None) -> SyntheticSheet:
         _draw_answer_frames(image, active)
     if active.answer_bubbles:
         _draw_answer_bubbles(image, active)
+    if active.write_in_boxes:
+        _draw_write_in_boxes(image, active)
+    for written in active.written_characters:
+        _draw_written_character(image, written, active)
 
     marker_size = (active.marker_width * active.width, active.marker_height * active.height)
     for role in CANONICAL_CORNER_ORDER:
@@ -549,7 +607,8 @@ def render_mark_layer(spec: SyntheticSheetSpec | None = None) -> MarkLayer:
         spec: The page, in the same coordinates :func:`render_sheet` uses.
 
     Returns:
-        The ink layer and how many bubbles received any.
+        The ink layer and how many bubbles received any. Written characters
+        are drawn but not counted: ``mark_count`` is about bubbles.
     """
     active = spec if spec is not None else SyntheticSheetSpec()
     image: NDArray[np.uint8] = np.full((active.height, active.width), _PAPER, dtype=np.uint8)
@@ -569,6 +628,9 @@ def render_mark_layer(spec: SyntheticSheetSpec | None = None) -> MarkLayer:
             sample_ratio=sample_ratio,
         )
         drawn += 1
+
+    for written in active.written_characters:
+        _draw_written_character(image, written, active)
 
     return MarkLayer(image=image, spec=active, mark_count=drawn)
 
@@ -1343,6 +1405,171 @@ def _mark_grey(intensity: float) -> int:
     """Return the grey level a mark of ``intensity`` is drawn in."""
     clamped = min(max(intensity, 0.0), 1.0)
     return round(_PAPER - clamped * (_PAPER - _INK))
+
+
+_WRITTEN_HEIGHT_RATIO = 0.56
+"""A written character's height, as a fraction of its box's height."""
+
+_WRITTEN_WIDTH_RATIO = 0.60
+"""Ceiling on a character's width, as a fraction of its box's width - what
+keeps a wide glyph clear of the box's side borders."""
+
+_FALLBACK_FONT = cv2.FONT_HERSHEY_SIMPLEX
+"""OpenCV's built-in font, used only when Pillow's scalable font is not
+available (a Pillow built without FreeType). Always present, but some OpenCV
+builds draw its zero slashed, which is why it is not the first choice."""
+
+_FALLBACK_STROKE_RATIO = 0.11
+"""Pen width for the fallback font, as a fraction of the character's height."""
+
+
+@functools.lru_cache(maxsize=128)
+def _written_font(size_px: int) -> Any:
+    """Pillow's bundled scalable font at ``size_px``, or ``None``.
+
+    Pillow is already a required dependency, and since 10.1 it ships a
+    scalable font inside the package, so nothing is read from the system, added
+    to the repository or licensed separately, and Windows and Linux draw the
+    same glyphs. Its digits are plain - an unslashed zero, a one without a
+    serif - which is how a candidate writes them. Cached per size: loading a
+    font is the expensive part, and a whole run uses a handful of sizes.
+    """
+    try:
+        from PIL import ImageFont
+
+        font = ImageFont.load_default(size=size_px)
+    except (ImportError, OSError, TypeError, ValueError):  # pragma: no cover - old Pillow
+        return None
+    return font if isinstance(font, ImageFont.FreeTypeFont) else None
+
+
+@functools.cache
+def _font_digit_extent() -> tuple[float, float] | None:
+    """Width and height of ``0`` per pixel of font size, or ``None``.
+
+    Every character is sized from this one glyph rather than from its own
+    extent, so a ``1`` is as tall as a ``0`` instead of being scaled up until
+    it is as *wide* as one. Measured once at a large size for precision.
+    """
+    font = _written_font(200)
+    if font is None:
+        return None
+    left, top, right, bottom = font.getbbox("0")
+    return max(right - left, 1) / 200.0, max(bottom - top, 1) / 200.0
+
+
+def _draw_written_character(
+    image: NDArray[np.uint8], written: WrittenCharacterSpec, spec: SyntheticSheetSpec
+) -> None:
+    """Write one character, centred in its box and sized from the box.
+
+    Every dimension is a fraction of the box, and the box a fraction of the
+    page, so the character keeps its proportions at any resolution. The glyph
+    is drawn into a patch the size of its box and laid onto the page as the
+    *darker* of the two, which is how ink over printing behaves and leaves a
+    box border it touches intact.
+    """
+    if not written.character.strip():
+        return
+    box_w = written.width * spec.width
+    box_h = written.height * spec.height
+    center = spec.to_pixels(written.center)
+    x = center.x + written.offset_x * box_w
+    y = center.y + written.offset_y * box_h
+    grey = _mark_grey(written.intensity)
+
+    extent = _font_digit_extent()
+    size = 0
+    if extent is not None:
+        size = int(
+            min(
+                _WRITTEN_HEIGHT_RATIO * box_h * written.size_scale / extent[1],
+                _WRITTEN_WIDTH_RATIO * box_w / extent[0],
+            )
+        )
+    font = _written_font(size) if size >= 4 else None
+    if font is None:
+        _draw_written_character_fallback(image, written.character, x, y, box_w, box_h,
+                                         written.size_scale, grey)
+        return
+
+    from PIL import Image, ImageDraw
+
+    patch_w, patch_h = max(2, round(box_w)), max(2, round(box_h))
+    glyph = Image.new("L", (patch_w, patch_h), _PAPER)
+    # Centred on the glyph's own inked extent, not on the font's line box,
+    # which would sit a digit - which has no descender - visibly high.
+    g_left, g_top, g_right, g_bottom = font.getbbox(written.character)
+    ImageDraw.Draw(glyph).text(
+        (patch_w / 2.0 - (g_left + g_right) / 2.0, patch_h / 2.0 - (g_top + g_bottom) / 2.0),
+        written.character,
+        font=font,
+        fill=grey,
+    )
+    ink = np.asarray(glyph, dtype=np.uint8)
+    left, top = round(x - patch_w / 2.0), round(y - patch_h / 2.0)
+    _lay_ink(image, ink, left, top)
+
+
+def _lay_ink(image: NDArray[np.uint8], ink: NDArray[np.uint8], left: int, top: int) -> None:
+    """Darken ``image`` by ``ink`` placed at ``(left, top)``, clipped to the page."""
+    height, width = image.shape[:2]
+    x0, y0 = max(left, 0), max(top, 0)
+    x1, y1 = min(left + ink.shape[1], width), min(top + ink.shape[0], height)
+    if x1 <= x0 or y1 <= y0:
+        return
+    source = ink[y0 - top : y1 - top, x0 - left : x1 - left]
+    region = image[y0:y1, x0:x1]
+    if region.ndim == 3:
+        source = source[..., np.newaxis]
+    np.minimum(region, source, out=region)
+
+
+def _draw_written_character_fallback(
+    image: NDArray[np.uint8],
+    character: str,
+    x: float,
+    y: float,
+    box_w: float,
+    box_h: float,
+    size_scale: float,
+    grey: int,
+) -> None:
+    """Write one character with OpenCV's built-in font; see :data:`_FALLBACK_FONT`."""
+    (glyph_w, glyph_h), _baseline = cv2.getTextSize("0", _FALLBACK_FONT, 1.0, 1)
+    scale = min(
+        _WRITTEN_HEIGHT_RATIO * box_h * size_scale / max(glyph_h, 1),
+        _WRITTEN_WIDTH_RATIO * box_w / max(glyph_w, 1),
+    )
+    if scale <= 0.0:
+        return
+    stroke = max(1, round(_FALLBACK_STROKE_RATIO * glyph_h * scale))
+    (text_w, text_h), _baseline = cv2.getTextSize(character, _FALLBACK_FONT, scale, stroke)
+    cv2.putText(
+        image,
+        character,
+        (round(x - text_w / 2.0), round(y + text_h / 2.0)),
+        _FALLBACK_FONT,
+        scale,
+        grey,
+        thickness=stroke,
+        lineType=cv2.LINE_AA,
+    )
+
+
+def _draw_write_in_boxes(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> None:
+    """Draw the printed write-in boxes: a row of rectangles sharing borders."""
+    for box in spec.write_in_boxes:
+        cv2.rectangle(
+            image,
+            (round(box.x * spec.width), round(box.y * spec.height)),
+            (
+                round((box.x + box.width) * spec.width),
+                round((box.y + box.height) * spec.height),
+            ),
+            _INK,
+            thickness=_LINE_THICKNESS_PX,
+        )
 
 
 def _draw_answer_frames(image: NDArray[np.uint8], spec: SyntheticSheetSpec) -> None:

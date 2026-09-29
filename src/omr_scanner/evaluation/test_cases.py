@@ -367,6 +367,13 @@ class SheetCase:
         notes: Free text for a human reading the ground truth.
         intended: The candidate's intended answers against their set's key,
             when the performance model produced them; ``None`` otherwise.
+        intended_roll: The identifier the candidate *meant* - what they wrote
+            in the write-in boxes - as opposed to :attr:`roll`, which is what
+            the bubbles read. The two differ exactly when a case stages an
+            identifier defect: a blank, partial, double-marked or wrongly
+            bubbled number is still written correctly above the grid, which is
+            what lets an operator resolve it. ``""`` when there is no intended
+            identifier (a solution sheet), and then nothing is written.
     """
 
     index: int
@@ -392,6 +399,7 @@ class SheetCase:
     duplicate_group: str = ""
     notes: str = ""
     intended: IntendedResponse | None = None
+    intended_roll: str = ""
 
     @property
     def tag_values(self) -> tuple[str, ...]:
@@ -547,6 +555,7 @@ class SheetBuilder:
         self._id_plans: dict[int, MarkPlan] = {}
         self._set_plans: dict[int, MarkPlan] = {}
         self._question_plans: dict[int, MarkPlan] = {}
+        self._intended_roll = ""
         self.notes = ""
 
     # -- tagging -------------------------------------------------------
@@ -564,9 +573,15 @@ class SheetBuilder:
         A character that is not one of the field's symbols is skipped, leaving
         that column blank - which is how a shorter value than the field, or an
         alphanumeric field asked for a digit, degrades sensibly.
+
+        ``value`` is also what the candidate *intended*, and is written in the
+        write-in boxes. Column calls made afterwards - blanking one, marking
+        two bubbles in another - change the bubbles and never that, which is
+        the point: the defect is in the bubbling, not in the number.
         """
         if not self.layout.has_identifier:
             return self
+        self._intended_roll = value[: self.layout.identifier_columns]
         for position, character in enumerate(value[: self.layout.identifier_columns]):
             if character in self.layout.identifier_symbols:
                 self._id_plans[position] = MarkPlan(labels=(character,), **kwargs)
@@ -686,6 +701,7 @@ class SheetBuilder:
             set_code=set_value,
             set_marks=set_marks,
             set_ambiguous=set_ambiguous,
+            intended_roll=self._intended_roll,
             # A note passed here wins over one set on the builder, so a caller
             # can describe the finished case without having to clear the
             # builder's own note first.
