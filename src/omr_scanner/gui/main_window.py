@@ -129,6 +129,7 @@ from omr_scanner.services import (
     adopt_template_if_unambiguous,
     create_project,
     diagnostics,
+    load_template,
     open_project,
     recover_interrupted,
     resolve_active_template,
@@ -1664,6 +1665,32 @@ class MainWindow(QMainWindow):
         answer_key = self._answer_key_page()
         if answer_key is not None:
             answer_key.refresh_project_template()
+        self._refresh_scan_template_if_changed()
+
+    def _refresh_scan_template_if_changed(self) -> None:
+        """Reload the Scan stage's template when its file was re-saved in place.
+
+        Scan identifies its template by *path*, so a template edited and saved
+        back to the same file kept being read with the old geometry - and
+        Results, fed from Scan, kept the old question count. Reloaded only
+        when the file's contents differ from what Scan holds (opening a
+        template re-announces it too), and never while a batch is running,
+        whose sheets must all be read with one template.
+        """
+        scan = self._scan_page()
+        session = self._session
+        if scan is None or session is None or self.batch_is_running():
+            return
+        active = resolve_active_template(session.project)
+        loaded = scan.state.template
+        if active is None or loaded is None or scan.state.template_path != active:
+            return
+        try:
+            current = load_template(active)
+        except OMRScannerError:
+            return  # Scan keeps what it has; the Template stage reports the file
+        if current != loaded:
+            scan.load_template_from(active)
 
     def confirm_unsaved_work(self, action: str) -> bool:
         """Offer to save unsaved answer-key edits before ``action``.

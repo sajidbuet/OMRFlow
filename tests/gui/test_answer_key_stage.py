@@ -136,6 +136,31 @@ class TestWithoutVisitingScan:
         # What the Template stage does after saving the same file again.
         window.set_active_project_template(path.resolve())
         assert page.state.plan.question_count == 30
+        # The Scan stage (and Results, fed from it) re-read it too.
+        assert plan_for(window._scan_page().state.template).question_count == 30
+        assert plan_for(window._results_page().state.template).question_count == 30
+
+
+class TestSamePathTemplateRefreshOnScan:
+    def _loaded(self, window: Any, tmp_path: Path, template: Any) -> tuple[Any, Path]:
+        root = _make_project(tmp_path, template)
+        assert window.open_project_at(root)
+        path = (window.session.project.layout.templates_dir / "exam.omrt").resolve()
+        return window._scan_page(), path
+
+    def test_an_unchanged_file_is_not_reloaded(self, window, tmp_path, template):
+        scan, path = self._loaded(window, tmp_path, template)
+        before = scan.state.template
+        window.set_active_project_template(path)  # re-announced, as opening does
+        assert scan.state.template is before
+
+    def test_no_reload_while_a_batch_is_running(self, window, tmp_path, template, monkeypatch):
+        scan, path = self._loaded(window, tmp_path, template)
+        before = scan.state.template
+        save_template(build_answer_sheet_template(questions_per_block=15), path)
+        monkeypatch.setattr(window, "batch_is_running", lambda: True)
+        window.set_active_project_template(path)
+        assert scan.state.template is before
 
 
 # ----------------------------------------------------------------------
@@ -410,6 +435,31 @@ class TestSolutionSheetWorkflow:
         assert "kept the selected set" in dialog.set_decision()
         dialog.choose_set("B")
         assert dialog.target_set() == "B"
+
+    def test_the_dialog_opens_on_the_first_question_needing_review(
+        self, qtbot, tmp_path, template
+    ):
+        """Found on a real scan: it used to open at 1:1 on the top-left corner."""
+        path, _key = _sheet(template, tmp_path / "amb.png", set_code="A", blank=(6,), double=(9,))
+        reading = read_solution_sheet(path, template, plan_for(template), selected_set="A")
+        dialog = SolutionSheetDialog(reading, template)
+        qtbot.addWidget(dialog)
+        assert dialog.table.currentRow() == -1
+        dialog.show()
+        qtbot.waitExposed(dialog)
+        assert dialog.table.currentRow() == dialog._rows[6]
+        assert dialog.preview.focus_rect is not None
+
+    def test_a_clean_sheet_opens_on_the_whole_page(self, qtbot, tmp_path, template):
+        path, _key = _sheet(template, tmp_path / "clean.png", set_code="A")
+        reading = read_solution_sheet(path, template, plan_for(template), selected_set="A")
+        dialog = SolutionSheetDialog(reading, template)
+        qtbot.addWidget(dialog)
+        dialog.show()
+        qtbot.waitExposed(dialog)
+        assert dialog.table.currentRow() == -1
+        assert dialog.preview.focus_rect is None
+        assert dialog.preview.zoom < 1.0  # fitted, not shown at 1:1
 
     def test_an_unregistered_sheet_offers_nothing(self, qtbot, tmp_path, template):
         import numpy as np

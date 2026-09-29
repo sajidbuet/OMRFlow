@@ -414,7 +414,13 @@ stylesheet.
     preview before anything is saved, records provenance per revision (creator,
     template identity, source hash, read metadata — schema migration 12), and
     marks a key that no longer fits the template *Incompatible* instead of
-    using it;
+    using it. **Real-world validation (2026-09-29): under way, not complete** —
+    one real solution sheet and four real scans used as stand-ins, 500/500
+    against a visual transcription, 0 false confident reads; the review dialog
+    now opens on the first question needing review (defect found on a real
+    scan). A template re-saved at the same path is now re-read by Scan too. A
+    logical/physical set-code mapping is designed (README) but not built;
+
   - **verification before scoring.** A key is a draft until a named person
     checks it — including one read off a solution sheet, because recognition
     completing does not make a key right. Only a verified key produces marks;

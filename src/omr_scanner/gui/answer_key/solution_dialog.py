@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -125,7 +126,35 @@ class SolutionSheetDialog(QDialog):
 
         self._fill_table()
         self._refresh()
+        self._framed = False
         self.resize(1180, 720)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """Open on something worth looking at, once.
+
+        Found on a real scan: without this the preview opened at 1:1 on the
+        page's top-left corner - the registration marker and the name box -
+        so the operator's first view of the sheet showed no answers at all.
+        """
+        super().showEvent(event)
+        if not self._framed:
+            self._framed = True
+            self.frame_initial_view()
+
+    def frame_initial_view(self) -> None:
+        """Select the first question needing review, or fit the whole page."""
+        first = next(
+            (
+                row
+                for row in range(self.table.rowCount())
+                if not self.table.isRowHidden(row) and self.only_problems.isChecked()
+            ),
+            None,
+        )
+        if first is not None:
+            self.table.setCurrentCell(first, 0)
+        else:
+            self.preview.fit_to_window()
 
     # ------------------------------------------------------------------
     # Construction
