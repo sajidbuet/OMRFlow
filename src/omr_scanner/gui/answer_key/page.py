@@ -265,9 +265,23 @@ class AnswerKeyPage(WorkflowPage):
     # ------------------------------------------------------------------
     def on_project_changed(self, session: ProjectSession | None) -> None:
         """Adopt an opened project, or clear everything when one closes."""
+        changed = session is not self.state.session
         self.state.session = session
         self.state.draft = None
         self.state.revisions = []
+        if changed:
+            # The editor belongs to the project it was typed in. Left filled,
+            # the previous project's key - and the set it was written for -
+            # would sit in the next project's editor as an unsaved draft, one
+            # click from being saved as that project's key. The same project
+            # re-announced (a renamed examination) keeps what is being typed.
+            self.state.set_code = ""
+            self.state.source = AnswerKeySource.MANUAL
+            self.state.source_scan = ""
+            for editor in (self.key_edit, self.wrong_edit):
+                editor.blockSignals(True)
+                editor.clear()
+                editor.blockSignals(False)
         self._refresh_sets()
         self._revalidate()
         self._update_enabled()
@@ -493,10 +507,15 @@ class AnswerKeyPage(WorkflowPage):
     # ------------------------------------------------------------------
     def prompt_read_from_scan(self) -> None:
         """Ask for a solution sheet, then recognise it."""
+        # The project folder, as the other stages' choosers do - not the
+        # process's working directory, which for an installed application is
+        # nowhere an operator keeps scans.
+        session = self.state.session
+        start = str(session.project.layout.root) if session is not None else ""
         chosen, _ = QFileDialog.getOpenFileName(
             self,
             "Read Answer Key From Solution Sheet",
-            "",
+            start,
             "Images (*.png *.jpg *.jpeg *.tif *.tiff *.bmp)",
         )
         if chosen:
@@ -539,9 +558,29 @@ class AnswerKeyPage(WorkflowPage):
         self.key_edit.blockSignals(True)
         self.key_edit.setPlainText(scanned.answers)
         self.key_edit.blockSignals(False)
+        mismatched = (
+            scanned.set_code
+            and self.state.set_code
+            and scanned.set_code != self.state.set_code
+        )
         if scanned.set_code and not self.state.set_code:
             self.set_combo.setCurrentText(scanned.set_code)
         self._revalidate()
+
+        if mismatched:
+            # Still only a suggestion - the chooser is not changed behind the
+            # operator's back - but never a silent one: saving now would file
+            # this sheet's key under the other set, and every candidate who
+            # sat either paper would be marked against the wrong answers.
+            QMessageBox.warning(
+                self,
+                "Solution sheet is for a different set",
+                f"This solution sheet is marked Set {scanned.set_code}, but "
+                f"Set {self.state.set_code} is selected.\n\n"
+                f"Choose Set {scanned.set_code} before saving if this is its "
+                "key; saving now stores these answers as Set "
+                f"{self.state.set_code}'s key.",
+            )
 
         if not scanned.is_clean:
             QMessageBox.warning(

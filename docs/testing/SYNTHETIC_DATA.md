@@ -24,6 +24,11 @@ SyntheticDataset/
 │   ├── SYN_000001.json          per-sheet truth: answers, roll, set, defects
 │   ├── candidates.csv           the authoritative roster
 │   └── reconciliation.csv       true vs. workbook vs. scan, and the expected state
+├── solution/                    the answer key, one set at a time
+│   ├── Set_10_Solution.png      a clean solution OMR sheet for set 10
+│   ├── Set_10_Answer_Key.txt    the same key as the Answer Key stage reads it
+│   ├── Set_10_Solution.json     the solution sheet's own ground truth
+│   └── ...                      (the same three for every set)
 ├── manifest.json
 ├── manifest.csv
 └── dataset_summary.json
@@ -401,11 +406,12 @@ is the honest behaviour of the setting, not a defect in the engine — treat a
 
 **Tools → Developer / Testing → Generate Synthetic Test Dataset…**
 
-The dialog has five sections: the source and destination (template, **render
+The dialog has six sections: the source and destination (template, **render
 mode**, **reference scan**, output folder), the image contents (profile, case
-families, count, seed), **Attendance and reconciliation**, **Physical page
+families, count, seed), **Attendance and reconciliation**, **Answer keys and
+candidate performance** (solution sheets, score distribution), **Physical page
 deformation** (corner folds), and the image/output settings (format,
-**colour**, resolution). The last two start folded away.
+**colour**, resolution). The last three start folded away.
 
 Choosing **Real scanned sheet + synthetic markings** enables the reference-scan
 field and disables **Resolution (dpi)**, which no longer applies. **Generate**
@@ -428,6 +434,254 @@ It needs a `.omrt` template. Everything about the sheets — page size,
 registration markers, orientation mark, zone geometry, bubble grids, roll-number
 and set-code fields — is read from that template, so a template for a different
 form generates the corresponding different form. No coordinates are hard-coded.
+
+## Answer keys and solution sheets
+
+Every generated dataset has a `solution/` folder at its root. For every set it
+holds:
+
+| File | What it is |
+|---|---|
+| `Set_<code>_Solution.<png\|jpg>` | A **solution OMR sheet**: the examiner's key, filled in on the real template — same page, registration and orientation marks, bubble geometry, fill renderer, colour mode, resolution and (in the reference-scan mode) the same blank scan as every candidate's script. Every question carries the key's answer; the set code is marked; the Student ID is **left blank** |
+| `Set_<code>_Answer_Key.txt` | The same key as **text**, in the format OMRFlow already reads |
+| `Set_<code>_Solution.json` | The solution sheet's ground truth, with `metadata.role = "solution"` and the key |
+
+`<code>` is the set code made safe for a file name (the same shape as
+`attendance/Set_<code>_Attendance.xlsx`); the unaltered code is in the manifest.
+Two set codes that would sanitise to the same file name are refused before
+anything is written.
+
+### One canonical key
+
+```text
+SyntheticAnswerKey (one per set, drawn once)
+        │
+        ├── solution OMR sheet     drawn by the ordinary renderer
+        ├── answer-key .txt        serialised
+        ├── manifest               generator.answer_keys / generator.solutions
+        └── candidates' answers    decided against it (below)
+```
+
+Nothing re-draws the answers for any of these, so they cannot disagree. The
+test suite checks all four against each other, and runs OMRFlow's recognition
+engine over every solution sheet to confirm it reads back as its set code and
+its key.
+
+### The text format
+
+OMRFlow has no answer-key *file* format: keys are typed or pasted into the
+Answer Key stage's **Answers** field and parsed by
+`omr_scanner.services.answer_key.read_key` — one option label per question, in
+question order, with whitespace, `,`, `;` and `|` ignored and anything else
+reported. The `.txt` file is exactly that string, uppercased, on one line,
+UTF-8, terminated by a single `\n`:
+
+```text
+BDBDBADACBAABCBACABB
+```
+
+So it can be pasted into the stage unchanged, and it round-trips through
+`read_key` in the test suite. **The set code is not in the file** — `read_key`
+would report it as a stray character — it is in the file name and the
+manifest. Labels are always single characters; a template whose options are
+longer is refused, as is one the Answer Key stage itself would refuse
+(non-contiguous numbering, disagreeing option labels, an option spelled `_` or
+`?`). A template with no question regions has no key, and writes no
+`solution/` files.
+
+### Why the Student ID is blank
+
+The Answer Key stage reads a solution sheet's answers and set code and nothing
+else, so no identifier is needed. A blank one is also the safest: a solution
+sheet scanned into a candidate batch by mistake resolves to no roll at all and
+is flagged, instead of matching somebody. Solution sheets live only in
+`solution/` — never in `images/`, `manifest.csv`, `manifest.entries` or the
+reconciliation ground truth.
+
+### Clean by default
+
+No rotation, blur, noise, folds or marker damage: a solution sheet is a
+reference. Degrading solution sheets on request is **not implemented**.
+
+### Set codes the template cannot show
+
+A roster's set codes and a template's set-code field are chosen separately, and
+existing datasets pair `10, 11, 12` with an `A`–`D` field. The candidate sheets
+have always carried a blank set code in that case. The solution sheet does the
+same rather than drawing some other set, logs a warning, and records
+`"set_code_marked": false` in the manifest. Multi-character codes are marked
+whenever the field can spell them: `103` on three digit positions, or `10` as
+one bubble on a single-position field whose symbols are whole codes.
+
+### Which sets get a key
+
+With attendance on, the roster's sets. Without it, the sets the planned sheets
+actually print; a sheet whose set code is a deliberate test case (blank, double
+marked) is assigned one of those papers from its own seeded stream.
+
+### Candidates answer their own set's key
+
+Candidate answers used to be drawn independently of any key, so every
+candidate scored about 25 % on a four-option paper. Now:
+
+```text
+target fraction  ~ truncated normal (mean, SD) on [minimum, maximum]
+target correct   = round(fraction × questions), clamped
+exactly that many questions, chosen uniformly over the whole paper → the key's answer
+every other question → a uniformly chosen option that is not the key's
+            ↓
+the case plan's own test conditions laid over it
+            ↓
+rendered
+```
+
+- **Truncation** is by inverse transform — `u` uniform on `[F(a), F(b)]`,
+  returned as `F⁻¹(u)` — using only `statistics.NormalDist`. Exact, one draw per
+  candidate, no rejection loop, and no spike of probability mass at the bounds
+  that clamping would create.
+- **Exact per candidate.** Before any test condition, the number of answers
+  equal to the key *is* the target. Rolling correctness per question would
+  instead give a binomial spread fixed by the question count (≈ 4.8 % at 100
+  questions), not the configured SD.
+- **The key is the candidate's own.** With a roster, the paper the candidate is
+  registered for — deliberately *not* the set code marked on the sheet, which is
+  a staged conflict for some. Never another set's key.
+- **Test conditions survive.** The case planner fills the questions it is not
+  testing with `SheetBuilder.answer_all`, which marks those plans `free`. Only
+  free plans take the intended option, and only their option changes — style,
+  fill, offset and size stay. Blanks, double marks, faint and erased marks, the
+  first-option / last-question cases and the intensity sweep are exactly as
+  before.
+- **Recorded per sheet.** `ground_truth/SYN_*.json` →
+  `metadata.performance`: `answer_key_set`, `target_fraction`,
+  `target_correct`, `scored_questions` and `intended_answers`. With the key
+  from the manifest, that separates *intended answer*, *correct answer* and
+  *rendered state* for every question. `answers` remains the rendered state,
+  as before. The manifest's `generator.performance.observed` gives the cohort's
+  N, mean, median, SD, minimum, maximum and a ten-bin histogram.
+- **Fully random (legacy)** skips all of this, and reproduces the pre-key
+  answers exactly for the same seed.
+
+No question difficulty, candidate ability or item-response model: every
+question is equally likely to be one a candidate gets right.
+
+### Settings
+
+| | Dialog | Command line | API |
+|---|---|---|---|
+| Solutions | **Generate solution sheets and answer keys** (on) | `--no-solutions` | `generate_solutions=True` |
+| Distribution | Normal (Gaussian) / Fully random (legacy) | `--performance-distribution normal\|random` | `PerformancePolicy(distribution=…)` |
+| Mean | 65 % | `--mean-correct 0.65` | `mean=0.65` |
+| SD | 15 % | `--sd-correct 0.15` | `stddev=0.15` |
+| Minimum / maximum | 0 % / 100 % | `--min-correct 0` / `--max-correct 1` | `minimum=0.0`, `maximum=1.0` |
+
+One default everywhere (`omr_scanner.evaluation.performance.DEFAULT_PERFORMANCE`).
+`0 ≤ minimum ≤ mean ≤ maximum ≤ 100 %` and `SD ≥ 0` are enforced in all three,
+before anything is written.
+
+### Reproducibility and isolation
+
+The keys use `Random(f"{seed}:answer-key:{set code}")` and the performance
+model `Random(f"{seed}:performance")`, following the fold planner's
+`f"{seed}:folds"`. So:
+
+- the same seed gives byte-identical solution files;
+- switching solutions off leaves every candidate image and ground-truth file
+  byte-identical — the keys are drawn either way;
+- adding a set leaves the other sets' keys unchanged;
+- changing the performance settings moves answers and nothing else — rolls,
+  set codes, tags, degradation and the solution files are unchanged.
+
+A stale `Set_*_Solution.*`, `Set_*_Answer_Key.txt` from an earlier run into the
+same folder is removed first (even with solutions off), so a four-set run
+followed by a three-set run does not leave `Set_4` looking valid. Other files
+in `solution/` are left alone.
+
+### Validation run
+
+3 sets, 100 questions (`ece_0000_sample.omrt`), 500 registered candidates, seed
+20260929, default settings — 469 scripts after absentees and missing scans:
+
+| | Configured | Truncated-normal expectation | Observed |
+|---|---|---|---|
+| Mean | 65 % | 64.6 % | 64.4 % |
+| SD | 15 % | 14.5 % | 15.3 % |
+| Median | | | 65 % |
+| Range | 0–100 % | | 16–100 % |
+
+```text
+ 0-10%  |
+10-20%  | 1
+20-30%  |###  6
+30-40%  |##########  24
+40-50%  |####################  47
+50-60%  |########################################  96
+60-70%  |############################################  105
+70-80%  |###############################################  114
+80-90%  |######################  54
+90-100% |#########  22
+```
+
+Scored against the `.txt` keys with OMRFlow's own `score_answers`, every
+candidate's intended answers scored exactly their `target_correct` (469/469),
+and all three solution sheets were read by the recognition engine as their set
+code and key.
+
+### Through the Answer Key and Results stages
+
+Validated on 2026-09-29 in the real application window
+(`tests/gui/test_generated_key_workflow.py` repeats it on every run). The
+stages were driven through the window's own methods, offscreen, with the same
+files an operator would pick; native file choosers and confirmation boxes were
+the only things not clicked.
+
+| | |
+|---|---|
+| Dataset | seed 20260930, sets `10` `11` `12` (two-digit set field, so every code is physically marked), 24 questions, 45 candidates, PNG grayscale, families *baseline* + *answers*, no attendance conflicts, normal 65 % ± 15 % |
+| Scan | 45 read, 0 conflicts |
+| Attendance | Each `attendance/Set_<code>_Attendance.xlsx` imported for its own set; 15 matched per set |
+| Answer Key | Set 10 pasted from `Set_10_Answer_Key.txt`; Sets 11 and 12 read with **Read From Solution Sheet…** from `Set_<code>_Solution.png`; each 24/24, valid, saved and verified with no editing |
+| Keys | manifest = `.txt` = verified key, for all three sets |
+| Results | 45 scored, 0 blocked, 15 per set; every mark from the candidate's own set's key |
+| Reopen | All three keys still verified at revision 1; results unchanged, none stale |
+
+**Marks.** The correct-answer count Results shows equals the ground truth's
+(the rendered sheet scored against its own set's `.txt` key) for **44 of 45**
+candidates, and for all 9 sheets with no answer test condition it also equals
+the drawn target exactly. The one difference is the deliberate
+`UNDERSIZED_MARK` sheet, whose half-size mark the engine did not accept as a
+single answer; scoring counts an undecided answer as a multiple, so that
+candidate has one correct answer fewer. Everywhere else the gap between the
+intended target and the mark is the test condition itself — an all-blank sheet
+scores 0, a sheet answering only its first or last question scores 0 or 1, a
+double mark is a multiple.
+
+| | Configured | Intended (ground truth) | Rendered (ground truth) | Results |
+|---|---|---|---|---|
+| Mean | 65 % | 62.7 % | 51.7 % | 51.6 % |
+| SD | 15 % | 10.4 % | 22.6 % | 22.6 % |
+| Median | | 62.5 % | 58.3 % | 58.3 % |
+| Range | 0–100 % | 41.7–87.5 % | 0–83.3 % | 0–83.3 % |
+
+The intended SD at N = 45 is a genuinely low draw for this seed (its raw
+uniform draws have SD 10.2 %), not a defect: 20,000 draws on the same template
+give mean 64.6 % and SD 14.5 %, the truncated-normal expectation. The rendered
+and Results columns are lower and wider because six of the 45 sheets are
+blank-dominated test cases.
+
+**Which key.** Candidate `10000016` (Set 10) scores 20 against its own key and
+5 or 10 against Sets 11 and 12's; Results shows 20.
+
+**Defects found and fixed on the way** — the project template not reaching
+the scoring stages, Results unable to score per-set attendance or to see a list
+imported during the session, a solution sheet read under the wrong set without
+warning, and the key editor carrying the previous project's text. See
+`CHANGELOG.md`.
+
+**Logical set codes the template cannot spell** (`10` on an `A`–`D` field)
+remain a limitation: the solution sheet reads back as its key with no set, the
+operator must choose the set, and nothing downstream fails. No
+logical-to-physical set mapping exists in OMRFlow.
 
 ## The two halves, and why they are separate
 
@@ -576,6 +830,10 @@ only, exactly as before this feature existed.
 | `--render-mode` | `template` (default) or `reference_scan` |
 | `--reference-scan` | The blank scan to lay marks on. Required by `reference_scan` |
 | `--color-mode` | `grayscale` (default), `color` or `bw` |
+| `--no-solutions` | Do not write `solution/`. The keys are still drawn |
+| `--performance-distribution` | `normal` (default) or `random` (legacy) |
+| `--mean-correct`, `--sd-correct` | Score distribution, as fractions (`0.65`, `0.15`) |
+| `--min-correct`, `--max-correct` | Truncation bounds, as fractions (`0`, `1`) |
 
 Set codes are never assumed to be a single character.
 
@@ -673,3 +931,12 @@ identifier ended up marked on the scan.
 - **The workbook is generated, not copied from a project's own attendance
   template.** Preserving a user-supplied workbook's formatting, logos and
   merged cells is not implemented.
+- **Solution sheets are always clean.** There is no option to degrade them.
+- **The answer-key text file carries no set code or header.** It is the bare
+  answer string the Answer Key stage reads; the set is in the file name and the
+  manifest. Wrong questions (full credit) are never generated.
+- **Candidate performance has no question difficulty or candidate ability.**
+  Every question is equally likely to be answered correctly.
+- **A set code the template's set-code field cannot spell** is left blank on
+  the solution sheet (and, as before, on the candidates' sheets) rather than
+  refused; the manifest says so.

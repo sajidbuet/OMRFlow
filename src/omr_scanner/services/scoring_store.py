@@ -63,7 +63,12 @@ from omr_scanner.domain.scoring import (
     score_answers,
 )
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import batch_store, reconciliation_store, review_store
+from omr_scanner.services import (
+    batch_store,
+    project_sets,
+    reconciliation_store,
+    review_store,
+)
 from omr_scanner.services.answer_key import QuestionPlan, plan_for
 from omr_scanner.services.scoring import (
     CandidateAnswers,
@@ -594,6 +599,31 @@ def gather_inputs(
         keys=verified_keys(database),
         policy=active_policy(database),
     )
+
+
+def scoring_rosters(database: ProjectDatabase) -> tuple[int, ...]:
+    """Every active candidate list the batch is scored against, in set order.
+
+    One per defined set that has attendance, in the operator's set order, then
+    the project's unscoped list if it has one. A project that has defined its
+    sets imports one list per set and has no unscoped list at all, so asking
+    only for the unscoped one - as the Results stage once did - finds nothing,
+    and a multi-set examination could never be marked. A project made before
+    sets existed has only the unscoped list and is scored exactly as before.
+
+    Each list is scored separately and each candidate is marked against the
+    verified key for the set read from their own script, so a set's candidates
+    never meet another set's key through this.
+    """
+    found: list[int] = []
+    for exam_set in project_sets.list_sets(database):
+        roster = reconciliation_store.active_roster(database, exam_set.set_id)
+        if roster is not None and roster.roster_id not in found:
+            found.append(roster.roster_id)
+    unscoped = reconciliation_store.active_roster(database, None)
+    if unscoped is not None and unscoped.roster_id not in found:
+        found.append(unscoped.roster_id)
+    return tuple(found)
 
 
 def inputs_for_candidate(

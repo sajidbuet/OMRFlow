@@ -11,6 +11,11 @@ the results a cancelled run computed are discarded rather than written, so a
 batch never ends up half-marked under two different policies while claiming to
 be current. That is stricter than "leave it coherent" and is the only behaviour
 that keeps the summary honest.
+
+A project with several sets has one candidate list per set, and each is scored
+in turn. Each set's run is committed on its own, so a cancellation part-way
+leaves the sets already marked complete and the rest untouched - never one set
+half-marked.
 """
 
 from __future__ import annotations
@@ -59,7 +64,7 @@ class ScoringWorker(QThread):
     def __init__(
         self,
         database: ProjectDatabase,
-        roster_id: int,
+        roster_ids: tuple[int, ...],
         batch_id: str,
         template: OmrTemplate,
         *,
@@ -69,7 +74,7 @@ class ScoringWorker(QThread):
     ) -> None:
         super().__init__(parent)
         self._database = database
-        self._roster_id = roster_id
+        self._roster_ids = roster_ids
         self._batch_id = batch_id
         self._template = template
         self._computed_by = computed_by
@@ -85,16 +90,20 @@ class ScoringWorker(QThread):
         from omr_scanner.services import scoring_store
 
         try:
-            counts = scoring_store.score_batch(
-                self._database,
-                self._roster_id,
-                self._batch_id,
-                self._template,
-                computed_by=self._computed_by,
-                candidates=self._candidates,
-                should_cancel=lambda: self._cancelled,
-                on_progress=self.progressed.emit,
-            )
+            counts = None
+            for roster_id in self._roster_ids:
+                if self._cancelled:
+                    break
+                counts = scoring_store.score_batch(
+                    self._database,
+                    roster_id,
+                    self._batch_id,
+                    self._template,
+                    computed_by=self._computed_by,
+                    candidates=self._candidates,
+                    should_cancel=lambda: self._cancelled,
+                    on_progress=self.progressed.emit,
+                )
         except OMRScannerError as exc:
             # Type and message only when the message is the services layer's
             # own operator-facing text; nothing from a candidate's record.

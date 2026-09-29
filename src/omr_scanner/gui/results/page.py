@@ -63,7 +63,6 @@ from omr_scanner.gui.results.policy_dialog import ScoringPolicyDialog
 from omr_scanner.gui.results.worker import ScoringResult, ScoringWorker
 from omr_scanner.services import (
     batch_store,
-    reconciliation_store,
     scoring,
     scoring_store,
 )
@@ -108,7 +107,13 @@ class ResultsPageState:
 
     session: ProjectSession | None = None
     template: OmrTemplate | None = None
-    roster_id: int | None = None
+    roster_ids: tuple[int, ...] = ()
+    """Every active candidate list: one per defined set, then any unscoped one.
+
+    See :func:`~omr_scanner.services.scoring_store.scoring_rosters`. Re-read on
+    every refresh rather than held from when the project opened, so a list
+    imported on the Attendance stage during this session is scored without
+    closing and reopening the project."""
     batch_id: str | None = None
     reviewer: str = ""
     results: list[StoredResult] = field(default_factory=list)
@@ -310,11 +315,10 @@ class ResultsPage(WorkflowPage):
         """Adopt an opened project, or clear everything when one closes."""
         self.state.session = session
         self.state.results = []
-        self.state.roster_id = None
+        self.state.roster_ids = ()
         self.state.batch_id = None
         if session is not None:
-            roster = reconciliation_store.active_roster(session.database)
-            self.state.roster_id = roster.roster_id if roster else None
+            self.state.roster_ids = scoring_store.scoring_rosters(session.database)
             batches = batch_store.list_batches(session.database, limit=1)
             self.state.batch_id = batches[0].batch_id if batches else None
         self._refresh_policy_label()
@@ -406,38 +410,43 @@ class ResultsPage(WorkflowPage):
         time, and the batch will fail five times.
         """
         database = self.database
-        if database is None or self.state.roster_id is None:
+        if database is not None:
+            self.state.roster_ids = scoring_store.scoring_rosters(database)
+        if database is None or not self.state.roster_ids:
             return ("No project or candidate list is open.",)
         if self.state.batch_id is None:
             return ("No batch has been processed in this project yet.",)
         if self.state.template is None:
             return ("No template is loaded. Load it on the Scan stage.",)
 
-        try:
-            data = scoring_store.gather_inputs(
-                database, self.state.roster_id, self.state.batch_id, self.state.template
-            )
-        except OMRScannerError as exc:
-            return (exc.user_message or str(exc),)
-
         issues: list[str] = []
-        needed = {
-            answers.set_code
-            for answers in data.answers.values()
-            if answers.set_code
-        }
-        for code in sorted(needed - set(data.keys)):
-            issues.append(f"Set {code} has no verified answer key.")
-        for entry in data.entries:
-            outcome = scoring.score_candidate(
-                scoring_store.inputs_for_candidate(data, entry)
-            )
-            if outcome.status is ResultStatus.BLOCKED:
-                issues.append(
-                    f"Candidate {entry.candidate_id or '(unknown)'}: "
-                    f"{outcome.describe_blocks()}"
+        missing: set[str] = set()
+        for roster_id in self.state.roster_ids:
+            try:
+                data = scoring_store.gather_inputs(
+                    database, roster_id, self.state.batch_id, self.state.template
                 )
-        return tuple(issues)
+            except OMRScannerError as exc:
+                return (exc.user_message or str(exc),)
+            needed = {
+                answers.set_code
+                for answers in data.answers.values()
+                if answers.set_code
+            }
+            missing |= needed - set(data.keys)
+            for entry in data.entries:
+                outcome = scoring.score_candidate(
+                    scoring_store.inputs_for_candidate(data, entry)
+                )
+                if outcome.status is ResultStatus.BLOCKED:
+                    issues.append(
+                        f"Candidate {entry.candidate_id or '(unknown)'}: "
+                        f"{outcome.describe_blocks()}"
+                    )
+        return (
+            *(f"Set {code} has no verified answer key." for code in sorted(missing)),
+            *issues,
+        )
 
     def show_preflight(self) -> None:
         """Show the rules and everything blocking, in one dialog."""
@@ -473,9 +482,11 @@ class ResultsPage(WorkflowPage):
     def score_batch(self, candidates: tuple[str, ...] | None = None) -> bool:
         """Mark the batch - or the named candidates - off the GUI thread."""
         database = self.database
+        if database is not None:
+            self.state.roster_ids = scoring_store.scoring_rosters(database)
         if (
             database is None
-            or self.state.roster_id is None
+            or not self.state.roster_ids
             or self.state.batch_id is None
             or self.state.template is None
         ):
@@ -494,7 +505,7 @@ class ResultsPage(WorkflowPage):
             self._worker.ready.disconnect()
         worker = ScoringWorker(
             database,
-            self.state.roster_id,
+            self.state.roster_ids,
             self.state.batch_id,
             self.state.template,
             computed_by=self.state.reviewer,
@@ -590,15 +601,22 @@ class ResultsPage(WorkflowPage):
         selected = self.selected_result()
         keep = selected.candidate_id if selected else None
 
-        if database is None or self.state.roster_id is None or self.state.batch_id is None:
+        if database is not None:
+            self.state.roster_ids = scoring_store.scoring_rosters(database)
+        if database is None or not self.state.roster_ids or self.state.batch_id is None:
             self.state.results = []
             self.state.counts = None
         else:
             _, statuses, attention = _FILTERS[max(0, self.filter_combo.currentIndex())]
             text = self.search_box.text().strip().casefold()
-            everything = scoring_store.list_results(
-                database, self.state.roster_id, self.state.batch_id, self.state.template
-            )
+            batch_id = self.state.batch_id
+            everything = [
+                item
+                for roster_id in self.state.roster_ids
+                for item in scoring_store.list_results(
+                    database, roster_id, batch_id, self.state.template
+                )
+            ]
             # The summary describes the whole batch, not the filtered view, so
             # it is taken before filtering and from this same read.
             self.state.counts = scoring_store.summarise(everything)
@@ -806,7 +824,7 @@ class ResultsPage(WorkflowPage):
         database = self.database
         ready = (
             database is not None
-            and self.state.roster_id is not None
+            and bool(self.state.roster_ids)
             and self.state.batch_id is not None
             and self.state.template is not None
         )
