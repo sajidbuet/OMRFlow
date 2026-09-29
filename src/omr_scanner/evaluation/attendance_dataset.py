@@ -997,6 +997,7 @@ def bind_case(
         marks=rendered,
         roll=roll,
         intended_roll=written_roll(candidate),
+        intended_set=written_set(candidate),
         roll_marks=marks,
         roll_ambiguous=ambiguous,
         set_code=set_code,
@@ -1031,6 +1032,18 @@ def written_roll(candidate: SyntheticCandidate) -> str:
     if candidate.conflict is ConflictKind.UNKNOWN_CANDIDATE_ID:
         return candidate.observed_roll or ""
     return candidate.roll
+
+
+def written_set(candidate: SyntheticCandidate) -> str:
+    """The set code this script's candidate wrote in the set-code boxes.
+
+    The paper they are registered for - which is the paper they sat - whatever
+    the bubbles say: :attr:`ConflictKind.WRONG_SET` and
+    :attr:`ConflictKind.BLANK_SET` are bubbling mistakes, and the written code
+    is what an operator resolves them with, exactly as :func:`written_roll`
+    is for the identifier.
+    """
+    return candidate.set_code
 
 
 def _column_plans(
@@ -1111,6 +1124,7 @@ __all__ = [
     "write_ground_truth",
     "write_workbooks",
     "written_roll",
+    "written_set",
 ]
 
 

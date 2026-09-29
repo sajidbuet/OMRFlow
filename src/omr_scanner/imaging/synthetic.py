@@ -1479,12 +1479,16 @@ def _draw_written_character(
     grey = _mark_grey(written.intensity)
 
     extent = _font_digit_extent()
+    # A box can hold more than one character - a set code "10" printed as one
+    # bubble per whole code has one box - and the width ceiling is on all of
+    # them together. One character is exactly the single-glyph case.
+    count = len(written.character.strip())
     size = 0
     if extent is not None:
         size = int(
             min(
                 _WRITTEN_HEIGHT_RATIO * box_h * written.size_scale / extent[1],
-                _WRITTEN_WIDTH_RATIO * box_w / extent[0],
+                _WRITTEN_WIDTH_RATIO * box_w / (extent[0] * count),
             )
         )
     font = _written_font(size) if size >= 4 else None
@@ -1539,7 +1543,7 @@ def _draw_written_character_fallback(
     (glyph_w, glyph_h), _baseline = cv2.getTextSize("0", _FALLBACK_FONT, 1.0, 1)
     scale = min(
         _WRITTEN_HEIGHT_RATIO * box_h * size_scale / max(glyph_h, 1),
-        _WRITTEN_WIDTH_RATIO * box_w / max(glyph_w, 1),
+        _WRITTEN_WIDTH_RATIO * box_w / max(glyph_w * len(character.strip()), 1),
     )
     if scale <= 0.0:
         return

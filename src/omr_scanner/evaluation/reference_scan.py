@@ -66,6 +66,7 @@ import cv2
 import numpy as np
 
 from omr_scanner.errors import ImagingError, OMRScannerError
+from omr_scanner.evaluation.bubble_cleanup import BubbleCleanup, clean_reference_bubbles
 from omr_scanner.evaluation.write_in import (
     WriteInPreparation,
     prepare_reference_write_in,
@@ -175,6 +176,10 @@ class ReferenceScan:
             erased from them; ``None`` when the template has none, or when
             preparing them was turned off. When present, :attr:`image` is the
             scan with those boxes emptied.
+        bubbles: What old candidate marks were found in the template's
+            bubbles and removed; ``None`` when cleaning them was turned off.
+            When present, :attr:`image` has those bubbles restored to their
+            printed, unmarked appearance.
     """
 
     name: str
@@ -185,6 +190,7 @@ class ReferenceScan:
     mark_layer_scale: int
     registration: ReferenceRegistration
     write_in: WriteInPreparation | None = None
+    bubbles: BubbleCleanup | None = None
 
     @property
     def width(self) -> int:
@@ -228,6 +234,7 @@ class ReferenceScan:
             "mark_layer_scale": self.mark_layer_scale,
             "registration": self.registration.describe(),
             "write_in": self.write_in.describe() if self.write_in is not None else None,
+            "bubbles": self.bubbles.describe() if self.bubbles is not None else None,
         }
 
 
@@ -238,16 +245,22 @@ def load_reference_scan(
     color_mode: ColorMode = ColorMode.GRAYSCALE,
     max_mark_layer_scale: int = MAX_MARK_LAYER_SCALE,
     prepare_write_in: bool = True,
+    clean_bubbles: bool = True,
 ) -> ReferenceScan:
     """Decode a blank scan and register it against the template.
 
-    Also locates the write-in boxes above the identifier and set-code fields
-    and erases any handwriting already in them
-    (:func:`~omr_scanner.evaluation.write_in.prepare_reference_write_in`). A
-    "blank" reference is often a used script, and the number somebody once
-    wrote on it would otherwise sit under - and contradict - every identifier
-    this run writes. Done here, once, because the reference is shared by every
-    sheet of the run.
+    A "blank" reference is often a used script, and what somebody once wrote
+    and marked on it would otherwise sit under - and contradict - every sheet
+    this run draws. So two things are removed from it, in this order, here,
+    once, because the reference is shared by every sheet of the run:
+
+    1. handwriting in the write-in boxes above the identifier and set-code
+       fields (:func:`~omr_scanner.evaluation.write_in.prepare_reference_write_in`);
+    2. old candidate marks in every bubble the template declares - identifier,
+       set code and answers alike
+       (:func:`~omr_scanner.evaluation.bubble_cleanup.clean_reference_bubbles`).
+
+    A genuinely blank scan comes through both unchanged.
 
     Args:
         path: The blank, unmarked scan of the printed form.
@@ -261,8 +274,10 @@ def load_reference_scan(
             very end (see :class:`~omr_scanner.imaging.synthetic.ColorMode`).
         max_mark_layer_scale: Ceiling on the mark layer's supersampling.
         prepare_write_in: Locate and empty the write-in boxes. ``False`` keeps
-            the scan exactly as decoded, and sheets written onto it fall back
-            to write-in boxes derived from the template alone.
+            them exactly as decoded, and sheets written onto it fall back to
+            write-in boxes derived from the template alone.
+        clean_bubbles: Remove old candidate marks from the bubbles. ``False``
+            keeps them exactly as decoded.
 
     Returns:
         The registered reference, ready to be reused for every sheet.
@@ -350,6 +365,15 @@ def load_reference_scan(
             canonical_width=config.canonical_width,
             canonical_height=config.canonical_height,
         )
+    cleanup: BubbleCleanup | None = None
+    if clean_bubbles:
+        image, cleanup = clean_reference_bubbles(
+            image,
+            canonical_to_scan,
+            template,
+            canonical_width=config.canonical_width,
+            canonical_height=config.canonical_height,
+        )
 
     return ReferenceScan(
         name=path.name,
@@ -360,6 +384,7 @@ def load_reference_scan(
         mark_layer_scale=scale,
         registration=registration,
         write_in=preparation,
+        bubbles=cleanup,
     )
 
 

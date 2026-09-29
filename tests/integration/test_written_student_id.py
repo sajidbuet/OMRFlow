@@ -474,34 +474,56 @@ class TestDeterminism:
 # ----------------------------------------------------------------------
 # Reference scans: old handwriting is removed, borders kept
 # ----------------------------------------------------------------------
+def used_form(
+    template: OmrTemplate,
+    *,
+    printed_rows: tuple[str, ...] = (IDENTIFIER_ROLE,),
+    size_scale: float = 1.15,
+) -> np.ndarray:
+    """A 'blank' form with an old ``8`` written in every printed box.
+
+    By default only the identifier boxes are printed - exactly what this
+    generator draws on a page made from nothing - while the template also
+    derives a set-code row.
+    """
+    render = PageRender(
+        width=template.page.canonical_width_px,
+        height=template.page.canonical_height_px,
+        dpi=150,
+        derived_from="canonical",
+    )
+    cells = [c for r in write_in_rows(template) if r.role in printed_rows for c in r.cells]
+    spec = sheet_spec_from_template(
+        template,
+        {},
+        render=render,
+        write_in_boxes=tuple(
+            PrintedBoxSpec(x=c.x, y=c.y, width=c.width, height=c.height) for c in cells
+        ),
+        written_characters=tuple(
+            WrittenCharacterSpec(
+                center=_point(c.center_x, c.center_y), width=c.width, height=c.height,
+                character="8", size_scale=size_scale, offset_x=0.05,
+            )
+            for c in cells
+        ),
+    )
+    return render_sheet(spec).image
+
+
+def assert_boxes_empty(reference, role: str) -> None:
+    row = next(r for r in reference.write_in.rows if r.role == role)
+    assert row.refined
+    for cell in page_cells(row, reference.canonical_width, reference.canonical_height):
+        crop = cell_crop(reference.image, cell, reference.canonical_to_scan, inset=0.0)
+        assert np.count_nonzero(crop < 128) == 0, f"old handwriting survived in {role}"
+
+
 class TestReferenceScanStaleText:
     @pytest.fixture
     def stale_reference(self, template, tmp_path: Path):
         """A 'blank' form that already has an old number written in its boxes."""
-        render = PageRender(
-            width=template.page.canonical_width_px,
-            height=template.page.canonical_height_px,
-            dpi=150,
-            derived_from="canonical",
-        )
-        row = identifier_row(write_in_rows(template))
-        spec = sheet_spec_from_template(
-            template,
-            {},
-            render=render,
-            write_in_boxes=tuple(
-                PrintedBoxSpec(x=c.x, y=c.y, width=c.width, height=c.height)
-                for c in row.cells
-            ),
-            written_characters=tuple(
-                WrittenCharacterSpec(
-                    center=_point(c.center_x, c.center_y), width=c.width, height=c.height,
-                    character="8", size_scale=1.15, offset_x=0.05,
-                )
-                for c in row.cells
-            ),
-        )
-        image = render_sheet(spec).image
+        image = used_form(template)
         path = tmp_path / "used-blank.png"
         cv2.imwrite(str(path), image)
         return path, image
@@ -512,7 +534,15 @@ class TestReferenceScanStaleText:
         preparation = reference.write_in
         assert preparation is not None
         assert preparation.erased_pixels > 0
+        # Every border of every printed box: top, bottom and one more vertical
+        # than there are boxes. The set-code row has no printed box on this
+        # form, so it is reported as such rather than counted as missed.
+        identifier = identifier_row(write_in_rows(template))
+        assert preparation.borders_expected == len(identifier.cells) + 3
         assert preparation.borders_found == preparation.borders_expected
+        assert preparation.unprinted_rows == ("set_code",)
+        set_code = next(r for r in preparation.rows if r.role == SET_CODE_ROLE)
+        assert not set_code.refined
 
         row = next(r for r in preparation.rows if r.role == IDENTIFIER_ROLE)
         assert row.refined
@@ -554,3 +584,108 @@ class TestReferenceScanStaleText:
         reference = load_reference_scan(path, template, prepare_write_in=False)
         assert reference.write_in is None
         assert np.array_equal(reference.image, original)
+
+    def test_a_form_that_prints_both_rows_has_both_emptied(self, template, tmp_path: Path):
+        image = used_form(template, printed_rows=(IDENTIFIER_ROLE, SET_CODE_ROLE))
+        path = tmp_path / "used-both.png"
+        cv2.imwrite(str(path), image)
+        reference = load_reference_scan(path, template)
+        preparation = reference.write_in
+        rows = write_in_rows(template)
+        assert preparation.borders_expected == sum(len(r.cells) + 3 for r in rows)
+        assert preparation.borders_found == preparation.borders_expected
+        assert preparation.unprinted_rows == ()
+        assert_boxes_empty(reference, IDENTIFIER_ROLE)
+        assert_boxes_empty(reference, SET_CODE_ROLE)
+
+    def test_a_row_the_form_does_not_print_is_left_as_scanned(self, template, tmp_path: Path):
+        # Printed matter where a set-code box would be derived - a label, say -
+        # is not handwriting, and nothing licenses erasing it.
+        image = used_form(template)
+        row = next(r for r in write_in_rows(template) if r.role == SET_CODE_ROLE)
+        width, height = template.page.canonical_width_px, template.page.canonical_height_px
+        (x0, y0, x1, y1), = page_cells(row, width, height)
+        cx, cy = round((x0 + x1) / 2), round((y0 + y1) / 2)
+        cv2.putText(image, "S", (cx - 10, cy + 10), cv2.FONT_HERSHEY_SIMPLEX, 1.0, 0, 3)
+        path = tmp_path / "labelled.png"
+        cv2.imwrite(str(path), image)
+        reference = load_reference_scan(path, template)
+        assert reference.write_in.unprinted_rows == ("set_code",)
+        region = (slice(round(y0), round(y1)), slice(round(x0), round(x1)))
+        assert np.array_equal(reference.image[region], image[region])
+
+    def test_a_stroke_touching_a_border_does_not_move_it(self, template, tmp_path: Path):
+        # A handwritten upright - a "1", the stem of a "4" - drawn against a
+        # box's side is dark, vertical and next to where the border is looked
+        # for. It must neither widen the border into the box nor be taken for
+        # it: the boxes found are the ones found on the same form without it.
+        clean = used_form(template)
+        cv2.imwrite(str(tmp_path / "clean.png"), clean)
+        touched = clean.copy()
+        row = identifier_row(write_in_rows(template))
+        width, height = template.page.canonical_width_px, template.page.canonical_height_px
+        cells = page_cells(row, width, height)
+        for index in (2, 5):
+            _x0, y0, x1, y1 = cells[index]
+            top, bottom = round(y0 + 0.15 * (y1 - y0)), round(y1 - 0.15 * (y1 - y0))
+            # Up against the line: no paper column between stroke and border.
+            touched[top:bottom, round(x1) - 6 : round(x1) - 1] = 20
+        cv2.imwrite(str(tmp_path / "touched.png"), touched)
+
+        def interiors(name: str) -> list[tuple[float, float]]:
+            reference = load_reference_scan(tmp_path / name, template)
+            found = next(r for r in reference.write_in.rows if r.role == IDENTIFIER_ROLE)
+            return [(c.x * width, (c.x + c.width) * width) for c in found.cells]
+
+        for (a0, a1), (b0, b1) in zip(interiors("clean.png"), interiors("touched.png"),
+                                      strict=True):
+            assert abs(a0 - b0) <= 1.0 and abs(a1 - b1) <= 1.0
+        reference = load_reference_scan(tmp_path / "touched.png", template)
+        assert_boxes_empty(reference, IDENTIFIER_ROLE)
+
+    def test_a_worn_scan_with_strokes_across_the_borders(self, template, tmp_path: Path):
+        # What a used script looks like after a scanner: digits big enough to
+        # run over the box edges, border lines with gaps in them, blur, noise
+        # and JPEG compression. Every border is still located from the evidence
+        # along the rest of its length, and the old number is still removed.
+        image = used_form(template, size_scale=1.6)
+        row = identifier_row(write_in_rows(template))
+        width, height = template.page.canonical_width_px, template.page.canonical_height_px
+        cells = page_cells(row, width, height)
+        rng = np.random.default_rng(SEED)
+        for x0, y0, x1, y1 in cells:
+            # A gap in each box's left border and in its top border.
+            gap_y = round(y0 + (y1 - y0) * rng.uniform(0.2, 0.6))
+            image[gap_y : gap_y + round(0.15 * (y1 - y0)), round(x0) - 2 : round(x0) + 3] = 255
+            gap_x = round(x0 + (x1 - x0) * rng.uniform(0.2, 0.6))
+            image[round(y0) - 2 : round(y0) + 3, gap_x : gap_x + round(0.15 * (x1 - x0))] = 255
+        image = cv2.GaussianBlur(image, (3, 3), 0)
+        noisy = image.astype(np.float64) + rng.normal(0.0, 6.0, image.shape)
+        image = np.clip(noisy, 0, 255).astype(np.uint8)
+        path = tmp_path / "worn.jpg"
+        cv2.imwrite(str(path), image, [cv2.IMWRITE_JPEG_QUALITY, 70])
+
+        reference = load_reference_scan(path, template)
+        preparation = reference.write_in
+        assert preparation.borders_expected == len(row.cells) + 3
+        assert preparation.borders_found == preparation.borders_expected
+        assert preparation.erased_pixels > 0
+        assert_boxes_empty(reference, IDENTIFIER_ROLE)
+
+        # Every border is as intact after cleaning as it was before: along its
+        # length, as much of it is still dark (the cut gaps excepted).
+        before = to_grey(cv2.imread(str(path), cv2.IMREAD_UNCHANGED))
+        after = to_grey(reference.image)
+        top, bottom = round(cells[0][1]), round(cells[0][3])
+        left, right = round(cells[0][0]), round(cells[-1][2])
+        strips = [
+            (slice(y - 2, y + 3), slice(left, right), 0) for y in (top, bottom)
+        ] + [
+            (slice(top + 3, bottom - 2), slice(x - 2, x + 3), 1)
+            for x in {round(c[0]) for c in cells} | {right}
+        ]
+        for rows_, cols_, axis in strips:
+            kept = np.mean(after[rows_, cols_].min(axis=axis) < 128)
+            had = np.mean(before[rows_, cols_].min(axis=axis) < 128)
+            assert had > 0.7
+            assert kept >= had - 0.02, f"border damaged: {kept:.2f} of it dark, was {had:.2f}"

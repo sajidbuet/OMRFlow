@@ -374,6 +374,10 @@ class SheetCase:
             bubbled number is still written correctly above the grid, which is
             what lets an operator resolve it. ``""`` when there is no intended
             identifier (a solution sheet), and then nothing is written.
+        intended_set: The same for the set code: what the candidate wrote in
+            the set-code boxes, as opposed to :attr:`set_code`, the bubbles'
+            reading. A wrongly bubbled, double-marked or blank set code is
+            still written correctly. ``""`` when there is none.
     """
 
     index: int
@@ -400,6 +404,7 @@ class SheetCase:
     notes: str = ""
     intended: IntendedResponse | None = None
     intended_roll: str = ""
+    intended_set: str = ""
 
     @property
     def tag_values(self) -> tuple[str, ...]:
@@ -556,6 +561,7 @@ class SheetBuilder:
         self._set_plans: dict[int, MarkPlan] = {}
         self._question_plans: dict[int, MarkPlan] = {}
         self._intended_roll = ""
+        self._intended_set = ""
         self.notes = ""
 
     # -- tagging -------------------------------------------------------
@@ -608,9 +614,15 @@ class SheetBuilder:
 
     # -- set code ------------------------------------------------------
     def set_code(self, value: str, **kwargs: Any) -> SheetBuilder:
-        """Mark the set-code positions to spell ``value``."""
+        """Mark the set-code positions to spell ``value``.
+
+        ``value`` is also the set the candidate *intended*, written in the
+        set-code boxes; :meth:`set_column` calls made afterwards change only
+        the bubbles, as :meth:`identifier` explains for the identifier.
+        """
         if not self.layout.has_set_code:
             return self
+        self._intended_set = value
         if self.layout.set_columns == 1 and value in self.layout.set_symbols:
             self._set_plans[0] = MarkPlan(labels=(value,), **kwargs)
             return self
@@ -702,6 +714,7 @@ class SheetBuilder:
             set_marks=set_marks,
             set_ambiguous=set_ambiguous,
             intended_roll=self._intended_roll,
+            intended_set=self._intended_set,
             # A note passed here wins over one set on the builder, so a caller
             # can describe the finished case without having to clear the
             # builder's own note first.

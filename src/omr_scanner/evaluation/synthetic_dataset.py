@@ -164,7 +164,12 @@ from omr_scanner.evaluation.test_cases import (
     SheetCase,
     TestCaseTag,
 )
-from omr_scanner.evaluation.write_in import WriteInRow, identifier_row, write_in_rows
+from omr_scanner.evaluation.write_in import (
+    WriteInRow,
+    identifier_row,
+    set_code_row,
+    write_in_rows,
+)
 from omr_scanner.imaging.folds import PagePlacement, apply_corner_folds
 from omr_scanner.imaging.synthetic import (
     AnswerBubbleSpec,
@@ -194,7 +199,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _LOGGER = logging.getLogger(__name__)
 
-GENERATOR_VERSION = "2.4"
+GENERATOR_VERSION = "2.5"
 """Version of this generator, recorded in every manifest.
 
 Changing how a defect is drawn changes what a dataset means, so a benchmark
@@ -202,8 +207,10 @@ result that does not say which generator produced its data is not comparable
 with anything. Bumped to 2.0 when named test cases, DPI-based rendering and
 JPEG output arrived, to 2.1 when the reference-scan rendering mode and the
 colour modes did, to 2.2 for physical corner folds, to 2.3 when answer keys,
-solution sheets and key-relative candidate performance arrived, and to 2.4
-when the intended identifier began to be written in the write-in boxes."""
+solution sheets and key-relative candidate performance arrived, to 2.4 when
+the intended identifier began to be written in the write-in boxes, and to 2.5
+when the intended set code was written too and a reference scan's old
+bubble marks began to be removed."""
 
 _WRITTEN_JITTER_X = 0.04
 """Largest horizontal displacement of a written character, in box widths."""
@@ -577,6 +584,62 @@ def written_identifier(
     row = identifier_row(rows)
     if row is None:
         return NOTHING_WRITTEN
+    value = case.intended_roll[: len(row.cells)]
+    return _written_in(row, value, tuple(value), f"{seed}:write-in:{value}", print_boxes)
+
+
+def written_set_code(
+    case: SheetCase,
+    rows: Sequence[WriteInRow],
+    *,
+    seed: int,
+    print_boxes: bool,
+) -> WrittenIdentifier:
+    """Decide what the candidate wrote above the set-code bubbles, and where.
+
+    The case's :attr:`~omr_scanner.evaluation.test_cases.SheetCase.intended_set`
+    - never the bubbles' reading - by the same rule and with the same drawing
+    as :func:`written_identifier`, from a generator of its own so the identifier
+    is written exactly as it was before set codes were.
+
+    Laid out the way the field spells a code, as
+    :meth:`~omr_scanner.evaluation.test_cases.SheetBuilder.set_code` marks it:
+    a field with one position whose bubbles are whole codes (``10``, ``11``)
+    has one box and the whole code goes in it; a positional field has one box
+    per position and one character in each, so ``05`` keeps its leading zero.
+    A code the field cannot spell - a ``10`` on an ``A``-``D`` field - is not
+    written: nothing a candidate could bubble corresponds to it, and the
+    template says nothing about what such a sheet would carry.
+
+    Returns:
+        :data:`NOTHING_WRITTEN` when the template has no set-code row.
+    """
+    row = set_code_row(rows)
+    if row is None:
+        return NOTHING_WRITTEN
+    value = case.intended_set
+    if len(row.cells) == 1 and value in row.symbols:
+        texts: tuple[str, ...] = (value,)
+    elif len(value) == len(row.cells) and all(ch in row.symbols for ch in value):
+        texts = tuple(value)
+    else:
+        value, texts = "", ()
+    return _written_in(row, value, texts, f"{seed}:write-in-set:{value}", print_boxes)
+
+
+def _written_in(
+    row: WriteInRow,
+    value: str,
+    texts: Sequence[str],
+    stream: str,
+    print_boxes: bool,
+) -> WrittenIdentifier:
+    """One row's printed boxes and ``texts`` written in them, one per box.
+
+    The small unevenness of each character is drawn from ``stream`` - keyed on
+    the dataset seed and the written value, never on the sheet's index - and
+    from no other random source.
+    """
     boxes = (
         tuple(
             PrintedBoxSpec(x=cell.x, y=cell.y, width=cell.width, height=cell.height)
@@ -585,11 +648,10 @@ def written_identifier(
         if print_boxes
         else ()
     )
-    value = case.intended_roll[: len(row.cells)]
     if not value:
         return WrittenIdentifier(value="", boxes=boxes, characters=())
 
-    rng = random.Random(f"{seed}:write-in:{value}")
+    rng = random.Random(stream)
     characters = tuple(
         WrittenCharacterSpec(
             center=NormalizedPoint(
@@ -597,13 +659,13 @@ def written_identifier(
             ),
             width=cell.width,
             height=cell.height,
-            character=character,
+            character=text,
             offset_x=rng.uniform(-_WRITTEN_JITTER_X, _WRITTEN_JITTER_X),
             offset_y=rng.uniform(-_WRITTEN_JITTER_Y, _WRITTEN_JITTER_Y),
             size_scale=1.0 + rng.uniform(-_WRITTEN_SIZE_JITTER, _WRITTEN_SIZE_JITTER),
         )
-        for cell, character in zip(row.cells, value, strict=False)
-        if character.strip()
+        for cell, text in zip(row.cells, texts, strict=False)
+        if text.strip()
     )
     return WrittenIdentifier(value=value, boxes=boxes, characters=characters)
 
@@ -734,6 +796,7 @@ def render_case(
     outlines: Sequence[MarkerOutline] | None = None,
     write_in: Sequence[WriteInRow] | None = None,
     render_student_id_text: bool = True,
+    render_set_code_text: bool = True,
 ) -> GeneratedSheet:
     """Render one planned case and return it with its ground truth.
 
@@ -772,6 +835,11 @@ def render_case(
             identifier's write-in boxes (and, on a page drawn from the
             template, print the boxes). On by default; off reproduces a page
             without either, as generator 2.3 drew it.
+        render_set_code_text: The same for the case's intended set code and
+            the set-code boxes; see :func:`written_set_code`. On a reference
+            scan, a row whose boxes the form does not print (see
+            :attr:`~omr_scanner.evaluation.write_in.WriteInPreparation.unprinted_rows`)
+            has nothing written in it, for either field.
 
     Returns:
         The image and the ground truth, which is copied from the case rather
@@ -797,13 +865,22 @@ def render_case(
     effective = case if source is None else strip_unrenderable_defects(case)
 
     rows: Sequence[WriteInRow] = ()
-    if render_student_id_text:
+    if render_student_id_text or render_set_code_text:
         if source is not None and source.write_in is not None:
-            rows = source.write_in.rows
+            unprinted = set(source.write_in.unprinted_rows)
+            rows = tuple(row for row in source.write_in.rows if row.zone_id not in unprinted)
         else:
             rows = write_in if write_in is not None else write_in_rows(template)
-    written = written_identifier(
-        effective, rows, seed=seed, print_boxes=source is None
+    id_rows = rows if render_student_id_text else ()
+    set_rows = rows if render_set_code_text else ()
+    written_id = written_identifier(effective, id_rows, seed=seed, print_boxes=source is None)
+    written_set = written_set_code(effective, set_rows, seed=seed, print_boxes=source is None)
+    # Both are the candidate's ink and go down together, before anything
+    # degrades the page.
+    written = WrittenIdentifier(
+        value=written_id.value,
+        boxes=written_id.boxes + written_set.boxes,
+        characters=written_id.characters + written_set.characters,
     )
 
     if source is not None:
@@ -828,12 +905,16 @@ def render_case(
         },
         "mark_styles": _mark_styles(effective),
     }
-    if identifier_row(rows) is not None:
+    if identifier_row(id_rows) is not None:
         # What the candidate wrote above the bubbles, which a staged identifier
         # defect deliberately makes differ from `roll`. Null when nothing was
         # written because the sheet has no intended identifier (a solution
         # sheet); absent when there were no boxes to write in at all.
-        metadata["written_student_id"] = written.value or None
+        metadata["written_student_id"] = written_id.value or None
+    if set_code_row(set_rows) is not None:
+        # The same for the set code, which a staged wrong or blank set makes
+        # differ from `set_code`.
+        metadata["written_set_code"] = written_set.value or None
     if effective.intended is not None:
         # The candidate's intended answers against their own set's key, before
         # any test condition was laid over them. Present only when the
@@ -1107,6 +1188,7 @@ def generate_dataset(
     fold_policy: FoldPolicy | None = None,
     generate_solutions: bool = True,
     render_student_id_text: bool = True,
+    render_set_code_text: bool = True,
     performance: PerformancePolicy | None = None,
     on_progress: Callable[[GenerationProgress], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
@@ -1170,6 +1252,8 @@ def generate_dataset(
             :func:`written_identifier`. On by default. It changes pixels only:
             no identifier, answer, set code, tag or expected reading changes
             either way.
+        render_set_code_text: The same for each script's *intended* set code
+            and the set-code boxes - see :func:`written_set_code`.
         on_progress: Called after each sheet is written. Runs on the calling
             thread, so a GUI caller must marshal to the main thread.
         should_cancel: Polled before each sheet; returning ``True`` stops the
@@ -1339,6 +1423,7 @@ def generate_dataset(
             outlines=outlines,
             write_in=write_in,
             render_student_id_text=render_student_id_text,
+            render_set_code_text=render_set_code_text,
         )
         success, buffer = cv2.imencode(chosen_format.suffix, sheet.image, encode_params)
         if not success:  # pragma: no cover - encoding a valid array
@@ -1385,6 +1470,7 @@ def generate_dataset(
             outlines=outlines,
             write_in=write_in,
             render_student_id_text=render_student_id_text,
+            render_set_code_text=render_set_code_text,
         )
         if solution_files
         else None
@@ -1421,6 +1507,7 @@ def generate_dataset(
             # describing folds that never happened.
             "folds": folds.describe() if folds.active else None,
             "written_student_id": render_student_id_text and identifier_row(write_in) is not None,
+            "written_set_code": render_set_code_text and set_code_row(write_in) is not None,
             # The canonical keys, whether or not their solution files were
             # written: they are what every candidate's intended answers were
             # decided against.
@@ -1511,6 +1598,7 @@ def _write_solutions(
     outlines: Sequence[MarkerOutline],
     write_in: Sequence[WriteInRow],
     render_student_id_text: bool,
+    render_set_code_text: bool,
 ) -> dict[str, Any]:
     """Render and write every set's solution sheet, key text and ground truth.
 
@@ -1540,6 +1628,7 @@ def _write_solutions(
             outlines=outlines,
             write_in=write_in,
             render_student_id_text=render_student_id_text,
+            render_set_code_text=render_set_code_text,
         )
         success, buffer = cv2.imencode(image_format.suffix, sheet.image, list(encode_params))
         if not success:  # pragma: no cover - encoding a valid array

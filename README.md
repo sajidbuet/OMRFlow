@@ -246,6 +246,7 @@ synthetically tested" to a qualified stable release.
 | Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
+| Synthetic written Student ID & set code; used-reference cleanup | 🟠 **Implemented — automated tests passing; inspected visually on generated sheets and a real used sample form, not yet used in a real session.** The *intended* Student ID and set code (not the bubbled ones) are written in the boxes above their bubbles; a used reference form has its old writing **and its old bubble marks** removed first, keeping the printed rings, labels and borders. On the sample: 110/110 filled bubbles removed, none of the 390 unfilled touched; generated sheets read back 100/100. Full suite after the set-code and cleanup work: 5817 passed, 15 skipped, 0 failed. See below |
 
 #### Answer keys, solution sheets and key-relative candidate performance
 
@@ -347,6 +348,120 @@ always clean. A logical set code the template's set-code field cannot spell
 candidates' sheets: nothing crashes, the operator must choose the set, and such
 candidates are held as *No question-paper set was read* rather than marked
 against another set's key. No logical-to-physical set mapping exists.
+
+#### Written Student ID and set code, and used reference forms cleaned first
+
+A real script carries its identity twice: **written** in a row of boxes, then
+**bubbled** underneath. Synthetic sheets now do the same for both the Student
+ID and the set code, because the written value is what an operator reads to
+resolve a wrongly bubbled, double-marked or blank field. And because a
+"blank" reference form is often a used script, its old writing *and* its old
+bubble marks are removed before any sheet is drawn on it.
+
+**Implemented.**
+
+- **The intended value is written, never the bubbles' reading.** Student ID:
+  the case's `intended_roll` — the registered roll, or an *unknown candidate*
+  script's own number; nothing on a solution sheet. A sheet bubbled
+  `13000019`, `1300?016` or `________` still shows `13000016`; leading zeros
+  kept. Set code: the case's new `intended_set` — the paper the candidate is
+  registered for, so *wrong set* and *blank set* scripts still show it; a
+  solution sheet shows its own set. Recorded as `metadata.written_student_id`
+  and `metadata.written_set_code`; bubbles, expected readings and every other
+  truth field are unchanged, and the recognition engine still reads only the
+  bubbles.
+- **Set codes as the template spells them.** A field with one position whose
+  bubbles are whole codes (`10`, `11`, `12`) has one box and the whole code
+  goes in it; a positional field has one box per position (`05` → `0`, `5`).
+  A code the field cannot spell (`10` on an `A`–`D` field) is not written.
+- **Where the boxes are.** Derived from each grid the template already
+  declares — one box per character position, sized in grid pitches — so no
+  template field was added and any length works. A template-rendered page
+  prints the boxes; on a reference scan they are located on the scan, and a row
+  the form does not print gets nothing written in it.
+- **A used reference is cleaned once per run, in this order**, inside
+  `load_reference_scan`:
+  1. *Write-in boxes* — handwriting removed; a printed border a stroke covered
+     is rebuilt from its own appearance further along the line.
+  2. *Bubbles* — every bubble the template declares (Student ID, set code and
+     answers) is compared with a **clean copy of the same printed label** on
+     the same form, and only the pixels darker than that copy are replaced by
+     it, aligned and matched to the local paper colour. Ring, printed label
+     and paper grain therefore come back from the scan itself, not as a white
+     disc; unfilled bubbles are left byte-for-byte as scanned, and a genuinely
+     blank form comes out unchanged. Overflow beside the ring is filled along
+     any table or frame line it crossed. If a label has no unfilled copy
+     anywhere, the fill is still removed but the label is lost — and counted.
+
+  Then, for every sheet: the intended Student ID and set code are written and
+  the synthetic bubbles drawn (one mark layer), folds applied, the page
+  degraded (blur, noise, JPEG…), and the colour mode applied last — so the new
+  writing and marks are degraded exactly as if they had been on the paper
+  before scanning. The manifest's `reference.write_in` and `reference.bubbles`
+  record what was found and removed; generator version **2.5**.
+
+**On the repository's own used sample** (`Sample-Project/1.Template/ECE-0000.png`
+— a filled solution sheet: all 100 answers, every Student-ID `0`, both set-code
+positions, and `00000000` / `10` handwritten): cleanup removed exactly the
+**110** filled bubbles and touched **none** of the 390 unfilled ones, in colour
+and in grayscale, with no label lost, measured against an independent
+filled/unfilled split. Sheets generated on it and read back by OMRFlow's own
+engine gave the synthetic candidate's Student ID, set code and **100/100**
+answers — a normal sheet in colour, grayscale and black-and-white; the wrong-ID
+and wrong-set anomalies in colour (each read as its *bubbled* value, as
+intended); the blank-bubble sheet 100/100 answers, its blank identity fields
+read as unresolved (see limitations). With cleaning turned off, the same test
+reads the old marks — which is what these sheets carried until now.
+
+**Fixed while completing it (2026-09-29).** The first Student-ID
+implementation failed its own stale-text test (12 of 15 borders "found"): the
+misses were not handwriting over the Student-ID borders but the set-code row,
+which the generator never printed boxes for — one of its borders had been
+"found" by borrowing the Student-ID row's edge, which would then have licensed
+erasing whatever is printed there. Checking the real sample found three more
+defects the clean synthetic fixture could not show: on a blurred/JPEG scan the
+rule for strokes crossing a border **faded every black border to grey**; a
+stroke touching a border **widened it into the box**; inpainting beside a pink
+border **left pink blots**. Developing the bubble cleanup on the same form found
+that print weight varies across one page (a heavier-printed unfilled bubble
+must not look filled), that registration drifts up to ~4 px across it, and that
+a fill can cover a printed frame line — each now handled and covered by a test.
+
+**Testing status.** `test_written_student_id.py` 44 passed;
+`test_written_set_code.py` (new) 22 passed; `test_reference_bubble_cleanup.py`
+(new) 17 passed; the synthetic-generation and evaluation suites 645 passed; 0
+failed, skipped or xfailed in any of them; ruff and mypy clean. Full suite
+after the Student-ID fix: **5778 passed, 15 skipped, 0 failed**. Full suite
+after the set-code and bubble-cleanup work: **5817 passed, 15 skipped, 0 failed**.
+
+**Visual validation.** Inspected by eye, not measured: template-rendered
+normal, wrong-ID, double-marked, blank-bubble and leading-zero sheets; the used
+sample cleaned and regenerated with a different candidate in colour, grayscale
+and black-and-white, for a normal, wrong-ID, wrong-set and blank-bubble sheet,
+and its answer area. Not yet used in a real session.
+
+**Known limitations (accepted, non-blocking).**
+
+- Handwriting *outside* a write-in box's border band is not removed.
+- Faint traces can remain: the lightest edge pixels of an old stroke, and a
+  few pixels of a fill that overflowed further than its exemplar reaches (on
+  the sample, a dot beside two Student-ID `0`s and one beside question 45's
+  `a`).
+- A stroke merged with a *black* printed border cannot be told from it and is
+  left on the line.
+- A bubble whose label has no unfilled copy on the form loses its printed
+  label (counted in the manifest); a fill in such a bubble is only removed if
+  it is unmistakable.
+- Not arbitrary form restoration: other handwriting on a used form (a name, a
+  signature, "Solution" on the sample) is not touched.
+- The written characters are a synthetic font, not handwriting, and only a
+  field whose characters run in columns gets write-in boxes.
+- Observed, not changed (outside this work): on the sample's pink form the
+  engine reads an *entirely blank* Student-ID or set-code column as unresolved
+  (`?`) rather than blank (`_`) — its printed labels measure as partial fill.
+
+**Pending.** Use in a real session; a dataset generated from a genuinely
+blank scan and from a used one compared end to end.
 
 #### Reject & Rescan
 
