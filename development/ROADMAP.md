@@ -8,6 +8,11 @@
 > document remains the working record for Phases 0–10: their deliverables,
 > tests and exit criteria as each was written. Update both when a phase's
 > status changes.
+>
+> The next release's plan — **v0.1.1-alpha.0**, multi-source continuous
+> ingestion and set-code identity — is in
+> [`ROADMAP_v0.1.1-alpha.0.md`](ROADMAP_v0.1.1-alpha.0.md) (proposed, not
+> implemented).
 
 Development proceeds in phases. A phase ends only when its exit criteria are met,
 `pytest`, `ruff check .` and `mypy` all pass, `development/CURRENT_STATE.md` is

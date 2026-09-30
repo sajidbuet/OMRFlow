@@ -44,6 +44,32 @@ Per-phase detail for 0–10: `development/ROADMAP.md` and the
 
 ---
 
+## Next development target — v0.1.1-alpha.0
+
+**Status: proposed, awaiting review — nothing implemented.** Baseline:
+`v0.1.0-alpha.2` plus the unreleased work on `main` (Reject & Rescan, the
+Attendance workstation, the Answer Key rework; schema 12).
+
+**Objective:** multi-source / continuous scan ingestion, a single explicit
+active batch that late and rescanned sheets join, robust duplicate and rescan
+provenance, and set-code architecture fixes (canonical case-insensitive set
+identity; optional logical ↔ physical set marks). Scanners still only write
+image files; OMRFlow discovers and processes them.
+
+Seven phases: (1) set identity and cohort scope, (2) intake ledger and
+idempotent registration, (3) continuous processing and controls, (4) duplicate
+and rescan semantics, (5) operator GUI, (6) recovery, telemetry and scale,
+(7) release validation. It also records six latent defects found while
+planning — among them that late scans can split an examination into a second
+batch that Attendance and Results then read alone.
+
+Full plan, priorities, schema proposals (migrations 13–14), acceptance matrix
+and exit criteria:
+[`development/ROADMAP_v0.1.1-alpha.0.md`](https://github.com/sajidbuet/OMRFlow/blob/main/development/ROADMAP_v0.1.1-alpha.0.md).
+Phase 11B real-data qualification continues alongside it.
+
+---
+
 ## Phase 11A — Alpha Release Infrastructure
 
 **Status: Implemented — validation pending.**
