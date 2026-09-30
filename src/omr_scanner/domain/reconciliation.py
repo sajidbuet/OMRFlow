@@ -148,6 +148,13 @@ class ReconciliationStatus(StrEnum):
     (or names no defined set). Its set assignment, not its existence, is what
     is missing - which is resolved on the Resolve stage."""
 
+    SCRIPT_DEFERRED = "script_deferred"
+    """This candidate's only script(s) are **deferred** on the Attendance
+    stage: the decision about them is postponed. Not a missing script, and
+    not a valid one either - it is left out of scoring and results until it is
+    restored or rejected. Shown and counted, but not outstanding work that
+    blocks moving on (:attr:`ResolutionState.DEFERRED`)."""
+
     @property
     def label(self) -> str:
         """Operator-facing wording.
@@ -171,6 +178,9 @@ class ReconciliationStatus(StrEnum):
             ),
             ReconciliationStatus.SCRIPT_SET_UNRESOLVED: (
                 "Script found — set unresolved"
+            ),
+            ReconciliationStatus.SCRIPT_DEFERRED: (
+                "Script deferred — decision postponed"
             ),
         }[self]
 
@@ -224,6 +234,12 @@ class ReconciliationStatus(StrEnum):
                 "not yet settled (or is not a defined set). Settle its set code "
                 "on the Resolve stage; it will then be reconciled here."
             ),
+            ReconciliationStatus.SCRIPT_DEFERRED: (
+                "A script was received for this candidate, but an operator "
+                "deferred the decision about it. While deferred it does not "
+                "count, is not scored and does not appear in results. Restore "
+                "it to active review, or reject / exclude it, when you decide."
+            ),
         }[self]
 
     @property
@@ -267,6 +283,7 @@ class ReconciliationIssue(StrEnum):
     UNRESOLVED_CANDIDATE_ID = "unresolved_candidate_id"
     RESCAN_REQUIRED = "rescan_required"
     SCRIPT_SET_UNRESOLVED = "script_set_unresolved"
+    SCRIPT_DEFERRED = "script_deferred"
 
     @property
     def status(self) -> ReconciliationStatus:
@@ -302,6 +319,7 @@ _STATUS_PRECEDENCE: tuple[ReconciliationIssue, ...] = (
     ReconciliationIssue.ABSENT_WITH_SCRIPT,
     ReconciliationIssue.DUPLICATE_SCRIPT,
     ReconciliationIssue.RESCAN_REQUIRED,
+    ReconciliationIssue.SCRIPT_DEFERRED,
     ReconciliationIssue.SCRIPT_SET_UNRESOLVED,
     ReconciliationIssue.PRESENT_WITHOUT_SCRIPT,
 )
@@ -355,6 +373,10 @@ class ResolutionState(StrEnum):
     OPEN = "open"
     RESOLVED = "resolved"
     DISMISSED = "dismissed"
+    DEFERRED = "deferred"
+    """The entry's only problem is a script whose decision was deferred. It
+    has a valid disposition - the operator may move on - but it is not
+    reviewed, and every later stage says so."""
 
     @property
     def label(self) -> str:
@@ -363,6 +385,7 @@ class ResolutionState(StrEnum):
             ResolutionState.OPEN: "Needs review",
             ResolutionState.RESOLVED: "Resolved",
             ResolutionState.DISMISSED: "Accepted as-is",
+            ResolutionState.DEFERRED: "Deferred",
         }[self]
 
     @property
@@ -535,6 +558,10 @@ class ScriptRecord:
             :attr:`ScriptView.counts_as_a_script`. For a rejected script,
             :attr:`effective_candidate_id` is the case's identity: the
             operator's declared Student ID when one was given.
+        deferred: Whether an operator deferred the decision about the scan on
+            the Attendance stage. Filed under a registered candidate it reads
+            as, so that candidate reads *script deferred* rather than
+            *missing script*; like a rejected script it **never counts**.
     """
 
     scan_id: int
@@ -544,6 +571,7 @@ class ScriptRecord:
     identifier_unresolved: bool = False
     corrected_by_human: bool = False
     rejected: bool = False
+    deferred: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -611,9 +639,10 @@ class ScriptView:
         An excluded script does not - that is what excluding it means - but it
         is still listed, still stored and still auditable. Nor does a script
         rejected pending a rescan: it was received, and it is shown, but it is
-        not a valid script for any count, duplicate or mark.
+        not a valid script for any count, duplicate or mark. Nor, while
+        deferred, does a deferred one.
         """
-        return not self.excluded and not self.script.rejected
+        return not self.excluded and not self.script.rejected and not self.script.deferred
 
 
 @dataclass(frozen=True, slots=True)
@@ -698,6 +727,9 @@ class ReconciliationCounts:
     unresolved_candidate_id: int = 0
     rescan_required: int = 0
     script_set_unresolved: int = 0
+    script_deferred: int = 0
+    """Candidates whose only script is deferred. Counted, never outstanding."""
+
     resolved: int = 0
     """Entries a human decision turned *into* a normal outcome.
 
@@ -708,6 +740,10 @@ class ReconciliationCounts:
 
     dismissed: int = 0
     """Exceptions an operator accepted as-is. Still exceptions, not outstanding."""
+
+    deferred: int = 0
+    """Entries whose resolution is :attr:`ResolutionState.DEFERRED`. Not
+    outstanding - the operator may proceed - but never reported as reviewed."""
 
     outstanding_count: int = 0
     """Exceptions nobody has dealt with. Counted, never derived - see
@@ -732,6 +768,7 @@ class ReconciliationCounts:
             + self.unresolved_candidate_id
             + self.rescan_required
             + self.script_set_unresolved
+            + self.script_deferred
         )
 
     @property

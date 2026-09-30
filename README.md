@@ -227,7 +227,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | Full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
+| Automated suite | Full local run after the Attendance dispositions work, 2026-09-30: **5,972 passed, 16 skipped, 3 failed** (1 h 05 min; 4 `stress` tests deselected). One failure was an expected enumeration assertion (two new placements), since updated and passing; the other two (`test_developer_tools` small-screen tab focus, `test_stress_kill_resume[100]` read-only database on resume) pass when rerun alone and did not touch this change — recorded as load/environment flakiness, not fixed. `ruff` clean; `mypy` reports the same 2 pre-existing errors as `main`. Previously: full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -251,6 +251,7 @@ synthetically tested" to a qualified stable release.
 | Attendance: reconciliation workstation | 🟠 **Implemented — automated tests passing; the 100-candidate acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Missing script and absent-but-script-found are investigated from the original scan; the complete Student ID or set code is corrected through the Resolve stage's own review ledger; suggestions of where to look; a compact layout usable at 1366×768; the Choose / Replace Attendance File defect fixed. See below |
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
 | Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
+| Attendance dispositions (Keep / Reject / Defer / Restore) | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (24/24 checks, screenshots at 1366×768 and 1100×680 inspected), not yet worked by an operator on real sheets.** A duplicate is settled by inspecting each copy and keeping one; an unwanted sheet is rejected / excluded; an undecided one is deferred; each is restorable. One eligibility rule (the Reject & Rescan lifecycle) from reconciliation through scoring, Results, reports and reopening. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
 | Answer Key stage (Step 7) rework | 🟠 **Implemented — under real-world validation.** One real solution sheet (ECE-0000) and four real scans used as stand-ins read 500/500 against a visual transcription with no false confident read; one dialog defect found and fixed; no operator use yet. The stage reads the project's own template (Scan need not be visited), shows every defined set's key state, keeps the key string and question table in step, reviews a marked solution sheet before anything is saved, records per-revision provenance (migration 12), and never uses a key that no longer fits the template. See below |
@@ -678,6 +679,73 @@ and its answer area. Not yet used in a real session.
 
 **Pending.** Use in a real session; a dataset generated from a genuinely
 blank scan and from a used one compared end to end.
+
+#### Attendance dispositions: duplicate scripts, unwanted scans, Defer
+
+**Status: implemented — automated tests passing; scripted acceptance in the
+real window passed; not yet validated by an operator on a real examination.**
+
+*The gap.* Attendance could identify a duplicate or an unrecognised sheet but
+offered no obvious way to dispose of it. *Set Script Aside* was a
+reconciliation-only decision: it did not reach Resolve's duplicate-ID
+detection, and it could not clear an *Unknown candidate ID* exception, so an
+accidental or wrong-exam scan could only be "fixed" by inventing a candidate
+ID or accepting the exception as-is.
+
+*What changed.* The disposition controls live in the right-hand panel and are
+context-sensitive:
+
+* **Keep This Script** — a duplicate row shows *Script 1 of N* with Previous /
+  Next, and each copy's file, batch, scan number, recognised and effective
+  Student ID and set, and disposition; selecting a copy shows its scan. Keeping
+  one rejects / excludes every other copy in one transaction, after a
+  confirmation that names each copy. Three or more copies work the same way.
+* **Reject / Exclude…** — with a reason (wrong page / document, accidental
+  scan, duplicate, blank / unusable, other + note). The sheet leaves
+  reconciliation, duplicate detection, scoring, Results and exports; it is
+  kept, counted under **Rejected**, and listed in *Rejected / excluded sheets*.
+* **Defer** — kept, marked *Deferred*, counted, not scored while deferred. The
+  operator may carry on; Attendance and Results say *N sheet(s) are deferred
+  and will not be included in scoring or results*, and a final export needs the
+  audited *Export incomplete results* acknowledgement. A registered candidate
+  whose only script is deferred reads *Script deferred — decision postponed*,
+  not *Missing script*.
+* **Restore** / **Undo Last Disposition** — back to active review exactly as it
+  was; a restored duplicate is reported again.
+
+*How.* The Reject & Rescan lifecycle (`scan_rejection`) gained two states,
+`excluded` and `deferred` — no new table and no migration — so the existing
+"only `active` is result-eligible" rule covers them everywhere. Every
+disposition is committed and re-reconciled before the call returns, and is
+recorded in the append-only audit ledger (`excluded`, `deferred`, `restored`,
+`disposition_changed`, `kept_canonical`). A confirmed rescan cannot be
+excluded or deferred while its link stands; excluded / deferred sheets never
+seed exact-re-import detection. Results no longer lists a *blocked* result
+whose entry no longer exists (such a row is removed on the next full
+calculation; a result with a mark is never removed). Details:
+[reconciliation](docs/reconciliation.md) § *Sheet dispositions*.
+
+*Testing performed.* 35 new service-level integration tests (`tests/integration/test_attendance_dispositions.py`) (duplicates of
+two and three copies, keep either copy, all-or-nothing refusal, scoring and
+report exclusion, counts, restore re-raising the duplicate, identical-bytes
+duplicates, unknown ID rejected and deferred, deferred registered candidate,
+persistence across reopen, Reject & Rescan including cross-batch
+replacements); 16 new GUI tests (`tests/gui/test_attendance_disposition_controls.py`: both scans exposed, preview follows the
+selection and the keyboard, confirmation text, reject / defer / restore /
+undo, rejected and deferred views and counts, reopen, controls reachable and
+unclipped at 1366×768 and 1100×680). `scripts/acceptance_attendance_dispositions.py`
+drives the real `MainWindow` on the platform display with real rendered and
+recognised sheets (10000049 scanned twice, stray 10000009, one deferred
+candidate): 24/24 checks passed, including scoring from the kept copy, the
+stray sheet absent from Results, the deferred warning on Results, and every
+disposition intact after closing and reopening the project.
+
+*Still under testing / limitations.* Not yet used by an operator on a real
+cohort. Undo Last Disposition covers the last action of the current session
+only (Restore works at any time). A non-duplicate row does not open its scan
+automatically (press *Inspect*). A sheet's Resolve conflicts leave the Resolve
+queue while it is excluded or deferred (they return on Restore). Existing
+*Set Script Aside* decisions are honoured but no longer created.
 
 #### Reject & Rescan
 

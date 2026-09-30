@@ -58,6 +58,19 @@ class LifecycleState(StrEnum):
     so such a scan is linked back to the original's history rather than
     treated as a new submission or offered as a replacement."""
 
+    EXCLUDED = "excluded"
+    """An operator decided the sheet must not take part in this examination's
+    results at all, and **no rescan is expected**: a duplicate copy of a
+    script that is kept, an accidental scan, the wrong exam's sheet, a blank
+    or administrative page. Reversible (*Restore*). Recorded from the
+    Attendance stage."""
+
+    DEFERRED = "deferred"
+    """An operator postponed the decision about this sheet. Left out of
+    reconciliation counts, scoring and results **while deferred**, but still
+    an open review item - visibly marked, counted, and restorable to active
+    review at any time. Never a final disposition."""
+
     @property
     def is_result_eligible(self) -> bool:
         """Whether a scan in this state may contribute to any result."""
@@ -65,8 +78,26 @@ class LifecycleState(StrEnum):
 
     @property
     def is_outstanding(self) -> bool:
-        """Whether this state represents unfinished physical work."""
+        """Whether this state represents unfinished *physical* work - a rescan.
+
+        A deferred sheet is unfinished too, but what is outstanding is a
+        decision, not a sheet to fetch: see :attr:`awaits_decision`.
+        """
         return self is LifecycleState.REJECTED_PENDING_RESCAN
+
+    @property
+    def awaits_decision(self) -> bool:
+        """Whether an operator still owes this sheet a decision (deferred)."""
+        return self is LifecycleState.DEFERRED
+
+    @property
+    def is_disposition(self) -> bool:
+        """Whether this is an Attendance disposition - excluded or deferred.
+
+        Both are reversible with *Restore*; neither involves a rescan or a
+        replacement link.
+        """
+        return self in (LifecycleState.EXCLUDED, LifecycleState.DEFERRED)
 
     @property
     def label(self) -> str:
@@ -84,6 +115,8 @@ _STATE_LABELS: dict[LifecycleState, str] = {
     LifecycleState.REJECTED_PENDING_RESCAN: "REJECTED — RESCAN REQUIRED",
     LifecycleState.SUPERSEDED_BY_REPLACEMENT: "Rejected — replaced by rescan",
     LifecycleState.REIMPORT_OF_REJECTED: "Re-import of a rejected scan",
+    LifecycleState.EXCLUDED: "REJECTED — EXCLUDED FROM RESULTS",
+    LifecycleState.DEFERRED: "DEFERRED — DECISION POSTPONED",
 }
 
 _STATE_MARKERS: dict[LifecycleState, str] = {
@@ -91,7 +124,29 @@ _STATE_MARKERS: dict[LifecycleState, str] = {
     LifecycleState.REJECTED_PENDING_RESCAN: "✖",  # heavy multiplication x
     LifecycleState.SUPERSEDED_BY_REPLACEMENT: "⇄",  # replaced
     LifecycleState.REIMPORT_OF_REJECTED: "⧉",  # copy
+    LifecycleState.EXCLUDED: "⊘",  # circled division slash
+    LifecycleState.DEFERRED: "⏸",  # pause
 }
+
+STATE_EXPLANATIONS: dict[LifecycleState, str] = {
+    LifecycleState.EXCLUDED: (
+        "Reject / Exclude: you have decided this sheet must not take part in "
+        "this examination's results - a duplicate copy, an accidental scan, "
+        "the wrong exam's sheet, a blank or administrative page. It leaves "
+        "reconciliation, duplicate detection, scoring and every result and "
+        "export. Nothing is deleted: the scan, its recognition result, the "
+        "original image and the history are all kept, and Restore brings it "
+        "back. No rescan is expected (use Resolve > Reject & Rescan for that)."
+    ),
+    LifecycleState.DEFERRED: (
+        "Defer: you have postponed the decision. While deferred the sheet is "
+        "left out of reconciliation counts, scoring and results, but it is "
+        "still an outstanding review item - counted, listed under Deferred, "
+        "and warned about on the Results stage - until you Restore it to "
+        "active review or Reject / Exclude it. Nothing is deleted."
+    ),
+}
+"""What each Attendance disposition means, for tooltips and confirmations."""
 
 
 class FileState(StrEnum):
@@ -148,6 +203,9 @@ class RejectionReason(StrEnum):
     SKEW = "skew"
     WRONG_DOCUMENT = "wrong_document"
     ID_UNREADABLE = "id_unreadable"
+    DUPLICATE = "duplicate"
+    ACCIDENTAL_SCAN = "accidental_scan"
+    BLANK_UNUSABLE = "blank_unusable"
     OTHER = "other"
 
     @property
@@ -169,8 +227,32 @@ _REASON_LABELS: dict[RejectionReason, str] = {
     RejectionReason.SKEW: "Severe skew / perspective",
     RejectionReason.WRONG_DOCUMENT: "Wrong page / wrong document",
     RejectionReason.ID_UNREADABLE: "Student ID unreadable",
+    RejectionReason.DUPLICATE: "Duplicate scan of a kept script",
+    RejectionReason.ACCIDENTAL_SCAN: "Accidental / unwanted scan",
+    RejectionReason.BLANK_UNUSABLE: "Blank or unusable sheet",
     RejectionReason.OTHER: "Other (explain in the note)",
 }
+
+RESCAN_REASONS: tuple[RejectionReason, ...] = (
+    RejectionReason.FOLDED,
+    RejectionReason.POOR_QUALITY,
+    RejectionReason.REGISTRATION,
+    RejectionReason.CLIPPED,
+    RejectionReason.SKEW,
+    RejectionReason.WRONG_DOCUMENT,
+    RejectionReason.ID_UNREADABLE,
+    RejectionReason.OTHER,
+)
+"""Reasons offered by *Reject & Rescan* - why a sheet must be scanned again."""
+
+EXCLUSION_REASONS: tuple[RejectionReason, ...] = (
+    RejectionReason.WRONG_DOCUMENT,
+    RejectionReason.ACCIDENTAL_SCAN,
+    RejectionReason.DUPLICATE,
+    RejectionReason.BLANK_UNUSABLE,
+    RejectionReason.OTHER,
+)
+"""Reasons offered by *Reject / Exclude* - why a sheet takes no part at all."""
 
 
 class LifecycleAction(StrEnum):
@@ -212,6 +294,23 @@ class LifecycleAction(StrEnum):
     """A final export produced while rescans were outstanding, acknowledged
     by a named operator."""
 
+    EXCLUDED = "excluded"
+    """``ACTIVE -> EXCLUDED``: Reject / Exclude from the Attendance stage."""
+
+    DEFERRED = "deferred"
+    """``ACTIVE -> DEFERRED``: the decision postponed."""
+
+    RESTORED = "restored"
+    """``EXCLUDED`` or ``DEFERRED`` ``-> ACTIVE``. ``previous_value`` says
+    which."""
+
+    DISPOSITION_CHANGED = "disposition_changed"
+    """``DEFERRED -> EXCLUDED``: a postponed decision taken."""
+
+    KEPT_CANONICAL = "kept_canonical"
+    """Recorded on the script an operator kept when resolving a duplicate
+    group; each other copy records its own :attr:`EXCLUDED`."""
+
     @property
     def label(self) -> str:
         """Operator-facing wording, for a history view."""
@@ -225,6 +324,11 @@ class LifecycleAction(StrEnum):
             LifecycleAction.IMAGE_QUARANTINED: "Image moved to quarantine",
             LifecycleAction.IMAGE_PURGED: "Image permanently deleted",
             LifecycleAction.EXPORT_INCOMPLETE: "Incomplete results exported",
+            LifecycleAction.EXCLUDED: "Rejected / excluded from results",
+            LifecycleAction.DEFERRED: "Deferred - decision postponed",
+            LifecycleAction.RESTORED: "Restored to active review",
+            LifecycleAction.DISPOSITION_CHANGED: "Disposition changed",
+            LifecycleAction.KEPT_CANONICAL: "Kept as the candidate's script",
         }[self]
 
 
@@ -409,10 +513,16 @@ class RescanCounts:
     outstanding: int = 0
     superseded: int = 0
     reimports: int = 0
+    excluded: int = 0
+    deferred: int = 0
 
     @property
     def total(self) -> int:
-        """Every rejection record that is not undone."""
+        """Every Reject & Rescan record that is not undone.
+
+        Excluded and deferred sheets are Attendance dispositions, counted on
+        their own, not rescan cases.
+        """
         return self.outstanding + self.superseded + self.reimports
 
 
@@ -502,8 +612,11 @@ def format_bytes(size: int) -> str:
 
 
 __all__ = [
+    "EXCLUSION_REASONS",
     "EXPORT_ENTITY",
     "LIFECYCLE_ENTITY",
+    "RESCAN_REASONS",
+    "STATE_EXPLANATIONS",
     "FileState",
     "LifecycleAction",
     "LifecycleState",

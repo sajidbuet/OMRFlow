@@ -93,7 +93,11 @@ and the table stays where you were.
 | Button | Meaning |
 |---|---|
 | **Confirm Script Assignment** | File this script under a candidate *without* changing its Student ID |
-| **Set Script Aside** | An accidental re-scan; it stops counting but is never deleted (**Bring Script Back** reverses this) |
+| **Keep This Script** | For a duplicate: keep the selected copy; every other copy is rejected / excluded (you confirm, with each copy named) |
+| **Reject / Exclude…** | The sheet must not take part in this exam's results (wrong form, accidental or blank scan, duplicate). Kept, never deleted; listed under **Rejected** |
+| **Defer** | Decide later. Kept and marked *Deferred*; not scored or in results while deferred; you can carry on meanwhile |
+| **Restore** | Return an excluded or deferred sheet to active review, exactly as it was |
+| **Bring Script Back** | Only for a script *set aside* by an earlier build |
 | **Override Attendance** | Record an attendance state different from the imported one |
 | **Accept As-Is** | Investigated, nothing more can be done - for example, no scan was found |
 

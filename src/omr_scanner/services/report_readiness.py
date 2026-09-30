@@ -42,6 +42,7 @@ def evaluate(
     results_by_candidate: Mapping[str, StoredResult],
     has_verified_key: bool,
     unattached_rescans: Sequence[str] = (),
+    unattached_deferred: Sequence[str] = (),
 ) -> ReadinessReport:
     """Build the full readiness report for one set.
 
@@ -60,6 +61,8 @@ def evaluate(
             that may belong to this set but are filed under no candidate - an
             unknown Student ID, or no known set. Each is an outstanding rescan
             the report cannot place, and must not quietly omit.
+        unattached_deferred: Likewise for sheets deferred on the Attendance
+            stage that are filed under no candidate.
 
     Returns:
         Every issue found. Blocking issues (the default) prevent **Final
@@ -109,6 +112,14 @@ def evaluate(
             f"known is awaiting its rescan and may belong to Set {set_code}.",
         )
         for name in unattached_rescans
+    )
+    issues.extend(
+        ReadinessIssue(
+            ReadinessIssueKind.SHEET_DEFERRED,
+            f"A deferred sheet ({name or 'unnamed scan'}) whose candidate is not "
+            f"known is excluded from scoring and may belong to Set {set_code}.",
+        )
+        for name in unattached_deferred
     )
     return ReadinessReport(set_code=set_code, issues=tuple(issues))
 
@@ -188,6 +199,18 @@ def _cross_reference_issues(
                     ReadinessIssueKind.RESCAN_OUTSTANDING,
                     f"Roll {row.roll}'s script was rejected as unusable and its "
                     "rescan has not been confirmed; it has no mark.",
+                    roll=row.roll,
+                )
+            )
+            continue
+
+        if entry.status is ReconciliationStatus.SCRIPT_DEFERRED:
+            # Likewise one issue: the decision about the script is postponed.
+            issues.append(
+                ReadinessIssue(
+                    ReadinessIssueKind.SHEET_DEFERRED,
+                    f"Roll {row.roll}'s script is deferred on the Attendance "
+                    "stage; it is not scored and has no mark.",
                     roll=row.roll,
                 )
             )
@@ -310,7 +333,7 @@ def block_stale_results_for_final_export(report: ReadinessReport) -> ReadinessRe
 
 
 def acknowledge_incomplete_results(report: ReadinessReport) -> ReadinessReport:
-    """Demote every outstanding-rescan issue to a warning.
+    """Demote every outstanding-rescan and deferred-sheet issue to a warning.
 
     The operator's *Export incomplete results* acknowledgement, and nothing
     else: every other blocking issue still blocks. The caller records the

@@ -137,8 +137,8 @@ template — so its layout is what your final report looks like.
 The **Reconciliation summary** reports matched scripts and exceptions:
 unknown candidate IDs, duplicates, candidates with no script, and absentees
 that nevertheless have one. Resolve each under **Your decision** —
-**Assign Script**, **Set Script Aside**, **Override Attendance** or **Accept
-As-Is**.
+**Assign Script**, **Keep This Script** (duplicates), **Reject / Exclude**,
+**Defer**, **Override Attendance** or **Accept As-Is**.
 
 See [Attendance](Attendance) and
 [Attendance Workbook Format](Attendance-Workbook-Format).

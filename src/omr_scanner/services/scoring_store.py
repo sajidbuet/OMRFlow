@@ -925,6 +925,8 @@ def score_batch(
 
     moment = _now()
     with database.session() as session:
+        if wanted is None:
+            _drop_vanished_blocked(session, roster_id, batch_id, data.entries)
         for entry, outcome in scored:
             _write_result(
                 session,
@@ -948,6 +950,32 @@ def score_batch(
         data.policy.revision,
     )
     return counts
+
+
+def _drop_vanished_blocked(
+    session: Session,
+    roster_id: int,
+    batch_id: str,
+    entries: Sequence[ReconciliationEntry],
+) -> None:
+    """Remove stored *blocked* results whose entry no longer exists.
+
+    Such a row belongs to an unregistered ID that reconciliation no longer
+    produces - its only sheet was rejected / excluded, deferred, or corrected
+    to a registered candidate. It never carried a mark (an unregistered entry
+    cannot be scored), so removing it removes no record of one; a row with a
+    mark is never touched here.
+    """
+    current = {entry.candidate_id for entry in entries}
+    for row in session.scalars(
+        select(CandidateResult)
+        .where(CandidateResult.roster_id == roster_id)
+        .where(CandidateResult.batch_id == batch_id)
+        .where(CandidateResult.status == ResultStatus.BLOCKED.value)
+    ).all():
+        if row.candidate_id not in current:
+            session.delete(row)
+    session.flush()
 
 
 def _write_result(
@@ -1170,6 +1198,9 @@ def list_results(
         entry.candidate_id: entry.display_name
         for entry in reconciliation_store.list_entries(database, roster_id, batch_id)
     }
+    # A stored result whose entry reconciliation no longer produces - an
+    # unregistered ID whose only sheet was rejected / excluded or deferred -
+    # describes nobody now, and is not shown (see _drop_vanished_blocked).
     by_id = (
         {entry.candidate_id: entry for entry in current.entries} if current else {}
     )
@@ -1191,6 +1222,7 @@ def list_results(
                 stale_reasons_for(row, keys, policy, current, by_id.get(row.candidate_id)),
             )
             for row in rows
+            if row.candidate_id in names or ResultStatus(row.status) is not ResultStatus.BLOCKED
         )
 
 

@@ -10,6 +10,12 @@ Responsibilities:
     * :func:`reject_scan`, :func:`undo_reject`, :func:`confirm_replacement`,
       :func:`remove_replacement` - the operator's actions, one transaction
       each, each appending to the shared audit ledger.
+    * :func:`exclude_scan`, :func:`defer_scan`, :func:`restore_scan` and
+      :func:`keep_script` - the Attendance stage's dispositions (*Reject /
+      Exclude*, *Defer*, *Restore*, *Keep this script*). The same table, the
+      same ledger and the same eligibility rule: an excluded or deferred scan
+      is simply another state that is not
+      :attr:`~omr_scanner.domain.scan_lifecycle.LifecycleState.ACTIVE`.
     * :func:`lifecycle_states` / :func:`ineligible_scan_ids` - **the single
       answer to "may this scan contribute to a result"**, read by
       reconciliation, scoring, duplicate detection, the review queue and the
@@ -41,6 +47,12 @@ The invariants this module enforces - in the service, not in the GUI:
        must be withdrawn explicitly first (:func:`remove_replacement`), after
        which two active scans with one Student ID are exactly what the
        existing duplicate detection is for.
+    7. A confirmed replacement cannot be excluded or deferred while its link
+       stands - that would silently leave its original's candidate with no
+       script. Withdraw the link first.
+    8. Excluded and deferred scans are **never** a source for
+       :func:`sync_reimports`: the kept copy of an accidentally duplicated
+       file has the excluded copy's exact bytes, and must stay active.
 
 Who writes:
     The GUI thread, through these functions, as for every other review
@@ -364,6 +376,8 @@ def count_cases(database: ProjectDatabase, batch_id: str) -> RescanCounts:
     """How many rejected scans the batch has, by state. Counted in SQL."""
     states = lifecycle_states(database, batch_id)
     return RescanCounts(
+        excluded=sum(1 for item in states.values() if item is LifecycleState.EXCLUDED),
+        deferred=sum(1 for item in states.values() if item is LifecycleState.DEFERRED),
         outstanding=sum(
             1 for item in states.values() if item is LifecycleState.REJECTED_PENDING_RESCAN
         ),
@@ -687,6 +701,11 @@ def undo_reject(
         omr_scanner.services.review_store.ReviewError: No reviewer.
     """
     name = review_store.validate_reviewer(reviewer)
+    if state_of(database, scan_id).is_disposition:
+        # Excluded or deferred from the Attendance stage: the same reversal,
+        # recorded under its own name.
+        restore_scan(database, scan_id, reviewer=name, note=note)
+        return
     moment = _now()
     with database.session() as session:
         row = _row_for(session, scan_id)
@@ -741,6 +760,566 @@ def undo_reject(
         )
     _LOGGER.info("Scan %d: rejection undone by %s", scan_id, name)
     _after_change(database, batch_id)
+
+
+# ----------------------------------------------------------------------
+# Attendance dispositions: Reject / Exclude, Defer, Restore, Keep this script
+# ----------------------------------------------------------------------
+def _refuse_replacement(session: Session, scan: BatchScan, what: str) -> None:
+    """Refuse to take a confirmed replacement out of play while it is linked."""
+    original = session.scalars(
+        select(ScanRejection).where(ScanRejection.replacement_scan_id == scan.scan_id).limit(1)
+    ).first()
+    if original is None:
+        return
+    raise LifecycleError(
+        f"Scan {scan.scan_id} is the confirmed replacement of scan {original.scan_id}",
+        user_message=(
+            f"{scan.filename or 'This scan'} is the confirmed rescan of "
+            f"{original.source_name or f'scan {original.scan_id}'}. It cannot be "
+            f"{what} while that link stands, because the original's candidate "
+            "would silently lose their script. Keep this copy instead, or remove "
+            "the replacement link under Resolve > Rejected / Rescan first."
+        ),
+    )
+
+
+def _write_disposition(
+    session: Session,
+    scan: BatchScan,
+    *,
+    target: LifecycleState,
+    reviewer: str,
+    reason: RejectionReason | None,
+    note: str,
+    detail: str,
+    moment: datetime,
+    readings: _ProjectReadings,
+) -> LifecycleState:
+    """Move one scan to ``target`` (excluded or deferred), with its ledger entry.
+
+    Runs inside the caller's transaction, so :func:`keep_script` can dispose
+    of several copies atomically. ``readings`` holds the effective identities,
+    read *before* that transaction opened. Returns the state it left.
+    """
+    row = _row_for(session, scan.scan_id)
+    previous = _state(row)
+    allowed = (
+        (LifecycleState.ACTIVE, LifecycleState.DEFERRED)
+        if target is LifecycleState.EXCLUDED
+        else (LifecycleState.ACTIVE,)
+    )
+    if previous not in allowed:
+        raise LifecycleError(
+            f"Scan {scan.scan_id} is {previous.value}; cannot become {target.value}",
+            user_message=(
+                f"{scan.filename or 'This scan'} is already "
+                f"{previous.label.lower()}."
+                + (
+                    " Restore it first."
+                    if previous.is_disposition
+                    else " Its Reject & Rescan case is handled on the Resolve stage."
+                )
+            ),
+        )
+    _refuse_replacement(
+        session, scan, "rejected" if target is LifecycleState.EXCLUDED else "deferred"
+    )
+    live_id = readings.identifiers.get(scan.scan_id)
+    live_set = readings.set_codes.get(scan.scan_id)
+    if row is None:
+        row = ScanRejection(scan_id=scan.scan_id, batch_id=scan.batch_id, rejected_at=moment)
+        session.add(row)
+    row.state = target.value
+    row.reason_code = reason.value if reason is not None else ""
+    row.note = note
+    row.declared_candidate_id = ""
+    row.declared_set_code = ""
+    row.recognised_candidate_id = live_id.value if live_id is not None else ""
+    row.recognised_set_code = live_set.value if live_set is not None else ""
+    row.source_name = scan.filename or ""
+    row.source_path = scan.source_path or ""
+    row.content_sha256 = scan.content_sha256 or ""
+    row.rejected_by = reviewer
+    row.rejected_at = moment
+    row.replacement_scan_id = None
+    row.replaced_by = ""
+    row.replaced_at = None
+    row.reimport_of_scan_id = None
+    row.file_state = FileState.PRESENT.value
+    row.updated_at = moment
+    session.flush()
+    if target is LifecycleState.DEFERRED:
+        action = LifecycleAction.DEFERRED
+    elif previous is LifecycleState.DEFERRED:
+        action = LifecycleAction.DISPOSITION_CHANGED
+    else:
+        action = LifecycleAction.EXCLUDED
+    _append_event(
+        session,
+        scan_id=scan.scan_id,
+        batch_id=scan.batch_id,
+        action=action,
+        reviewer=reviewer,
+        previous_value=previous.value,
+        new_value=target.value,
+        machine_value=row.recognised_candidate_id,
+        reason_code=row.reason_code,
+        reason_text=note,
+        detail=_identity_detail(
+            detail,
+            declared_id="",
+            declared_set="",
+            recognised_id=row.recognised_candidate_id,
+            recognised_set=row.recognised_set_code,
+        )
+        + f" Batch {scan.batch_id[:8]}, file '{scan.filename or scan.scan_id}'.",
+    )
+    return previous
+
+
+def _readings_for(database: ProjectDatabase, scan_ids: Sequence[int]) -> _ProjectReadings:
+    """Effective identities for the batches these scans belong to.
+
+    Read before any write transaction opens, as :func:`reject_scan` does.
+    """
+    with database.session() as session:
+        batch_ids = [
+            str(item)
+            for item in session.scalars(
+                select(BatchScan.batch_id).where(BatchScan.scan_id.in_(list(scan_ids)))
+            ).all()
+        ]
+    return _project_readings(database, batch_ids)
+
+
+def _validated_note(reason: RejectionReason | None, note: str) -> str:
+    text = note.strip()
+    if reason is not None and reason.requires_note and not text:
+        raise LifecycleError(
+            "Exclusion reason 'other' needs a note",
+            user_message="Describe why the sheet is excluded when choosing 'Other'.",
+        )
+    return text
+
+
+_EXCLUDED_SENTENCE = (
+    "Rejected / excluded: takes no part in reconciliation, duplicate detection, "
+    "scoring, results or exports. No rescan is expected. Nothing was deleted."
+)
+
+
+def exclude_scan(
+    database: ProjectDatabase,
+    scan_id: int,
+    *,
+    reviewer: str,
+    reason: RejectionReason,
+    note: str = "",
+) -> RescanCase:
+    """*Reject / Exclude*: take a sheet out of this examination's results.
+
+    Args:
+        database: The open project database.
+        scan_id: An active or deferred scan.
+        reviewer: Who decided. Required.
+        reason: Why - normally one of
+            :data:`~omr_scanner.domain.scan_lifecycle.EXCLUSION_REASONS`.
+            :attr:`RejectionReason.OTHER` needs a note.
+        note: The operator's own words.
+
+    Returns:
+        The scan's record, now :attr:`LifecycleState.EXCLUDED`.
+
+    Raises:
+        LifecycleError: The scan is already excluded, is a Reject & Rescan
+            case, or is a confirmed replacement; or *Other* has no note.
+        omr_scanner.services.review_store.ReviewError: No reviewer.
+
+    A logical exclusion: the scan row, its recognition result, its conflicts
+    and decisions and its image are all kept, which is what makes
+    :func:`restore_scan` exact. Reconciliation and duplicate detection are
+    re-derived at once (:func:`_after_change`), in the same way as for a
+    rejection.
+    """
+    name = review_store.validate_reviewer(reviewer)
+    text = _validated_note(reason, note)
+    readings = _readings_for(database, [scan_id])
+    with database.session() as session:
+        scan = _require_scan(session, scan_id)
+        batch_id = scan.batch_id
+        _write_disposition(
+            session, scan,
+            target=LifecycleState.EXCLUDED, reviewer=name, reason=reason,
+            note=text, detail=_EXCLUDED_SENTENCE, moment=_now(), readings=readings,
+        )
+    _LOGGER.info("Scan %d excluded by %s (%s)", scan_id, name, reason.value)
+    _after_change(database, batch_id)
+    case = get_case(database, scan_id)
+    assert case is not None  # just written
+    return case
+
+
+def defer_scan(
+    database: ProjectDatabase, scan_id: int, *, reviewer: str, note: str = ""
+) -> RescanCase:
+    """*Defer*: postpone the decision about a sheet, without losing it.
+
+    The sheet leaves reconciliation counts, duplicate detection, scoring and
+    results while deferred, and is listed and counted as *Deferred* until it
+    is restored (:func:`restore_scan`) or excluded (:func:`exclude_scan`).
+
+    Raises:
+        LifecycleError: The scan is not active, or is a confirmed replacement.
+        omr_scanner.services.review_store.ReviewError: No reviewer.
+    """
+    name = review_store.validate_reviewer(reviewer)
+    readings = _readings_for(database, [scan_id])
+    with database.session() as session:
+        scan = _require_scan(session, scan_id)
+        batch_id = scan.batch_id
+        _write_disposition(
+            session, scan,
+            target=LifecycleState.DEFERRED, reviewer=name, reason=None,
+            note=note.strip(),
+            detail=(
+                "Deferred: the decision is postponed. Left out of reconciliation "
+                "counts, scoring and results until restored or excluded. Nothing "
+                "was deleted."
+            ),
+            moment=_now(),
+            readings=readings,
+        )
+    _LOGGER.info("Scan %d deferred by %s", scan_id, name)
+    _after_change(database, batch_id)
+    case = get_case(database, scan_id)
+    assert case is not None  # just written
+    return case
+
+
+def restore_scan(
+    database: ProjectDatabase, scan_id: int, *, reviewer: str, note: str = ""
+) -> None:
+    """*Restore*: return an excluded or deferred sheet to active review.
+
+    Exactly as it was - recognition result, conflicts and decisions were never
+    touched. If that makes a duplicate real again, duplicate detection and
+    reconciliation raise it again, as for any other pair of active scans.
+
+    Raises:
+        LifecycleError: The scan is not excluded or deferred (a Reject &
+            Rescan case is undone on the Resolve stage), or its image is no
+            longer available.
+        omr_scanner.services.review_store.ReviewError: No reviewer.
+    """
+    name = review_store.validate_reviewer(reviewer)
+    moment = _now()
+    with database.session() as session:
+        row = _row_for(session, scan_id)
+        state = _state(row)
+        if row is None or not state.is_disposition:
+            raise LifecycleError(
+                f"Scan {scan_id} is {state.value}; nothing to restore",
+                user_message=(
+                    "That sheet is not rejected / excluded or deferred, so there "
+                    "is nothing to restore."
+                    if state is LifecycleState.ACTIVE
+                    else "That sheet is a Reject & Rescan case; undo it on the "
+                    "Resolve stage under Rejected / Rescan."
+                ),
+            )
+        if row.file_state != FileState.PRESENT.value:  # pragma: no cover - never purged
+            raise LifecycleError(
+                f"Scan {scan_id} image is {row.file_state}",
+                user_message=FileState(row.file_state).unavailable_note,
+            )
+        batch_id = row.batch_id
+        row.state = LifecycleState.ACTIVE.value
+        row.updated_at = moment
+        _append_event(
+            session,
+            scan_id=scan_id,
+            batch_id=batch_id,
+            action=LifecycleAction.RESTORED,
+            reviewer=name,
+            previous_value=state.value,
+            new_value=LifecycleState.ACTIVE.value,
+            reason_code=row.reason_code,
+            reason_text=note.strip(),
+            detail=(
+                f"Restored from {state.label.lower()} to active review, with every "
+                "earlier recognition result, conflict and decision as it was."
+            ),
+        )
+    _LOGGER.info("Scan %d restored from %s by %s", scan_id, state.value, name)
+    _after_change(database, batch_id)
+
+
+def keep_script(
+    database: ProjectDatabase,
+    keep_scan_id: int,
+    duplicate_scan_ids: Sequence[int],
+    *,
+    reviewer: str,
+    candidate_id: str = "",
+    note: str = "",
+) -> tuple[RescanCase, ...]:
+    """*Keep this script*: settle a duplicate group in one transaction.
+
+    Args:
+        database: The open project database.
+        keep_scan_id: The copy the operator inspected and chose. Must be active.
+        duplicate_scan_ids: Every other copy in the group - one or more - each
+            to be excluded with reason
+            :attr:`~omr_scanner.domain.scan_lifecycle.RejectionReason.DUPLICATE`.
+        reviewer: Who decided. Required.
+        candidate_id: The Student ID the group is filed under, for the ledger.
+        note: The operator's own words.
+
+    Returns:
+        The excluded copies' records.
+
+    Raises:
+        LifecycleError: Nothing to exclude, the kept copy is among them or is
+            not active, or any copy cannot be excluded. **All or nothing**:
+            one refusal leaves every copy as it was.
+
+    Nothing is chosen here. The canonical copy is whichever the operator
+    named; file names, timestamps and scan order are never consulted.
+    """
+    name = review_store.validate_reviewer(reviewer)
+    others = list(dict.fromkeys(int(item) for item in duplicate_scan_ids))
+    if not others:
+        raise LifecycleError(
+            "keep_script needs at least one duplicate",
+            user_message="There is no other copy to reject.",
+        )
+    if keep_scan_id in others:
+        raise LifecycleError(
+            "The kept script is also listed as a duplicate",
+            user_message="The script you keep cannot also be rejected.",
+        )
+    text = note.strip()
+    moment = _now()
+    batches: set[str] = set()
+    readings = _readings_for(database, [keep_scan_id, *others])
+    with database.session() as session:
+        kept = _require_scan(session, keep_scan_id)
+        if _state(_row_for(session, keep_scan_id)) is not LifecycleState.ACTIVE:
+            raise LifecycleError(
+                f"Scan {keep_scan_id} is not active",
+                user_message=(
+                    f"{kept.filename or 'The chosen script'} is not active, so it "
+                    "cannot be kept. Restore it first."
+                ),
+            )
+        batches.add(kept.batch_id)
+        names: list[str] = []
+        for scan_id in others:
+            scan = _require_scan(session, scan_id)
+            batches.add(scan.batch_id)
+            names.append(scan.filename or f"scan {scan_id}")
+            _write_disposition(
+                session, scan,
+                target=LifecycleState.EXCLUDED, reviewer=name,
+                reason=RejectionReason.DUPLICATE, note=text,
+                detail=(
+                    f"Duplicate of {kept.filename or f'scan {keep_scan_id}'} "
+                    f"(scan {keep_scan_id}), which was kept"
+                    + (f" for candidate {candidate_id}" if candidate_id else "")
+                    + ". " + _EXCLUDED_SENTENCE
+                ),
+                moment=moment,
+                readings=readings,
+            )
+        _append_event(
+            session,
+            scan_id=keep_scan_id,
+            batch_id=kept.batch_id,
+            action=LifecycleAction.KEPT_CANONICAL,
+            reviewer=name,
+            previous_value=LifecycleState.ACTIVE.value,
+            new_value=LifecycleState.ACTIVE.value,
+            reason_code=RejectionReason.DUPLICATE.value,
+            reason_text=text,
+            detail=(
+                "Kept as the script"
+                + (f" for candidate {candidate_id}" if candidate_id else "")
+                + f"; {len(others)} duplicate cop{'y' if len(others) == 1 else 'ies'} "
+                f"rejected / excluded: {', '.join(names)} "
+                f"(scan {', '.join(str(item) for item in others)})."
+            ),
+        )
+    _LOGGER.info(
+        "Scan %d kept by %s; %d duplicate(s) excluded", keep_scan_id, name, len(others)
+    )
+    _after_change(database, *sorted(batches))
+    return tuple(
+        case for case in (get_case(database, item) for item in others) if case is not None
+    )
+
+
+def list_dispositions(
+    database: ProjectDatabase,
+    batch_id: str,
+    *,
+    states: Iterable[LifecycleState] = (LifecycleState.EXCLUDED, LifecycleState.DEFERRED),
+) -> tuple[RescanCase, ...]:
+    """The batch's excluded and/or deferred sheets, deferred first, oldest first."""
+    wanted = set(states)
+    cases = [case for case in cases_by_scan(database, batch_id).values() if case.state in wanted]
+    cases.sort(
+        key=lambda item: (
+            item.state is not LifecycleState.DEFERRED,
+            item.rejected_at or _now(),
+            item.scan_id,
+        )
+    )
+    return tuple(cases)
+
+
+def deferred_for_set(
+    database: ProjectDatabase, batch_id: str, set_code: str
+) -> tuple[RescanCase, ...]:
+    """The deferred sheets that may belong to one set.
+
+    Placed like :func:`outstanding_for_set`: a sheet whose set code is this
+    set's, unknown, or no defined set's may be this set's, and a result that
+    ignored it would look complete when it might not be.
+    """
+    from omr_scanner.services import project_sets
+
+    defined = {item.code for item in project_sets.list_sets(database)}
+    return tuple(
+        case
+        for case in cases_by_scan(database, batch_id).values()
+        if case.state is LifecycleState.DEFERRED
+        and (
+            case.set_code == set_code
+            or not case.set_code
+            or (bool(defined) and case.set_code not in defined)
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class SheetFacts:
+    """Everything an operator needs to tell one scan from another, detached.
+
+    What the Attendance stage shows beside each copy of a duplicate before
+    anything is kept or rejected - so the wrong copy is hard to pick.
+
+    Attributes:
+        scan_id: The scan.
+        filename: Its file name.
+        batch_id / batch_label: The batch it was read in.
+        scan_number: Its 1-based position in that batch.
+        machine_id / effective_id: The Student ID as read, and as it reads now.
+        machine_set / effective_set: Likewise for the set code.
+        read_at: When recognition finished, when known.
+        state: Its lifecycle state.
+        reason_label: Why it is not active, when it is not.
+        decided_by / decided_at: Who put it in that state, and when.
+        replacement_of: The file name of the rejected original this scan is
+            the confirmed rescan of, or ``""``.
+        replaced_by: For a superseded original, its replacement's file name.
+    """
+
+    scan_id: int
+    filename: str
+    batch_id: str
+    batch_label: str
+    scan_number: int
+    machine_id: str
+    effective_id: str
+    machine_set: str
+    effective_set: str
+    read_at: datetime | None
+    state: LifecycleState
+    reason_label: str = ""
+    decided_by: str = ""
+    decided_at: datetime | None = None
+    replacement_of: str = ""
+    replaced_by: str = ""
+
+    @property
+    def is_rescan_linked(self) -> bool:
+        """Whether this scan takes part in a confirmed Reject & Rescan link."""
+        return bool(self.replacement_of or self.replaced_by)
+
+
+def sheet_facts(database: ProjectDatabase, scan_ids: Iterable[int]) -> dict[int, SheetFacts]:
+    """Identifying facts for each of these scans, in whatever batches they are."""
+    wanted = list(dict.fromkeys(int(item) for item in scan_ids))
+    if not wanted:
+        return {}
+    with database.session() as session:
+        scans = session.scalars(select(BatchScan).where(BatchScan.scan_id.in_(wanted))).all()
+        batch_ids = {scan.batch_id for scan in scans}
+        rows = {
+            row.scan_id: row
+            for row in session.scalars(
+                select(ScanRejection).where(ScanRejection.scan_id.in_(wanted))
+            ).all()
+        }
+        originals = {
+            int(row.replacement_scan_id): row.source_name or f"scan {row.scan_id}"
+            for row in session.scalars(
+                select(ScanRejection).where(ScanRejection.replacement_scan_id.in_(wanted))
+            ).all()
+            if row.replacement_scan_id is not None
+        }
+        replacement_names = _names(session, [row.replacement_scan_id for row in rows.values()])
+        detached = [
+            (
+                scan.scan_id,
+                scan.filename or "",
+                scan.batch_id,
+                scan.batch_index,
+                scan.identifier_value or "",
+                scan.set_code_value or "",
+                scan.finished_at,
+            )
+            for scan in scans
+        ]
+        cases = {
+            scan_id: _to_case(
+                row,
+                replacement_name=replacement_names.get(row.replacement_scan_id or -1, ""),
+            )
+            for scan_id, row in rows.items()
+        }
+    readings = _project_readings(database, batch_ids)
+    found: dict[int, SheetFacts] = {}
+    for scan_id, name, batch_id, index, machine_id, machine_set, read_at in detached:
+        read = readings.identifiers.get(scan_id)
+        code = readings.set_codes.get(scan_id)
+        case = cases.get(scan_id)
+        state = case.state if case is not None else LifecycleState.ACTIVE
+        inactive = case is not None and state is not LifecycleState.ACTIVE
+        found[scan_id] = SheetFacts(
+            scan_id=scan_id,
+            filename=name,
+            batch_id=batch_id,
+            batch_label=readings.batch_labels.get(batch_id, f"batch {batch_id[:8]}"),
+            scan_number=index + 1,
+            machine_id=read.machine_value if read is not None else machine_id,
+            effective_id=("" if read.unresolved else read.value) if read else machine_id,
+            machine_set=code.machine_value if code is not None else machine_set,
+            effective_set=("" if code.unresolved else code.value) if code else machine_set,
+            read_at=read_at,
+            state=state,
+            reason_label=case.reason_label if inactive and case is not None else "",
+            decided_by=case.rejected_by if inactive and case is not None else "",
+            decided_at=case.rejected_at if inactive and case is not None else None,
+            replacement_of=originals.get(scan_id, ""),
+            replaced_by=(
+                case.replacement_name
+                if case is not None and state is LifecycleState.SUPERSEDED_BY_REPLACEMENT
+                else ""
+            ),
+        )
+    return found
 
 
 # ----------------------------------------------------------------------
@@ -1971,6 +2550,7 @@ __all__ = [
     "LifecycleError",
     "LifecycleEvent",
     "ProcessedSheet",
+    "SheetFacts",
     "adopted_replacements",
     "association_choices",
     "batch_of",
@@ -1979,13 +2559,18 @@ __all__ = [
     "count_cases",
     "counted_elsewhere",
     "current_identity",
+    "defer_scan",
+    "deferred_for_set",
+    "exclude_scan",
     "execute_purge",
     "get_case",
     "incomplete_exports",
     "ineligible_scan_ids",
+    "keep_script",
     "lifecycle_history",
     "lifecycle_states",
     "list_cases",
+    "list_dispositions",
     "managed_roots",
     "outstanding_for_set",
     "owned_path",
@@ -1998,6 +2583,8 @@ __all__ = [
     "remove_replacement",
     "removed_images",
     "replacement_candidates",
+    "restore_scan",
+    "sheet_facts",
     "state_of",
     "sync_reimports",
     "undo_reject",

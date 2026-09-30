@@ -378,6 +378,9 @@ class MainWindow(QMainWindow):
                 attendance_page.resolution_recorded.connect(
                     self._on_attendance_decision
                 )
+                attendance_page.lifecycle_changed.connect(
+                    self._on_attendance_lifecycle_changed
+                )
                 attendance_page.split_ratio_changed.connect(
                     self._on_attendance_split_changed
                 )
@@ -1070,6 +1073,23 @@ class MainWindow(QMainWindow):
         resolve = self._resolve_page()
         if resolve is not None and resolve.state.batch_id is not None:
             resolve.refresh_queue()
+
+    def _on_attendance_lifecycle_changed(self, _scan_id: int) -> None:
+        """A sheet was kept, rejected / excluded, deferred or restored on Attendance.
+
+        The same consequences as a Resolve-stage rejection: the Resolve queue
+        (its duplicate-ID conflicts), Results staleness and report readiness.
+        The Attendance page has already redrawn itself.
+        """
+        resolve = self._resolve_page()
+        if resolve is not None and resolve.state.batch_id is not None:
+            resolve.refresh_queue()
+        results = self._results_page()
+        if results is not None:
+            results.refresh_table()
+        reports = self._reports_page()
+        if reports is not None:
+            reports.refresh_table()
 
     def _on_lifecycle_changed(self, _scan_id: int) -> None:
         """Tell every stage that depends on script validity to re-read.

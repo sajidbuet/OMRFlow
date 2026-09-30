@@ -330,10 +330,18 @@ class ReadinessIssueKind(StrEnum):
     such are a legitimate interim product. The acknowledgement is audited and
     written into the workbook."""
 
+    SHEET_DEFERRED = "sheet_deferred"
+    """A sheet's decision was deferred on the Attendance stage, so it is not
+    scored and not in the results. Acknowledgeable exactly like
+    :attr:`RESCAN_OUTSTANDING`: incomplete results, clearly marked as such."""
+
     @property
     def is_acknowledgeable(self) -> bool:
         """Whether an operator may export past this issue by acknowledging it."""
-        return self is ReadinessIssueKind.RESCAN_OUTSTANDING
+        return self in (
+            ReadinessIssueKind.RESCAN_OUTSTANDING,
+            ReadinessIssueKind.SHEET_DEFERRED,
+        )
 
     @property
     def label(self) -> str:
@@ -382,6 +390,9 @@ class ReadinessIssueKind(StrEnum):
             ),
             ReadinessIssueKind.RESCAN_OUTSTANDING: (
                 "A rejected sheet is still awaiting its rescan"
+            ),
+            ReadinessIssueKind.SHEET_DEFERRED: (
+                "A sheet is deferred - its decision is postponed"
             ),
         }[self]
 
@@ -441,12 +452,22 @@ class ReadinessReport:
         return len(self.by_kind(ReadinessIssueKind.RESCAN_OUTSTANDING))
 
     @property
+    def deferred_sheets(self) -> int:
+        """How many readiness issues are deferred sheets."""
+        return len(self.by_kind(ReadinessIssueKind.SHEET_DEFERRED))
+
+    @property
+    def incomplete_count(self) -> int:
+        """Everything that makes a result incomplete: rescans plus deferrals."""
+        return self.outstanding_rescans + self.deferred_sheets
+
+    @property
     def only_acknowledgeable_blocks(self) -> bool:
         """Whether everything blocking export could be acknowledged away.
 
         True when the set is blocked, and blocked *only* by outstanding
-        rescans - the case in which the interface offers *Export incomplete
-        results* rather than refusing outright.
+        rescans or deferred sheets - the case in which the interface offers
+        *Export incomplete results* rather than refusing outright.
         """
         blocking = [item for item in self.issues if item.blocking]
         return bool(blocking) and all(item.kind.is_acknowledgeable for item in blocking)

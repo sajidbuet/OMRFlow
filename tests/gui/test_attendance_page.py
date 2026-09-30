@@ -222,6 +222,9 @@ class TestImport:
             "absent": "Absent + script  1",
             "unrecognised": "Unrecognised  1",
             "duplicate": "Duplicates  1",
+            # Sheets by disposition, counted apart from the entries.
+            "rejected": "Rejected  0",
+            "deferred": "Deferred  0",
         }
 
     def test_the_summary_says_work_remains(self, imported: AttendancePage):

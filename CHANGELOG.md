@@ -14,6 +14,21 @@ produced them, because that is how the work was sequenced and how
 
 ### Added
 
+- **Attendance dispositions: Keep This Script, Reject / Exclude, Defer,
+  Restore.** A duplicate is settled by inspecting each copy (*Script 1 of N*,
+  with file, batch, scan number, recognised and effective ID and set) and
+  keeping one; the others are rejected / excluded in one audited transaction.
+  An unwanted sheet (wrong form, accidental or blank scan) is rejected /
+  excluded with a reason; an undecided one is deferred - kept, counted and
+  warned about on Attendance, Results and final export, but not scored.
+  *Rejected* and *Deferred* counts and sheet views; Restore and Undo Last
+  Disposition. Built on the Reject & Rescan lifecycle (two new states,
+  `excluded` and `deferred`; no schema change), so reconciliation, duplicate
+  detection, scoring, results and exports share one eligibility rule. New
+  reconciliation status *Script deferred - decision postponed*; new readiness
+  issue *sheet deferred* (acknowledgeable). Results no longer lists a blocked
+  result whose entry no longer exists. *Set Script Aside* is retired for new
+  decisions (existing ones are honoured and reversible).
 - **Reject & Rescan.** Resolve can reject an unusable scan (*Reject / Rescan…*,
   `R`) with a reason and an optional case identity; it stops contributing to
   reconciliation validity, scoring, results and exports at once, without

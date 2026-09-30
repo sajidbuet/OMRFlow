@@ -364,4 +364,6 @@ def test_placement_is_an_enumeration_ready_for_rescan():
     assert {item.value for item in ScriptSetPlacement} == {
         "in_set", "other_set", "unresolved", "undefined",
         "rejected", "rejected_unplaced", "superseded", "counted_elsewhere",
+        # Attendance dispositions: rejected / excluded, and deferred.
+        "excluded", "deferred",
     }

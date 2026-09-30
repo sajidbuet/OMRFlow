@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.domain.scan_lifecycle import (
+    RESCAN_REASONS,
     FileState,
     LifecycleState,
     PurgeMode,
@@ -135,7 +136,7 @@ class RejectScanDialog(QDialog):
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.reason_combo = QComboBox()
         self.reason_combo.setObjectName("rejectReasonCombo")
-        for reason in RejectionReason:
+        for reason in RESCAN_REASONS:
             self.reason_combo.addItem(reason.label, userData=reason.value)
         form.addRow("Reason", self.reason_combo)
 

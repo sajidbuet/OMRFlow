@@ -240,9 +240,25 @@ Select a row to see the candidate, what your list said about them, and every
 script attributed to them. Then decide:
 
 - **Assign Script** — type the correct roll number for the selected script.
-- **Set Script Aside** — for a sheet that was scanned twice. It stops counting,
-  but **nothing is deleted**: the scan, its reading and your reason are all
-  kept, and you can bring it back.
+- **Keep This Script** — for a sheet that was scanned twice (or more). Select
+  the duplicate row, look at each copy (*Script 1 of 2*, **Previous** /
+  **Next**), select the one to keep and confirm: every other copy is
+  **rejected / excluded**. The confirmation names each copy by file, batch and
+  scan number.
+- **Reject / Exclude…** — for a sheet that should never have been part of this
+  exam: the wrong form, an accidental or blank scan, an administrative page.
+  Choose a reason. It leaves reconciliation, scoring and results, but
+  **nothing is deleted** — it stays under the **Rejected** count and the
+  *Rejected / excluded sheets* view, and **Restore** brings it back. No fake
+  candidate ID is needed.
+- **Defer** — when you are not sure yet. The sheet is kept and marked
+  *Deferred*; you can carry on with everything else, but it is **not scored and
+  not in the results** until you **Restore** it (or reject it). Attendance and
+  Results both say how many sheets are deferred, and a final export asks you to
+  acknowledge incomplete results.
+- **Restore** / **Undo Last Disposition** — put an excluded or deferred sheet
+  back into active review exactly as it was. If you kept the poorer copy of a
+  duplicate, restore the other copy and keep it instead.
 - **Override Attendance** — for a candidate your list has wrong.
 - **Accept As-Is** — for a problem nothing can be done about, such as a script
   known to be lost.

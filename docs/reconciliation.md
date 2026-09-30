@@ -245,8 +245,8 @@ name Phase 6 records) and appends an audit event.
 
 | Exception | What the operator can do |
 |---|---|
-| Unknown candidate ID | Inspect the scan and correct the Student ID; assign the script to the right candidate; or accept it as-is with a reason. |
-| Duplicate scripts | Inspect each scan and correct a misidentified Student ID; set one aside as an accidental re-scan; nominate the working script; or leave it. |
+| Unknown candidate ID | Inspect the scan and correct the Student ID; assign the script to the right candidate; **Reject / Exclude** a sheet that should never have been part of this exam; **Defer** it if undecided; or accept it as-is with a reason. |
+| Duplicate scripts | Inspect each copy (*Script 1 of N*) and choose **Keep This Script** - every other copy is rejected / excluded; or correct a misidentified Student ID; or reject / defer one copy individually. |
 | Missing script | Inspect the suggested scripts (*Where to look*) and correct the one that is theirs; override attendance to absent; accept that the script is missing; or assign an unplaced script to them. |
 | Absent but script found | Inspect the scan: if another candidate filled in this roll number, correct the Student ID (the likeliest owners are suggested); if the candidate did attend, override attendance to present; or accept it. |
 | Student ID not yet resolved | Inspect the scan and type the complete ID (or resolve it on the **Resolve** stage); reconciliation re-runs by itself. |
@@ -349,10 +349,75 @@ reviewer, the reason and that it was made from the Attendance stage.
 Reconciliation re-runs immediately. The suggestions under *Where to look*
 (`services/reconciliation_leads.py`) are never acted on automatically.
 
+### Sheet dispositions: Keep, Reject / Exclude, Defer, Restore
+
+The Attendance stage can take a sheet out of play, and put it back, through
+the **Reject & Rescan lifecycle** (`scan_rejection`, see
+`services/scan_lifecycle.py`) - the one table every stage already asks "may
+this scan contribute to a result?". Two states were added to it; no column,
+table or migration was needed (`state` is free text).
+
+| State | Meaning | In reconciliation | Duplicate detection | Scoring / Results / exports |
+|---|---|---|---|---|
+| `active` | An ordinary scan | Counted | Takes part | Eligible |
+| `excluded` (*Reject / Exclude*) | The operator decided the sheet must not take part in this exam's results; **no rescan is expected** | Not listed; counted as *Rejected* in the set's scope | Does not take part | Never |
+| `deferred` (*Defer*) | The decision is postponed | Filed under a registered candidate it reads as, never counted (the candidate reads **Script deferred - decision postponed**, resolution *Deferred*); otherwise listed only under *Deferred sheets* | Does not take part | Never, while deferred |
+| `rejected_pending_rescan` | Reject & Rescan - unchanged | Filed under its candidate as *rescan required* | Does not take part | Never |
+
+* **Keep This Script** (`scan_lifecycle.keep_script`) settles a duplicate
+  group in one transaction: the chosen copy stays active (ledger event
+  `kept_canonical`) and every other counted copy becomes `excluded` with reason
+  *Duplicate* (event `excluded`). All or nothing. Nothing is chosen by file
+  name, timestamp or scan order - only the copy the operator selected.
+* **Reject / Exclude** (`exclude_scan`) needs a reason (wrong page / document,
+  accidental scan, duplicate, blank / unusable, other + note). From `active`
+  or `deferred` (the latter recorded as `disposition_changed`).
+* **Defer** (`defer_scan`) from `active` only.
+* **Restore** (`restore_scan`) returns `excluded` or `deferred` to `active`
+  exactly as it was (event `restored`, `previous_value` naming the state). If
+  that makes a duplicate real again, duplicate detection and reconciliation
+  raise it again. Resolve's *Undo Reject* on such a sheet does the same.
+* Every write re-runs duplicate-ID detection and every stored reconciliation
+  of the batch (`_after_change`) before it returns, so a committed decision is
+  visible everywhere at once and survives a crash or restart; nothing waits
+  for the end of the stage.
+
+**Refusals, in the service.** A confirmed rescan (the replacement in a
+Reject & Rescan link) cannot be excluded or deferred while the link stands -
+its original's candidate would silently lose their script; keep it, or remove
+the link on Resolve first. A `rejected_pending_rescan` sheet is undone on
+Resolve, not restored here. Excluded and deferred scans are never a source for
+`sync_reimports`: the kept copy of a file imported twice has the excluded
+copy's exact bytes and must stay active.
+
+**Downstream.** Reconciliation (`batch_scripts`, read-time lifecycle flags),
+duplicate detection (`review_store._ineligible_scans`), the Resolve queue,
+scoring (`gather_inputs`, `working_script`), the Scan stage's export and the
+reports all read the same predicate - `state != 'active'` is ineligible. A
+stored *blocked* result whose entry no longer exists (an unregistered ID whose
+only sheet was excluded or deferred) is no longer listed by Results and is
+removed on the next full *Calculate Results*; a result with a mark is never
+removed. Report readiness raises `sheet_deferred` for a deferred sheet (by
+candidate, or unattached for the set) - acknowledgeable through *Export
+incomplete results*, exactly like an outstanding rescan.
+
+**Progression.** An excluded sheet is a final disposition. A deferred one is a
+valid disposition too - it does not count as outstanding, so the operator can
+carry on - but Attendance says *N sheet(s) are deferred and will not be
+included in scoring or results*, Results repeats it, and a final export needs
+the incomplete-results acknowledgement.
+
+**Legacy set-aside.** Earlier builds could *Set Script Aside* - a
+reconciliation-only decision that did not reach duplicate detection. Existing
+set-aside decisions are still honoured and shown (*SET ASIDE*), and *Bring
+Script Back* still reverses them, but new duplicates are settled with Keep /
+Reject, which use the lifecycle.
+
 ### Nothing is deleted, ever
 
-Setting a script aside as an accidental re-scan **excludes** it: it stops
-counting towards its candidate and is shown as *SET ASIDE*. The scan row, its
+Rejecting / excluding, deferring or (in older projects) setting a script aside
+takes it out of play: it stops counting towards its candidate and is shown as
+such. The scan row, its
 recognition result, its overlay, the reason and the audit trail all remain.
 That is the difference between resolving a duplicate and destroying evidence.
 

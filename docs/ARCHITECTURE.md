@@ -679,7 +679,19 @@ AttendancePage.assign_selected_script
    / toggle_attendance             / override_attendance / dismiss_entry
                                      -> one transaction: decision + audit event
                                      -> re-reconcile, so consequences are visible
+AttendancePage.keep_selected_script
+   / exclude_ / defer_ / restore_selected_script
+                                -> services.scan_lifecycle.keep_script / exclude_scan
+                                   / defer_scan / restore_scan   (Reject & Rescan lifecycle)
+                                     -> one transaction: scan_rejection state + audit event(s)
+                                     -> _after_change: duplicate-ID sync + re-reconcile
 ```
+
+Sheet dispositions (*Keep This Script*, *Reject / Exclude*, *Defer*,
+*Restore*) are lifecycle states, not reconciliation decisions: the
+`scan_rejection` table is the single answer to "may this scan contribute to a
+result", read by reconciliation, duplicate detection, scoring and exports
+alike. See `docs/reconciliation.md` § *Sheet dispositions*.
 
 Four decisions worth carrying forward:
 

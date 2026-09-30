@@ -672,6 +672,16 @@ class ScriptSetPlacement(StrEnum):
     """A confirmed rescan of a sheet from **another** batch. It counts there,
     in its original's place, and so is left out here - a rescan counts once."""
 
+    EXCLUDED = "excluded"
+    """Rejected / excluded on the Attendance stage. Outside every set's
+    reconciliation, duplicate detection and results; counted in the scope so
+    it never disappears from the arithmetic."""
+
+    DEFERRED = "deferred"
+    """Deferred on the Attendance stage. Filed under its candidate when it
+    reads as one of this set's registered candidates - never counted - and
+    otherwise listed only as deferred."""
+
 
 _LIFECYCLE_PLACEMENTS = frozenset(
     {
@@ -679,6 +689,8 @@ _LIFECYCLE_PLACEMENTS = frozenset(
         ScriptSetPlacement.REJECTED_UNPLACED,
         ScriptSetPlacement.SUPERSEDED,
         ScriptSetPlacement.COUNTED_ELSEWHERE,
+        ScriptSetPlacement.EXCLUDED,
+        ScriptSetPlacement.DEFERRED,
     }
 )
 
@@ -751,6 +763,10 @@ class SetScriptScope:
             belonging to this set (or, unscoped, to the batch).
         counted_elsewhere: This batch's scans that are confirmed rescans of
             sheets in another batch, and are counted there instead.
+        excluded: Sheets rejected / excluded on the Attendance stage that
+            belong to this set (or to no known set). Not counted.
+        deferred: Sheets deferred on the Attendance stage that belong to this
+            set (or to no known set). Not counted while deferred.
     """
 
     set_code: str
@@ -761,6 +777,8 @@ class SetScriptScope:
     rescan_required: int = 0
     superseded: int = 0
     counted_elsewhere: int = 0
+    excluded: int = 0
+    deferred: int = 0
 
     @property
     def other_set_total(self) -> int:
@@ -837,8 +855,12 @@ def _lifecycle_placement(
     set_code: str,
     defined: set[str],
 ) -> tuple[ScriptSetPlacement, str]:
-    """Place a rejected, superseded or re-imported scan relative to one set."""
+    """Place a rejected, superseded, re-imported, excluded or deferred scan."""
     code = _case_set_code(case, found)
+    if case.state is LifecycleState.EXCLUDED:
+        return ScriptSetPlacement.EXCLUDED, code
+    if case.state is LifecycleState.DEFERRED:
+        return ScriptSetPlacement.DEFERRED, code
     if case.state is not LifecycleState.REJECTED_PENDING_RESCAN:
         return ScriptSetPlacement.SUPERSEDED, code
     if code and code == set_code:
@@ -873,7 +895,7 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
         scripts = batch_scripts(database, batch_id)
         return SetScriptScope(
             set_code="",
-            in_set=sum(1 for item in scripts if not item.rejected),
+            in_set=sum(1 for item in scripts if not item.rejected and not item.deferred),
             rescan_required=sum(
                 1
                 for item in states.values()
@@ -882,11 +904,15 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
             superseded=sum(
                 1
                 for item in states.values()
-                if item is not LifecycleState.REJECTED_PENDING_RESCAN
+                if item
+                in (LifecycleState.SUPERSEDED_BY_REPLACEMENT, LifecycleState.REIMPORT_OF_REJECTED)
             ),
             counted_elsewhere=len(scan_lifecycle.counted_elsewhere(database, batch_id)),
+            excluded=sum(1 for item in states.values() if item is LifecycleState.EXCLUDED),
+            deferred=sum(1 for item in states.values() if item is LifecycleState.DEFERRED),
         )
     in_set = unresolved = undefined = rescan = superseded = elsewhere = 0
+    excluded = deferred = 0
     others: dict[str, int] = {}
     for placement, code in _placements(database, batch_id, set_code).values():
         if placement is ScriptSetPlacement.IN_SET:
@@ -902,6 +928,12 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
                 superseded += 1
         elif placement is ScriptSetPlacement.COUNTED_ELSEWHERE:
             elsewhere += 1
+        elif placement is ScriptSetPlacement.EXCLUDED:
+            if code == set_code or not code:
+                excluded += 1
+        elif placement is ScriptSetPlacement.DEFERRED:
+            if code == set_code or not code:
+                deferred += 1
         else:
             undefined += 1
     return SetScriptScope(
@@ -913,6 +945,8 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
         rescan_required=rescan,
         superseded=superseded,
         counted_elsewhere=elsewhere,
+        excluded=excluded,
+        deferred=deferred,
     )
 
 
@@ -975,12 +1009,15 @@ def batch_scripts(
     read, and reconciling against it would ignore every correction a reviewer
     made on the Resolve stage.
 
-    **Lifecycle first.** A superseded original and a re-import of rejected
-    content are never returned. A scan rejected pending a rescan is returned
-    with :attr:`~omr_scanner.domain.reconciliation.ScriptRecord.rejected` set
-    - so its candidate can be told *rescan required* - carrying the case's
-    identity (the operator's declared Student ID, else its effective one);
-    it never counts. See :mod:`omr_scanner.services.scan_lifecycle`.
+    **Lifecycle first.** A superseded original, a re-import of rejected
+    content and a sheet rejected / excluded on the Attendance stage are never
+    returned. A scan rejected pending a rescan is returned with
+    :attr:`~omr_scanner.domain.reconciliation.ScriptRecord.rejected` set - so
+    its candidate can be told *rescan required* - carrying the case's
+    identity (the operator's declared Student ID, else its effective one); a
+    deferred scan likewise with
+    :attr:`~omr_scanner.domain.reconciliation.ScriptRecord.deferred`. Neither
+    ever counts. See :mod:`omr_scanner.services.scan_lifecycle`.
     """
     readings = _batch_readings(database, batch_id)
     identifiers = readings.identifiers
@@ -993,6 +1030,7 @@ def batch_scripts(
                 database, batch_id, set_code
             ).items()
             if placement in (ScriptSetPlacement.IN_SET, ScriptSetPlacement.REJECTED)
+            or (placement is ScriptSetPlacement.DEFERRED and _code == set_code)
         }
     with database.session() as session:
         rows = session.scalars(
@@ -1020,11 +1058,15 @@ def batch_scripts(
                 continue
             found = identifiers.get(row.scan_id)
             case = cases.get(row.scan_id)
-            if case is not None and case.state is not LifecycleState.REJECTED_PENDING_RESCAN:
+            if case is not None and case.state not in (
+                LifecycleState.REJECTED_PENDING_RESCAN,
+                LifecycleState.DEFERRED,
+            ):
                 continue
             machine = found.machine_value if found else (row.identifier_value or "")
             if case is not None:
                 identity = _case_identity(case, found)
+                deferred = case.state is LifecycleState.DEFERRED
                 scripts.append(
                     ScriptRecord(
                         scan_id=row.scan_id,
@@ -1033,7 +1075,8 @@ def batch_scripts(
                         effective_candidate_id=identity,
                         identifier_unresolved=not identity,
                         corrected_by_human=bool(found and found.was_corrected),
-                        rejected=True,
+                        rejected=not deferred,
+                        deferred=deferred,
                     )
                 )
                 continue
@@ -1199,7 +1242,10 @@ def reconcile_batch(
     )
     # A rejected script is listed under its candidate, but it is not one of
     # the scripts this reconciliation counts.
-    counts = count_entries(entries, scripts=sum(1 for item in scripts if not item.rejected))
+    counts = count_entries(
+        entries,
+        scripts=sum(1 for item in scripts if not item.rejected and not item.deferred),
+    )
 
     moment = _now()
     with database.session() as session:
@@ -1355,8 +1401,10 @@ def _counts_payload(counts: ReconciliationCounts) -> dict[str, Any]:
         "unresolved_candidate_id": counts.unresolved_candidate_id,
         "rescan_required": counts.rescan_required,
         "script_set_unresolved": counts.script_set_unresolved,
+        "script_deferred": counts.script_deferred,
         "resolved": counts.resolved,
         "dismissed": counts.dismissed,
+        "deferred": counts.deferred,
         "outstanding_count": counts.outstanding_count,
     }
 
@@ -1459,23 +1507,29 @@ def list_entries(
         )
 
 
-def _ineligible_among(session: Session, scan_ids: Sequence[int]) -> frozenset[int]:
-    """Which of these scans are rejected, superseded or re-imported, **now**.
+def _ineligible_among(
+    session: Session, scan_ids: Sequence[int]
+) -> dict[int, LifecycleState]:
+    """Which of these scans are not active **now**, and in which state.
 
     Read at the moment an entry is read rather than stored with it, so that a
-    reconciliation computed before a scan was rejected - a cache - can never
-    hand scoring or a report a rejected script as though it counted.
+    reconciliation computed before a scan was rejected, excluded or deferred -
+    a cache - can never hand scoring or a report such a script as though it
+    counted.
     """
     if not scan_ids:
-        return frozenset()
-    return frozenset(
-        int(item)
-        for item in session.scalars(
-            select(ScanRejection.scan_id)
-            .where(ScanRejection.scan_id.in_(list(set(scan_ids))))
-            .where(ScanRejection.state != LifecycleState.ACTIVE.value)
-        ).all()
-    )
+        return {}
+    found: dict[int, LifecycleState] = {}
+    for scan_id, state in session.execute(
+        select(ScanRejection.scan_id, ScanRejection.state)
+        .where(ScanRejection.scan_id.in_(list(set(scan_ids))))
+        .where(ScanRejection.state != LifecycleState.ACTIVE.value)
+    ).all():
+        try:
+            found[int(scan_id)] = LifecycleState(state)
+        except ValueError:  # pragma: no cover - a state from a newer build
+            found[int(scan_id)] = LifecycleState.REJECTED_PENDING_RESCAN
+    return found
 
 
 def _apply_filters(statement: Any, rules: EntryFilter) -> Any:
@@ -1571,7 +1625,7 @@ def _to_entry(
     row: ReconciliationEntryRow,
     links: Sequence[ReconciliationScript],
     candidates: dict[int, RegisteredCandidate],
-    ineligible: frozenset[int] = frozenset(),
+    ineligible: dict[int, LifecycleState] | None = None,
 ) -> ReconciliationEntry:
     """Convert stored rows into a detached domain entry."""
     candidate = None
@@ -1591,7 +1645,8 @@ def _to_entry(
         candidate_id=row.candidate_id,
         candidate=candidate,
         scripts=tuple(
-            _to_script_view(link, rejected=link.scan_id in ineligible) for link in links
+            _to_script_view(link, state=(ineligible or {}).get(link.scan_id))
+            for link in links
         ),
         issues=issues,
         status=ReconciliationStatus(row.status),
@@ -1604,8 +1659,16 @@ def _to_entry(
     )
 
 
-def _to_script_view(link: ReconciliationScript, *, rejected: bool = False) -> ScriptView:
-    """Convert one stored script link into a detached view."""
+def _to_script_view(
+    link: ReconciliationScript, *, state: LifecycleState | None = None
+) -> ScriptView:
+    """Convert one stored script link into a detached view.
+
+    ``state`` is the scan's current lifecycle state when it is not active: a
+    deferred scan is flagged deferred, any other ineligible one rejected -
+    either way it does not count.
+    """
+    deferred = state is LifecycleState.DEFERRED
     return ScriptView(
         script=ScriptRecord(
             scan_id=link.scan_id,
@@ -1616,7 +1679,8 @@ def _to_script_view(link: ReconciliationScript, *, rejected: bool = False) -> Sc
             corrected_by_human=(
                 link.effective_candidate_id != link.machine_candidate_id
             ),
-            rejected=rejected,
+            rejected=state is not None and not deferred,
+            deferred=deferred,
         ),
         assignment=ScriptAssignment(link.assignment),
         excluded=link.excluded,

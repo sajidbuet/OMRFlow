@@ -809,15 +809,22 @@ class ResultsPage(WorkflowPage):
         session = self.state.session
         if session is None or not self.state.batch_id:
             return ""
-        outstanding = scan_lifecycle.count_cases(
-            session.database, self.state.batch_id
-        ).outstanding
-        if not outstanding:
-            return ""
-        return (
-            f"<br><span style='color:#a4262c'><b>Results may be incomplete: "
-            f"{outstanding} rejected sheet(s) still awaiting rescan.</b></span>"
-        )
+        cases = scan_lifecycle.count_cases(session.database, self.state.batch_id)
+        text = ""
+        if cases.outstanding:
+            text += (
+                f"<br><span style='color:#a4262c'><b>Results may be incomplete: "
+                f"{cases.outstanding} rejected sheet(s) still awaiting rescan.</b></span>"
+            )
+        if cases.deferred:
+            # A deferred sheet is an open decision, not a reviewed one: the
+            # results must not read as a completely reviewed dataset.
+            text += (
+                f"<br><span style='color:#a4262c'><b>{cases.deferred} sheet(s) "
+                "are deferred and will not be included in scoring or results."
+                "</b></span> Restore or reject them on the <b>Attendance</b> stage."
+            )
+        return text
 
     # ------------------------------------------------------------------
     # The detail panel

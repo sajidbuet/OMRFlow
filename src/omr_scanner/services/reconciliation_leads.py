@@ -86,6 +86,7 @@ _SCRIPT_SOURCES: dict[ReconciliationStatus, tuple[int, str]] = {
 _OWNER_SOURCES: dict[ReconciliationStatus, tuple[int, str]] = {
     ReconciliationStatus.PRESENT_WITHOUT_SCRIPT: (0, "expected present, no script"),
     ReconciliationStatus.RESCAN_REQUIRED: (0, "script rejected, rescan required"),
+    ReconciliationStatus.SCRIPT_DEFERRED: (0, "script deferred, decision postponed"),
     ReconciliationStatus.SCRIPT_SET_UNRESOLVED: (0, "expected present, script set unresolved"),
     ReconciliationStatus.ABSENT_CONFIRMED: (1, "marked absent, no script"),
 }

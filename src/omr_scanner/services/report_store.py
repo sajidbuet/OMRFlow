@@ -651,6 +651,9 @@ class SetGenerationInputs:
     unattached_rescans: tuple[str, ...] = ()
     """File names of outstanding rescans that may belong to this set but are
     filed under no candidate - see :func:`_unattached_rescans`."""
+    unattached_deferred: tuple[str, ...] = ()
+    """File names of deferred sheets that may belong to this set but are
+    filed under no candidate - see :func:`_unattached_deferred`."""
 
 
 def gather_set_inputs(
@@ -675,6 +678,7 @@ def gather_set_inputs(
         policy=policy,
         question_plan_count=plan.question_count,
         unattached_rescans=_unattached_rescans(database, batch_id, set_code, entries),
+        unattached_deferred=_unattached_deferred(database, batch_id, set_code, entries),
     )
 
 
@@ -702,6 +706,36 @@ def _unattached_rescans(
         for case in scan_lifecycle.outstanding_for_set(database, batch_id, set_code)
         if case.scan_id not in attached
     )
+
+
+def _unattached_deferred(
+    database: ProjectDatabase,
+    batch_id: str,
+    set_code: str,
+    entries: Sequence[ReconciliationEntry],
+) -> tuple[str, ...]:
+    """Deferred sheets relevant to a set that no candidate row accounts for."""
+    attached = {
+        view.script.scan_id
+        for entry in entries
+        for view in entry.scripts
+        if view.script.deferred
+    }
+    return tuple(
+        case.source_name
+        for case in scan_lifecycle.deferred_for_set(database, batch_id, set_code)
+        if case.scan_id not in attached
+    )
+
+
+def incomplete_phrase(rescans: int, deferred: int) -> str:
+    """Name what makes results incomplete, e.g. ``2 rejected sheet(s) ...``."""
+    parts = []
+    if rescans:
+        parts.append(f"{rescans} rejected sheet(s) awaiting rescan")
+    if deferred:
+        parts.append(f"{deferred} deferred sheet(s) excluded from scoring")
+    return " and ".join(parts)
 
 
 def _decisions_for(
@@ -789,6 +823,7 @@ def check_readiness(
         results_by_candidate=inputs.results_by_candidate,
         has_verified_key=inputs.verified_key is not None,
         unattached_rescans=inputs.unattached_rescans,
+        unattached_deferred=inputs.unattached_deferred,
     )
     return block_stale_results_for_final_export(report) if for_final_export else report
 
@@ -970,9 +1005,12 @@ def generate_xlsx(
         results_by_candidate=inputs.results_by_candidate,
         has_verified_key=inputs.verified_key is not None,
         unattached_rescans=inputs.unattached_rescans,
+        unattached_deferred=inputs.unattached_deferred,
     )
     outstanding = readiness.outstanding_rescans
-    acknowledged = bool(final and acknowledge_incomplete and outstanding)
+    deferred = readiness.deferred_sheets
+    incomplete = incomplete_phrase(outstanding, deferred)
+    acknowledged = bool(final and acknowledge_incomplete and (outstanding or deferred))
     if acknowledged and not computed_by.strip():
         return GenerationOutcome(
             report_id=0, set_code=set_code, report_type="xlsx", status="blocked",
@@ -993,19 +1031,16 @@ def generate_xlsx(
             )
 
     warnings: list[str] = list(readiness.describe()) if readiness.has_warnings else []
-    if outstanding:
+    if incomplete:
         # First, so that nobody reading the Processing Log can miss it.
         warnings.insert(
             0,
             (
-                f"INCOMPLETE RESULTS: exported with {outstanding} rejected sheet(s) "
-                f"still awaiting rescan - acknowledged by {computed_by.strip()}."
+                f"INCOMPLETE RESULTS: exported with {incomplete} - acknowledged by "
+                f"{computed_by.strip()}."
             )
             if acknowledged
-            else (
-                f"Results incomplete: {outstanding} rejected sheet(s) still awaiting "
-                "rescan."
-            ),
+            else f"Results incomplete: {incomplete}.",
         )
 
     try:
@@ -1116,11 +1151,11 @@ def generate_xlsx(
             batch_id=batch_id,
             set_code=set_code,
             reviewer=computed_by,
-            outstanding=outstanding,
+            outstanding=outstanding + deferred,
             detail=(
                 f"Final export of set {set_code} (report {report_id}, "
-                f"{output_path.name}) produced with {outstanding} rejected sheet(s) "
-                "still awaiting rescan; acknowledged as incomplete results."
+                f"{output_path.name}) produced with {incomplete}; acknowledged as "
+                "incomplete results."
             ),
         )
     _LOGGER.info(

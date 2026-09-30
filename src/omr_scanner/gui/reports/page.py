@@ -770,24 +770,31 @@ class ReportsPage(WorkflowPage):
         assert self.state.session is not None
         return self.state.session.project.layout.exports_dir
 
-    def _incomplete_sets(self, rows: list[SetRow]) -> list[tuple[str, int]]:
-        """Sets blocked for final export **only** by outstanding rescans.
+    def _incomplete_sets(self, rows: list[SetRow]) -> list[tuple[str, str]]:
+        """Sets blocked for final export **only** by rescans or deferrals.
 
-        ``(set code, outstanding count)`` for each. A set blocked by anything
+        ``(set code, what is incomplete)`` for each. A set blocked by anything
         else is not offered the acknowledgement - it stays blocked, and its
         readiness issues say why.
         """
-        found: list[tuple[str, int]] = []
+        found: list[tuple[str, str]] = []
         for row in rows:
             if row.blocker:
                 continue
             report = self._readiness_for(row, for_final_export=True)
             if (
                 report is not None
-                and report.outstanding_rescans
+                and report.incomplete_count
                 and report.only_acknowledgeable_blocks
             ):
-                found.append((row.set_code, report.outstanding_rescans))
+                found.append(
+                    (
+                        row.set_code,
+                        report_store.incomplete_phrase(
+                            report.outstanding_rescans, report.deferred_sheets
+                        ),
+                    )
+                )
         return found
 
     def _acknowledge_if_needed(self, rows: list[SetRow]) -> bool | None:
@@ -806,10 +813,7 @@ class ReportsPage(WorkflowPage):
         pending = self._incomplete_sets(rows)
         if not pending:
             return False
-        summary = "\n".join(
-            f"• Set {code}: {count} rejected sheet(s) awaiting rescan"
-            for code, count in pending
-        )
+        summary = "\n".join(f"• Set {code}: {what}" for code, what in pending)
         return True if self.confirm_incomplete_export(summary) else None
 
     def confirm_incomplete_export(self, summary: str) -> bool:
@@ -825,7 +829,8 @@ class ReportsPage(WorkflowPage):
         box.setWindowTitle("Results are incomplete")
         box.setText(
             "Some sheets were rejected as unusable and their rescans have not "
-            f"been confirmed:\n\n{summary}\n\nThose candidates have no mark. "
+            "been confirmed, or were deferred on the Attendance stage and are "
+            f"excluded from scoring:\n\n{summary}\n\nThose sheets have no mark. "
             "Exporting now produces a final report marked as INCOMPLETE, and "
             "the decision is recorded against your name."
         )

@@ -143,13 +143,14 @@ def reconcile(data: ReconciliationInput) -> tuple[ReconciliationEntry, ...]:
             reviewer=decision.reviewer,
         )
         target = decision.assigned_candidate_id or script.effective_candidate_id
-        if script.rejected:
+        if script.rejected or script.deferred:
             # A rejected script is filed only under a registered candidate it
             # can be attributed to, so that candidate reads "rescan required".
             # It never becomes an entry of its own: it does not count, so an
             # unknown-ID or unread entry holding nothing but it would be an
             # exception about nothing. The Resolve stage's Rejected / Rescan
-            # queue is where every rejected scan is listed.
+            # queue is where every rejected scan is listed; the Attendance
+            # stage's Deferred list is where every deferred one is.
             if target in by_id:
                 attributed.setdefault(target, []).append(view)
             continue
@@ -219,6 +220,7 @@ def _candidate_entry(
     ordered = tuple(sorted(views, key=lambda item: item.script.scan_id))
     counted = [item for item in ordered if item.counts_as_a_script]
     rejected = [item for item in ordered if item.script.rejected]
+    deferred = [item for item in ordered if item.script.deferred]
 
     overridden = decision.attendance_override is not AttendanceState.UNKNOWN
     attendance = (
@@ -235,6 +237,9 @@ def _candidate_entry(
         # Whatever the roster says: a sheet was received and is waiting to be
         # rescanned, which is outstanding physical work either way.
         issues.add(ReconciliationIssue.RESCAN_REQUIRED)
+    elif not counted and deferred:
+        # Likewise: received, and waiting on a decision rather than missing.
+        issues.add(ReconciliationIssue.SCRIPT_DEFERRED)
     elif not counted and attendance.expects_a_script:
         issues.add(
             ReconciliationIssue.SCRIPT_SET_UNRESOLVED
@@ -318,6 +323,10 @@ def _resolution_for(
     """
     if not issues:
         return ResolutionState.RESOLVED
+    if issues == {ReconciliationIssue.SCRIPT_DEFERRED}:
+        # A disposition, not an open question: the operator chose to decide
+        # later. Never "resolved" - every later stage says it is deferred.
+        return ResolutionState.DEFERRED
     if decision.dismissed:
         return ResolutionState.DISMISSED
     # Issues remain. That is true even when a decision has already been
@@ -377,6 +386,8 @@ def count_entries(
         if entry.status.is_exception:
             if entry.resolution is ResolutionState.DISMISSED:
                 bump("dismissed")
+            elif entry.resolution is ResolutionState.DEFERRED:
+                bump("deferred")
             else:
                 bump("outstanding")
         elif entry.reviewer:
@@ -409,8 +420,10 @@ def count_entries(
         script_set_unresolved=counts.get(
             ReconciliationIssue.SCRIPT_SET_UNRESOLVED.value, 0
         ),
+        script_deferred=counts.get(ReconciliationIssue.SCRIPT_DEFERRED.value, 0),
         resolved=counts.get("resolved", 0),
         dismissed=counts.get("dismissed", 0),
+        deferred=counts.get("deferred", 0),
         outstanding_count=counts.get("outstanding", 0),
         by_status=by_status,
     )

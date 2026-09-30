@@ -42,6 +42,13 @@ The rules the page is arranged around:
   audited and undoable. Reconciliation is then recomputed at once.
 * **No destructive shortcut exists.** Nothing drops a script, picks a
   duplicate or edits the imported roster.
+* **Every sheet gets an explicit disposition.** A duplicate is settled by
+  inspecting each copy and choosing *Keep This Script*; an unwanted sheet is
+  *Rejected / Excluded*; an undecided one is *Deferred*; either is *Restored*.
+  All four go through the Reject & Rescan lifecycle
+  (:mod:`omr_scanner.services.scan_lifecycle`) - the one authority on whether
+  a scan may contribute to a result - so reconciliation, duplicate detection,
+  scoring and every export agree, across restarts. Nothing is deleted.
 
 A project with no Sets defined yet still works: attendance is then *unscoped*
 (one list for the project, ``set_id`` NULL), exactly as before Sets existed.
@@ -69,7 +76,10 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -93,11 +103,19 @@ from omr_scanner.domain.reconciliation import (
     AttendanceSource,
     AttendanceState,
     ReconciliationEntry,
+    ReconciliationIssue,
     ReconciliationReason,
     ReconciliationStatus,
     ResolutionState,
 )
 from omr_scanner.domain.review import ReasonCode
+from omr_scanner.domain.scan_lifecycle import (
+    EXCLUSION_REASONS,
+    STATE_EXPLANATIONS,
+    LifecycleState,
+    RejectionReason,
+    RescanCase,
+)
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.attendance.import_dialog import RosterImportDialog
 from omr_scanner.gui.attendance.worker import ReconcileResult, ReconcileWorker
@@ -116,6 +134,7 @@ from omr_scanner.services import (
     load_template,
     reconciliation_store,
     resolve_active_template,
+    scan_lifecycle,
     set_attendance,
 )
 from omr_scanner.services.candidate_import import (
@@ -131,10 +150,12 @@ from omr_scanner.services.reconciliation_leads import (
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.exam_sets import ExamSet
+    from omr_scanner.domain.reconciliation import ScriptView
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import ProjectDatabase, ProjectSession
     from omr_scanner.services.reconciliation_store import RosterSummary
+    from omr_scanner.services.scan_lifecycle import SheetFacts
     from omr_scanner.services.set_attendance import SetAttendanceStatus
 
 _LOGGER = logging.getLogger(__name__)
@@ -206,6 +227,19 @@ UNRECOGNISED: tuple[ReconciliationStatus, ...] = (
 
 ALL_CANDIDATES = "All candidates"
 EXCEPTIONS_ONLY = "Exceptions only"
+REJECTED_SHEETS = "Rejected / excluded sheets"
+DEFERRED_SHEETS = "Deferred sheets"
+
+_DISPOSITION_VIEWS: dict[str, LifecycleState] = {
+    REJECTED_SHEETS: LifecycleState.EXCLUDED,
+    DEFERRED_SHEETS: LifecycleState.DEFERRED,
+}
+"""Views that list *sheets* by disposition rather than reconciliation entries.
+
+A rejected / excluded sheet takes part in no reconciliation, and a deferred
+one only when it reads as a registered candidate - so neither could be found
+through the entry filters. These views are where every one of them stays
+visible."""
 
 _STATUS_FILTERS: tuple[tuple[str, tuple[ReconciliationStatus, ...]], ...] = (
     (ALL_CANDIDATES, ()),
@@ -222,8 +256,11 @@ _STATUS_FILTERS: tuple[tuple[str, tuple[ReconciliationStatus, ...]], ...] = (
     ("Absent but script found", (ReconciliationStatus.ABSENT_WITH_SCRIPT,)),
     ("Unrecognised ID", UNRECOGNISED),
     ("Duplicate scripts", (ReconciliationStatus.DUPLICATE_SCRIPT,)),
+    ("Script deferred", (ReconciliationStatus.SCRIPT_DEFERRED,)),
     ("Matched", (ReconciliationStatus.MATCHED,)),
     ("Absent, confirmed", (ReconciliationStatus.ABSENT_CONFIRMED,)),
+    (REJECTED_SHEETS, ()),
+    (DEFERRED_SHEETS, ()),
 )
 
 _RESOLUTION_FILTERS: tuple[tuple[str, tuple[ResolutionState, ...]], ...] = (
@@ -231,6 +268,7 @@ _RESOLUTION_FILTERS: tuple[tuple[str, tuple[ResolutionState, ...]], ...] = (
     ("Needs review", (ResolutionState.OPEN,)),
     ("Resolved", (ResolutionState.RESOLVED,)),
     ("Accepted as-is", (ResolutionState.DISMISSED,)),
+    ("Deferred", (ResolutionState.DEFERRED,)),
 )
 
 _SERIOUS: frozenset[ReconciliationStatus] = frozenset(
@@ -249,6 +287,7 @@ _MARKERS: dict[ReconciliationStatus, str] = {
     ReconciliationStatus.DUPLICATE_SCRIPT: "!",
     ReconciliationStatus.RESCAN_REQUIRED: "✖",
     ReconciliationStatus.SCRIPT_SET_UNRESOLVED: "◐",
+    ReconciliationStatus.SCRIPT_DEFERRED: "⏸",
 }
 """A glyph beside every status word, so the state is never colour alone."""
 
@@ -269,7 +308,10 @@ _EXPLANATIONS: dict[ReconciliationStatus, str] = {
     ReconciliationStatus.UNKNOWN_ID: (
         "The roll number read is not on this set's candidate list. It may have "
         "been misread, mistyped by the candidate, or belong to another set. "
-        "Inspect the script and correct the Student ID if it is wrong."
+        "Inspect the script and correct the Student ID if it is wrong. If the "
+        "sheet should never have been part of this exam - an accidental scan, "
+        "the wrong form, a blank page - <b>Reject / Exclude</b> it; if you are "
+        "not sure yet, <b>Defer</b> it. No fake candidate ID is needed."
     ),
     ReconciliationStatus.UNRESOLVED_CANDIDATE_ID: (
         "Part of this script's Student ID could not be read. Inspect the "
@@ -277,9 +319,12 @@ _EXPLANATIONS: dict[ReconciliationStatus, str] = {
         "stage records."
     ),
     ReconciliationStatus.DUPLICATE_SCRIPT: (
-        "More than one script reads as this ID. One may be an accidental "
-        "re-scan (set it aside) or another candidate's sheet (correct its "
-        "Student ID). Nothing is chosen for you."
+        "More than one script reads as this ID. If the same sheet was scanned "
+        "twice, inspect each copy (<b>Script 1 of N</b> below), select the one "
+        "to keep and choose <b>Keep This Script</b>: every other copy is "
+        "rejected / excluded - kept in the project, never deleted, and "
+        "restorable. If a copy is another candidate's sheet, correct its "
+        "Student ID instead. Nothing is chosen for you."
     ),
     ReconciliationStatus.RESCAN_REQUIRED: (
         "This candidate's script <b>was received</b>, but it was rejected as "
@@ -291,6 +336,12 @@ _EXPLANATIONS: dict[ReconciliationStatus, str] = {
         "A script with exactly this Student ID exists, but its set code is not "
         "settled (or names no defined set), so no set reconciles it yet. "
         "Settle its set code on the Resolve stage; it will then appear here."
+    ),
+    ReconciliationStatus.SCRIPT_DEFERRED: (
+        "You deferred the decision about this candidate's script. You can carry "
+        "on with the rest of Attendance, but until you <b>Restore</b> it (or "
+        "<b>Reject / Exclude</b> it) the candidate is not scored and the "
+        "Results stage says the results are incomplete."
     ),
 }
 
@@ -310,6 +361,8 @@ _CHIP_FILTERS: dict[str, str] = {
     "absent": "Absent but script found",
     "unrecognised": "Unrecognised ID",
     "duplicate": "Duplicate scripts",
+    "rejected": REJECTED_SHEETS,
+    "deferred": DEFERRED_SHEETS,
 }
 """Which status filter each summary chip selects."""
 
@@ -348,6 +401,11 @@ class AttendancePageState:
     all_entries: list[ReconciliationEntry] | None = None
     scope: reconciliation_store.SetScriptScope | None = None
     outside: tuple[OutOfSetScript, ...] | None = None
+    dispositions: list[RescanCase] = field(default_factory=list)
+    """The rows of a *Rejected / excluded* or *Deferred* sheet view."""
+
+    facts: dict[int, SheetFacts] = field(default_factory=dict)
+    """Identifying facts for the scripts the detail panel is showing."""
 
     @property
     def has_sets(self) -> bool:
@@ -383,6 +441,11 @@ class AttendancePage(WorkflowPage):
     """Emitted after an operator decision has been stored - including a
     Student ID or set code corrected from the inspector."""
 
+    lifecycle_changed = Signal(int)
+    """Emitted with a scan id after a sheet was kept, rejected / excluded,
+    deferred or restored here - every stage that depends on script validity
+    re-reads."""
+
     split_ratio_changed = Signal(float)
     """Emitted, settled, after the operator moves the work-area divider: the
     table's share of the width. The window persists it; the page never writes
@@ -400,6 +463,10 @@ class AttendancePage(WorkflowPage):
         """``(candidate_id, row, scan_id)`` of the entry an inspector correction
         was made from, while the reconciliation it triggered is running."""
         self._chips: dict[str, QPushButton] = {}
+        self._filling_scripts = False
+        self._last_disposition: tuple[str, tuple[int, ...]] | None = None
+        """``(what was done, scans it took out of play)`` - what *Undo Last
+        Disposition* restores."""
 
         top = QWidget()
         top_layout = QVBoxLayout(top)
@@ -568,6 +635,18 @@ class AttendancePage(WorkflowPage):
                 "A script whose ID is not on the list, or not yet fully read.",
             ),
             ("duplicate", "Duplicates", "More than one script under one ID."),
+            (
+                "rejected",
+                "Rejected",
+                "Sheets rejected / excluded from this exam's results - kept, "
+                "never deleted, not counted as scripts.",
+            ),
+            (
+                "deferred",
+                "Deferred",
+                "Sheets whose decision is postponed. Not scored while deferred; "
+                "still an open item.",
+            ),
         ):
             chip = QPushButton(f"{label}  -")
             chip.setObjectName("attendanceCountChip")
@@ -699,22 +778,10 @@ class AttendancePage(WorkflowPage):
             "Every script attributed to this entry, including any set aside. "
             "Nothing here is ever deleted."
         )
-        self.scripts_list.currentRowChanged.connect(lambda _row: self._update_enabled())
+        self.scripts_list.currentRowChanged.connect(self._on_script_row_changed)
         self.scripts_list.itemActivated.connect(lambda _item: self.inspect_selected_script())
         layout.addWidget(self.scripts_list)
-
-        script_actions = QHBoxLayout()
-        self.inspect_button = QPushButton(load_icon("scan-line"), "Inspect / Correct Script")
-        self.inspect_button.setObjectName("inspectScriptButton")
-        self.inspect_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
-        self.inspect_button.setToolTip(
-            "Open the selected script's original scan and its Student ID and "
-            "set code, here, to check and correct them. (Enter)"
-        )
-        self.inspect_button.clicked.connect(self.inspect_selected_script)
-        script_actions.addWidget(self.inspect_button)
-        script_actions.addStretch(1)
-        layout.addLayout(script_actions)
+        layout.addWidget(self._build_disposition_box())
 
         self.leads_heading = _section_heading("Where to look")
         layout.addWidget(self.leads_heading)
@@ -764,6 +831,110 @@ class AttendancePage(WorkflowPage):
         self.detail_scroll = scroll
         return scroll
 
+    def _build_disposition_box(self) -> QWidget:
+        """The selected script: which copy, what identifies it, and what to do with it.
+
+        Context-sensitive - a button is shown only when its action applies to
+        the selected script - so the operator is never offered *Keep* for a
+        single script or *Restore* for an active one.
+        """
+        box = QWidget()
+        box.setObjectName("sheetDispositionBox")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.XS)
+
+        navigator = QHBoxLayout()
+        navigator.setSpacing(Spacing.SM)
+        self.previous_script_button = QPushButton("◀ Previous")
+        self.previous_script_button.setObjectName("previousScriptButton")
+        self.previous_script_button.setToolTip("Show the previous script of this entry.")
+        self.previous_script_button.clicked.connect(lambda: self.step_script(-1))
+        navigator.addWidget(self.previous_script_button)
+        self.script_position_label = QLabel("")
+        self.script_position_label.setObjectName("scriptPositionLabel")
+        self.script_position_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        navigator.addWidget(self.script_position_label, stretch=1)
+        self.next_script_button = QPushButton("Next ▶")
+        self.next_script_button.setObjectName("nextScriptButton")
+        self.next_script_button.setToolTip("Show the next script of this entry.")
+        self.next_script_button.clicked.connect(lambda: self.step_script(1))
+        navigator.addWidget(self.next_script_button)
+        layout.addLayout(navigator)
+
+        self.script_facts_label = QLabel("")
+        self.script_facts_label.setObjectName("scriptFactsLabel")
+        self.script_facts_label.setTextFormat(Qt.TextFormat.RichText)
+        self.script_facts_label.setWordWrap(True)
+        self.script_facts_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        layout.addWidget(self.script_facts_label)
+
+        first = QHBoxLayout()
+        first.setSpacing(Spacing.SM)
+        self.inspect_button = QPushButton(load_icon("scan-line"), "Inspect / Correct ID / Set")
+        self.inspect_button.setObjectName("inspectScriptButton")
+        self.inspect_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
+        self.inspect_button.setToolTip(
+            "Open the selected script's original scan and its Student ID and "
+            "set code, here, to check and correct them. (Enter)"
+        )
+        self.inspect_button.clicked.connect(self.inspect_selected_script)
+        first.addWidget(self.inspect_button)
+        self.keep_button = QPushButton("Keep This Script")
+        self.keep_button.setObjectName("keepScriptButton")
+        self.keep_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
+        self.keep_button.setToolTip(
+            "Keep the selected copy as this candidate's script and reject / "
+            "exclude every other copy of the duplicate. You are asked to "
+            "confirm, with each copy named. Nothing is deleted; Restore brings "
+            "a rejected copy back."
+        )
+        self.keep_button.clicked.connect(self.keep_selected_script)
+        first.addWidget(self.keep_button)
+        first.addStretch(1)
+        layout.addLayout(first)
+
+        second = QHBoxLayout()
+        second.setSpacing(Spacing.SM)
+        self.exclude_sheet_button = QPushButton("Reject / Exclude...")
+        self.exclude_sheet_button.setObjectName("excludeSheetButton")
+        self.exclude_sheet_button.setToolTip(STATE_EXPLANATIONS[LifecycleState.EXCLUDED])
+        self.exclude_sheet_button.clicked.connect(self.exclude_selected_script)
+        second.addWidget(self.exclude_sheet_button)
+        self.defer_button = QPushButton("Defer")
+        self.defer_button.setObjectName("deferSheetButton")
+        self.defer_button.setToolTip(STATE_EXPLANATIONS[LifecycleState.DEFERRED])
+        self.defer_button.clicked.connect(self.defer_selected_script)
+        second.addWidget(self.defer_button)
+        self.restore_button = QPushButton("Restore")
+        self.restore_button.setObjectName("restoreSheetButton")
+        self.restore_button.setToolTip(
+            "Return this sheet to active review, exactly as it was. If that "
+            "makes a duplicate again, it is reported again."
+        )
+        self.restore_button.clicked.connect(self.restore_selected_script)
+        second.addWidget(self.restore_button)
+        self.undo_disposition_button = QPushButton("Undo Last Disposition")
+        self.undo_disposition_button.setObjectName("undoDispositionButton")
+        self.undo_disposition_button.setToolTip(
+            "Restore the sheet(s) your last Keep, Reject / Exclude or Defer on "
+            "this stage took out of play."
+        )
+        self.undo_disposition_button.clicked.connect(self.undo_last_disposition)
+        second.addWidget(self.undo_disposition_button)
+        second.addStretch(1)
+        layout.addLayout(second)
+
+        self.disposition_note_label = QLabel("")
+        self.disposition_note_label.setObjectName("dispositionNoteLabel")
+        self.disposition_note_label.setWordWrap(True)
+        self.disposition_note_label.setTextFormat(Qt.TextFormat.RichText)
+        self.disposition_note_label.setStyleSheet(f"color: {Color.TEXT_TERTIARY};")
+        layout.addWidget(self.disposition_note_label)
+        return box
+
     def _build_actions(self) -> QWidget:
         """The reconciliation decisions an operator can record."""
         box = QWidget()
@@ -795,11 +966,14 @@ class AttendancePage(WorkflowPage):
         layout.addLayout(assign_row)
 
         buttons = QHBoxLayout()
-        self.exclude_button = QPushButton("Set Script Aside")
+        # Kept for scripts set aside by an earlier build: Keep This Script and
+        # Reject / Exclude replace setting aside, and this button is shown only
+        # to bring such a script back.
+        self.exclude_button = QPushButton("Bring Script Back")
         self.exclude_button.setObjectName("excludeScriptButton")
         self.exclude_button.setToolTip(
-            "Record the selected script as an accidental re-scan. It stops "
-            "counting towards this candidate but is never deleted."
+            "This script was set aside by an earlier version of OMRFlow. Bring "
+            "it back into this candidate's count."
         )
         self.exclude_button.clicked.connect(self.toggle_selected_exclusion)
         buttons.addWidget(self.exclude_button)
@@ -1490,6 +1664,7 @@ class AttendancePage(WorkflowPage):
             if database is not None and roster is not None and self.state.batch_id is not None
             else None
         )
+        scope = self._script_scope()
         values = {
             "matched": counts.matched if counts else None,
             "missing": counts.present_without_script if counts else None,
@@ -1498,6 +1673,9 @@ class AttendancePage(WorkflowPage):
                 counts.unknown_id + counts.unresolved_candidate_id if counts else None
             ),
             "duplicate": counts.duplicate_script if counts else None,
+            # Sheets, not entries: a rejected sheet is in no entry at all.
+            "rejected": scope.excluded if counts and scope else None,
+            "deferred": scope.deferred if counts and scope else None,
         }
         for key, chip in self._chips.items():
             name = chip.text().rsplit("  ", 1)[0]
@@ -1522,7 +1700,16 @@ class AttendancePage(WorkflowPage):
                 )
             return
 
-        if counts.is_clear:
+        deferred = scope.deferred if scope is not None else 0
+        if counts.is_clear and deferred:
+            # Every exception has a disposition, so the operator may move on -
+            # but a deferred sheet is not a reviewed one, and must not read so.
+            verdict = (
+                f"<span style='color:{Color.STATUS_BUSY};'><b>No attendance "
+                f"exceptions need review, but {deferred} sheet(s) are deferred "
+                "and will not be included in scoring or results.</b></span>"
+            )
+        elif counts.is_clear:
             verdict = (
                 f"<span style='color:{Color.STATUS_READY};'><b>Reconciliation "
                 "complete. No attendance exceptions need review.</b></span>"
@@ -1532,6 +1719,12 @@ class AttendancePage(WorkflowPage):
                 f"<span style='color:{Color.STATUS_ERROR};'><b>{counts.outstanding} "
                 "attendance exception(s) still need review.</b></span>"
             )
+            if deferred:
+                verdict += (
+                    f" <span style='color:{Color.STATUS_BUSY};'><b>{deferred} "
+                    "sheet(s) are deferred and will not be included in scoring or "
+                    "results.</b></span>"
+                )
         self.summary_label.setText(
             f"{verdict}<br><span style='color:{Color.TEXT_TERTIARY};'>"
             f"Registered <b>{counts.registered}</b> · "
@@ -1541,7 +1734,14 @@ class AttendancePage(WorkflowPage):
             + (f" ({counts.scripts_excluded} set aside)" if counts.scripts_excluded else "")
             + f" · Absent confirmed <b>{counts.absent_confirmed}</b>"
             f" · Resolved <b>{counts.resolved}</b>"
-            f" · Accepted as-is <b>{counts.dismissed}</b></span>"
+            f" · Accepted as-is <b>{counts.dismissed}</b>"
+            + (
+                f" · Rejected / excluded <b>{scope.excluded}</b>"
+                f" · Deferred <b>{scope.deferred}</b>"
+                if scope is not None and (scope.excluded or scope.deferred)
+                else ""
+            )
+            + "</span>"
             + self._scope_sentence()
         )
         self._refresh_roster_label(counts.outstanding)
@@ -1593,6 +1793,13 @@ class AttendancePage(WorkflowPage):
             )
         if scope.superseded:
             parts.append(f"{scope.superseded} superseded by a confirmed rescan (not counted)")
+        if scope.excluded:
+            parts.append(f"{scope.excluded} rejected / excluded (not counted)")
+        if scope.deferred:
+            parts.append(
+                f"<span style='color:{Color.STATUS_BUSY};'><b>{scope.deferred} "
+                "deferred</b> (not counted or scored while deferred)</span>"
+            )
         return f"<br><span style='color:{Color.TEXT_TERTIARY};'>{' · '.join(parts)}.</span>"
 
     # ------------------------------------------------------------------
@@ -1616,6 +1823,10 @@ class AttendancePage(WorkflowPage):
         self._sync_chips()
         self.refresh_table()
 
+    def _disposition_view(self) -> LifecycleState | None:
+        """The disposition a sheet view lists, or ``None`` for the entry table."""
+        return _DISPOSITION_VIEWS.get(self.status_filter.currentText())
+
     def _current_filter(self) -> reconciliation_store.EntryFilter:
         """Build a filter from the three controls."""
         label, statuses = _STATUS_FILTERS[max(0, self.status_filter.currentIndex())]
@@ -1638,6 +1849,7 @@ class AttendancePage(WorkflowPage):
         keep: str | None = None,
         fallback_row: int | None = None,
         keep_inspector: bool = False,
+        advance: bool = False,
     ) -> None:
         """Re-read the reconciliation from the database and rebuild the table.
 
@@ -1646,6 +1858,9 @@ class AttendancePage(WorkflowPage):
             fallback_row: The row to select when ``keep`` is no longer shown -
                 so settling an exception moves to the next one, not the top.
             keep_inspector: Leave the script inspector showing what it shows.
+            advance: Use ``fallback_row`` even without ``keep_inspector`` -
+                after a disposition, which usually settles the row it was
+                made from.
         """
         database = self.database
         roster = self.state.roster
@@ -1653,8 +1868,17 @@ class AttendancePage(WorkflowPage):
         wanted = keep if keep is not None else (selected.candidate_id if selected else None)
         row = fallback_row if fallback_row is not None else self.table.currentRow()
 
+        view = self._disposition_view()
+        self.state.dispositions = []
         if database is None or roster is None or self.state.batch_id is None:
             self.state.entries = []
+        elif view is not None:
+            self.state.entries = []
+            self.state.dispositions = self._read_dispositions(view)
+            self._rebuild_disposition_table()
+            self._restore_disposition(keep if keep is not None else None, row)
+            self._refresh_summary()
+            return
         else:
             self.state.entries = list(
                 reconciliation_store.list_entries(
@@ -1665,8 +1889,104 @@ class AttendancePage(WorkflowPage):
                 )
             )
         self._rebuild_table()
-        self._restore_selection(wanted, row if keep_inspector else None, keep_inspector)
+        self._restore_selection(
+            wanted, row if keep_inspector or advance else None, keep_inspector
+        )
         self._refresh_summary()
+
+    def _read_dispositions(self, state: LifecycleState) -> list[RescanCase]:
+        """This set's excluded or deferred sheets, searched like the table."""
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return []
+        scope = self._script_scope()
+        set_code = scope.set_code if scope is not None else ""
+        text = self.search_box.text().strip().casefold()
+        found = []
+        for case in scan_lifecycle.list_dispositions(
+            database, self.state.batch_id, states=(state,)
+        ):
+            if set_code and case.set_code and case.set_code != set_code:
+                continue  # another set's sheet
+            haystack = " ".join(
+                (case.source_name, case.identity, case.recognised_candidate_id)
+            ).casefold()
+            if text and text not in haystack:
+                continue
+            found.append(case)
+        return found
+
+    def _rebuild_disposition_table(self) -> None:
+        """Fill the table with rejected / excluded or deferred sheets."""
+        self.table.blockSignals(True)
+        self.table.clearSelection()
+        self.table.setCurrentCell(-1, -1)
+        self.table.setRowCount(len(self.state.dispositions))
+        for row, case in enumerate(self.state.dispositions):
+            when = f"{case.rejected_at:%Y-%m-%d %H:%M}" if case.rejected_at else ""
+            values = (
+                f"{case.state.marker} {case.state.label}",
+                case.identity or "(not read)",
+                "",
+                "",
+                case.source_name or f"scan {case.scan_id}",
+                case.recognised_candidate_id or "(not read)",
+                case.reason_label or "Decision postponed",
+                f"{case.rejected_by} {when}".strip(),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == STATUS_COLUMN:
+                    item.setToolTip(STATE_EXPLANATIONS.get(case.state, ""))
+                    item.setForeground(
+                        QColor(
+                            Color.STATUS_BUSY
+                            if case.state is LifecycleState.DEFERRED
+                            else Color.TEXT_TERTIARY
+                        )
+                    )
+                if column == ISSUE_COLUMN:
+                    item.setToolTip(value)
+                self.table.setItem(row, column, item)
+        self.table.blockSignals(False)
+        kind = self._disposition_view()
+        noun = "deferred" if kind is LifecycleState.DEFERRED else "rejected / excluded"
+        self.table_count_label.setText(
+            f"{len(self.state.dispositions)} {noun} sheet(s) shown · nothing here "
+            "counts towards any result; Restore returns a sheet to active review"
+            if self.state.dispositions
+            else f"No {noun} sheets in this set."
+        )
+
+    def _restore_disposition(self, scan_key: str | None, fallback_row: int) -> None:
+        """Re-select a sheet row by scan id, else by position."""
+        target = -1
+        if scan_key is not None and scan_key.startswith("#scan:"):
+            wanted = int(scan_key.split(":", 1)[1])
+            target = next(
+                (
+                    row
+                    for row, case in enumerate(self.state.dispositions)
+                    if case.scan_id == wanted
+                ),
+                -1,
+            )
+        if target < 0 and self.state.dispositions:
+            target = min(max(fallback_row, 0), len(self.state.dispositions) - 1)
+        if target >= 0:
+            self.table.blockSignals(True)
+            self.table.selectRow(target)
+            self.table.blockSignals(False)
+            self._show_disposition(self.state.dispositions[target])
+            return
+        self._show_entry(None)
+
+    def _selected_disposition(self) -> RescanCase | None:
+        """The sheet row a disposition view has selected, if any."""
+        row = self.table.currentRow()
+        if self._disposition_view() is not None and 0 <= row < len(self.state.dispositions):
+            return self.state.dispositions[row]
+        return None
 
     def _rebuild_table(self) -> None:
         """Fill the table from :attr:`AttendancePageState.entries`."""
@@ -1773,6 +2093,8 @@ class AttendancePage(WorkflowPage):
             return "Script received but rejected; rescan required"
         if status is ReconciliationStatus.SCRIPT_SET_UNRESOLVED:
             return "Script exists; its set assignment is unresolved"
+        if status is ReconciliationStatus.SCRIPT_DEFERRED:
+            return "Script deferred; not scored until restored or rejected"
         return ""
 
     def _attendance_text(self, entry: ReconciliationEntry) -> str:
@@ -1790,11 +2112,14 @@ class AttendancePage(WorkflowPage):
         """How many scripts count, and how many are set aside or rejected."""
         aside = sum(1 for item in entry.scripts if item.excluded)
         rejected = sum(1 for item in entry.scripts if item.script.rejected)
+        deferred = sum(1 for item in entry.scripts if item.script.deferred)
         extras = []
         if aside:
             extras.append(f"+{aside} set aside")
         if rejected:
             extras.append(f"+{rejected} rejected")
+        if deferred:
+            extras.append(f"+{deferred} deferred")
         if extras:
             return f"{entry.script_count} ({', '.join(extras)})"
         return str(entry.script_count)
@@ -1804,7 +2129,9 @@ class AttendancePage(WorkflowPage):
         values = []
         for view in entry.scripts:
             machine = view.script.machine_candidate_id or "(not read)"
-            if view.script.rejected:
+            if view.script.deferred:
+                values.append(f"{machine} (deferred)")
+            elif view.script.rejected:
                 # For a rejected script the second value is the case's
                 # identity, which may be the operator's declaration - not a
                 # correction of the scan's Student ID, so it is not shown as one.
@@ -1874,6 +2201,13 @@ class AttendancePage(WorkflowPage):
 
     def _on_selection_changed(self) -> None:
         """Show whatever the table now has selected."""
+        if self._disposition_view() is not None:
+            case = self._selected_disposition()
+            if case is not None:
+                self._show_disposition(case)
+            else:
+                self._show_entry(None)
+            return
         self._show_entry(self._selected_entry())
 
     # ------------------------------------------------------------------
@@ -1913,14 +2247,17 @@ class AttendancePage(WorkflowPage):
         self, entry: ReconciliationEntry | None, *, keep_inspector: bool = False
     ) -> None:
         """Describe one entry: the problem, its scripts, where to look, its history."""
+        self._filling_scripts = True
         self.scripts_list.clear()
+        self._filling_scripts = False
         self.leads_list.clear()
         if not keep_inspector:
             self.inspector.clear()
         if entry is None:
+            self.state.facts = {}
             self.detail_label.setText(
                 "Select a row to see what needs attention."
-                if self.state.entries
+                if self.state.entries or self.state.dispositions
                 else ""
             )
             self.history_label.setText("")
@@ -1928,7 +2265,14 @@ class AttendancePage(WorkflowPage):
             self._update_enabled()
             return
 
+        database = self.database
+        self.state.facts = (
+            scan_lifecycle.sheet_facts(database, [view.script.scan_id for view in entry.scripts])
+            if database is not None
+            else {}
+        )
         self.detail_label.setText(self._describe(entry))
+        self._filling_scripts = True
         for view in entry.scripts:
             script = view.script
             bits = [script.source_name or f"scan {script.scan_id}"]
@@ -1941,7 +2285,9 @@ class AttendancePage(WorkflowPage):
                 bits.append("working script")
             if view.excluded:
                 bits.append("SET ASIDE")
-            if script.rejected:
+            if script.deferred:
+                bits.append("DEFERRED")
+            elif script.rejected:
                 bits.append("REJECTED — RESCAN REQUIRED")
             item = QListWidgetItem(" · ".join(bits))
             item.setData(Qt.ItemDataRole.UserRole, script.scan_id)
@@ -1950,7 +2296,9 @@ class AttendancePage(WorkflowPage):
                     "Set aside as an accidental re-scan. The scan, its "
                     "recognition result and this decision are all kept."
                 )
-            if script.rejected:
+            if script.deferred:
+                item.setToolTip(STATE_EXPLANATIONS[LifecycleState.DEFERRED])
+            elif script.rejected:
                 item.setToolTip(
                     "Rejected as unusable on the Resolve stage. It is kept, but "
                     "it does not count until its rescan is confirmed there."
@@ -1958,7 +2306,16 @@ class AttendancePage(WorkflowPage):
             self.scripts_list.addItem(item)
         if self.scripts_list.count():
             self.scripts_list.setCurrentRow(0)
+        self._filling_scripts = False
         _fit_list(self.scripts_list)
+        if (
+            not keep_inspector
+            and ReconciliationIssue.DUPLICATE_SCRIPT in entry.issues
+            and self.scripts_list.count()
+        ):
+            # A duplicate is settled by comparing the copies: open the first
+            # at once, and each other one as it is selected.
+            self.inspect_selected_script()
 
         entries = self._entries_for_leads()
         if entry.status in _LOOK_FOR_SCRIPT:
@@ -2033,7 +2390,13 @@ class AttendancePage(WorkflowPage):
             lines.append("<b>Attendance:</b> not on this set's candidate list")
         count = entry.script_count
         rejected = sum(1 for view in entry.scripts if view.script.rejected)
-        if count == 0 and rejected:
+        deferred = sum(1 for view in entry.scripts if view.script.deferred)
+        if count == 0 and deferred and not rejected:
+            lines.append(
+                f"<b>Script:</b> received, but <b>deferred — decision postponed</b> "
+                f"({deferred} deferred sheet(s); none counts while deferred)"
+            )
+        elif count == 0 and rejected:
             lines.append(
                 f"<b>Script:</b> received, but <b>rejected — rescan required</b> "
                 f"({rejected} rejected scan(s); none counts)"
@@ -2045,6 +2408,11 @@ class AttendancePage(WorkflowPage):
             lines.append(
                 f"<b>Script:</b> {count} scanned {plural} recognised as "
                 f"{html.escape(self._recognised_text(entry) or entry.candidate_id)}"
+            )
+        if ReconciliationIssue.DUPLICATE_SCRIPT in entry.issues:
+            lines.append(
+                f"<b>{count} copies:</b> select each under <b>Scripts</b> to see "
+                "it below, then keep the right one."
             )
         lines.append(f"<b>Problem:</b> {entry.status.description}")
         explanation = _EXPLANATIONS.get(entry.status)
@@ -2096,10 +2464,11 @@ class AttendancePage(WorkflowPage):
             self.history_label.setText("")
             return
         records = reconciliation_store.history_for_entry(database, entry)
+        sheets = self._sheet_history([view.script.scan_id for view in entry.scripts])
         if not records:
             self.history_label.setText(
                 f"<span style='color:{Color.TEXT_TERTIARY};'><i>No reconciliation "
-                "decisions have been recorded for this entry.</i></span>"
+                "decisions have been recorded for this entry.</i></span>" + sheets
             )
             return
         lines = ["<b>History</b>"]
@@ -2116,7 +2485,384 @@ class AttendancePage(WorkflowPage):
                 f"{when} · <b>{record.action.label}</b> by "
                 f"{html.escape(record.reviewer or '(unnamed)')}{change}{reason}"
             )
-        self.history_label.setText("<br>".join(lines))
+        self.history_label.setText("<br>".join(lines) + sheets)
+
+    def _sheet_history(self, scan_ids: list[int]) -> str:
+        """Every disposition recorded about these sheets, as rich text lines."""
+        database = self.database
+        if database is None or not scan_ids:
+            return ""
+        names = {
+            scan_id: facts.filename for scan_id, facts in self.state.facts.items()
+        }
+        lines: list[str] = []
+        for scan_id in scan_ids:
+            for event in scan_lifecycle.lifecycle_history(database, scan_id):
+                reason = f" - {html.escape(event.reason_text)}" if event.reason_text else ""
+                lines.append(
+                    f"{event.occurred_at:%Y-%m-%d %H:%M} · "
+                    f"{html.escape(names.get(scan_id) or f'scan {scan_id}')}: "
+                    f"<b>{html.escape(event.action.label)}</b> by "
+                    f"{html.escape(event.reviewer or 'OMRFlow')}{reason}"
+                )
+        if not lines:
+            return ""
+        return "<br><b>Sheet history</b><br>" + "<br>".join(lines)
+
+    # ------------------------------------------------------------------
+    # One sheet: the disposition views, the navigator and the facts
+    # ------------------------------------------------------------------
+    def _show_disposition(self, case: RescanCase) -> None:
+        """Describe one rejected / excluded or deferred sheet, and open its scan."""
+        database = self.database
+        self._filling_scripts = True
+        self.scripts_list.clear()
+        self._filling_scripts = False
+        self.leads_list.clear()
+        self.inspector.clear()
+        self._show_leads(None, ())
+        self.state.facts = (
+            scan_lifecycle.sheet_facts(database, [case.scan_id]) if database else {}
+        )
+        colour = Color.STATUS_BUSY if case.state is LifecycleState.DEFERRED else Color.TEXT_TERTIARY
+        when = f"{case.rejected_at:%Y-%m-%d %H:%M}" if case.rejected_at else "-"
+        self.detail_label.setText(
+            f"<b>{html.escape(case.source_name or f'scan {case.scan_id}')}</b><br>"
+            f"<span style='color:{colour};'><b>{html.escape(case.state.marker)} "
+            f"{html.escape(case.state.label)}</b></span><br>"
+            f"<b>Recognised as:</b> {html.escape(case.recognised_candidate_id or '(not read)')}"
+            f" · set {html.escape(case.recognised_set_code or '(not read)')}<br>"
+            f"<b>Reason:</b> {html.escape(case.reason_label or 'Decision postponed')}<br>"
+            f"<b>Decided:</b> {when} by {html.escape(case.rejected_by or '-')}<br>"
+            f"<b>What this means:</b> {html.escape(STATE_EXPLANATIONS.get(case.state, ''))}"
+        )
+        self._filling_scripts = True
+        item = QListWidgetItem(
+            f"{case.source_name or f'scan {case.scan_id}'} · read as "
+            f"{case.recognised_candidate_id or '(not read)'} · {case.state.label}"
+        )
+        item.setData(Qt.ItemDataRole.UserRole, case.scan_id)
+        self.scripts_list.addItem(item)
+        self.scripts_list.setCurrentRow(0)
+        self._filling_scripts = False
+        _fit_list(self.scripts_list)
+        self.history_label.setText(self._sheet_history([case.scan_id]).removeprefix("<br>"))
+        self.inspect_scan(case.scan_id, title=case.source_name or f"Scan {case.scan_id}")
+        self._update_enabled()
+
+    def _on_script_row_changed(self, _row: int) -> None:
+        """A different script is selected: say which, and show it."""
+        if not self._filling_scripts and self._selected_scan_id() is not None:
+            self.inspect_selected_script()
+        self._update_enabled()
+
+    def step_script(self, step: int) -> bool:
+        """Show the previous (``-1``) or next (``1``) script of this entry."""
+        count = self.scripts_list.count()
+        row = self.scripts_list.currentRow() + step
+        if count < 2 or not 0 <= row < count:
+            return False
+        self.scripts_list.setCurrentRow(row)
+        return True
+
+    def _selected_view(self) -> ScriptView | None:
+        """The selected script's view inside the selected entry, if any."""
+        scan_id = self._selected_scan_id()
+        entry = self._selected_entry()
+        if scan_id is None or entry is None:
+            return None
+        return next((item for item in entry.scripts if item.script.scan_id == scan_id), None)
+
+    def _selected_state(self) -> LifecycleState | None:
+        """The selected script's lifecycle state, or ``None`` with none selected."""
+        scan_id = self._selected_scan_id()
+        if scan_id is None:
+            return None
+        facts = self.state.facts.get(scan_id)
+        if facts is not None:
+            return facts.state
+        case = self._selected_disposition()
+        return case.state if case is not None else None
+
+    def _facts_html(self, facts: SheetFacts | None) -> str:
+        """The selected script, identified: file, batch, scan number, IDs, set, state."""
+        if facts is None:
+            return ""
+
+        def value(text: str) -> str:
+            return f"<b>{html.escape(text)}</b>" if text else "<i>not read</i>"
+
+        read = f" · read {facts.read_at:%Y-%m-%d %H:%M}" if facts.read_at else ""
+        lines = [
+            f"<b>{html.escape(facts.filename or f'scan {facts.scan_id}')}</b> · "
+            f"{html.escape(facts.batch_label)} · scan #{facts.scan_number}{read}",
+            f"Student ID: recognised {value(facts.machine_id)} · effective "
+            f"{value(facts.effective_id)}",
+            f"Set: recognised {value(facts.machine_set)} · effective "
+            f"{value(facts.effective_set)}",
+        ]
+        colour = (
+            Color.STATUS_READY
+            if facts.state is LifecycleState.ACTIVE
+            else Color.STATUS_BUSY
+            if facts.state is LifecycleState.DEFERRED
+            else Color.DESTRUCTIVE
+        )
+        label = html.escape(facts.state.label)
+        disposition = f"<span style='color:{colour};'><b>{label}</b></span>"
+        if facts.decided_by:
+            disposition += f" by {html.escape(facts.decided_by)}"
+        if facts.reason_label:
+            disposition += f" - {html.escape(facts.reason_label)}"
+        lines.append(f"Disposition: {disposition}")
+        if facts.replacement_of:
+            lines.append(
+                f"Confirmed rescan of <b>{html.escape(facts.replacement_of)}</b> "
+                "(Reject &amp; Rescan)"
+            )
+        if facts.replaced_by:
+            lines.append(f"Replaced by rescan <b>{html.escape(facts.replaced_by)}</b>")
+        return "<br>".join(lines)
+
+    # ------------------------------------------------------------------
+    # Dispositions: Keep This Script, Reject / Exclude, Defer, Restore
+    # ------------------------------------------------------------------
+    def _describe_sheet(self, scan_id: int) -> str:
+        """One plain line naming a sheet unmistakably, for a confirmation."""
+        facts = self.state.facts.get(scan_id)
+        if facts is None:
+            return f"scan {scan_id}"
+        return (
+            f"{facts.filename or f'scan {scan_id}'} — {facts.batch_label}, "
+            f"scan #{facts.scan_number}, read as {facts.machine_id or '(not read)'}"
+            + (
+                f" (now {facts.effective_id})"
+                if facts.effective_id and facts.effective_id != facts.machine_id
+                else ""
+            )
+            + f", set {facts.effective_set or facts.machine_set or '(not read)'}"
+        )
+
+    def confirm_keep(self, text: str) -> bool:
+        """Ask before keeping one copy and rejecting the others. No is the default.
+
+        Separate so a test can answer it; every modal on this page follows
+        the same split.
+        """
+        box = QMessageBox(self)
+        box.setObjectName("keepScriptConfirmation")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Keep this script?")
+        box.setText(text)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        keep = box.addButton("Keep And Reject Others", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is keep
+
+    def ask_exclusion(self, text: str) -> tuple[RejectionReason, str] | None:
+        """Ask why a sheet is rejected / excluded. ``None`` when cancelled."""
+        dialog = ExclusionDialog(text, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.values()
+
+    def keep_selected_script(self) -> bool:
+        """Keep the selected copy of a duplicate; reject / exclude every other one."""
+        entry = self._selected_entry()
+        view = self._selected_view()
+        if entry is None or view is None or not view.counts_as_a_script:
+            return False
+        others = [
+            item.script.scan_id
+            for item in entry.scripts
+            if item.counts_as_a_script and item.script.scan_id != view.script.scan_id
+        ]
+        if not others:
+            return False
+        who = entry.candidate_id or "this unread ID"
+        plural = "copy" if len(others) == 1 else "copies"
+        text = (
+            f"Keep this script for candidate {who} and reject {len(others)} "
+            f"duplicate {plural}?\n\n"
+            f"KEEP:\n  {self._describe_sheet(view.script.scan_id)}\n\n"
+            "REJECT / EXCLUDE:\n"
+            + "\n".join(f"  {self._describe_sheet(item)}" for item in others)
+            + (
+                "\n\nThe rejected copy stays in the project with its image and "
+                "history, takes no part in scoring or results, and can be "
+                "restored at any time."
+                if len(others) == 1
+                else "\n\nThe rejected copies stay in the project with their "
+                "images and history, take no part in scoring or results, and "
+                "can be restored at any time."
+            )
+        )
+        if not self.confirm_keep(text):
+            return False
+        database = self.database
+        if database is None:
+            return False
+        return self._dispose(
+            lambda: scan_lifecycle.keep_script(
+                database,
+                view.script.scan_id,
+                others,
+                reviewer=self.state.operator,
+                candidate_id=entry.candidate_id,
+                note=self.reason_text.text(),
+            ),
+            kind="keep",
+            affected=tuple(others),
+            done=(
+                f"Kept {self._describe_sheet(view.script.scan_id).split(' — ')[0]} for "
+                f"{who}; {len(others)} duplicate {plural} rejected / excluded."
+            ),
+            keep=entry.candidate_id,
+        )
+
+    def exclude_selected_script(self) -> bool:
+        """Reject / exclude the selected sheet, with a reason."""
+        scan_id = self._selected_scan_id()
+        state = self._selected_state()
+        if scan_id is None or state not in (LifecycleState.ACTIVE, LifecycleState.DEFERRED):
+            return False
+        answer = self.ask_exclusion(
+            f"Reject / exclude this sheet from the examination's results?\n\n"
+            f"  {self._describe_sheet(scan_id)}\n\n"
+            + STATE_EXPLANATIONS[LifecycleState.EXCLUDED]
+        )
+        if answer is None:
+            return False
+        reason, note = answer
+        database = self.database
+        if database is None:
+            return False
+        entry = self._selected_entry()
+        return self._dispose(
+            lambda: scan_lifecycle.exclude_scan(
+                database, scan_id, reviewer=self.state.operator, reason=reason, note=note
+            ),
+            kind="exclude",
+            affected=(scan_id,),
+            done=f"{self._describe_sheet(scan_id).split(' — ')[0]} rejected / excluded "
+            f"({reason.label}).",
+            keep=entry.candidate_id if entry is not None else None,
+        )
+
+    def defer_selected_script(self) -> bool:
+        """Defer the decision about the selected sheet. Nothing is lost."""
+        scan_id = self._selected_scan_id()
+        if scan_id is None or self._selected_state() is not LifecycleState.ACTIVE:
+            return False
+        database = self.database
+        if database is None:
+            return False
+        entry = self._selected_entry()
+        return self._dispose(
+            lambda: scan_lifecycle.defer_scan(
+                database, scan_id, reviewer=self.state.operator, note=self.reason_text.text()
+            ),
+            kind="defer",
+            affected=(scan_id,),
+            done=f"{self._describe_sheet(scan_id).split(' — ')[0]} deferred - listed "
+            "under Deferred; not scored until restored.",
+            keep=entry.candidate_id if entry is not None else None,
+        )
+
+    def restore_selected_script(self) -> bool:
+        """Return the selected excluded or deferred sheet to active review."""
+        scan_id = self._selected_scan_id()
+        state = self._selected_state()
+        if scan_id is None or state is None or not state.is_disposition:
+            return False
+        database = self.database
+        if database is None:
+            return False
+        entry = self._selected_entry()
+        return self._dispose(
+            lambda: scan_lifecycle.restore_scan(
+                database, scan_id, reviewer=self.state.operator, note=self.reason_text.text()
+            ),
+            kind="restore",
+            affected=(),
+            done=f"{self._describe_sheet(scan_id).split(' — ')[0]} restored to active "
+            "review.",
+            keep=entry.candidate_id if entry is not None else f"#scan:{scan_id}",
+        )
+
+    def undo_last_disposition(self) -> bool:
+        """Restore every sheet the last Keep, Reject / Exclude or Defer took out of play."""
+        last = self._last_disposition
+        database = self.database
+        if last is None or database is None:
+            return False
+        _kind, scan_ids = last
+
+        def restore_all() -> None:
+            for scan_id in scan_ids:
+                if scan_lifecycle.state_of(database, scan_id).is_disposition:
+                    scan_lifecycle.restore_scan(
+                        database, scan_id, reviewer=self.state.operator,
+                        note="Undo last disposition",
+                    )
+
+        restored = self._dispose(
+            restore_all,
+            kind="restore",
+            affected=(),
+            done=f"Last disposition undone: {len(scan_ids)} sheet(s) restored to active review.",
+            keep=None,
+        )
+        return restored
+
+    def _dispose(
+        self,
+        action: object,
+        *,
+        kind: str,
+        affected: tuple[int, ...],
+        done: str,
+        keep: str | None,
+    ) -> bool:
+        """Run one disposition, report a refusal, then redraw every consequence.
+
+        The service has already committed the decision and re-run the stored
+        reconciliation before this returns; nothing here waits for the end of
+        the stage to save anything.
+        """
+        entry_row = max(self.table.currentRow(), 0)
+        try:
+            action()  # type: ignore[operator]
+        except OMRScannerError as exc:
+            QMessageBox.warning(
+                self, "Disposition not recorded", exc.user_message or str(exc)
+            )
+            return False
+        self._last_disposition = (kind, affected) if affected else None
+        self.state.all_entries = None
+        self.state.scope = None
+        self.state.outside = None
+        self.refresh_table(keep=keep, fallback_row=entry_row, advance=True)
+        home = next(
+            (
+                item
+                for item in self._entries_for_leads()
+                if keep is not None and item.candidate_id == keep
+            ),
+            None,
+        )
+        if home is not None:
+            done += f" {home.candidate_id or '(not read)'} now reads: {home.status.label}."
+        self.table_count_label.setText(
+            f"{self.table_count_label.text()}<br><span style='color:"
+            f"{Color.STATUS_READY};'>{html.escape(done)}</span>"
+        )
+        self.resolution_recorded.emit()
+        scan_id = affected[0] if affected else (self._selected_scan_id() or 0)
+        self.lifecycle_changed.emit(scan_id)
+        self.reconciled.emit()
+        return True
 
     def _selected_scan_id(self) -> int | None:
         """The scan id of the script selected in the detail list."""
@@ -2148,12 +2894,22 @@ class AttendancePage(WorkflowPage):
     def inspect_selected_script(self) -> bool:
         """Open the selected script in the inspector below."""
         scan_id = self._selected_scan_id()
+        if scan_id is None:
+            return False
+        case = self._selected_disposition()
+        if case is not None:
+            return self.inspect_scan(scan_id, title=case.source_name or f"Scan {scan_id}")
         entry = self._selected_entry()
-        if scan_id is None or entry is None:
+        if entry is None:
             return False
         view = next((item for item in entry.scripts if item.script.scan_id == scan_id), None)
         name = view.script.source_name if view is not None else ""
-        return self.inspect_scan(scan_id, title=name or f"Scan {scan_id}")
+        position = (
+            f" (script {self.scripts_list.currentRow() + 1} of {self.scripts_list.count()})"
+            if self.scripts_list.count() > 1
+            else ""
+        )
+        return self.inspect_scan(scan_id, title=(name or f"Scan {scan_id}") + position)
 
     def follow_selected_lead(self) -> bool:
         """Inspect a suggested script, or go to a suggested candidate."""
@@ -2368,6 +3124,9 @@ class AttendancePage(WorkflowPage):
         entry = self._selected_entry()
         has_scripts = bool(entry and entry.scripts)
         registered = bool(entry and entry.is_registered)
+        if self._disposition_view() is not None:
+            # A sheet row, not an entry: only the sheet's own actions apply.
+            has_scripts = False
 
         can_choose = writable and (not self.state.has_sets or self.selected_set() is not None)
         self.import_button.setEnabled(can_choose)
@@ -2375,10 +3134,10 @@ class AttendancePage(WorkflowPage):
         self.reconcile_button.setEnabled(has_project and has_roster)
         self.assign_button.setEnabled(has_scripts)
         self.assign_edit.setEnabled(has_scripts)
-        self.exclude_button.setEnabled(has_scripts)
+        self.exclude_button.setEnabled(has_scripts and writable)
         self.attendance_button.setEnabled(registered)
         self.dismiss_button.setEnabled(bool(entry and entry.status.is_exception))
-        self.inspect_button.setEnabled(has_scripts and self._selected_scan_id() is not None)
+        self.inspect_button.setEnabled(self._selected_scan_id() is not None)
         lead = self._selected_lead()
         self.lead_button.setEnabled(lead is not None)
         self.lead_button.setText(
@@ -2397,10 +3156,83 @@ class AttendancePage(WorkflowPage):
             if scan_id is not None
             else None
         )
-        self.exclude_button.setText(
-            "Bring Script Back" if view is not None and view.excluded else "Set Script Aside"
-        )
+        # Setting aside is superseded by Keep / Reject; the button remains only
+        # to bring back a script an earlier build set aside.
+        self.exclude_button.setVisible(view is not None and view.excluded)
+        self._refresh_dispositions(entry, view, writable=writable)
         self._refresh_operator_label()
+
+    def _refresh_dispositions(
+        self,
+        entry: ReconciliationEntry | None,
+        view: ScriptView | None,
+        *,
+        writable: bool,
+    ) -> None:
+        """Show only the disposition actions that apply to the selected script."""
+        count = self.scripts_list.count()
+        row = self.scripts_list.currentRow()
+        many = count > 1
+        for widget in (self.previous_script_button, self.next_script_button):
+            widget.setVisible(many)
+        self.script_position_label.setVisible(many)
+        self.script_position_label.setText(
+            f"<b>Script {row + 1} of {count}</b>" if many and row >= 0 else ""
+        )
+        self.previous_script_button.setEnabled(many and row > 0)
+        self.next_script_button.setEnabled(many and 0 <= row < count - 1)
+
+        scan_id = self._selected_scan_id()
+        state = self._selected_state()
+        facts = self.state.facts.get(scan_id) if scan_id is not None else None
+        self.script_facts_label.setText(self._facts_html(facts))
+        self.script_facts_label.setVisible(facts is not None)
+
+        can_decide = writable and bool(self.state.operator)
+        counted = [item for item in entry.scripts if item.counts_as_a_script] if entry else []
+        duplicate = entry is not None and len(counted) > 1
+        keepable = duplicate and view is not None and view.counts_as_a_script
+        self.keep_button.setVisible(duplicate)
+        self.keep_button.setEnabled(keepable and can_decide)
+        if duplicate:
+            others = len(counted) - 1 if keepable else len(counted)
+            self.keep_button.setText(
+                f"Keep This Script (reject {others} other{'s' if others != 1 else ''})"
+                if keepable
+                else "Keep This Script"
+            )
+        active = state is LifecycleState.ACTIVE and not (view is not None and view.excluded)
+        self.exclude_sheet_button.setVisible(
+            state in (LifecycleState.ACTIVE, LifecycleState.DEFERRED)
+        )
+        self.exclude_sheet_button.setEnabled(can_decide)
+        self.defer_button.setVisible(active)
+        self.defer_button.setEnabled(can_decide)
+        restorable = state is not None and state.is_disposition
+        self.restore_button.setVisible(restorable)
+        self.restore_button.setEnabled(can_decide)
+        self.undo_disposition_button.setVisible(self._last_disposition is not None)
+        self.undo_disposition_button.setEnabled(can_decide)
+
+        note = ""
+        if state is LifecycleState.REJECTED_PENDING_RESCAN:
+            note = (
+                "Rejected for rescan on the Resolve stage. Undo it, or confirm its "
+                "rescan, under Resolve > Rejected / Rescan."
+            )
+        elif state is LifecycleState.SUPERSEDED_BY_REPLACEMENT:
+            note = "Replaced by a confirmed rescan; it cannot be kept or restored here."
+        elif state is not None and not state.is_result_eligible and not restorable:
+            note = "Not active; managed on the Resolve stage under Rejected / Rescan."
+        elif facts is not None and facts.replacement_of and state is LifecycleState.ACTIVE:
+            note = (
+                "This scan is a confirmed rescan: it cannot be rejected or deferred "
+                "while that link stands. Keep it, or remove the link on Resolve first."
+            )
+        elif state is not None and not self.state.operator:
+            note = "Set a reviewer name (File > Settings > Reviewer) to record a disposition."
+        self.disposition_note_label.setText(html.escape(note))
+        self.disposition_note_label.setVisible(bool(note))
 
     # ------------------------------------------------------------------
     # Lifetime
@@ -2421,6 +3253,43 @@ class AttendancePage(WorkflowPage):
         super().closeEvent(event)  # type: ignore[arg-type]
 
 
+class ExclusionDialog(QDialog):
+    """Ask why a sheet is rejected / excluded: a reason and an optional note."""
+
+    def __init__(self, text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("exclusionDialog")
+        self.setWindowTitle("Reject / Exclude Sheet")
+        layout = QVBoxLayout(self)
+        message = QLabel(text)
+        message.setWordWrap(True)
+        message.setObjectName("exclusionDialogMessage")
+        layout.addWidget(message)
+        form = QFormLayout()
+        self.reason_combo = QComboBox()
+        self.reason_combo.setObjectName("exclusionReasonCombo")
+        for reason in EXCLUSION_REASONS:
+            self.reason_combo.addItem(reason.label, reason.value)
+        form.addRow("Reason", self.reason_combo)
+        self.note_edit = QLineEdit()
+        self.note_edit.setObjectName("exclusionNoteEdit")
+        self.note_edit.setPlaceholderText("Optional note; required for 'Other'.")
+        form.addRow("Note", self.note_edit)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.confirm_button = buttons.addButton(
+            "Reject / Exclude", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.resize(520, self.sizeHint().height())
+
+    def values(self) -> tuple[RejectionReason, str]:
+        """The chosen reason and note."""
+        return RejectionReason(self.reason_combo.currentData()), self.note_edit.text()
+
+
 def _status_colour(entry: ReconciliationEntry) -> str | None:
     """The status cell's colour, always beside a word - never instead of one.
 
@@ -2428,6 +3297,8 @@ def _status_colour(entry: ReconciliationEntry) -> str | None:
     matched; a decision already recorded is drawn neutral, because it no
     longer needs anybody.
     """
+    if entry.resolution is ResolutionState.DEFERRED:
+        return Color.STATUS_BUSY  # a disposition, but visibly not a reviewed one
     if entry.status.is_exception and entry.resolution is not ResolutionState.OPEN:
         return Color.TEXT_TERTIARY
     if entry.status in _SERIOUS:
@@ -2458,9 +3329,11 @@ def _paint_chip(chip: QPushButton, key: str, value: int) -> None:
         "unrecognised": Color.STATUS_BUSY,
         "absent": Color.STATUS_ERROR,
         "duplicate": Color.STATUS_ERROR,
+        "rejected": Color.TEXT_SECONDARY,
+        "deferred": Color.STATUS_BUSY,
     }[key]
     chip.setStyleSheet(f"color: {colour};" if value else f"color: {Color.TEXT_TERTIARY};")
     chip.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
 
-__all__ = ["AttendancePage", "AttendancePageState"]
+__all__ = ["AttendancePage", "AttendancePageState", "ExclusionDialog"]
