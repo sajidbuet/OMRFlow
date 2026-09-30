@@ -89,6 +89,7 @@ class ScoringWorker(QThread):
         """Score. Runs on the worker thread."""
         from omr_scanner.services import scoring_store
 
+        roster_id: int | None = None
         try:
             counts = None
             for roster_id in self._roster_ids:
@@ -111,9 +112,27 @@ class ScoringWorker(QThread):
             self.ready.emit(ScoringResult(error=exc.user_message or str(exc)))
             return
         except Exception as exc:  # pragma: no cover - defensive
-            _LOGGER.error("Unexpected failure during scoring: %s", type(exc).__name__)
+            # The full traceback goes to the log, with identifiers that say
+            # which run failed and nothing about any candidate. The dialog
+            # names only the exception type: an arbitrary exception's message
+            # may quote a value from a candidate's record.
+            _LOGGER.exception(
+                "Unexpected failure during scoring: batch=%s roster=%s of %s "
+                "candidates=%s",
+                self._batch_id,
+                roster_id,
+                self._roster_ids,
+                "all" if self._candidates is None else f"{len(self._candidates)} named",
+            )
             self.ready.emit(
-                ScoringResult(error=f"Scoring could not complete. ({exc})")
+                ScoringResult(
+                    error=(
+                        "Scoring could not complete because of an internal error "
+                        f"({type(exc).__name__}). The candidate list being "
+                        "scored was not written; details are in the application "
+                        "log."
+                    )
+                )
             )
             return
         self.ready.emit(ScoringResult(counts=counts, cancelled=self._cancelled))

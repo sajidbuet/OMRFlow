@@ -1256,7 +1256,7 @@ class AttendancePage(WorkflowPage):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
-            if answer is not QMessageBox.StandardButton.Yes:
+            if answer != QMessageBox.StandardButton.Yes:
                 return False
         try:
             save_sample_template(destination, overwrite=True)
@@ -1342,7 +1342,7 @@ class AttendancePage(WorkflowPage):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        return answer is QMessageBox.StandardButton.Yes
+        return answer == QMessageBox.StandardButton.Yes
 
     def commit_roster(self, validation: object, source_path: Path | None = None) -> bool:
         """Store a validated roster for the selected set and reconcile.

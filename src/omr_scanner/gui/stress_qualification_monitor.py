@@ -703,7 +703,7 @@ class StressQualificationMonitor(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer is QMessageBox.StandardButton.Yes:
+        if answer == QMessageBox.StandardButton.Yes:
             self.request_stop_safely()
 
     def force_kill_now(self) -> tuple[int, ...]:
@@ -749,7 +749,7 @@ class StressQualificationMonitor(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer is QMessageBox.StandardButton.Yes:
+        if answer == QMessageBox.StandardButton.Yes:
             self.force_kill_now()
 
     # ------------------------------------------------------------------
@@ -775,7 +775,7 @@ class StressQualificationMonitor(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer is QMessageBox.StandardButton.Yes:
+        if answer == QMessageBox.StandardButton.Yes:
             self.resume_campaign()
 
     # ------------------------------------------------------------------

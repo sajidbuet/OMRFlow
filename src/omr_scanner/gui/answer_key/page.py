@@ -1490,16 +1490,52 @@ class AnswerKeyPage(WorkflowPage):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        if answer is not QMessageBox.StandardButton.Yes:
+        # Compared by value, never by identity. PySide6 (6.11) returns the
+        # clicked button from the *real* QMessageBox.question as a plain int
+        # (16384), which is equal to - but never *is* - StandardButton.Yes.
+        # An identity check here rejected every real "Yes": the dialog closed
+        # and the key silently stayed a draft. Tests that replaced `question`
+        # with a function returning the enum member could not see it.
+        if answer != QMessageBox.StandardButton.Yes:
             return False
 
         try:
             verified = scoring_store.verify_key(
                 database, stored.key_id, verified_by=self.state.reviewer, plan=self.state.plan
             )
+            # Announce success only for what is actually stored.
+            persisted = scoring_store.get_key(database, stored.key_id)
         except OMRScannerError as exc:
+            _LOGGER.exception(
+                "Answer key verification failed: set=%s revision=%d",
+                stored.set_code,
+                stored.revision,
+            )
             QMessageBox.warning(self, "Answer key not verified", exc.user_message or str(exc))
+            self._refresh_overview()
+            self._refresh_revisions(select=stored.key_id)
+            self._revalidate()
             return False
+        if persisted is None or persisted.key.status is not AnswerKeyStatus.VERIFIED:
+            _LOGGER.error(
+                "Answer key verification did not persist: set=%s revision=%d status=%s",
+                stored.set_code,
+                stored.revision,
+                persisted.key.status.value if persisted is not None else "missing",
+            )
+            QMessageBox.critical(
+                self,
+                "Answer key not verified",
+                f"Set {stored.set_code} revision {stored.revision} could not be "
+                "recorded as verified. It remains a draft; nothing will be "
+                "marked against it. Try again, and check File > Project Health "
+                "if this repeats.",
+            )
+            self._refresh_overview()
+            self._refresh_revisions(select=stored.key_id)
+            self._revalidate()
+            return False
+        verified = persisted
         self._refresh_overview()
         self._refresh_revisions(select=verified.key_id)
         self._show_revision(verified)

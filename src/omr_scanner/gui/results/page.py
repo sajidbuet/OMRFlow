@@ -208,7 +208,11 @@ class ResultsPage(WorkflowPage):
             "Mark every candidate from the stored answers, the verified key "
             "for their set and the current configuration."
         )
-        self.score_button.clicked.connect(self.score_batch)
+        # Its own handler, never `score_batch` directly: `clicked` emits a
+        # bool, which a slot with an optional first parameter receives - and
+        # `score_batch(False)` once reached the scorer as the candidate list
+        # (`set(False)`: "'bool' object is not iterable").
+        self.score_button.clicked.connect(self._on_calculate_clicked)
         layout.addWidget(self.score_button)
         return box
 
@@ -525,8 +529,16 @@ class ResultsPage(WorkflowPage):
     # ------------------------------------------------------------------
     # Scoring
     # ------------------------------------------------------------------
-    def score_batch(self, candidates: tuple[str, ...] | None = None) -> bool:
-        """Mark the batch - or the named candidates - off the GUI thread."""
+    def _on_calculate_clicked(self, _checked: bool = False) -> None:
+        """*Calculate Results*: the whole batch, every roster."""
+        self.score_batch(candidates=None)
+
+    def score_batch(self, *, candidates: tuple[str, ...] | None = None) -> bool:
+        """Mark the batch - or the named candidates - off the GUI thread.
+
+        ``candidates`` is keyword-only so that no signal argument (a button's
+        ``checked`` bool) can ever be taken for a candidate list.
+        """
         database = self.database
         if database is not None:
             self.state.roster_ids = scoring_store.scoring_rosters(database)
@@ -606,8 +618,12 @@ class ResultsPage(WorkflowPage):
             return
         self.scored.emit()
 
-    def rescore_selected(self) -> bool:
-        """Recompute one candidate from their stored inputs."""
+    def rescore_selected(self, _checked: bool = False) -> bool:
+        """Recompute one candidate from their stored inputs.
+
+        Connected to *Recalculate This Candidate*; the button's ``checked``
+        argument is accepted and ignored, never passed on.
+        """
         selected = self.selected_result()
         if selected is None:
             return False

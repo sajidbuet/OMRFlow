@@ -1479,7 +1479,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
-            if answer is QMessageBox.StandardButton.Yes:
+            if answer == QMessageBox.StandardButton.Yes:
                 self.open_stress_qualification_monitor(default_dir)
                 return
 

@@ -201,7 +201,13 @@ If OMRFlow is useful in your work, please consider citing it using the
 
 ## Development status
 
-**Current release: `0.1.0-alpha.2`**
+**Current release: `0.1.0-alpha.2`** (development baseline; `main` carries
+further unreleased work — see below).
+
+**Next development target: `v0.1.1-alpha.0`** — multi-source / continuous
+scan ingestion, cross-batch-safe processing, robust rescan provenance, and
+set-code architecture improvements. *Proposed, awaiting review, not
+implemented:* [plan](development/ROADMAP_v0.1.1-alpha.0.md).
 
 Phases 0–10 are implemented; Phase 11 takes OMRFlow from "implemented and
 synthetically tested" to a qualified stable release.
@@ -220,7 +226,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | Full local run after the Step 7 real-sheet validation fixes, 2026-09-29: **5,900 passed, 15 skipped, 0 failed** (36 min 15 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Step 7 rework itself: 5,878 passed, 15 skipped. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
+| Automated suite | Full local run after the Results *Calculate Results* button fix, 2026-09-30: **5,911 passed, 15 skipped, 0 failed** (39 min 14 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the answer-key verification fix: 5,906 passed; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -487,8 +493,49 @@ the same mapping. **Also found:** set-code case handling differs between stages
 upper-cases before the key lookup) — harmless for upper-case codes, a latent
 fault for a lower-case one; recorded as a follow-up, not changed.
 
-**Pending / limitations.** No operator has used the stage. Verification
-remains a prerequisite for scoring, as before. With many sets the tiles scroll
+**Verification defect found by an operator and fixed (2026-09-29).** Clicking
+*Verify Answer Key* and then **Yes** in the real confirmation left the key a
+draft. Cause: PySide6 6.11 returns the clicked button from the real
+`QMessageBox.question` as a plain `int` (`16384`), equal to but never *the
+same object as* `StandardButton.Yes`, and `verify_key` compared by identity
+(`is not`). Every existing test replaced the dialog with a function returning
+the enum member, so none could see it. The same identity comparison was also
+silently refusing six other real confirmations — replacing an attendance
+candidate list, replacing the sample attendance template file, and four
+stress-campaign prompts (continue / stop safely / force kill / resume); all
+now compare by value. Verification also re-reads the stored revision and
+announces success only if it is persisted as verified, and reports and logs a
+failure. New tests: `tests/gui/test_answer_key_real_verify.py` clicks the real
+button and the real dialog's Yes/No (no mocking of `QMessageBox.question`;
+confirmed to fail on the old code), and
+`tests/unit/test_qt_dialog_result_comparisons.py` keeps identity comparisons of
+dialog results out of `src/`. Rendered acceptance at 1366×768, reviewer
+*Robin*, sets 10/11/12, the real ECE-0000 sheet: Draft → Verify → Yes →
+*Verified*, *1 of 3 verified*, Results shows `10 rev 1`, and it stays verified
+after reopening.
+
+**Results: *Calculate Results* failed from the real button — fixed
+(2026-09-30).** Clicking *Calculate Results* in a project with three verified
+keys reported *Scoring could not complete. ('bool' object is not iterable)*.
+`QPushButton.clicked` emits a `checked` bool; the button was connected straight
+to `ResultsPage.score_batch(candidates=None)`, so a click became
+`score_batch(False)`, `False` travelled through `ScoringWorker` into
+`scoring_store.score_batch(candidates=False)`, and `set(False)` raised. Every
+test called `score_batch()` directly, never through the button. Now the button
+has its own handler, `candidates` is keyword-only, *Recalculate This Candidate*
+ignores the bool, and an unexpected scoring failure is logged with its full
+traceback and batch/roster context while the dialog names only the exception
+type. Audited every `clicked`/`toggled`/`triggered` connection in `src/…/gui`:
+no other slot takes the bool as something else. Tests now click the real
+buttons (`TestTheRealButtons` in `tests/gui/test_scoring_pages.py`; the
+three-set generated workflow uses the real button) and were confirmed to fail
+on the old code. Rendered acceptance (1366×768, sets 10/11/12, real button
+clicks): *Check Before Scoring* → *Every candidate can be marked*; *Calculate
+Results* → 12/12 scored, 4 per set, key revision 1, no error dialog; the same
+after reopening. Scripted, not an operator session.
+
+**Pending / limitations.** No operator has used the stage beyond the reports
+above. Verification remains a prerequisite for scoring, as before. With many sets the tiles scroll
 horizontally (checked with fifteen).
 
 #### Written Student ID and set code, and used reference forms cleaned first

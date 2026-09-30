@@ -1149,3 +1149,107 @@ class TestCrossStageWiring:
         }
         assert "A" in offered
         window.close()
+
+
+class TestTheRealButtons:
+    """The Results buttons, clicked - not the methods behind them.
+
+    `QPushButton.clicked` emits a ``checked`` bool. Connected straight to
+    ``score_batch(candidates=None)``, a click became ``score_batch(False)`` and
+    the scorer failed on ``set(False)`` ("'bool' object is not iterable").
+    Every earlier test called ``score_batch()`` directly and so never passed
+    through the signal.
+    """
+
+    def test_calculate_results_button_scores_the_batch(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan, qtbot,
+        monkeypatch,
+    ):
+        verified_key_for(project_session.database, plan)
+        warned: list[str] = []
+        monkeypatch.setattr(QMessageBox, "warning", _capture(warned))
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_button.click()
+        assert warned == []
+        counts = results_page.state.counts
+        assert counts is not None and counts.scored > 0
+        assert results_page.table.rowCount() == len(results_page.state.results) > 0
+        stored = scoring_store.list_results(
+            project_session.database,
+            results_page.state.roster_ids[0],
+            results_page.state.batch_id,
+        )
+        assert any(item.final_score is not None for item in stored)
+
+    def test_a_real_mouse_click_scores_too(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan, qtbot,
+        monkeypatch,
+    ):
+        verified_key_for(project_session.database, plan)
+        warned: list[str] = []
+        monkeypatch.setattr(QMessageBox, "warning", _capture(warned))
+        results_page.show()
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            qtbot.mouseClick(results_page.score_button, Qt.MouseButton.LeftButton)
+        assert warned == []
+        assert results_page.state.counts is not None and results_page.state.counts.scored > 0
+
+    def test_recalculate_this_candidate_sends_only_that_candidate(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan, qtbot,
+        monkeypatch,
+    ):
+        verified_key_for(project_session.database, plan)
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.score_button.click()
+        before = {item.candidate_id: item.computed_at for item in results_page.state.results}
+        results_page.table.selectRow(0)
+        chosen = results_page.selected_result()
+        assert chosen is not None
+
+        sent: list[object] = []
+        original = results_page.score_batch
+
+        def spy(*args: object, **kwargs: object) -> bool:
+            assert args == ()
+            sent.append(kwargs.get("candidates"))
+            return original(**kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(results_page, "score_batch", spy)
+        warned: list[str] = []
+        monkeypatch.setattr(QMessageBox, "warning", _capture(warned))
+        with qtbot.waitSignal(results_page.scored, timeout=15_000):
+            results_page.rescore_button.click()
+        assert sent == [(chosen.candidate_id,)]
+        assert warned == []
+        after = {item.candidate_id: item.computed_at for item in results_page.state.results}
+        assert after[chosen.candidate_id] > before[chosen.candidate_id]
+        assert all(
+            after[key] == value for key, value in before.items() if key != chosen.candidate_id
+        )
+
+    def test_candidates_cannot_be_passed_positionally(self, results_page: ResultsPage):
+        with pytest.raises(TypeError):
+            results_page.score_batch(False)  # type: ignore[misc]
+
+    def test_an_unexpected_failure_is_logged_with_a_traceback_not_shown(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan, qtbot,
+        monkeypatch, caplog,
+    ):
+        import logging
+
+        verified_key_for(project_session.database, plan)
+
+        def explode(*_a: object, **_k: object) -> None:
+            raise RuntimeError("value from a candidate record 10001")
+
+        monkeypatch.setattr(scoring_store, "score_batch", explode)
+        warned: list[str] = []
+        monkeypatch.setattr(QMessageBox, "warning", _capture(warned))
+        with caplog.at_level(logging.ERROR, logger="omr_scanner.gui.results.worker"):
+            results_page.score_button.click()
+            qtbot.waitUntil(lambda: bool(warned), timeout=15_000)
+        assert "internal error (RuntimeError)" in warned[0]
+        assert "10001" not in warned[0]
+        record = next(r for r in caplog.records if "Unexpected failure during scoring" in r.message)
+        assert record.exc_info is not None  # the full traceback is kept
+        assert results_page.state.batch_id in record.getMessage()

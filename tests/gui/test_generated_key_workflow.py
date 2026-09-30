@@ -92,6 +92,7 @@ class Scenario:
     roster_ids_before_reopen: tuple[int, ...]
     mismatch_warning: list[str]
     mismatch_blocked: bool
+    scoring_messages: list[str]
 
 
 @pytest.fixture(scope="module")
@@ -207,8 +208,12 @@ def scenario(qapp, tmp_path_factory) -> Iterator[Scenario]:
 
         results = window._results_page()
         state.roster_ids_before_reopen = results.state.roster_ids
-        assert results.score_batch()
+        # The operator's path: the real Calculate Results button, whose
+        # `clicked(bool)` once reached the scorer as the candidate list.
+        before = len(messages)
+        results.score_button.click()
         _wait(results.scored)
+        state.scoring_messages = messages[before:]
         yield state
     finally:
         window.close()
@@ -258,6 +263,7 @@ class TestTheResultsStage:
     def test_every_set_is_scored(self, scenario: Scenario):
         """D1 and D2: per-set lists, imported during this session, are scored."""
         results = scenario.window._results_page()
+        assert scenario.scoring_messages == []  # no "Scoring failed"
         assert len(scenario.roster_ids_before_reopen) == 3
         counts = results.state.counts
         assert counts is not None
