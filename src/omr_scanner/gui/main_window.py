@@ -1222,7 +1222,7 @@ class MainWindow(QMainWindow):
     def _on_batch_finished(self, report: object) -> None:
         """Point the scoring stages at a batch that has just been processed.
 
-        All three stages pick up a batch when a project is *opened*. A batch
+        Every stage picks up a batch when a project is *opened*. A batch
         scanned during the session would otherwise be invisible to them until
         the project was closed and reopened, and "Calculate Results" - or
         "Generate XLSX" - would go on saying it had nothing to work with, with
@@ -1238,6 +1238,12 @@ class MainWindow(QMainWindow):
         batch_id = scan_page.state.batch_id if scan_page is not None else None
         if not batch_id:
             return
+        # Attendance first: left on the previous batch, it reconciled that one
+        # while Results marked this one, which had no reconciliation - and
+        # every set scored zero candidates with no error.
+        attendance = self._attendance_page()
+        if attendance is not None and attendance.state.batch_id != batch_id:
+            attendance.set_batch(batch_id)
         results = self._results_page()
         if results is not None:
             results.set_batch(batch_id)
@@ -1277,6 +1283,14 @@ class MainWindow(QMainWindow):
         if page is None:
             return False
         page.set_batch(batch_id)
+        # The batch reconciled is the batch marked and reported; the stages
+        # never hold different ones.
+        results = self._results_page()
+        if results is not None and results.state.batch_id != batch_id:
+            results.set_batch(batch_id)
+        reports = self._reports_page()
+        if reports is not None and reports.state.batch_id != batch_id:
+            reports.set_batch(batch_id)
         return self.show_page("attendance")
 
     def review_batch(self, batch_id: str) -> bool:

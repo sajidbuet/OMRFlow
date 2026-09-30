@@ -25,6 +25,7 @@ Three rules the page is arranged around:
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -74,7 +75,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import ProjectDatabase, ProjectSession
-    from omr_scanner.services.scoring_store import StoredResult
+    from omr_scanner.services.scoring_store import StoredResult, UnreconciledRoster
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -129,6 +130,9 @@ class ResultsPageState:
     closing and reopening the project."""
     batch_id: str | None = None
     reviewer: str = ""
+    unreconciled: tuple[UnreconciledRoster, ...] = ()
+    """Active lists never reconciled against :attr:`batch_id`, as of the last
+    refresh. Scoring them would find no candidates, so they stop the run."""
     results: list[StoredResult] = field(default_factory=list)
     counts: ResultCounts | None = None
     """The whole batch's summary, from the same read that filled :attr:`results`.
@@ -221,6 +225,15 @@ class ResultsPage(WorkflowPage):
         box = QGroupBox("Results summary")
         box.setObjectName("resultsSummaryBox")
         layout = QVBoxLayout(box)
+
+        # Which batch is being marked. Without it, a Results stage holding a
+        # different batch from the Attendance stage looks exactly like one
+        # with nothing to mark.
+        self.batch_label = QLabel("")
+        self.batch_label.setObjectName("resultsBatchLabel")
+        self.batch_label.setWordWrap(True)
+        self.batch_label.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(self.batch_label)
 
         self.summary_label = QLabel("Nothing scored yet.")
         self.summary_label.setObjectName("resultsSummaryLabel")
@@ -447,9 +460,16 @@ class ResultsPage(WorkflowPage):
                 "load one on the Template stage.",
             )
 
-        issues: list[str] = []
+        batch_id = self.state.batch_id
+        unreconciled = scoring_store.unreconciled_rosters(
+            database, self.state.roster_ids, batch_id
+        )
+        issues: list[str] = [item.describe(batch_id) for item in unreconciled]
+        skipped = {item.roster_id for item in unreconciled}
         missing: set[str] = set()
         for roster_id in self.state.roster_ids:
+            if roster_id in skipped:
+                continue
             try:
                 data = scoring_store.gather_inputs(
                     database, roster_id, self.state.batch_id, self.state.template
@@ -555,6 +575,21 @@ class ResultsPage(WorkflowPage):
                 "processed batch and the template it was read with.",
             )
             return False
+        if candidates is None:
+            # A whole-batch run over a list never reconciled against this
+            # batch would "finish" having marked nobody. Refused, with the
+            # sets named, rather than reported as an empty success.
+            unreconciled = scoring_store.unreconciled_rosters(
+                database, self.state.roster_ids, self.state.batch_id
+            )
+            if unreconciled:
+                QMessageBox.warning(
+                    self,
+                    "Not ready to score",
+                    "\n\n".join(item.describe(self.state.batch_id) for item in unreconciled),
+                )
+                self.refresh_table()
+                return False
 
         self.score_button.setEnabled(False)
         self.progress.setVisible(True)
@@ -668,7 +703,11 @@ class ResultsPage(WorkflowPage):
         if database is None or not self.state.roster_ids or self.state.batch_id is None:
             self.state.results = []
             self.state.counts = None
+            self.state.unreconciled = ()
         else:
+            self.state.unreconciled = scoring_store.unreconciled_rosters(
+                database, self.state.roster_ids, self.state.batch_id
+            )
             _, statuses, attention = _FILTERS[max(0, self.filter_combo.currentIndex())]
             text = self.search_box.text().strip().casefold()
             batch_id = self.state.batch_id
@@ -762,11 +801,41 @@ class ResultsPage(WorkflowPage):
         """Show whatever the table now has selected."""
         self._show_result(self.selected_result())
 
+    def _refresh_batch_label(self) -> None:
+        """Name the batch being marked."""
+        database = self.database
+        batch_id = self.state.batch_id
+        summary = (
+            batch_store.load_summary(database, batch_id)
+            if database is not None and batch_id is not None
+            else None
+        )
+        if summary is None or batch_id is None:
+            self.batch_label.setText("")
+            return
+        self.batch_label.setText(
+            f"Marking <b>batch {batch_id[:8]}</b> · {summary.total} scan(s) from "
+            f"{html.escape(summary.source_folder or '(files)')}"
+        )
+
     def _refresh_summary(self) -> None:
         """Show the batch counts, from the read that filled the table."""
+        self._refresh_batch_label()
         counts = self.state.counts
         if counts is None:
             self.summary_label.setText("Nothing scored yet.")
+            return
+        if self.state.unreconciled and self.state.batch_id is not None:
+            batch_id = self.state.batch_id
+            lines = "<br>".join(
+                html.escape(item.describe(batch_id)) for item in self.state.unreconciled
+            )
+            self.summary_label.setText(
+                "<span style='color:#a4262c'><b>Not ready to score.</b></span><br>"
+                + lines
+                + ("<br>" + self._counts_text(counts) if counts.registered else "")
+                + self._incomplete_warning()
+            )
             return
         if not counts.registered:
             self.summary_label.setText(
@@ -784,18 +853,23 @@ class ResultsPage(WorkflowPage):
                 f"scored, {counts.stale} need recalculating.</b></span>"
             )
         )
+        self.summary_label.setText(
+            self._counts_text(counts) + verdict + self._incomplete_warning()
+        )
+
+    @staticmethod
+    def _counts_text(counts: ResultCounts) -> str:
+        """The count line, and the per-set line when there is one, each ending in a break."""
         by_set = " · ".join(
             f"Set {code}: {total}" for code, total in sorted(counts.by_set.items())
         )
-        self.summary_label.setText(
+        return (
             f"Candidates <b>{counts.registered}</b> · "
             f"Scored <b>{counts.scored}</b> · "
             f"Absent <b>{counts.absent}</b> · "
             f"Cannot be scored <b>{counts.blocked}</b> · "
             f"Need recalculating <b>{counts.stale}</b><br>"
             + (f"{by_set}<br>" if by_set else "")
-            + verdict
-            + self._incomplete_warning()
         )
 
     def _incomplete_warning(self) -> str:

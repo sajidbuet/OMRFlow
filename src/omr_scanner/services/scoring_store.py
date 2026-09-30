@@ -837,6 +837,62 @@ def scoring_rosters(database: ProjectDatabase) -> tuple[int, ...]:
     return tuple(found)
 
 
+@dataclass(frozen=True, slots=True)
+class UnreconciledRoster:
+    """A candidate list that has never been reconciled against the batch.
+
+    Scoring such a pair finds no candidates at all - not blocked ones, none -
+    so it has to be stopped with a reason rather than allowed to "succeed"
+    with an empty table. The case that made this matter: a batch scanned
+    while the Attendance stage still held the previous one, so every set was
+    reconciled against the old batch and Results marked the new one.
+    """
+
+    roster_id: int
+    label: str
+    """``"Set 10"``, or ``"The candidate list"`` for an unscoped roster."""
+    reconciled_batch_ids: tuple[str, ...]
+    """The batches it *has* been reconciled against, most recent first."""
+
+    def describe(self, batch_id: str) -> str:
+        """One sentence naming the batch it needs and the one it has."""
+        text = f"{self.label} has not been reconciled against batch {batch_id[:8]}"
+        if self.reconciled_batch_ids:
+            text += (
+                " (it was last reconciled against batch "
+                f"{self.reconciled_batch_ids[0][:8]})"
+            )
+        return text + ". Reconcile it on the Attendance stage."
+
+
+def unreconciled_rosters(
+    database: ProjectDatabase, roster_ids: Sequence[int], batch_id: str
+) -> tuple[UnreconciledRoster, ...]:
+    """The rosters among ``roster_ids`` with no reconciliation of ``batch_id``."""
+    labels: dict[str | None, str] = {
+        exam_set.set_id: exam_set.display_label
+        for exam_set in project_sets.list_sets(database)
+    }
+    rosters = {
+        roster.roster_id: roster for roster in reconciliation_store.list_rosters(database)
+    }
+    found: list[UnreconciledRoster] = []
+    for roster_id in roster_ids:
+        batches = reconciliation_store.reconciled_batch_ids(database, roster_id)
+        if batch_id in batches:
+            continue
+        roster = rosters.get(roster_id)
+        set_id = roster.set_id if roster is not None else None
+        found.append(
+            UnreconciledRoster(
+                roster_id=roster_id,
+                label=labels.get(set_id, "The candidate list"),
+                reconciled_batch_ids=batches,
+            )
+        )
+    return tuple(found)
+
+
 def inputs_for_candidate(
     data: BatchInputs, entry: ReconciliationEntry
 ) -> ScoringInputs:

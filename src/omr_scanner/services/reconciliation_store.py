@@ -1439,6 +1439,20 @@ def last_reconciled_at(
         ).first()
 
 
+def reconciled_batch_ids(database: ProjectDatabase, roster_id: int) -> tuple[str, ...]:
+    """Every batch this roster has been reconciled against, most recent first."""
+    with database.session() as session:
+        return tuple(
+            session.scalars(
+                select(ReconciliationRun.batch_id)
+                .where(ReconciliationRun.roster_id == roster_id)
+                .order_by(
+                    ReconciliationRun.updated_at.desc(), ReconciliationRun.run_id.desc()
+                )
+            ).all()
+        )
+
+
 # ----------------------------------------------------------------------
 # Reading the reconciliation back
 # ----------------------------------------------------------------------

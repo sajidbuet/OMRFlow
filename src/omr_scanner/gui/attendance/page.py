@@ -523,6 +523,12 @@ class AttendancePage(WorkflowPage):
         self.exam_label.setObjectName("attendanceExamNameLabel")
         self.exam_label.setTextFormat(Qt.TextFormat.RichText)
         heading.addWidget(self.exam_label, stretch=1)
+        # Which batch is reconciled - the Results stage names the one it marks,
+        # so the two can be compared at a glance.
+        self.batch_label = QLabel("")
+        self.batch_label.setObjectName("attendanceBatchLabel")
+        self.batch_label.setTextFormat(Qt.TextFormat.RichText)
+        heading.addWidget(self.batch_label)
         layout.addLayout(heading)
 
         self.no_sets_label = QLabel(NO_SETS_TEXT)
@@ -1180,6 +1186,8 @@ class AttendancePage(WorkflowPage):
         self.inspector.set_context(
             self.database, self.state.batch_id, self.state.template, self.state.operator
         )
+        batch_id = self.state.batch_id
+        self.batch_label.setText(f"Batch: <b>{batch_id[:8]}</b>" if batch_id else "")
 
     # ------------------------------------------------------------------
     # Sets

@@ -107,9 +107,8 @@ def validation_of(candidates: list[tuple[str, str, AttendanceState]]) -> RosterV
     )
 
 
-@pytest.fixture
-def prepared(project_session: ProjectSession, plan, tmp_path: Path):
-    """A reconciled batch in an open project, ready to be keyed and scored."""
+def add_batch(database, plan, tmp_path: Path) -> str:
+    """Store a processed two-script batch of set A, and return its id."""
     from omr_scanner.database.models import BatchScan, ScanBatch
     from omr_scanner.services.recognition_models import (
         AnswerView,
@@ -119,16 +118,7 @@ def prepared(project_session: ProjectSession, plan, tmp_path: Path):
         ScanResult,
     )
 
-    database = project_session.database
-    roster_id = reconciliation_store.import_roster(
-        database,
-        validation_of(
-            [("10001", "CAND A", PRESENT), ("10002", "CAND B", PRESENT),
-             ("10003", "CAND C", ABSENT)]
-        ),
-        imported_by=OPERATOR,
-    )
-    rows = [("s1.png", "10001", "A", {}), ("s2.png", "10002", "A", {1: "B"})]
+    rows =[("s1.png", "10001", "A", {}), ("s2.png", "10002", "A", {1: "B"})]
     now = datetime.now(UTC)
     batch_id = batch_store.new_batch_id()
     with database.session() as session:
@@ -169,6 +159,22 @@ def prepared(project_session: ProjectSession, plan, tmp_path: Path):
                     result_json=json.dumps(result.to_dict()),
                 )
             )
+    return batch_id
+
+
+@pytest.fixture
+def prepared(project_session: ProjectSession, plan, tmp_path: Path):
+    """A reconciled batch in an open project, ready to be keyed and scored."""
+    database = project_session.database
+    roster_id = reconciliation_store.import_roster(
+        database,
+        validation_of(
+            [("10001", "CAND A", PRESENT), ("10002", "CAND B", PRESENT),
+             ("10003", "CAND C", ABSENT)]
+        ),
+        imported_by=OPERATOR,
+    )
+    batch_id = add_batch(database, plan, tmp_path)
     reconciliation_store.reconcile_batch(database, roster_id, batch_id)
     return roster_id, batch_id
 
@@ -1253,3 +1259,97 @@ class TestTheRealButtons:
         record = next(r for r in caplog.records if "Unexpected failure during scoring" in r.message)
         assert record.exc_info is not None  # the full traceback is kept
         assert results_page.state.batch_id in record.getMessage()
+
+
+class TestTheBatchReconciledIsTheBatchMarked:
+    """Attendance and Results must never hold different batches.
+
+    Found in a real project: a batch was scanned after the project opened. The
+    Scan stage handed it to Results, but Attendance kept the batch it had
+    picked on opening, so every set was reconciled against the old batch while
+    Results marked the new one - which had no reconciliation at all. Calculate
+    Results then "succeeded" with zero candidates and no message.
+    """
+
+    def test_an_unreconciled_batch_is_named_with_the_one_that_was(
+        self, project_session: ProjectSession, prepared, plan, tmp_path: Path
+    ):
+        roster_id, old = prepared
+        database = project_session.database
+        new = add_batch(database, plan, tmp_path)
+        assert scoring_store.unreconciled_rosters(database, (roster_id,), old) == ()
+        (found,) = scoring_store.unreconciled_rosters(database, (roster_id,), new)
+        assert found.roster_id == roster_id
+        assert found.reconciled_batch_ids == (old,)
+        assert new[:8] in found.describe(new) and old[:8] in found.describe(new)
+
+    def test_calculate_refuses_an_unreconciled_batch_and_says_why(
+        self, results_page: ResultsPage, project_session: ProjectSession, plan,
+        tmp_path: Path, monkeypatch,
+    ):
+        database = project_session.database
+        verified_key_for(database, plan)
+        new = add_batch(database, plan, tmp_path)
+        results_page.set_batch(new)
+        assert "Not ready to score" in results_page.summary_label.text()
+        assert new[:8] in results_page.batch_label.text()
+        assert any(new[:8] in issue for issue in results_page.preflight())
+
+        warned: list[str] = []
+        monkeypatch.setattr(QMessageBox, "warning", _capture(warned))
+        assert results_page.score_batch(candidates=None) is False
+        assert len(warned) == 1 and new[:8] in warned[0]
+        assert scoring_store.list_results(database, results_page.state.roster_ids[0], new) == ()
+
+    def test_a_batch_scanned_mid_session_is_reconciled_and_marked(
+        self, qtbot, project_session: ProjectSession, template, prepared, plan,
+        tmp_path: Path, monkeypatch,
+    ):
+        """The real-project sequence, end to end through the main window."""
+        _, old = prepared
+        database = project_session.database
+        give_project_template(project_session, template)
+        verified_key_for(database, plan)
+        window = MainWindow(AppConfig(reviewer_name=OPERATOR))
+        qtbot.addWidget(window)
+        window._adopt_session(project_session)
+        window.broadcast_template(template)
+        attendance = window._attendance_page()
+        results = window._results_page()
+        scan_page = window._scan_page()
+        assert attendance is not None and results is not None and scan_page is not None
+        assert attendance.state.batch_id == old
+
+        new = add_batch(database, plan, tmp_path)
+        scan_page.state.batch_id = new
+        window._on_batch_finished(object())
+        assert attendance.state.batch_id == results.state.batch_id == new
+        assert new[:8] in attendance.batch_label.text()
+
+        with qtbot.waitSignal(attendance.reconciled, timeout=15_000):
+            assert attendance.reconcile()
+        warned: list[str] = []
+        monkeypatch.setattr(QMessageBox, "warning", _capture(warned))
+        with qtbot.waitSignal(results.scored, timeout=15_000):
+            results.score_button.click()
+        assert warned == []
+        assert results.state.counts is not None and results.state.counts.scored > 0
+        window.close()
+
+    def test_reconciling_a_chosen_batch_points_results_at_it(
+        self, qtbot, project_session: ProjectSession, template, prepared, plan,
+        tmp_path: Path,
+    ):
+        _, old = prepared
+        window = MainWindow(AppConfig(reviewer_name=OPERATOR))
+        qtbot.addWidget(window)
+        window._adopt_session(project_session)
+        window.broadcast_template(template)
+        newer = add_batch(project_session.database, plan, tmp_path)
+        results = window._results_page()
+        assert results is not None
+        results.set_batch(newer)
+
+        assert window.reconcile_batch(old)
+        assert results.state.batch_id == old
+        window.close()
