@@ -226,7 +226,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | Full local run after the Results *Calculate Results* button fix, 2026-09-30: **5,911 passed, 15 skipped, 0 failed** (39 min 14 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the answer-key verification fix: 5,906 passed; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
+| Automated suite | Full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -533,6 +533,32 @@ on the old code. Rendered acceptance (1366×768, sets 10/11/12, real button
 clicks): *Check Before Scoring* → *Every candidate can be marked*; *Calculate
 Results* → 12/12 scored, 4 per set, key revision 1, no error dialog; the same
 after reopening. Scripted, not an operator session.
+
+**Resolve: interface froze ("Python is not responding") — investigated
+(2026-09-30).** Reported on the Resolve stage, on the Student ID position-1
+conflict of `SYN_000033` right after a full Student ID edit on another sheet.
+Windows recorded an *Application Hang* (event 1002: "stopped interacting with
+Windows and was closed"); the OMRFlow logs simply stop, with no exception —
+a GUI-thread freeze, not a crash. **The exact trigger could not be reproduced**
+on a copy of the project (every open conflict, sheet row, value choice,
+confirmation and full-field edit replayed in the real window, maximised, with
+the old code). Two changes result:
+
+- **A real freeze in the same pane was found and fixed.** The zoomed preview
+  (`gui/scan/preview.py`) refits its framed region on every resize, sized
+  against the *current* viewport. For a region at the page's left edge (Student
+  ID position 1) in a wide, short pane, one zoom showed a scroll bar and the
+  narrower viewport then gave a zoom that hid it; each refit's resize triggered
+  the other, forever. A sweep reproduced it in 46 of 1,386 pane-size/region
+  combinations; with the fit sized against the scroll-bar-independent
+  `maximumViewportSize()` and a re-entrancy guard, in none.
+  `tests/gui/test_preview_refit_stability.py` fails on the old code. Whether
+  this is what froze the reported session is **not established**.
+- **Freezes now leave evidence.** `gui/hang_watchdog.py`: if the event loop is
+  silent for 10 s, every thread's Python stack is written to
+  `omrflow-hang-<time>.txt` in the application log folder
+  (`%LOCALAPPDATA%\OMRFlow\logs`) and the path is logged. No candidate data is
+  written; it observes and never interrupts.
 
 **Pending / limitations.** No operator has used the stage beyond the reports
 above. Verification remains a prerequisite for scoring, as before. With many sets the tiles scroll

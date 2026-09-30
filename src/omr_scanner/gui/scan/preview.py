@@ -792,6 +792,7 @@ class ScanPreviewView(QGraphicsView):
         self._page_size = (0, 0)
         self._zoom = 1.0
         self._focus_rect: QRectF | None = None
+        self._refitting = False
 
         self._pan_active = False
         self._pan_last: QPoint | None = None
@@ -1012,7 +1013,8 @@ class ScanPreviewView(QGraphicsView):
         width, height = self._page_size
         if width <= 0 or height <= 0:
             return
-        viewport = self.viewport().size()
+        # Scroll-bar-independent, for the same reason as `_apply_focus`.
+        viewport = self.maximumViewportSize()
         factor = min(viewport.width() / width, viewport.height() / height)
         self._apply_zoom(max(MIN_ZOOM, min(MAX_ZOOM, factor)))
         self.centerOn(width / 2.0, height / 2.0)
@@ -1065,11 +1067,21 @@ class ScanPreviewView(QGraphicsView):
         return self._focus_rect
 
     def _apply_focus(self) -> None:
-        """Fit the remembered region to the viewport, centred and filling it."""
+        """Fit the remembered region to the viewport, centred and filling it.
+
+        Sized against :meth:`maximumViewportSize` - the viewport *without*
+        scroll bars - never the current viewport. Found as a real freeze on the
+        Resolve stage: a region at the page's left edge (Student ID position 1)
+        widened to a wide, short pane runs past the page, so one zoom showed a
+        scroll bar, the narrower viewport gave a zoom that hid it, and each
+        refit's resize triggered the other, forever, on the GUI thread. The
+        scroll-bar-independent size gives the same zoom either way, so the
+        refit is stable; the guard stops a refit re-entering itself.
+        """
         rect = self._focus_rect
-        if rect is None or not self.has_page:
+        if rect is None or not self.has_page or self._refitting:
             return
-        viewport = self.viewport().size()
+        viewport = self.maximumViewportSize()
         if viewport.width() <= 0 or viewport.height() <= 0:
             return
         shown = self._widened_to_viewport(rect, viewport.width(), viewport.height())
@@ -1077,8 +1089,12 @@ class ScanPreviewView(QGraphicsView):
             viewport.width() / max(shown.width(), 1.0),
             viewport.height() / max(shown.height(), 1.0),
         )
-        self._apply_zoom(factor)
-        self.centerOn(shown.center())
+        self._refitting = True
+        try:
+            self._apply_zoom(factor)
+            self.centerOn(shown.center())
+        finally:
+            self._refitting = False
 
     @staticmethod
     def _widened_to_viewport(
