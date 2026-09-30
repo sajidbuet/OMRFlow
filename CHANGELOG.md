@@ -14,6 +14,24 @@ produced them, because that is how the work was sequenced and how
 
 ### Added
 
+- **Results Dashboard tab.** The Results stage now has two tabs: *Results*
+  (the existing stage, unchanged) and a read-only *Dashboard* with statistics
+  for *Overall Exam* or one set: scored-script count, mean, median, mode,
+  sample standard deviation, minimum, maximum, quartiles; a marks histogram
+  (5-mark bins on a 100-mark paper) with mean and median; box plots; a set
+  comparison; per-question % correct with difficulty bands, corrected
+  point-biserial discrimination, correct / incorrect / multiple / blank
+  shares, easiest and hardest questions, option (distractor) counts with the
+  key highlighted, *Questions to review* flags and KR-20 with its standard
+  error of measurement. It analyses exactly the rows the Results table lists
+  (effective set code and answers, one row per candidate), regenerates each
+  question's outcome with the scorer and the key revision that produced the
+  mark, computes off the GUI thread and caches by a fingerprint of the
+  results. Question statistics are never combined across sets, which have
+  their own keys and no recorded question mapping. Charts are drawn with
+  `QPainter`; no new dependency. New `services/result_analytics.py`; no
+  schema change.
+
 - **Attendance dispositions: Keep This Script, Reject / Exclude, Defer,
   Restore.** A duplicate is settled by inspecting each copy (*Script 1 of N*,
   with file, batch, scan number, recognised and effective ID and set) and

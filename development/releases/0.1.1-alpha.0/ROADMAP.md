@@ -103,8 +103,10 @@ line preserves: Reject & Rescan (migration 11) and its cross-batch hardening,
 the Attendance reconciliation workstation with per-set rosters and
 set-scoped reconciliation, the Answer Key rework with answer-key provenance
 (migration 12), solution-sheet and answer-key generation, synthetic write-ins,
-the GUI fixes for answer-key verification and Calculate Results, and the
-zoomed-preview fix. `CHANGELOG.md` `[Unreleased]` must describe all of it before
+the GUI fixes for answer-key verification and Calculate Results, the
+zoomed-preview fix, and the Results **Dashboard** tab (2026-10-01; read-only
+analytics over the Results rows, no schema change — implemented, tested,
+scripted in the real window, not operator-validated). `CHANGELOG.md` `[Unreleased]` must describe all of it before
 any release is cut.
 
 **Schema version 12.** Migration numbers 1–12 are taken; the next is **13**
@@ -297,6 +299,13 @@ the effective set for multi-batch sessions.
 
 **Non-goals.** Intake (D); changes to scoring rules, reconciliation
 classification, ranking or report layout.
+
+**Carried dependency.** The Results *Dashboard* tab analyses exactly the rows
+the Results table lists (`ResultsPage.state.every_result`, via
+`services/result_analytics.py`). When Results reads a session instead of one
+batch, the dashboard must be fed the session's rows through that same
+attribute — never a second read — so its counts keep reconciling with the
+Results summary.
 
 **Risks.** The largest migration of the line (table rebuilds or parallel
 tables); byte-identical per-batch behaviour for single-batch sessions; bounded

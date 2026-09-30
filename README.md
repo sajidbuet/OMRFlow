@@ -227,7 +227,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | Full local run after the Attendance dispositions work, 2026-09-30: **5,972 passed, 16 skipped, 3 failed** (1 h 05 min; 4 `stress` tests deselected). One failure was an expected enumeration assertion (two new placements), since updated and passing; the other two (`test_developer_tools` small-screen tab focus, `test_stress_kill_resume[100]` read-only database on resume) pass when rerun alone and did not touch this change — recorded as load/environment flakiness, not fixed. `ruff` clean; `mypy` reports the same 2 pre-existing errors as `main`. Previously: full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
+| Automated suite | Full local run after the Results Dashboard work, 2026-10-01: **6,066 passed, 15 skipped, 0 failed** (38 min 29 s; 4 `stress` tests deselected); `ruff` (src, tests, tools, scripts) and `mypy` (201 files) clean. Previously: full local run after the Attendance dispositions work, 2026-09-30: **5,972 passed, 16 skipped, 3 failed** (1 h 05 min; 4 `stress` tests deselected). One failure was an expected enumeration assertion (two new placements), since updated and passing; the other two (`test_developer_tools` small-screen tab focus, `test_stress_kill_resume[100]` read-only database on resume) pass when rerun alone and did not touch this change — recorded as load/environment flakiness, not fixed. `ruff` clean; `mypy` reports the same 2 pre-existing errors as `main`. Previously: full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -252,10 +252,82 @@ synthetically tested" to a qualified stable release.
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
 | Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
 | Attendance dispositions (Keep / Reject / Defer / Restore) | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (24/24 checks, screenshots at 1366×768 and 1100×680 inspected), not yet worked by an operator on real sheets.** A duplicate is settled by inspecting each copy and keeping one; an unwanted sheet is rejected / excluded; an undecided one is deferred; each is restorable. One eligibility rule (the Reject & Rescan lifecycle) from reconciliation through scoring, Results, reports and reopening. See below |
+| Results Dashboard tab | 🟠 **Implemented — under testing.** Automated tests passing; driven in the real window by a script (49/49 checks, screenshots at 1366×768 and 1100×680 inspected); not yet used by an operator. Read-only statistics for Overall Exam or one set — marks distribution, question difficulty and discrimination, distractors, review flags, set comparison, KR-20 — from exactly the rows the Results table lists. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
 | Answer Key stage (Step 7) rework | 🟠 **Implemented — under real-world validation.** One real solution sheet (ECE-0000) and four real scans used as stand-ins read 500/500 against a visual transcription with no false confident read; one dialog defect found and fixed; no operator use yet. The stage reads the project's own template (Scan need not be visited), shows every defined set's key state, keeps the key string and question table in step, reviews a marked solution sheet before anything is saved, records per-revision provenance (migration 12), and never uses a key that no longer fits the template. See below |
 | Synthetic written Student ID & set code; used-reference cleanup | 🟠 **Implemented — automated tests passing; inspected visually on generated sheets and a real used sample form, not yet used in a real session.** The *intended* Student ID and set code (not the bubbled ones) are written in the boxes above their bubbles; a used reference form has its old writing **and its old bubble marks** removed first, keeping the printed rings, labels and borders. On the sample: 110/110 filled bubbles removed, none of the 390 unfilled touched; generated sheets read back 100/100. Full suite after the set-code and cleanup work: 5817 passed, 15 skipped, 0 failed. See below |
+
+#### Results Dashboard (2026-10-01)
+
+**Status: 🟠 Implemented — automated tests passing; acceptance scenario driven
+in the real window by a script (screenshots at 1366×768 and 1100×680 at 175 %
+Windows scaling inspected); not yet used by an operator on a real
+examination. Not validated.**
+
+The Results stage now has two tabs: **Results** — the existing stage, whose
+controls, table, filters, scoring and behaviour are unchanged (its widgets
+moved into the tab, nothing else) — and a read-only **Dashboard**. *Analysis:*
+selects **Overall Exam** or a set (the project's own set codes, each with its
+script count). For the selected scope: KPI cards (scored scripts, mean,
+median, mode, sample SD, min, max, Q1–Q3), a marks histogram with mean and
+median lines, a box plot with variance and skewness, and — per set — % correct
+for every question with difficulty-band lines and counts, discrimination
+(negative bars in red), easiest / hardest questions, a stacked correct /
+incorrect / multiple / blank chart, *Questions to review*, a selected-question
+option panel with the key highlighted, and KR-20 with its SEM. *Overall Exam*
+adds a set comparison (N, mean, median, SD, min, max, KR-20, box plots). Every
+bar has an exact-value tooltip; clicking a bar or a review row selects that
+question.
+
+- **Same data as the Results table.** `services/result_analytics.py` consumes
+  the page's unfiltered `StoredResult` rows (one per candidate, effective set
+  and answers after Resolve; rejected, deferred, superseded and duplicate
+  sheets already excluded by scoring). Only *Scored* rows with a mark count.
+  Per-question outcomes are regenerated with the scorer and each result's own
+  key and policy revision — no second marking implementation. Stale results are
+  included, as on the table, and announced.
+- **Never combined across sets.** Sets have their own keys and OMRFlow records
+  no question mapping, so question statistics are per set; *Overall Exam*
+  shows them only for a single-set examination.
+- **Formulas:** sample SD; linear-interpolation quartiles; adjusted
+  Fisher-Pearson skewness; corrected point-biserial (item vs. rest score in
+  questions correct); KR-20 with population variances, SEM = SD × √(1 − KR-20).
+  Undefined values read *N/A* / *Not available* with the reason, never NaN.
+  Thresholds (difficulty bands, review flags, minimum N) are in one
+  `AnalyticsSettings` dataclass.
+- **Performance:** computed on first opening of the tab, off the GUI thread,
+  for every scope at once, and cached by a fingerprint of the result rows; a
+  scope change is a lookup. The 210-script, 100-question acceptance set
+  computes in about 0.1 s (plus the Results page's existing read).
+- **Isolation:** a failure is shown on the Dashboard tab and logged; the Results
+  tab is unaffected (tested).
+- **Charts** are drawn with `QPainter` — `PySide6.QtCharts` is excluded from the
+  frozen build, and no dependency was added.
+
+**Tests.** 53 unit tests (hand-worked statistics, histogram binning, per-set
+filtering, discrimination sign and formula, KR-20 normal / zero-variance /
+too-few cases, distractors with 4 and 5 options, empty and one-script states,
+flags); 9 integration tests on a real project (counts reconcile with the
+Results summary; a rejected sheet, a confirmed rescan, an unresolved and a kept
+duplicate, and a Resolve set-code override 2 → 3 are each followed); 24 GUI
+tests (tabs, Results tab unchanged and still scores, default scope, set list,
+scope switching and restoring, histogram, question charts, distractor panel,
+click-to-select, empty set, stale notice, failure isolation, caching, resize at
+1366×768 / 1100×680, vertical scrolling). Rendered acceptance:
+`scripts/acceptance_results_dashboard.py` builds a 3-set, 100-question,
+225-candidate project (`tests/analytics_fixtures.py`, with eight designed
+questions), opens the real window, compares every scope's KPIs with the
+Results rows computed independently, screenshots each panel and captures a
+real hover tooltip — 49/49 checks passed.
+
+**Limitations.** No pass mark exists in OMRFlow, so no pass rate is shown; no
+export of analytics yet (the service returns structured values for a later
+CSV / JSON / PDF step); only the batch the Results stage holds is analysed
+(session-level results are 0.1.1-C); the release-validation baseline
+`10-stage-results.png` predates the tab bar and will need regenerating;
+display scaling other than 175 % was not checked on this machine; interpretation
+bands are conventional defaults, not psychometric standards.
 
 #### Answer keys, solution sheets and key-relative candidate performance
 

@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -60,10 +61,14 @@ from omr_scanner.domain.scoring import (
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.results.dashboard import DashboardInputs, ResultsDashboard
 from omr_scanner.gui.results.policy_dialog import ScoringPolicyDialog
 from omr_scanner.gui.results.worker import ScoringResult, ScoringWorker
+from omr_scanner.gui.theme import Spacing
 from omr_scanner.services import (
     batch_store,
+    project_sets,
+    result_analytics,
     scan_lifecycle,
     scoring,
     scoring_store,
@@ -134,6 +139,9 @@ class ResultsPageState:
     """Active lists never reconciled against :attr:`batch_id`, as of the last
     refresh. Scoring them would find no candidates, so they stop the run."""
     results: list[StoredResult] = field(default_factory=list)
+    every_result: tuple[StoredResult, ...] = ()
+    """The whole batch, unfiltered, from the same read as :attr:`results` -
+    what the summary counts and the Dashboard tab analyses."""
     counts: ResultCounts | None = None
     """The whole batch's summary, from the same read that filled :attr:`results`.
 
@@ -160,8 +168,17 @@ class ResultsPage(WorkflowPage):
         self._workers: list[ScoringWorker] = []
         self._closing = False
 
-        self.body.addWidget(self._build_policy_bar())
-        self.body.addWidget(self._build_summary())
+        # The existing stage, unchanged, is the first tab; the analytics
+        # dashboard is a second, read-only one beside it. Nothing on the
+        # Results tab depends on the dashboard.
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("resultsTabs")
+        results_tab = QWidget()
+        results_tab.setObjectName("resultsMainTab")
+        results_layout = QVBoxLayout(results_tab)
+        results_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
+        results_layout.addWidget(self._build_policy_bar())
+        results_layout.addWidget(self._build_summary())
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("resultsSplitter")
@@ -169,7 +186,18 @@ class ResultsPage(WorkflowPage):
         splitter.addWidget(self._build_detail_panel())
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        self.body.addWidget(splitter, stretch=1)
+        results_layout.addWidget(splitter, stretch=1)
+        self.tabs.addTab(results_tab, load_icon("list-checks"), "Results")
+
+        self.dashboard = ResultsDashboard()
+        self.dashboard.set_provider(self.dashboard_inputs)
+        self.tabs.addTab(self.dashboard, load_icon("chart-column"), "Dashboard")
+        self.tabs.setTabToolTip(
+            1,
+            "Statistics and charts for the scored results: marks, questions, sets "
+            "and reliability. Read-only.",
+        )
+        self.body.addWidget(self.tabs, stretch=1)
 
         self._update_enabled()
 
@@ -702,6 +730,7 @@ class ResultsPage(WorkflowPage):
             self.state.roster_ids = scoring_store.scoring_rosters(database)
         if database is None or not self.state.roster_ids or self.state.batch_id is None:
             self.state.results = []
+            self.state.every_result = ()
             self.state.counts = None
             self.state.unreconciled = ()
         else:
@@ -721,6 +750,7 @@ class ResultsPage(WorkflowPage):
             # The summary describes the whole batch, not the filtered view, so
             # it is taken before filtering and from this same read.
             self.state.counts = scoring_store.summarise(everything)
+            self.state.every_result = tuple(everything)
             self.state.results = [
                 item
                 for item in everything
@@ -739,6 +769,51 @@ class ResultsPage(WorkflowPage):
         # another stage - so it is refreshed whenever the table is, not only
         # when the policy itself changes.
         self._refresh_policy_label()
+        # Only marks the dashboard out of date; it reads its inputs when it is
+        # next shown (or now, if it is showing), and recomputes only if the
+        # results actually changed.
+        self.dashboard.invalidate()
+
+    # ------------------------------------------------------------------
+    # The Dashboard tab
+    # ------------------------------------------------------------------
+    def dashboard_inputs(self) -> DashboardInputs | None:
+        """What the Dashboard tab analyses: this page's own unfiltered results.
+
+        The same rows the Results table was built from, so the dashboard's
+        counts reconcile with the summary above the table.
+        """
+        database = self.database
+        if database is None or not self.state.every_result:
+            return None
+        plan = plan_or_none(self.state.template)
+        policy = scoring_store.active_policy(database).policy
+        set_codes = tuple(item.code for item in project_sets.list_sets(database))
+        notes = {
+            item.set_code: item.describe()
+            for item in scoring_store.key_overview(database, set_codes, plan)
+            if not item.is_ready
+        }
+        notices: list[str] = [
+            html.escape(item.describe(self.state.batch_id or ""))
+            for item in self.state.unreconciled
+        ]
+        incomplete = self._incomplete_warning().removeprefix("<br>")
+        if incomplete:
+            notices.append(incomplete)
+        return DashboardInputs(
+            database=database,
+            results=self.state.every_result,
+            set_codes=set_codes,
+            labels=plan.labels if plan is not None else (),
+            maximum_possible=(
+                result_analytics.maximum_mark(plan.question_count, policy)
+                if plan is not None
+                else None
+            ),
+            notices=tuple(notices),
+            set_notes=notes,
+        )
 
     def _rebuild_table(self) -> None:
         """Fill the table from the current results."""
@@ -1012,6 +1087,7 @@ class ResultsPage(WorkflowPage):
             if worker.isRunning():
                 worker.cancel()
                 worker.wait(10_000)
+        self.dashboard.shutdown()
 
     def closeEvent(self, event: object) -> None:
         """Join the workers before the page goes away."""

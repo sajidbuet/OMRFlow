@@ -38,6 +38,7 @@ from omr_scanner.gui.theme.stylesheet import (
 )
 from omr_scanner.gui.theme.tokens import (
     Card,
+    ChartColor,
     Chrome,
     Color,
     Dashboard,
@@ -65,6 +66,7 @@ __all__ = [
     "VARIANT_PRIMARY",
     "VARIANT_PROPERTY",
     "Card",
+    "ChartColor",
     "Chrome",
     "Color",
     "Dashboard",

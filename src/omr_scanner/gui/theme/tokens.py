@@ -496,8 +496,42 @@ class Dashboard:
     COLUMN_GAP: Final = 16
 
 
+class ChartColor:
+    """The Results dashboard's chart palette.
+
+    Restrained, like the rest of the shell: one neutral slate carries every
+    ordinary bar, and colour is spent only where it means something. The four
+    outcome colours are a blue / orange / purple / grey set rather than green
+    and red, so correct and incorrect stay distinguishable to the commonest
+    colour-vision deficiencies; every value is also given in the tooltip, so
+    no chart relies on colour alone. The brand accent is not used for data -
+    it means "active step" everywhere else - except that a *negative*
+    discrimination, the one value the dashboard asks a person to look at, is
+    drawn in :data:`Color.DESTRUCTIVE`.
+    """
+
+    BAR: Final = "#5E6E82"
+    BAR_HOVER: Final = "#3E4B5B"
+    BAR_SELECTED_OUTLINE: Final = "#1A1A1A"
+    GRID: Final = "#ECECEE"
+    AXIS: Final = "#9A9AA0"
+    MEAN: Final = "#1A1A1A"
+    MEDIAN: Final = "#B26A00"
+    BAND: Final = "#B8B8BE"
+    """Difficulty-band guide lines on the question chart."""
+    KEY: Final = "#1F8A4C"
+    """The correct option in the distractor chart."""
+    NEGATIVE: Final = "#B3261E"
+    CORRECT: Final = "#3B6EA8"
+    INCORRECT: Final = "#D9822B"
+    MULTIPLE: Final = "#8C6BB1"
+    BLANK: Final = "#C9CBD0"
+    BOX_FILL: Final = "#DCE3EC"
+
+
 __all__ = [
     "Card",
+    "ChartColor",
     "Chrome",
     "Color",
     "Dashboard",

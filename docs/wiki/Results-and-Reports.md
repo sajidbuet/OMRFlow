@@ -46,6 +46,36 @@ The merit-wise sheet is built by copying the finished roll-wise sheet, then
 restoring the attributes Excel's copy operation drops and re-attaching the
 images — so it keeps your formatting and your logo too.
 
+## The Results Dashboard
+
+The **Results** stage has two tabs. **Results** is the marking stage itself.
+**Dashboard** is read-only: it analyses the same rows the Results table lists
+and changes nothing. Choose **Overall Exam** or one set under *Analysis*.
+
+| Shown | How it is calculated |
+|---|---|
+| Scored scripts, mean, median, mode, min, max | Final marks of *Scored* candidates only. Absent and cannot-be-scored candidates are left out, never counted as zero. One row per candidate, so duplicates, rejected and superseded sheets never count twice |
+| Standard deviation, variance | Sample estimates (n − 1) |
+| Q1, Q3 | Linear interpolation (as Excel `QUARTILE.INC`) |
+| Histogram | Spans the whole mark scale; about 20 bins (5 marks on a 100-mark paper) |
+| % correct, difficulty | Easy ≥ 80 %, Moderate 50–80 %, Difficult 20–50 %, Very difficult < 20 % (defaults in `services/result_analytics.py`) |
+| Discrimination | Corrected point-biserial: correctness on the question against the number of the *other* questions answered correctly |
+| KR-20, SEM | Over the 0/1 correctness matrix; SEM = SD × √(1 − KR-20), in questions correct |
+
+A candidate is counted under their **effective** set, after any correction on
+Resolve. **Question statistics are always per set.** Each set has its own
+answer key and OMRFlow records no mapping between one set's question 37 and
+another's, so *Overall Exam* shows marks and a set comparison, and the
+question panels only when the examination has a single set. *Questions to
+review* lists prompts (negative discrimination, very high or low % correct,
+many blanks, a distractor chosen more than the key, a distractor nobody
+chose), not verdicts. No pass mark is configured anywhere in OMRFlow, so no
+pass rate is shown. If some results need recalculating the dashboard says so;
+their marks are included, as they are on the Results table.
+
+🟠 Implemented and tested with automated and scripted rendered checks on
+synthetic data; not yet used by an operator on a real examination.
+
 ## Spreadsheet-injection safety
 
 Text that came from a candidate list is treated as text, not as a formula.
