@@ -42,43 +42,55 @@ criteria are met, `pytest`, `ruff` and `mypy` all pass,
 Per-phase detail for 0–10: `development/ROADMAP.md` and the
 `development/PHASE_NN_HANDOFF.md` documents.
 
-### Next development line: `0.1.1-alpha.0` (planned)
-
-`0.1.0-alpha.2` remains the finite-batch Alpha baseline. Post-`0.1.0-alpha.2`
-development of a live, multi-scanner intake workflow — scan sessions fed by
-several scanner folders, incremental review, rescan and replacement, explicit
-session closure — is **planned, not implemented**, in the release-specific
-roadmap
-[`development/releases/0.1.1-alpha.0/ROADMAP.md`](https://github.com/sajidbuet/OMRFlow/blob/main/development/releases/0.1.1-alpha.0/ROADMAP.md).
-That plan proposes running the Phase 11B real-data qualification on the
-`0.1.1` line rather than on the finite-batch model; this page's Phase 11B
-definition is unchanged until the plan is adopted.
-
 ---
 
 ## Next development target — v0.1.1-alpha.0
 
-**Status: proposed, awaiting review — nothing implemented.** Baseline:
+**Status: planned, awaiting review — nothing implemented.** Baseline:
 `v0.1.0-alpha.2` plus the unreleased work on `main` (Reject & Rescan, the
-Attendance workstation, the Answer Key rework; schema 12).
+Attendance workstation, the Answer Key rework; schema 12). `0.1.0-alpha.2`
+remains the finite-batch Alpha baseline.
 
-**Objective:** multi-source / continuous scan ingestion, a single explicit
-active batch that late and rescanned sheets join, robust duplicate and rescan
-provenance, and set-code architecture fixes (canonical case-insensitive set
-identity; optional logical ↔ physical set marks). Scanners still only write
-image files; OMRFlow discovers and processes them.
+**Architecture:** `Project → ScanSession → one or more finite ScanBatch
+objects → sheets`. A *scan batch* stays a finite, auditable processing and
+provenance unit; a *scan session* is the examination-level unit that may stay
+open while further batches arrive from several scanners, computers, network
+shares or later rescans; the *project* stays the persistent container.
+Attendance, reconciliation, scoring, Results and final Reports get one
+authoritative session-level view; batch-level views remain for provenance and
+monitoring. A normal finite import is a session with one batch and needs no
+new steps.
 
-Seven phases: (1) set identity and cohort scope, (2) intake ledger and
-idempotent registration, (3) continuous processing and controls, (4) duplicate
-and rescan semantics, (5) operator GUI, (6) recovery, telemetry and scale,
-(7) release validation. It also records six latent defects found while
+**Scope:** canonical, case-insensitive set identity with optional logical ↔
+physical set marks; scan sessions and genuinely finite batches; session-level
+results; multi-source intake (watched and manual) with stable-file detection
+and idempotent registration; continuous processing through finite units; a
+scan-quality decision layer that suggests rejections to the existing Reject &
+Rescan workflow; an operator GUI; synthetic intake and real network-share
+qualification. It fixes six latent `0.1.0-alpha.2` defects found while
 planning — among them that late scans can split an examination into a second
 batch that Attendance and Results then read alone.
 
-Full plan, priorities, schema proposals (migrations 13–14), acceptance matrix
-and exit criteria:
-[`development/ROADMAP_v0.1.1-alpha.0.md`](https://github.com/sajidbuet/OMRFlow/blob/main/development/ROADMAP_v0.1.1-alpha.0.md).
-Phase 11B real-data qualification continues alongside it.
+Two further requirements are explicit: **supersession** is first-class — only
+effective, non-superseded batch and sheet membership counts towards
+session-level results, while superseded batches are kept for provenance and
+audit — and **crash-safe persistence and resume**: after a crash, forced
+termination, power failure or normal close, reopening the project keeps every
+committed Scan and Resolve step and resumes the same session. A fresh
+100,000-sheet run is optional for this Alpha; before the first Beta, a fresh
+100,000-sheet qualification on the new architecture and a fix for the
+installer's prerelease version ordering are mandatory gates.
+
+Seven phases, A–G. Full plan, architecture notes, acceptance criteria and
+implementation prompts:
+[`development/releases/0.1.1-alpha.0/`](https://github.com/sajidbuet/OMRFlow/blob/main/development/releases/0.1.1-alpha.0/ROADMAP.md)
+— the single authoritative plan for this release (it supersedes
+`development/ROADMAP_v0.1.1-alpha.0.md`).
+
+**Phase 11B and this line:** Phase 11B real-data qualification **continues
+alongside** development of the `0.1.1` line. It is not replaced by `0.1.1`, and
+it is not moved entirely before or after it. Phase 11B's definition below is
+unchanged; its Beta target is now `v0.1.1-beta.x`.
 
 ---
 
@@ -183,7 +195,18 @@ for "evaluate the documented workflow".
 
 ## Phase 11B — Real-Data Qualification & Beta Release
 
-**Status: Pending.** Target: `v0.1.0-beta.1`.
+**Status: Pending.** Target: `v0.1.1-beta.1` — the first Beta of the `0.1.1`
+line, following `v0.1.1-alpha.x` (changed from `v0.1.0-beta.1` on 2026-09-30:
+`v0.1.0-beta.x` is not used as a successor to `v0.1.1-alpha.0`). No Beta tag is
+created until the installer's prerelease version ordering is fixed and tested,
+and a fresh 100,000-sheet qualification on the 0.1.1 architecture has passed.
+
+Phase 11B runs **alongside** the `0.1.1-alpha.0` development line — not
+replaced by it, and not moved entirely before or after it. Real-data evidence
+from `0.1.0-alpha.2` stays valid for what `0.1.1` does not change (recognition,
+calibration, scan-quality evidence, scoring rules); evidence about scan
+sessions, multi-source intake and session-level results can only come from
+`0.1.1` builds.
 
 ### Purpose
 

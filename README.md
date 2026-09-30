@@ -204,10 +204,11 @@ If OMRFlow is useful in your work, please consider citing it using the
 **Current release: `0.1.0-alpha.2`** (development baseline; `main` carries
 further unreleased work — see below).
 
-**Next development target: `v0.1.1-alpha.0`** — multi-source / continuous
-scan ingestion, cross-batch-safe processing, robust rescan provenance, and
-set-code architecture improvements. *Proposed, awaiting review, not
-implemented:* [plan](development/ROADMAP_v0.1.1-alpha.0.md).
+**Next development target: `v0.1.1-alpha.0`** — scan sessions made of finite
+batches (one scanner or many, finite imports or continuous watched folders,
+later rescans), session-level attendance, results and reports, robust rescan
+provenance, and set-code identity improvements. *Planned, awaiting review, not
+implemented:* [plan](development/releases/0.1.1-alpha.0/ROADMAP.md).
 
 Phases 0–10 are implemented; Phase 11 takes OMRFlow from "implemented and
 synthetically tested" to a qualified stable release.

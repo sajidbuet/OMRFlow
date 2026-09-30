@@ -9,10 +9,11 @@
 > tests and exit criteria as each was written. Update both when a phase's
 > status changes.
 >
-> The next release's plan — **v0.1.1-alpha.0**, multi-source continuous
-> ingestion and set-code identity — is in
-> [`ROADMAP_v0.1.1-alpha.0.md`](ROADMAP_v0.1.1-alpha.0.md) (proposed, not
-> implemented).
+> The next release's plan — **v0.1.1-alpha.0**: scan sessions over finite
+> batches, multi-source intake, session-level results and set-code identity —
+> is in [`releases/0.1.1-alpha.0/ROADMAP.md`](releases/0.1.1-alpha.0/ROADMAP.md)
+> (planned, not implemented). The earlier `ROADMAP_v0.1.1-alpha.0.md` is
+> superseded by it.
 
 Development proceeds in phases. A phase ends only when its exit criteria are met,
 `pytest`, `ruff check .` and `mypy` all pass, `development/CURRENT_STATE.md` is
@@ -485,7 +486,7 @@ In summary:
 | | Purpose | Target | Status |
 |---|---|---|---|
 | **11A** | Safe, installable, clearly identified Alpha for external evaluation while qualification is incomplete | `v0.1.0-alpha.1` | **Implemented - clean-machine validation pending** |
-| **11B** | Validate against representative *real* examination material, verified against independently known expected results | `v0.1.0-beta.1` | Pending |
+| **11B** | Validate against representative *real* examination material, verified against independently known expected results | `v0.1.1-beta.1` (was `v0.1.0-beta.1`; see the wiki roadmap) | Pending |
 | **11C** | Feature freeze, qualify the *packaged* application, validate upgrades and documentation | `v1.0.0-rc.1` then `v1.0.0` | Pending |
 
 **11A delivered.** Centralised versioning with the release channel derived

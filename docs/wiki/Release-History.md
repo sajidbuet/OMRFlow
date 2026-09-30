@@ -24,7 +24,7 @@ maturity its version does not support.
 
 ## What is next
 
-- **`0.1.0-beta.1`** — after [Phase 11B](Development-Roadmap#phase-11b--real-data-qualification--beta-release):
+- **`0.1.1-beta.1`** (the Beta of the `0.1.1` line, after `0.1.1-alpha.x`) — after [Phase 11B](Development-Roadmap#phase-11b--real-data-qualification--beta-release):
   real-data qualification against real sheets, scanners, attendance workbooks
   and answer keys, verified against independently known expected results.
 - **`1.0.0-rc.1`**, then **`1.0.0`** — after

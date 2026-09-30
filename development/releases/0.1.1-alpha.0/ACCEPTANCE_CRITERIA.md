@@ -1,20 +1,21 @@
 # `0.1.1-alpha.0` — acceptance criteria
 
 > **Planning document.** Nothing here has been run. Every criterion is a
-> requirement for later work.
+> requirement for later work. Reconciled 2026-09-30 against `main` at
+> `128512d` (schema 12); see [ROADMAP.md](ROADMAP.md) §11.
 
 Rules that apply to every section:
 
-- A criterion is met only by **evidence recorded in the repository** (a test,
-  a committed report, a handoff entry with the command and its output) — not
+- A criterion is met only by **evidence recorded in the repository** — a test,
+  a committed report, or a handoff entry with the command and its output — not
   by a statement that it was checked.
 - `pytest`, `ruff check src tests tools scripts` and `mypy` (strict, as
-  configured in `pyproject.toml`) pass at the end of every phase.
-- Every pre-existing test passes **unchanged**. A test may be edited only if
-  the phase's handoff explains why its old expectation was wrong, not merely
+  configured) pass at the end of every phase.
+- Every pre-existing test passes **unchanged**. A test may be edited only if the
+  phase's handoff explains why its old expectation was wrong, not merely
   inconvenient.
-- **Passing unit tests does not complete a phase.** Status is reported on the
-  six tracks of ROADMAP.md §5, separately.
+- **Passing tests do not complete a phase.** Status is reported on the six
+  tracks of ROADMAP.md §7, separately.
 - No real candidate data is committed. Real scans stay in the git-ignored
   `private_test_data/` or `local_test_data/`.
 
@@ -24,252 +25,430 @@ Rules that apply to every section:
 
 | # | Invariant | Checked by |
 |---|---|---|
-| X1 | A finite batch outside a session behaves exactly as in `0.1.0-alpha.2`: registration, resume, retry, per-batch duplicate IDs, conflicts, reconciliation, scoring, reports | Existing suites, unchanged; plus a golden comparison of a finite project processed by both builds |
-| X2 | Workers never open the database; only the coordinator writes | `tests/unit/test_architecture.py` (extended if needed) and code review |
-| X3 | Services contain no Qt; the GUI imports no OpenCV/NumPy/SQLAlchemy | `tests/unit/test_architecture.py` |
-| X4 | Nothing is ever deleted to express a decision: rejected, superseded and duplicate assets and their history persist | Tests on every transition |
-| X5 | Original source files are never modified, moved or deleted | Hash-before/hash-after tests on every intake path |
-| X6 | `audit_event` and `batch_scan_history` remain append-only | Existing trigger tests |
-| X7 | Migrations are additive and forward-only; a schema-9 project upgrades and answers every earlier query identically | Upgrade test from a committed schema-9 fixture |
-| X8 | The Phase 10 harness and its 15 assertions are unchanged and still pass their small-scale self-test | `tests/unit/test_qualification.py`, `tests/integration/test_stress_*` |
-| X9 | Answer ambiguity never becomes a conflict | Existing `test_conflict_policy.py` cases |
+| X1 | A **single-batch session** — the traditional finite workflow — behaves exactly as `main` did before this line: registration, resume, retry, conflicts, reconciliation, scoring, reports, and no new operator step | Existing suites unchanged; a golden comparison of a finite project (rows and workbook cell values) |
+| X2 | Every `ScanBatch` belongs to exactly one `ScanSession` after backfill; a **sealed** batch's membership never changes | Service tests; a database invariant check in `project_health` |
+| X3 | Workers never open the database; only the coordinator writes | `tests/unit/test_architecture.py` |
+| X4 | Services contain no Qt; the GUI imports no OpenCV/NumPy/SQLAlchemy | `tests/unit/test_architecture.py` |
+| X5 | Nothing is deleted to express a decision: rejected, superseded, duplicate and reprocessed-away scans and batches, and their history, persist | Tests on every transition |
+| X6 | Original source files are never modified, moved or deleted | Hash-before / hash-after tests on every intake path |
+| X7 | `audit_event` and `batch_scan_history` remain append-only | Existing trigger tests |
+| X8 | Migrations are additive and forward-only; numbers 1–12 are never reused; a real schema-12 project upgrades, backfills and scores identically | Upgrade tests from a committed schema-12 fixture |
+| X9 | The Phase 10 harness and its assertions are unchanged and pass their small-scale self-test | `tests/unit/test_qualification.py`, `tests/integration/test_stress_*` |
+| X10 | Answer ambiguity never becomes a conflict | Existing `test_conflict_policy.py` cases |
+| X11 | Every set-code comparison goes through `set_identity` | Architecture test (from Phase A on) |
+| X12 | No downstream stage chooses its input by `updated_at` or "latest batch" | Architecture/grep test and GUI tests (from Phase B on) |
+| X13 | **Supersession invariant:** only effective, non-superseded batch/sheet membership contributes to session-level attendance, reconciliation, scoring, results and final reports; superseded batches remain retained and auditable | Effective-set tests for every cause (reprocess, whole-batch rescan, algorithmic reprocessing, reopen/recompute); nothing deleted (from Phase B on) |
+| X14 | Lifecycle invariants: an OPEN batch may receive members, a SEALED batch never does, a SUPERSEDED batch is excluded from aggregation; an OPEN session may receive batches, a CLOSED one never does and has only sealed batches, a REOPENED one is open again and its prior final outputs are stale | Service and database-invariant tests (from Phase B on) |
+| X15 | **Crash-safe persistence and resume:** after any interruption, reopening the project preserves every committed Scan and Resolve unit of work, retries only uncommitted work, reconstructs counts from committed rows, and never creates a new session or a superseding batch | §5.4 crash-safety tests (from Phase B on) |
+| X16 | **Durable completion:** a sheet reported to the operator as recognised/completed already has its recognition result and all review/conflict state required for Resolve durably committed; the completed count shown is committed state, never buffered state | §5.4 cases 2, 4, 13; GUI tests (from Phase B on) |
 
 ---
 
 ## 2. Per-phase exit criteria
 
-### A — Architecture & persistence
+### A — Set identity
 
-- A1. `__version__` is `0.1.1-alpha.0` in `_version.py` only; version tests
-  pass; `CHANGELOG.md` `[Unreleased]` notes the line has begun.
-- A2. ADR-0005 (ingest vs reference), a writer-strategy ADR and a
-  template-change ADR are committed and referenced from `docs/ARCHITECTURE.md`.
-- A3. Migration 10 creates the session, source and asset representation and
-  the optional links; `DATA_MODEL.md` documents each field.
-- A4. Repository-layer tests: create/open/close session; add/enable/disable
-  source; register asset; link asset to `BatchScan`; record duplicate and
-  supersession relationships; all transitions audited.
-- A5. Upgrade test from schema 9 (X7).
-- A6. The late-added-scan defect (ARCHITECTURE_NOTES.md §17) has a test that
-  demonstrates it; it is fixed or explicitly deferred with the test marked
-  `xfail(strict=True)` and a reason.
-- A7. No GUI change beyond what the version bump implies.
+- A1. `__version__` is `0.1.1-alpha.0` in `_version.py` only, committed alone
+  first; version and release-automation tests pass; `CHANGELOG.md`
+  `[Unreleased]` notes the line has begun.
+- A2. Migration 13 adds canonical code and physical mark; a schema-12 project
+  with sets `A` and `a` upgrades, reports the collision by name, and blocks only
+  the set-dependent stages until the operator renames or merges.
+- A3. Defining `a` when `A` exists is refused.
+- A4. A lower-case logical set and a mapped `10 → A` set pass end to end:
+  Resolve, Attendance, Answer Key, Results and Reports show the logical set;
+  the raw `A` is retained; the key is found (closes defect 5).
+- A5. X11 holds.
 
-### B — Intake engine
+### B — Scan sessions and finite batches
 
-- B1. Every stable file in every enabled source is registered **exactly once**,
+- B1. Migration 14 and the session service exist; `DATA_MODEL.md` documents
+  each field; an ADR records the model.
+- B2. First *Process All* in a project creates a session silently; the operator
+  is asked nothing new.
+- B3. Reopening the project and processing further scans creates a **new batch
+  in the same session** (defect 1's cause removed).
+- B4. Retrying failed sheets in an old batch, and `recover_interrupted` on
+  open, do not change which data downstream reads (defect 2's cause removed).
+- B5. A sealed batch refuses new members; a rescan of a sealed batch's sheet
+  goes into a new `rescan` batch of the same session and the existing Reject &
+  Rescan link still counts it once.
+- B6. *Reprocess All* creates a `reprocess` batch that supersedes the batch it
+  re-reads; nothing is counted twice; the superseded batch stays inspectable.
+- B7. Upgrade backfill from a schema-12 fixture: one batch → one session with
+  identical results; two unrelated batches of one project → two sessions, never
+  combined automatically; batches joined by an unambiguous confirmed
+  replacement → one session, counted-once behaviour identical; an ambiguous
+  case → separate sessions, results unchanged, listed in the upgrade report.
+- B7a. *Combine into one session* is refused across projects, is only ever
+  operator-initiated, writes its audit event, and refuses (listing reasons) any
+  combination that would create a duplicate effective sheet or a contradictory
+  supersession relationship.
+- B8. `processing_manifest` rows are written at the defined boundaries
+  (closes defect 6).
+- B9. Template change inside a session follows the ADR; never silent.
+- B10. Session lifecycle: CLOSED refuses new batches and intake and seals every
+  batch on close; REOPENED is open again, marks prior final outputs stale, and
+  both reopen and re-close are audit events.
+- B11. Batch supersession is a first-class record (reason, by, when, audited
+  reversal); cycles and double supersession are refused; the superseded batch
+  and its records are retained (X13).
+- B12. **Required pre-Alpha defects S1, S2, S3 and R1 closed**
+  (ARCHITECTURE_NOTES.md §13.5), each with a test that failed before the fix:
+  - S1: recognition and its required conflict state form one crash-consistent
+    work unit; after a kill between recognition persistence and conflict
+    generation, the sheet is not treated as completed or Resolve-ready until
+    recovery has deterministically generated its conflicts (§5.4 case 13);
+  - S2: on reopen, interrupted session/batch state is discovered from persisted
+    data, completed sheets are visible immediately, unfinished work is available
+    for Resume;
+  - S3: the completed count and "done" marks reflect committed state only;
+  - R1: Resolve loads the persisted session/batch directly on reopen, without a
+    visit to Scan.
+- B13. §5.4 cases 1–10, 12 and 13 pass for the finite workflow with real process
+  kills; recovery keeps an interrupted OPEN batch OPEN and an interrupted SEALED
+  batch SEALED (resuming its unfinished processing), and never creates a
+  session, batch or superseding batch.
+- B14. The handoff records the measured cost of per-sheet commits and the
+  chosen commit granularity (ARCHITECTURE_NOTES.md §13.8).
+
+### C — Session-level review, reconciliation, scoring and reporting
+
+- C1. The effective-scan-set service excludes rejected, superseded,
+  re-imported, exact-duplicate and reprocessed-away scans by construction, and
+  reports a count per exclusion reason.
+- C2. Resolve shows one session queue with batch/source filters; cross-batch
+  duplicate groups are navigable.
+- C3. Duplicate-ID conflicts are computed session-wide on **effective**
+  identifiers: the 10:03 / 10:47 / 11:05 scenario across two batches creates
+  conflicts on both sheets and withdraws the untouched one on correction; a
+  corrected ID that collides raises a conflict (closes defect 3).
+- C4. (set, identifier) grouping exists as a policy option, default unchanged,
+  documented as an office decision.
+- C5. Byte-identical files added under different paths or batches produce one
+  effective script; the other is listed as a duplicate (closes defect 4 for
+  manual adds).
+- C6. Attendance, reconciliation, Results and Reports aggregate the session; a
+  candidate whose script is in another batch of the session is present
+  (closes defect 1); pages select a session explicitly and name it (closes
+  defect 2).
+- C7. Batch-level diagnostic views exist and are labelled as such.
+- C8. Results on an open session are labelled provisional everywhere shown or
+  exported; Final Export requires a CLOSED session; on an open session it offers
+  one step, "Close session and generate final export", which either lists the
+  blockers and changes nothing, or closes and generates; `generated_report`
+  records its scope and the close it came from; reopening marks those outputs
+  stale until regenerated.
+- C9. Golden regression: a single-batch project gives byte-identical
+  reconciliation rows and workbook cell values.
+- C10. A synthetic multi-set session over several batches with replacements
+  and duplicates matches the generator's independently computed ground truth,
+  and matches the same cohort processed as one batch.
+
+### D — Intake sources and ledger
+
+- D1. Every stable file in every enabled source is registered **exactly once**,
   including files present before the engine started.
-- B2. No asset becomes READY while its file is still being written — tested
-  with writers that grow a file in steps, pause, hold it open, and write a
-  valid header before the body.
-- B3. Same filenames in different sources are distinct assets; same relative
-  path with new content in one source is a new, flagged asset.
-- B4. Byte-identical content is `duplicate_content`, linked to the first, and
-  never submitted for recognition.
-- B5. A source that becomes unreachable is marked so without affecting other
-  sources or marking its assets missing; on return every file created meanwhile
-  is discovered.
-- B6. After a restart, files created while OMRFlow was closed are discovered;
-  in-flight stabilisation is redone; READY assets are re-verified.
-- B7. Correctness holds with notifications disabled (reconciliation only).
-- B8. Stabilisation parameters are configuration, with the measured basis for
-  their defaults recorded in the handoff.
-- B9. Manual import and watched sources produce identical asset records for
+- D2. No file becomes ready while still being written — tested with stepped
+  growth, pauses, held-open files and header-first writes.
+- D3. Same filenames in different sources are distinct; same relative path
+  with new content is a new, flagged file.
+- D4. Byte-identical content is `duplicate_content`, linked, never recognised.
+- D5. An unreachable source is marked so without affecting other sources or
+  marking its files vanished; on return, files created meanwhile are found.
+- D6. After restart, files created while OMRFlow was closed are discovered;
+  in-flight stabilisation is redone; ready files are re-verified.
+- D7. Correctness holds with notifications disabled.
+- D8. Stabilisation parameters are configuration, with the measured basis for
+  their defaults in the handoff.
+- D9. *Add Folder* and a watched source produce identical ledger records for
   identical files.
 
-### C — Incremental processing, review & rescan
+### E — Continuous processing, quality decisions and session controls
 
-- C1. READY assets are processed in finite units that satisfy every Phase 5
-  invariant; a unit interrupted by a forced kill resumes without
+- E1. Ready files are processed in sealed, per-source units satisfying every
+  Phase 5 invariant; a unit interrupted by a forced kill resumes without
   resubmitting committed sheets (measured, as Phase 10 does).
-- C2. Sheet-local conflicts appear after each unit commit, not at session end.
-- C3. Cross-sheet duplicate IDs span units: the 10:03 / 10:47 scenario creates
-  conflicts on **both** sheets; a correction that dissolves the group withdraws
-  the untouched one; superseded and duplicate-content assets never participate.
-- C4. Duplicate grouping by (set, identifier) exists as a policy option with
-  the default unchanged, documented as an office decision.
-- C5. The quality decision layer is pure, policy-driven, fingerprinted and
-  pinned per session; its default mapping is labelled unvalidated in code and
-  docs; no new geometric threshold is introduced.
-- C6. Rescan lifecycle: RESCAN_REQUIRED → replacement suggested → confirmed by a
-  named operator → original SUPERSEDED, replacement EFFECTIVE; undo restores;
-  chains work; everything survives restart; nothing is deleted.
-- C7. The session snapshot's counts partition (ARCHITECTURE_NOTES.md §14) in
-  every test that produces one.
-- C8. Concurrent writes (intake + unit recording + a review decision) complete
-  without `database is locked` failures in a contention test, and the GUI
-  thread's write latency is bounded.
-- C9. `ScanJobStatus.PROCESSING` is actually written while a sheet is in a
-  worker, and recovered as today.
+- E2. Sheet-local conflicts appear after each unit commit; the finite GUI path
+  syncs conflicts exactly as before.
+- E3. The quality decision layer is pure, versioned, fingerprinted, pinned per
+  session, labelled unvalidated; RESCAN_REQUIRED produces a **suggested**
+  rejection that a named operator confirms through the existing flow; no new
+  geometric threshold.
+- E4. The session snapshot's counts partition in every test that produces one.
+- E5. Concurrent writes (intake + recording + a review decision) complete
+  without `database is locked` failures in a contention test; GUI-thread write
+  latency bounded.
+- E6. `ScanJobStatus.PROCESSING` is written while a sheet is in a worker and
+  recovered as today.
+- E7. Pause lets in-flight sheets finish **and be recorded**; finish-current
+  replaces destructive cancel as the default stop.
+- E8. Finish-session returns each blocker of §3 individually, or closes,
+  audited; files arriving for a closed session are held.
+- E9. Crash safety holds under continuous processing: §5.4 cases 1–4 and
+  9–12 pass with intake running (smaller-scale case 11), including a kill
+  between a unit commit and its conflict sync; recovery resumes the same
+  session and sealed unit, never a new session or a superseding batch.
 
-### D — Operational GUI
+### F — Operational GUI
 
-- D1. With no session open, the Scan stage is the `0.1.0-alpha.2` workflow;
-  existing GUI tests pass unchanged.
-- D2. Session mode: configure sources, start, pause/resume processing, and
-  Finish with a blocker list — each blocker in §3 below tested
-  individually.
-- D3. Three separate progress lines; recognition progress may decrease when
-  the workload grows; "Caught up — watching for new scans" appears only under
-  its definition; an unreachable source prevents "caught up".
-- D4. Per-source status is compact and collapsible, not the dominant element.
-- D5. Resolve and Rescan queues update while intake runs.
-- D6. At 10,000 assets the GUI thread stays responsive (event-loop latency
-  measured in a test, threshold recorded in the handoff); growing lists are
-  model-based and paged, not item widgets.
-- D7. Screenshots via the `qtguitesting` workflow for each new state.
+- F1. With one implicit single-batch session, the Scan stage is the
+  `0.1.0-alpha.2` workflow; existing GUI tests pass unchanged.
+- F2. Session mode: configure sources, start, pause/resume, finish with a
+  blocker list, reopen — each tested.
+- F3. Three separate progress lines; recognition may decrease; "Caught up —
+  watching for new scans" only under its definition; an unreachable source
+  prevents it; no combined percentage anywhere.
+- F4. Per-source status is compact and collapsible, not dominant.
+- F5. Resolve and the Rescan queue update while intake runs.
+- F6. At 10,000 files with ongoing arrivals the GUI stays responsive (latency
+  measured, threshold recorded); growing lists are paged models.
+- F7. Screenshots via the `qtguitesting` workflow for each new state, at
+  1366×768 and 175 % scaling.
+- F8. Reopening a project with interrupted session work shows the reconstructed
+  state (per session, batch and source; recognised / failed / pending; conflicts
+  resolved) before Resume is pressed, from committed rows; final outputs made
+  stale by a reopen are shown as stale.
 
-### E — Session-scoped reconciliation, scoring & reporting
+### G — Qualification and release
 
-- E1. Reconciliation, scoring and reports accept a session's effective set;
-  superseded, duplicate-content and rescan-outstanding assets are excluded by
-  construction.
-- E2. Per-batch results for finite projects are byte-identical to
-  `0.1.0-alpha.2` on a golden project.
-- E3. Results on an open session are labelled provisional; Final Export
-  requires a closed session.
-- E4. Attendance, Results and Reports select a session or batch explicitly;
-  "latest batch" is no longer an implicit choice when a session exists.
-- E5. A synthetic multi-set session with a roster and answer key produces
-  results matching independently computed expectations (the existing
-  synthetic dataset generator's ground truth).
-
-### F — Qualification & release
-
-See §§4–7.
+See §§4–8 (and §9 for what remains before Beta).
 
 ---
 
-## 3. Finish Scan Session — closure checks
+## 3. Finish scan session — closure checks
 
 Closure is refused, listing each blocker, unless all hold after a final
 reconciliation of every configured source:
 
-- no asset stabilising, ready, queued or processing;
-- no unresolved required conflict (sheet-local or cross-sheet);
-- no outstanding rescan item;
-- no unmatched replacement;
+- nothing stabilising, ready, queued or processing;
+- no unresolved required conflict (sheet-local or cross-batch);
+- no outstanding rescan item; no unmatched replacement;
+- no held file awaiting a decision;
 - every enabled source reachable for the final reconciliation; disabled
   sources listed by name.
 
-Temporary absence of new files never closes a session.
+A temporary absence of new files never closes a session. On success the
+session becomes CLOSED: every contributing batch is sealed, no new batch or
+intake is accepted, and final reconciliation, scoring, results and reports
+represent its authoritative state. The same checks run in the one-step "Close
+session and generate final export" at Final Export, so a finite import needs no
+separate session-management screen. Reopening is explicit and audited, returns
+the session to OPEN, and marks prior final outputs stale; re-closing is audited
+and final outputs must then be regenerated.
 
 ---
 
-## 4. Synthetic intake qualification campaign
+## 4. Real-world acceptance matrix
+
+| # | Scenario | Observable acceptance |
+|---|---|---|
+| A | Single scanner, finite folder | *Add Folder → Process All* identical to today; same results as `main` on the same images |
+| B | Two scanners, files copied in afterwards | Two batches in one session; every sheet registered once; source recorded per batch |
+| C | Three scanners writing continuously | Sealed units per source; backlog visible; no sheet processed before stable; totals equal files written |
+| D | Network share disconnected mid-run | Source *unreachable*; nothing marked vanished; resumes on reconnect; no OMR failures for the outage |
+| E | OMRFlow stopped, files added, restarted | New files discovered on start; no reprocessing of committed sheets |
+| F | Same image imported twice (two paths/sources/batches) | One effective script; the other listed as duplicate, linked |
+| G | Same physical script scanned twice | Session-wide duplicate-ID conflict; one counts after decision; both kept |
+| H | Rejected sheet later rescanned on another station | Suggested and linked; counted once in the session; lineage in audit |
+| I | Project reopened, more scans processed | New batch in the same session; no candidate becomes absent (defect 1) |
+| J | Old batch retried / project reopened after interruption | What is scored does not change (defect 2) |
+| K | File still being written | Not registered until stable; no decode failure recorded |
+| L | Large backlog while processing continues | GUI responsive; backlog and rate shown; memory bounded |
+| M | Logical set `10` printed as `A` | Every stage shows Set 10; raw `A` retained |
+| N | Set codes typed `a` / `A` | One set; key found; duplicates refused at definition |
+| O | Kill during continuous processing | Resume safe; Phase 10 kill criteria still hold |
+| P | *Reprocess All* in a session | Old batch superseded; nobody counted twice |
+| Q | Open vs closed session | Provisional labels while open; Final Export only when closed |
+| R | Crash while scanning (sheet 638 of 1,000) | 637 results kept and not re-read; 638 retried; counts reconstructed; same session and batch |
+| S | Crash after 47 of 120 Resolve decisions | 47 kept with audit history; 73 in the active queue |
+| T | Reopen after Final Export | Final outputs marked stale; regeneration required after changes |
+
+---
+
+## 5. Synthetic qualification: intake campaign, endurance and crash safety
 
 **Additional to, and independent of, the Phase 10 100,000-sheet campaign**,
-which keeps validating deterministic finite processing, persistence and forced
-kill/resume.
+which keeps validating deterministic finite processing and forced kill/resume.
 
-### 4.1 Workload
+### 5.1 Workload
 
-- ≥ 3 simulated scanner sources, ≥ 10,000 incoming images in total, generated
-  with the existing template-driven synthetic generator so ground truth is
-  exact.
+- ≥ 3 simulated scanner sources, ≥ 10,000 images in total, from the existing
+  template-driven synthetic generator so ground truth is exact; multi-set, with
+  paired attendance workbooks and answer keys.
 - The **same filenames** from different sources.
 - Files written gradually and partially (stepped growth, held-open, header
   first), with random inter-arrival times.
-- Duplicate content (byte copies) within and across sources.
+- Byte copies within and across sources.
 - Temporary source loss and reconnection.
 - Forced application kill and restart while sources keep producing.
-- New duplicate-ID conflicts arising while a scripted operator resolves
-  earlier ones.
-- Physically "bad" sheets (the existing fold generator) triggering
-  RESCAN_REQUIRED, followed by replacement files — including from a different
-  source, and chains.
+- New duplicate-ID conflicts arising while a scripted operator resolves earlier
+  ones.
+- Fold-generated bad sheets triggering RESCAN_REQUIRED suggestions, confirmed
+  rejections, and replacements — including from a different source, and chains.
+- Session closure, then session-level Results and Reports compared with ground
+  truth.
 
-The campaign is driven by a supervisor in the Phase 10 style: evidence is
-written from outside the process being killed, and kill points are chosen
-from committed state, not wall time.
+Driven by a supervisor in the Phase 10 style: evidence written from outside the
+process being killed; kill points chosen from committed state, not wall time.
 
-### 4.2 Release-blocking assertions
+### 5.2 Release-blocking assertions
 
 | Assertion | Requirement |
 |---|---|
-| `stable_files_discovered_exactly_once` | Every stable file ↔ exactly one asset |
-| `no_incomplete_file_processed` | No asset was submitted before its writer finished (writer logs vs submission log) |
-| `source_provenance_retained` | Every asset's source, path and filename match the generator's manifest |
+| `stable_files_discovered_exactly_once` | Every stable file ↔ exactly one ledger row and at most one effective scan |
+| `no_incomplete_file_processed` | No file was submitted before its writer finished (writer log vs submission log) |
+| `source_provenance_retained` | Every scan's source, path and filename match the generator's manifest |
 | `duplicate_content_identified` | Every planted byte copy, and nothing else, is `duplicate_content` |
 | `independent_filenames_do_not_collide` | Same-named files from different sources are distinct and all processed |
-| `no_accepted_image_lost` | Every accepted asset is still present and effective after all restarts |
-| `no_completed_scan_rerecognised` | Measured via the submission log: no committed asset resubmitted |
+| `batches_finite` | No sealed batch gained a member; every batch belongs to the session |
+| `no_accepted_image_lost` | Every accepted scan is still present and effective after all restarts |
+| `no_completed_scan_rerecognised` | Measured via the submission log |
 | `offline_arrivals_discovered` | Files created while OMRFlow was down are all discovered after restart |
 | `conflict_counts_correct_as_population_grows` | At each checkpoint, open duplicate-ID conflicts equal the ground-truth count for the population seen so far |
 | `rescan_relationships_survive_restart` | Every confirmed association and supersession is intact after each restart |
 | `aggregate_counts_consistent` | The session snapshot partitions at every checkpoint and equals a recount from raw rows |
+| `session_results_match_ground_truth` | Session-level attendance, marks and report cell values equal the independently computed expectation |
 | `sqlite_integrity` | `quick_check`, `integrity_check`, `foreign_key_check` |
 | `application_invariants` | `project_health.full_check` reports no error-level or critical issue |
-| `finite_mode_regression` | A finite batch run in the same build matches its golden result |
+| `finite_mode_regression` | A single-batch session run in the same build matches its golden result |
 
-No assertion may be demoted to a warning to let the campaign pass. A smaller
-run is reported as "ALL RUNS PASSED — NOT THE RELEASE QUALIFICATION", as
-Phase 10 does.
+No assertion may be demoted to a warning to let the campaign pass. A smaller run
+is reported as "ALL RUNS PASSED — NOT THE RELEASE QUALIFICATION", as Phase 10
+does.
+
+### 5.3 Targeted endurance tests (required for Alpha)
+
+A fresh 100,000-sheet run is **not** required for `0.1.1-alpha.0`. Instead,
+committed endurance tests (marked `stress` where long) must cover, on the new
+architecture:
+
+- **multiple batches** in one session (≥ 10 sealed batches, several sources);
+- **continuous intake** over an extended period with random arrivals;
+- **supersession / reprocessing** — *Reprocess All* and an algorithmic re-read
+  mid-session, with totals unchanged and nothing double-counted;
+- **restart / resume** — repeated kills and restarts during intake and
+  processing;
+- **session-level aggregation** — attendance, marks and report cells equal the
+  ground truth, and equal an uninterrupted run.
+
+Scale and durations are recorded in the handoff; they are evidence, not a
+substitute for the pre-Beta 100k qualification (§9).
+
+### 5.4 Crash-safe persistence and resume tests (required for Alpha)
+
+Real process termination (not a simulated exception) wherever "forced"
+appears; evidence recorded from outside the killed process, in the Phase 10
+style.
+
+| # | Test | Must show |
+|---|---|---|
+| 1 | Clean application close halfway through Scan | Committed sheets kept; the rest resumable; nothing marked failed |
+| 2 | Forced process termination halfway through Scan | Every committed sheet kept and not re-recognised (submission log); uncommitted ones retried |
+| 3 | Restart with a sheet interrupted during processing | That sheet returns to a retryable state, never "completed" or "failed" |
+| 4 | Restart after a recognition commit but before the next sheet starts | Nothing lost, nothing re-read |
+| 5 | Clean close halfway through Resolve | Every confirmed decision kept |
+| 6 | Forced termination after several Resolve corrections | Every committed correction kept, with its audit event |
+| 7 | Restart retains resolved corrections | Machine value, override, effective value and history intact |
+| 8 | Restart keeps unresolved items unresolved | Active queue = exactly the unresolved items |
+| 9 | Repeated restarts | No duplicate sheet, conflict, attendance, scoring or audit rows; no new session; no superseding batch |
+| 10 | Session-level results after interruption | Counts and scores identical to an uninterrupted run |
+| 11 | Resume after interruption at ≈ 1, 25, 50, 75 and 99 % of a large run | Each point meets 2–4 and 10 (Phase G at scale; smaller-scale versions from Phase B/E on) |
+| 12 | Integrity after every case | `quick_check`, `integrity_check`, `foreign_key_check`; health check clean; audit history valid and append-only |
+| 13 | **Kill after recognition is persisted but before conflict generation** | The sheet is never reported completed or Resolve-ready in that state; on restart recovery deterministically generates exactly the missing conflicts (no duplicates), and only then counts the sheet as completed; the sheet is not recognised again |
+| 14 | Sealed batch interrupted mid-processing | After restart it is still SEALED, gained no members, and its unfinished sheets resume |
+| 15 | Resolve reachable after reopen | Without visiting Scan, Resolve opens the persisted session/batch with the committed decisions and the unresolved queue |
+
+After reopening, the GUI shows the reconstructed state — e.g. *637 / 1,000
+recognised · 4 failed (retryable) · 359 pending* and *47 / 120 conflicts
+resolved* — before Resume is pressed, from committed rows, never from a stored
+progress value.
 
 ---
 
-## 5. Network-share (SMB) qualification
+## 6. Network-share (SMB) qualification
 
 Phase 5 explicitly did **not** establish behaviour on a genuine network share.
-Smaller than §4, on real infrastructure:
+On real infrastructure:
 
-- ≥ 2 Windows machines: sources on genuine SMB shares (`\\host\share\…`),
-  written by a process on the remote machine, not by the OMRFlow machine.
+- ≥ 2 Windows machines; sources on genuine SMB shares (`\\host\share\…`),
+  written by a process on the remote machine.
 - ≥ 1,000 files per source, including the partial-write patterns.
-- Share disconnected (cable/adapter/service stopped) and restored mid-write.
+- Share disconnected (cable/adapter/service) and restored mid-write.
 - OMRFlow restarted during intake.
-- Record measured listing cost per reconciliation and the stabilisation
-  latency distribution; confirm or adjust the Phase B defaults.
-- The project database itself stays on a local disk (unless a separate ADR
-  says otherwise); state which in the report.
+- Listing cost per reconciliation and the stabilisation latency distribution
+  measured; Phase D defaults confirmed or adjusted.
+- The project database on a local disk (unless an ADR says otherwise); the
+  report says which.
 
-Result committed under `docs/release/validation/` with machine descriptions
-and OS/SMB versions. Required for `0.1.1-alpha.0`.
+Result committed under `docs/release/validation/` with machine descriptions and
+OS/SMB versions. **Required for `0.1.1-alpha.0`.** A simulated share is never
+reported as SMB.
 
 ---
 
-## 6. Real scanning-room qualification (after `0.1.1-alpha.0`; gates Beta)
+## 7. Real scanning-room qualification
 
-Not required for `0.1.1-alpha.0`. Performed on a later `0.1.1` Alpha, and it
-is what the Beta decision rests on:
+Not required for `0.1.1-alpha.0`. Performed on a later `0.1.1` Alpha, and part
+of the evidence Phase 11B's Beta decision rests on:
 
-- two or more real scanner workstations where practical, scanning continuously;
+- two or more real scanner workstations, scanning continuously;
 - the same filenames from different scanner PCs;
-- network interruption and reconnection;
-- OMRFlow restart during intake;
+- network interruption and reconnection; OMRFlow restart during intake;
 - operators resolving conflicts while scanning continues;
-- real scan-quality rejects, physical rescans and replacement of rejected
-  images;
+- real scan-quality rejects, physical rescans and replacements;
 - final session closure;
 - **independently verified result correctness** — stored results compared with
   an independently computed expectation, never approved by visual inspection
   (the existing Phase 11B rule);
-- the quality-decision defaults set from these real rejects, and the evidence
-  recorded.
+- quality-decision defaults set from these real rejects, with the evidence.
 
 ---
 
-## 7. `0.1.1-alpha.0` release gate
+## 8. `0.1.1-alpha.0` release gate
 
 All of:
 
-1. Phases A–E: implementation complete and automated tests complete.
-2. §4 synthetic intake campaign: QUALIFIED at full scale.
-3. §5 SMB qualification: passed and recorded.
-4. X1–X9 hold; the Phase 10 harness self-test passes.
-5. Packaged application: the existing packaging smoke and installer checks
-   pass, plus a scripted live-intake smoke run **on the installed build**
-   (two local sources, a few hundred files, one restart).
-6. Upgrade from a `0.1.0-alpha.2` project verified on the installed build,
-   with the forward-only consequence stated in the release notes.
-7. Documentation: user guide for scan sessions, updated Scanning,
-   Processing, Review-and-Resolution, Known-Limitations and
+1. Phases A–F: implemented and tested; X1–X12 hold.
+2. §5 synthetic intake campaign: QUALIFIED at full scale.
+3. §6 SMB qualification: passed and recorded.
+4. The Phase 10 harness self-test passes. A fresh 100,000-sheet run is
+   **optional at Alpha** (decided); if it was not run, the release notes say so
+   plainly. The §5.3 endurance tests and every §5.4 crash-safety test pass.
+4a. **Required defects S1, S2, S3 and R1 are closed** (B12), with their tests
+   passing on the installed build as well as from source.
+5. Packaged application: existing packaging smoke and installer checks, plus a
+   scripted live-intake smoke run **on the installed build** (two local
+   sources, a few hundred files, one restart).
+6. Upgrade from a schema-12 project (and from a `0.1.0-alpha.2` project)
+   verified on the installed build; the forward-only consequence stated in the
+   release notes.
+7. Documentation: user guide for scan sessions; updated Scanning, Processing,
+   Review-and-Resolution, Attendance, Results-and-Reports, Known-Limitations and
    Upgrade-Compatibility wiki pages; README development and testing status.
 8. Release notes state plainly: real scanning-room qualification **not yet
    performed**; quality-decision defaults **unvalidated**.
 9. `docs/release/RELEASE_CHECKLIST.md` followed; published as a GitHub
-   pre-release.
+   pre-release only on the owner's instruction.
 
-Not required for `0.1.1-alpha.0`: §6, real-data Beta qualification, code
-signing, the full Phase 10 100,000-sheet run (still optional at Alpha per the
-canonical qualification matrix).
+Not required for `0.1.1-alpha.0`: §7, Phase 11B's Beta criteria, code signing,
+a fresh 100,000-sheet run.
+
+---
+
+## 9. Gates before the first Beta
+
+In addition to Phase 11B's own criteria (real-data qualification, which runs
+alongside the `0.1.1` line), **no Beta tag may be created** until:
+
+1. **A fresh 100,000-sheet qualification on the new architecture** —
+   ScanSession, finite ScanBatch units, continuous processing — has run and
+   been reported QUALIFIED, including interruption and resume at ≈ 1, 25, 50,
+   75 and 99 %. The earlier Phase 10 finite-batch harness (whose 100k run was
+   never completed) does not satisfy this.
+2. **Finding F8 is fixed and tested**: `numeric_version` and the installer's
+   upgrade comparison order every prerelease correctly — within one base
+   version a Beta sorts above its Alphas (e.g. `0.1.1-beta.1` above
+   `0.1.1-alpha.N`) — with tests. The Beta is **`v0.1.1-beta.x`**;
+   `v0.1.0-beta.x` is not used after `v0.1.1-alpha.0`.
+3. The §7 real scanning-room qualification has been performed.
