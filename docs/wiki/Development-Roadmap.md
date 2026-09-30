@@ -42,6 +42,18 @@ criteria are met, `pytest`, `ruff` and `mypy` all pass,
 Per-phase detail for 0–10: `development/ROADMAP.md` and the
 `development/PHASE_NN_HANDOFF.md` documents.
 
+### Next development line: `0.1.1-alpha.0` (planned)
+
+`0.1.0-alpha.2` remains the finite-batch Alpha baseline. Post-`0.1.0-alpha.2`
+development of a live, multi-scanner intake workflow — scan sessions fed by
+several scanner folders, incremental review, rescan and replacement, explicit
+session closure — is **planned, not implemented**, in the release-specific
+roadmap
+[`development/releases/0.1.1-alpha.0/ROADMAP.md`](https://github.com/sajidbuet/OMRFlow/blob/main/development/releases/0.1.1-alpha.0/ROADMAP.md).
+That plan proposes running the Phase 11B real-data qualification on the
+`0.1.1` line rather than on the finite-batch model; this page's Phase 11B
+definition is unchanged until the plan is adopted.
+
 ---
 
 ## Next development target — v0.1.1-alpha.0
