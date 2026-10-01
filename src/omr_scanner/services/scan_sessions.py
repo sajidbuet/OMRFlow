@@ -1153,8 +1153,11 @@ def downstream_batch_id(database: ProjectDatabase) -> str | None:
     * not superseded;
     * not still ``new`` or ``running``.
 
-    ``None`` when the project has no active session or it has no such batch.
-    On a pre-session project opened read-only: the newest batch by creation.
+    ``None`` when the active session has no such batch. With **no** active
+    session, the newest such batch that belongs to no session yet - a batch
+    written before the upgrade backfill ran (or directly, by a tool), read
+    exactly as before sessions existed. On a pre-session project opened
+    read-only: the newest batch by creation.
 
     This is a **temporary single-batch rule**. A session of several batches is
     not aggregated; that is session-level results' work.
@@ -1169,12 +1172,17 @@ def downstream_batch_id(database: ProjectDatabase) -> str | None:
         return str(found) if found is not None else None
     with database.session() as session:
         pointer = _setting(session, SettingKey.ACTIVE_SCAN_SESSION)
-        if not pointer:
-            return None
+        if pointer and session.get(ScanSession, pointer) is None:
+            pointer = None
         live = _live(session)
+        owner = (
+            ScanBatch.scan_session_id == pointer
+            if pointer
+            else ScanBatch.scan_session_id.is_(None)
+        )
         rows = session.execute(
             select(ScanBatch.batch_id, ScanBatch.role, ScanBatch.status)
-            .where(ScanBatch.scan_session_id == pointer)
+            .where(owner)
             .order_by(ScanBatch.created_at.desc(), ScanBatch.batch_id.desc())
         ).all()
     for batch_id, role, status in rows:

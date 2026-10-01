@@ -726,8 +726,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=14,
         description=(
-            "Scan sessions: scan_session, batch_supersession; scan_batch."
-            "scan_session_id/sealed_at/sealed_by/role"
+            "Scan sessions: session and batch-supersession tables; batch "
+            "session link, seal and role columns"
         ),
         apply=_migration_014_scan_sessions,
     ),
