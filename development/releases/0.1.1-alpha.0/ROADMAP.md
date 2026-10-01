@@ -1,11 +1,14 @@
 # `0.1.1-alpha.0` roadmap — scan sessions, multi-source intake and set identity
 
 > **The single authoritative plan for `0.1.1-alpha.0`.** Status: **in
-> implementation.** Reconciled 2026-09-30. Phase **A (set identity)** is
-> implemented and tested on branch `feat/0.1.1-phase1-set-identity` (not yet
-> merged; see [PHASE_A_HANDOFF.md](PHASE_A_HANDOFF.md)); phases B–G are not
-> implemented. Source builds on that branch report `0.1.1-alpha.0` (§9);
-> nothing is released.
+> implementation.** Reconciled 2026-09-30. Revised phase 1 (set identity,
+> roadmap A) is implemented, tested and merged into `main` (`ce3f082`; see
+> [PHASE_A_HANDOFF.md](PHASE_A_HANDOFF.md)). Revised phase 2 (scan sessions and
+> finite batches - the lifecycle part of roadmap B) is implemented and tested
+> on branch `feat/0.1.1-phase2-scan-session-lifecycle`, not merged (see
+> [PHASE_B_HANDOFF.md](PHASE_B_HANDOFF.md)). The rest is not implemented;
+> nothing is released. The implementation sequence is the revised ten-phase
+> split in §5.1.
 >
 > Written against `main` at `128512d` (code as of `c30e809`, **schema 12**).
 > It reconciles and replaces two earlier plans (§11). Canonical project status
@@ -169,7 +172,7 @@ processing, the operator GUI, and qualification.
 | Phase | Title | Depends on | Proposed migration | Prompt | Status |
 |---|---|---|---|---|---|
 | **0.1.1-A** | Set identity (and the version bump) | — | 13 (taken) | [01](prompts/01-set-identity.md) | Implemented; tested — [handoff](PHASE_A_HANDOFF.md) |
-| **0.1.1-B** | Scan sessions and finite batches | A | 14 | [02](prompts/02-scan-sessions.md) | Pending |
+| **0.1.1-B** | Scan sessions and finite batches | A | 14 (taken) | [02](prompts/02-scan-sessions.md) | Lifecycle part implemented; tested (revised phase 2, [handoff](PHASE_B_HANDOFF.md)). Crash-safety part (S1–S3, R1) moved to revised phase 3 — pending |
 | **0.1.1-C** | Session-level review, reconciliation, scoring and reporting | B | 15 | [03](prompts/03-session-results.md) | Pending |
 | **0.1.1-D** | Intake sources and ledger | B | 16 | [04](prompts/04-intake-ledger.md) | Pending |
 | **0.1.1-E** | Continuous processing, quality decisions and session controls | C, D | as needed | [05](prompts/05-continuous-processing.md) | Pending |
@@ -179,6 +182,28 @@ processing, the operator GUI, and qualification.
 C and D both depend on B and may proceed in either order; if D merges first it
 takes migration 15 and C takes 16. **Numbers are assigned at merge; a merged
 migration is never renumbered.**
+
+### 5.1 Revised implementation sequence (2026-10-01)
+
+The architecture and the semantics above are unchanged. Only the
+*implementation boundaries* are split finer, so that each phase is reviewable
+and crash safety gets its own phase:
+
+| Revised phase | Scope | From roadmap phase | Status |
+|---|---|---|---|
+| **1** Set Identity Foundation | Canonical set identity, physical marks, migration 13 | A | Implemented; tested; merged |
+| **2** ScanSession + finite ScanBatch lifecycle | Sessions, sealing, roles, supersession, backfill, pinning, manifests, minimal menu, migration 14 | B (lifecycle) | Implemented; tested; branch, not merged |
+| **3** Crash-safe Scan/Resolve persistence | S1, S2, S3, R1; durable-completion invariant; real-kill matrix (ACCEPTANCE §5.4) | **B (crash safety, moved here)** | Pending |
+| **4** Session-level effective results | Effective scan set, session Resolve queue, reconciliation, scoring, Results, Reports, final export | C | Pending |
+| **5** Intake sources + ledger | | D | Pending |
+| **6** Continuous-processing engine | Unit scheduler, writer strategy, restart sequence | E (first part) | Pending |
+| **7** Quality / rescan / session controls | Quality decision layer, rescan suggestions, pause/finish semantics, session snapshot | E (second part) | Pending |
+| **8** Operational GUI | | F | Pending |
+| **9** Automated qualification | Synthetic intake campaign, endurance, crash matrix at scale | G (first part) | Pending |
+| **10** SMB / installed-build / Alpha release gate | Real network-share qualification, installed-build upgrade, release preparation | G (second part) | Pending |
+
+The phase letters A–G, the prompts and the acceptance criteria keep their
+meaning; a revised phase cites the roadmap phase it draws from.
 
 ### 0.1.1-A — Set identity
 
@@ -523,8 +548,9 @@ qualified*, *released*. Each phase is tracked on separate tracks:
 
 | Phase | Implemented | Tested | Synthetic | Network share | Real scanners | Production |
 |---|---|---|---|---|---|---|
-| A | **Done** (branch, unmerged) | **Passing** | n/a | n/a | Pending | Pending |
-| B | Pending | Pending | n/a | n/a | Pending | Pending |
+| A (revised 1) | **Done** (merged `ce3f082`) | **Passing** | n/a | n/a | Pending | Pending |
+| B lifecycle (revised 2) | **Done** (branch, unmerged) | **Passing** | n/a | n/a | Pending | Pending |
+| B crash safety (revised 3) | Pending | Pending | n/a | n/a | Pending | Pending |
 | C | Pending | Pending | Pending | n/a | Pending | Pending |
 | D | Pending | Pending | Pending | Pending | Pending | Pending |
 | E | Pending | Pending | Pending | Pending | Pending | Pending |

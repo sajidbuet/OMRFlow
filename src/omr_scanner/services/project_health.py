@@ -62,7 +62,13 @@ from omr_scanner.database.models import (
 )
 from omr_scanner.domain.reconciliation import ReconciliationStatus
 from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState
-from omr_scanner.services import project_backup, scan_lifecycle, scan_provenance, set_identity
+from omr_scanner.services import (
+    project_backup,
+    scan_lifecycle,
+    scan_provenance,
+    scan_sessions,
+    set_identity,
+)
 from omr_scanner.services.set_identity import SetCodeMap, distinct_codes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -448,6 +454,196 @@ def _set_identity_issues(database: ProjectDatabase) -> list[HealthIssue]:
     ]
 
 
+def _scan_session_issues(database: ProjectDatabase) -> list[HealthIssue]:
+    """Lifecycle integrity of scan sessions and finite batches (0.1.1 phase 2).
+
+    Every batch belongs to a session; a sealed batch's ``total_scans`` equals
+    its rows; no supersession is cyclic, crosses sessions or replaces an
+    unsealed batch; a closed session holds no open batch; the active-session
+    pointer names a session of this project; a batch whose template identity
+    differs from its session's pin was acknowledged; ambiguous upgrade cases
+    are listed. Crash-recovery state (revised phase 3) is not checked here.
+    """
+    from omr_scanner.database.models import (
+        AuditEvent,
+        BatchSupersession,
+        ProjectSetting,
+        ScanSession,
+        SettingKey,
+    )
+    from omr_scanner.domain.scan_sessions import SessionAction, supersession_cycles
+
+    if not scan_sessions.has_lifecycle_schema(database):
+        return []
+    issues: list[HealthIssue] = []
+    with database.session() as session:
+        orphans = session.scalar(
+            select(func.count()).select_from(ScanBatch).where(ScanBatch.scan_session_id.is_(None))
+        )
+        if orphans:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.ERROR,
+                    "BATCH_WITHOUT_SCAN_SESSION",
+                    f"{orphans} batch(es) belong to no scan session. Reopen the project "
+                    "read-write to run the upgrade backfill.",
+                )
+            )
+        counts: dict[str, int] = {
+            str(batch_id): int(count)
+            for batch_id, count in session.execute(
+                select(BatchScan.batch_id, func.count()).group_by(BatchScan.batch_id)
+            ).all()
+        }
+        for batch_id, total in session.execute(
+            select(ScanBatch.batch_id, ScanBatch.total_scans).where(
+                ScanBatch.sealed_at.is_not(None)
+            )
+        ).all():
+            if int(total) != int(counts.get(batch_id, 0)):
+                issues.append(
+                    HealthIssue(
+                        HealthLevel.ERROR,
+                        "SEALED_BATCH_MEMBERSHIP_CHANGED",
+                        f"Sealed batch {batch_id[:8]} records {total} scan(s) but holds "
+                        f"{counts.get(batch_id, 0)}.",
+                    )
+                )
+        facts = {
+            str(batch_id): (scan_session_id, sealed_at)
+            for batch_id, scan_session_id, sealed_at in session.execute(
+                select(ScanBatch.batch_id, ScanBatch.scan_session_id, ScanBatch.sealed_at)
+            ).all()
+        }
+        live = {
+            str(old): str(new)
+            for old, new in session.execute(
+                select(
+                    BatchSupersession.superseded_batch_id,
+                    BatchSupersession.superseding_batch_id,
+                ).where(BatchSupersession.reversed_at.is_(None))
+            ).all()
+        }
+        for cycle in supersession_cycles(live):
+            issues.append(
+                HealthIssue(
+                    HealthLevel.ERROR,
+                    "SUPERSESSION_CYCLE",
+                    "Batch supersession forms a cycle: "
+                    + " -> ".join(item[:8] for item in cycle),
+                )
+            )
+        for old, new in live.items():
+            old_facts, new_facts = facts.get(old), facts.get(new)
+            if old_facts is None or new_facts is None or old_facts[0] != new_facts[0]:
+                issues.append(
+                    HealthIssue(
+                        HealthLevel.ERROR,
+                        "CROSS_SESSION_SUPERSESSION",
+                        f"Batch {old[:8]} is superseded by {new[:8]} of another scan session.",
+                    )
+                )
+            elif old_facts[1] is None:
+                issues.append(
+                    HealthIssue(
+                        HealthLevel.WARNING,
+                        "UNSEALED_BATCH_SUPERSEDED",
+                        f"Batch {old[:8]} is superseded but was never sealed.",
+                    )
+                )
+        sessions = session.scalars(select(ScanSession)).all()
+        for row in sessions:
+            if row.state == "closed":
+                still_open = [
+                    batch_id
+                    for batch_id, (owner, sealed_at) in facts.items()
+                    if owner == row.scan_session_id and sealed_at is None
+                ]
+                if still_open:
+                    issues.append(
+                        HealthIssue(
+                            HealthLevel.ERROR,
+                            "CLOSED_SESSION_HAS_OPEN_BATCH",
+                            f"Closed scan session '{row.name}' holds {len(still_open)} "
+                            "unsealed batch(es).",
+                        )
+                    )
+            if bool(row.template_id) != bool(row.geometry_fingerprint):
+                issues.append(
+                    HealthIssue(
+                        HealthLevel.WARNING,
+                        "SESSION_TEMPLATE_PIN_INCOMPLETE",
+                        f"Scan session '{row.name}' has an incomplete pinned template identity.",
+                    )
+                )
+        acknowledged = set(
+            session.scalars(
+                select(AuditEvent.batch_id).where(
+                    AuditEvent.action == SessionAction.TEMPLATE_ACKNOWLEDGED.value
+                )
+            ).all()
+        )
+        pins = {row.scan_session_id: row for row in sessions}
+        for batch_id, owner, template_id, geometry, recognition, engine in session.execute(
+            select(
+                ScanBatch.batch_id, ScanBatch.scan_session_id, ScanBatch.template_id,
+                ScanBatch.geometry_fingerprint, ScanBatch.recognition_fingerprint,
+                ScanBatch.engine_version,
+            )
+        ).all():
+            pin = pins.get(owner) if owner else None
+            if pin is None or not pin.template_id or batch_id in acknowledged:
+                continue
+            if (template_id, geometry, recognition, engine) != (
+                pin.template_id, pin.geometry_fingerprint,
+                pin.recognition_fingerprint, pin.engine_version,
+            ):
+                issues.append(
+                    HealthIssue(
+                        HealthLevel.WARNING,
+                        "BATCH_DIFFERS_FROM_SESSION_TEMPLATE",
+                        f"Batch {batch_id[:8]} was read with a template identity that "
+                        f"differs from scan session '{pin.name}' without an acknowledgement.",
+                    )
+                )
+        pointer = session.get(ProjectSetting, SettingKey.ACTIVE_SCAN_SESSION)
+        if pointer is not None and pointer.value and pointer.value not in pins:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.WARNING,
+                    "ACTIVE_SCAN_SESSION_MISSING",
+                    "The active scan session no longer exists; the next Process All "
+                    "starts a new one.",
+                )
+            )
+        project = session.get(ProjectSetting, SettingKey.PROJECT_ID)
+        foreign = [
+            row.name
+            for row in sessions
+            if row.project_id and project is not None and row.project_id != project.value
+        ]
+        if foreign:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.WARNING,
+                    "SCAN_SESSION_OF_ANOTHER_PROJECT",
+                    f"{len(foreign)} scan session(s) record a different project id.",
+                )
+            )
+    report = scan_sessions.backfill_report(database)
+    if report and report.get("ambiguous"):
+        issues.append(
+            HealthIssue(
+                HealthLevel.WARNING,
+                "SCAN_SESSION_BACKFILL_AMBIGUOUS",
+                f"The upgrade kept {len(report['ambiguous'])} rescan relationship(s) in "
+                "separate scan sessions because grouping them was ambiguous: "
+                + " ".join(report["ambiguous"]),
+            )
+        )
+    return issues
+
+
 def _backup_issue(project_root: Path) -> list[HealthIssue]:
     backups_dir = project_root / project_backup.BACKUP_DIR_NAME
     entries = project_backup.list_backups(backups_dir)
@@ -529,6 +725,7 @@ def full_check(database: ProjectDatabase, project_root: Path) -> HealthReport:
             _unresolved_reconciliation_issue,
             _missing_verified_key_issue,
             _set_identity_issues,
+            _scan_session_issues,
         ):
             try:
                 issues += check(database)

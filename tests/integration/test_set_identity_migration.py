@@ -50,9 +50,15 @@ PRESERVED_TABLES = (
     "reconciliation_script",
     "batch_scan",
     "review_conflict",
-    "audit_event",
     "report_template_association",
 )
+
+HISTORICAL_AUDIT = (
+    "SELECT COUNT(*) FROM audit_event "
+    "WHERE entity_type NOT IN ('scan_session', 'scan_batch')"
+)
+"""The ledger as it stood: later upgrades (migration 14's scan-session
+backfill) append their own lifecycle events, which is not a change to it."""
 
 
 def _copy(name: str, tmp_path: Path) -> Path:
@@ -78,6 +84,7 @@ def _snapshot(root: Path) -> dict[str, object]:
     found: dict[str, object] = {
         table: _raw(root, f"SELECT COUNT(*) FROM {table}")[0][0] for table in PRESERVED_TABLES
     }
+    found["audit_event"] = _raw(root, HISTORICAL_AUDIT)[0][0]
     found["sets"] = _raw(
         root, "SELECT set_id, code, description, display_order FROM project_set ORDER BY set_id"
     )
@@ -113,7 +120,9 @@ class TestUniqueSets:
         root = _copy("unique_sets", tmp_path)
         before = _snapshot(root)
         with open_project(root) as session:
-            assert session.database.schema_version == SCHEMA_VERSION == 13
+            # Upgraded through migration 13 to whatever is current (14 since
+            # 0.1.1 phase 2); this test was first written when 13 was current.
+            assert session.database.schema_version == SCHEMA_VERSION >= 13
         assert _snapshot(root) == before
         rows = _raw(
             root, "SELECT code, canonical_code, physical_mark FROM project_set ORDER BY code"
@@ -125,7 +134,8 @@ class TestUniqueSets:
         with open_project(root):
             pass
         backups = list((root / "backups").glob("**/*"))
-        assert any("before-migration-12-to-13" in str(item) for item in backups), backups
+        wanted = f"before-migration-12-to-{SCHEMA_VERSION}"
+        assert any(wanted in str(item) for item in backups), backups
 
     def test_it_reopens_and_scores_identically(self, tmp_path: Path) -> None:
         root = _copy("unique_sets", tmp_path)

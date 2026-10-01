@@ -135,6 +135,7 @@ from omr_scanner.services import (
     resolve_active_template,
     review_store,
     scan_lifecycle,
+    scan_sessions,
     set_active_template,
 )
 from omr_scanner.services.project_lock import ProjectLockHeldError
@@ -1235,9 +1236,17 @@ class MainWindow(QMainWindow):
         if getattr(report, "cancelled", False):
             return
         scan_page = self._scan_page()
-        batch_id = scan_page.state.batch_id if scan_page is not None else None
-        if not batch_id:
+        scanned = scan_page.state.batch_id if scan_page is not None else None
+        if not scanned:
             return
+        # Which batch the downstream stages read is the scan-session rule
+        # (0.1.1 phase 2), not "whatever was just processed": a rescan batch's
+        # replacements count in the original's batch, so reading the rescan
+        # batch would show an empty cohort. In an ordinary run the two agree.
+        session = self._session
+        batch_id = (
+            scan_sessions.downstream_batch_id(session.database) if session is not None else None
+        ) or scanned
         # Attendance first: left on the previous batch, it reconciled that one
         # while Results marked this one, which had no reconciliation - and
         # every set scored zero candidates with no error.
@@ -1257,13 +1266,12 @@ class MainWindow(QMainWindow):
             # sheet rejected in the batch under review. Listed, never linked.
             resolve.refresh_queue()
         answer_key = self._answer_key_page()
-        session = self._session
         if answer_key is None or session is None:
             return
         # The sets the batch actually contains, so an operator writing keys is
         # offered the papers that were sat rather than having to remember them.
         try:
-            found = review_store.effective_set_codes(session.database, batch_id)
+            found = review_store.effective_set_codes(session.database, scanned)
         except OMRScannerError:  # pragma: no cover - defensive
             return
         answer_key.offer_set_codes(
@@ -1607,6 +1615,7 @@ class MainWindow(QMainWindow):
         scan_page = self._scan_page()
         if scan_page is not None:
             scan_page.set_processing_settings(self._config.processing)
+            scan_page.set_reviewer(self._config.reviewer_name)
         resolve_page = self._resolve_page()
         if resolve_page is not None:
             resolve_page.set_reviewer(self._config.reviewer_name)

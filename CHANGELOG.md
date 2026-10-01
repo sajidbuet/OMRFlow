@@ -17,7 +17,47 @@ Development of the **`0.1.1-alpha.0`** line has begun: `__version__` is now
 tagged; the last release is `v0.1.0-alpha.2`. The plan is
 [`development/releases/0.1.1-alpha.0/ROADMAP.md`](development/releases/0.1.1-alpha.0/ROADMAP.md).
 
+### Changed (`0.1.1` line)
+
+- **Attendance, Results and Reports no longer read "the most recently updated
+  batch".** They read the active scan session's newest scan / reprocess batch
+  that is not superseded, by creation time (`scan_sessions.downstream_batch_id`),
+  so retrying an old batch or reopening the project cannot change what is
+  scored (removes the cause of `0.1.0-alpha.2` defect 2). Still one batch: a
+  session of several batches is not added up until session-level results.
+
+### Fixed (`0.1.1` line)
+
+- **`processing_manifest` is now written** - at every batch seal and at the
+  end of every processing run (`0.1.0-alpha.2` defect 6).
+- **A lower-case set code could not find its answer key** (latent
+  `0.1.0-alpha.2` defect 5): keys were stored as typed and looked up
+  upper-cased, and the registry compared exactly. All lookups are now
+  canonical.
+
 ### Added
+
+- **Scan sessions and finite batches (`0.1.1` revised phase 2; schema 14).**
+  `Project → ScanSession → finite ScanBatch` (ADR-0005). The first *Process
+  All* creates a scan session silently (named after the exam and the date); a
+  later *Process All*, including after reopening the project, adds a new batch
+  to the same session instead of starting an unrelated one, and seals the
+  previous batch. A sealed batch never gains members; a rescan for one goes
+  into a new `rescan` batch of the same session (still confirmed on Resolve
+  and counted in the original's batch). *Reprocess All* creates a `reprocess`
+  batch that supersedes the original through a first-class, reversible
+  `batch_supersession` record; nothing is deleted. Sessions pin their first
+  batch's template identity and ask before a different one. A minimal
+  *Session* menu on the Scan stage: New, Rename, Close (seals every batch),
+  Reopen (final outputs become stale), Combine (explicit, audited, refuses
+  duplicate effective sheets and template mismatches). Every transition is an
+  audit event. Migration 14 adds `scan_session`, `batch_supersession` and four
+  `scan_batch` columns; an upgrade backfill on the first writable open puts
+  each existing batch in its own sealed `legacy` session, groups two batches
+  only through an unambiguous confirmed cross-batch rescan, and reports
+  ambiguous cases. Project Health checks lifecycle integrity. Implemented;
+  automated tests passing; not used with a real scanner or by an operator.
+  **Session-level aggregation and crash-safe recovery are not part of it.**
 
 - **Canonical set identity and printed set marks (`0.1.1` phase A; schema
   13).** Set codes are compared without regard to case, compatibility width
@@ -38,13 +78,6 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   reconciliation, key verification, scoring and reports until renamed.
   Implemented; automated tests passing; not used with a real scanner or real
   paper. See `development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md`.
-
-### Fixed
-
-- **A lower-case set code could not find its answer key** (latent
-  `0.1.0-alpha.2` defect 5): keys were stored as typed and looked up
-  upper-cased, and the registry compared exactly. All lookups are now
-  canonical.
 
 - **Results Dashboard tab.** The Results stage now has two tabs: *Results*
   (the existing stage, unchanged) and a read-only *Dashboard* with statistics

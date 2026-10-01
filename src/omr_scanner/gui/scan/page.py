@@ -30,6 +30,7 @@ Testability:
 
 from __future__ import annotations
 
+import html
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -47,7 +48,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -58,12 +61,14 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from omr_scanner.config.processing import ProcessingSettings, detected_cpu_count
 from omr_scanner.domain.review import ReviewCounts
+from omr_scanner.domain.scan_sessions import BatchMembership, BatchRole, ScanSessionState
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
@@ -99,7 +104,6 @@ from omr_scanner.services import (
     collect_scan_files,
     completed_results,
     count_conflicts,
-    create_batch,
     export_scan_results,
     failed_scans,
     finalise_batch,
@@ -115,6 +119,7 @@ from omr_scanner.services import (
     scan_ids_by_path,
     scan_lifecycle,
     scan_paths,
+    scan_sessions,
     set_batch_status,
     set_identity,
     sheet_resolutions,
@@ -122,7 +127,9 @@ from omr_scanner.services import (
     sync_duplicate_identifiers,
     sync_undefined_set_codes,
 )
+from omr_scanner.services.batch_store import BatchSealedError
 from omr_scanner.services.recognition_models import utc_timestamp
+from omr_scanner.services.scan_sessions import ScanSessionError, TemplatePinError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable, Sequence
@@ -134,6 +141,15 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.services import ProjectDatabase, ProjectSession, SheetResolution
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class _RunRefusedError(Exception):
+    """A run must not start; ``reason`` is shown in the progress panel."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
 
 CONTROL_PANEL_WIDTH = 290
 RESULTS_PANEL_WIDTH = 290
@@ -284,6 +300,8 @@ class ScanPage(WorkflowPage):
 
         self.state = ScanPageState()
         self._session: ProjectSession | None = None
+        self._operator = ""
+        """Who is working - recorded on scan-session and batch lifecycle events."""
         self._worker: BatchWorker | None = None
         self._announced_processing = False
         """Last value :attr:`processing_changed` reported - see
@@ -421,6 +439,38 @@ class ScanPage(WorkflowPage):
         # -- Processing ------------------------------------------------
         process_box = QGroupBox("Processing")
         process_layout = QVBoxLayout(process_box)
+
+        # The scan session the next batch joins (0.1.1 phase 2). One line and
+        # one small menu: a single-folder examination never needs either.
+        session_row = QHBoxLayout()
+        session_row.setContentsMargins(0, 0, 0, 0)
+        self.session_label = QLabel("")
+        self.session_label.setObjectName("scanSessionLabel")
+        self.session_label.setWordWrap(True)
+        self.session_label.setToolTip(
+            "The scan session this examination's batches are grouped into. It is "
+            "created automatically by the first Process All."
+        )
+        session_row.addWidget(self.session_label, stretch=1)
+        self.session_menu_button = QToolButton()
+        self.session_menu_button.setObjectName("scanSessionMenuButton")
+        self.session_menu_button.setText("Session")
+        self.session_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.session_menu = QMenu(self.session_menu_button)
+        self.session_menu.setObjectName("scanSessionMenu")
+        self.new_session_action = self.session_menu.addAction("New Scan Session...")
+        self.new_session_action.triggered.connect(self._prompt_new_scan_session)
+        self.rename_session_action = self.session_menu.addAction("Rename...")
+        self.rename_session_action.triggered.connect(self._prompt_rename_scan_session)
+        self.close_session_action = self.session_menu.addAction("Close Session")
+        self.close_session_action.triggered.connect(self._prompt_close_scan_session)
+        self.reopen_session_action = self.session_menu.addAction("Reopen Session")
+        self.reopen_session_action.triggered.connect(self._prompt_reopen_scan_session)
+        self.combine_session_action = self.session_menu.addAction("Combine Into This Session...")
+        self.combine_session_action.triggered.connect(self._prompt_combine_scan_sessions)
+        self.session_menu_button.setMenu(self.session_menu)
+        session_row.addWidget(self.session_menu_button)
+        process_layout.addLayout(session_row)
 
         # What the current setting means for the list as it stands, beside the
         # button that will act on it - so the answer to "why is this taking so
@@ -853,7 +903,218 @@ class ScanPage(WorkflowPage):
         self.state.batch_id = None
         self._adopt_project_template(session)
         self._refresh_batch_state_label()
+        # The project's active scan session is re-adopted (by name, below):
+        # the next Process All adds a new batch to it rather than starting an
+        # unrelated session. Its earlier batches are not loaded here.
+        self._refresh_session_label()
         self._refresh_controls()
+
+    # ------------------------------------------------------------------
+    # Scan sessions (0.1.1 phase 2)
+    # ------------------------------------------------------------------
+    def set_reviewer(self, name: str) -> None:
+        """Adopt the configured operator name, recorded on lifecycle events."""
+        self._operator = name.strip()
+
+    def active_scan_session(self) -> scan_sessions.ScanSessionInfo | None:
+        """The project's active scan session, or ``None``."""
+        database = self.database
+        if database is None:
+            return None
+        try:
+            return scan_sessions.active_scan_session(database)
+        except OMRScannerError:
+            _LOGGER.exception("Could not read the active scan session")
+            return None
+
+    def _refresh_session_label(self) -> None:
+        """Name the active scan session in the stage header, and gate the menu."""
+        current = self.active_scan_session()
+        read_only = self._session is None or self._session.read_only
+        if self._session is None:
+            text = ""
+        elif current is None:
+            text = "Scan session: a new one starts with the first Process All"
+        else:
+            batches = (
+                f"{current.batch_count} batch(es)" if current.batch_count else "no batches yet"
+            )
+            text = (
+                f"Scan session: <b>{html.escape(current.name)}</b> - "
+                f"{current.state.label.lower()}, {batches}"
+            )
+        self.session_label.setText(text)
+        is_open = current is not None and current.state is ScanSessionState.OPEN
+        self.session_menu_button.setEnabled(not read_only)
+        self.rename_session_action.setEnabled(current is not None and not current.virtual)
+        self.close_session_action.setEnabled(is_open and not (current and current.virtual))
+        self.reopen_session_action.setEnabled(
+            current is not None and current.state is ScanSessionState.CLOSED
+        )
+        self.combine_session_action.setEnabled(is_open and not (current and current.virtual))
+
+    def new_scan_session(self, name: str = "") -> bool:
+        """Start a new, empty scan session and make it active. No dialog.
+
+        The page's current batch is let go - the next Process All registers
+        its batch in the new session.
+        """
+        database = self.database
+        if database is None or (self._worker is not None and self._worker.isRunning()):
+            return False
+        try:
+            scan_sessions.create_scan_session(
+                database, name=name, created_by=self._operator, origin="operator"
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="New scan session")
+            return False
+        self.state.batch_id = None
+        self._refresh_batch_state_label()
+        self._refresh_session_label()
+        return True
+
+    def rename_active_scan_session(self, name: str) -> bool:
+        """Rename the active scan session. No dialog."""
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return False
+        try:
+            scan_sessions.rename_scan_session(
+                database, current.scan_session_id, name, renamed_by=self._operator
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Rename scan session")
+            return False
+        self._refresh_session_label()
+        return True
+
+    def close_active_scan_session(self) -> bool:
+        """Close the active scan session, sealing its batches. No dialog."""
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return False
+        if self._worker is not None and self._worker.isRunning():
+            return False
+        try:
+            scan_sessions.close_scan_session(
+                database, current.scan_session_id, closed_by=self._operator
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Close scan session")
+            return False
+        self._refresh_batch_state_label()
+        self._refresh_session_label()
+        self._refresh_controls()
+        return True
+
+    def reopen_active_scan_session(self) -> bool:
+        """Reopen the active scan session. No dialog."""
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return False
+        try:
+            scan_sessions.reopen_scan_session(
+                database, current.scan_session_id, reopened_by=self._operator
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Reopen scan session")
+            return False
+        # Reopening lets the session take *new* batches; the batch this page
+        # held stays sealed, so the next Process All registers a new one.
+        held_id = self.state.batch_id
+        held = scan_sessions.batch_info(database, held_id) if held_id else None
+        if held is not None and held.membership is BatchMembership.SEALED:
+            self.state.batch_id = None
+            self._refresh_batch_state_label()
+        self._refresh_session_label()
+        self._refresh_controls()
+        return True
+
+    def combine_into_active_session(self, source_ids: Sequence[str]) -> bool:
+        """Combine other scan sessions into the active one. No dialog."""
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return False
+        try:
+            scan_sessions.combine_scan_sessions(
+                database, source_ids, current.scan_session_id, combined_by=self._operator
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Combine scan sessions")
+            return False
+        self._refresh_session_label()
+        return True
+
+    def _prompt_new_scan_session(self) -> None:
+        name, ok = QInputDialog.getText(
+            self, "New Scan Session", "Name (leave empty for the exam name and date):"
+        )
+        if ok:
+            self.new_scan_session(name)
+
+    def _prompt_rename_scan_session(self) -> None:
+        current = self.active_scan_session()
+        if current is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename Scan Session", "Name:", text=current.name)
+        if ok:
+            self.rename_active_scan_session(name)
+
+    def _prompt_close_scan_session(self) -> None:
+        current = self.active_scan_session()
+        if current is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Close scan session",
+            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
+            "batches until it is reopened.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.close_active_scan_session()
+
+    def _prompt_reopen_scan_session(self) -> None:
+        current = self.active_scan_session()
+        if current is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Reopen scan session",
+            f"Reopen '{current.name}'? Any final export generated while it was "
+            "closed becomes stale and should be regenerated.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self.reopen_active_scan_session()
+
+    def _prompt_combine_scan_sessions(self) -> None:
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return
+        others = [
+            item
+            for item in scan_sessions.list_scan_sessions(database)
+            if item.scan_session_id != current.scan_session_id and item.batch_count
+        ]
+        if not others:
+            QMessageBox.information(
+                self, "Combine scan sessions", "There is no other scan session with batches."
+            )
+            return
+        labels = [f"{item.name} ({item.batch_count} batch(es))" for item in others]
+        chosen, ok = QInputDialog.getItem(
+            self,
+            "Combine into this session",
+            f"Move every batch of this session into '{current.name}':",
+            labels,
+            editable=False,
+        )
+        if ok and chosen in labels:
+            self.combine_into_active_session([others[labels.index(chosen)].scan_session_id])
 
     def _adopt_project_template(self, session: ProjectSession | None) -> None:
         """Take the template from the project rather than asking again.
@@ -912,12 +1173,26 @@ class ScanPage(WorkflowPage):
             "diagnostics": self.state.processing.writes_diagnostics,
         }
 
-    def _ensure_batch(self, paths: Sequence[Path]) -> str | None:
+    def _ensure_batch(
+        self, paths: Sequence[Path], *, role: BatchRole = BatchRole.SCAN
+    ) -> str | None:
         """Return the batch id to record this run under, creating one if needed.
 
         A batch is registered the first time a run starts against the current
         scan list, not when scans are added: enumerating a folder the operator
         then changes their mind about should not leave a row behind.
+
+        **Scan sessions (0.1.1 phase 2).** A new batch joins the project's
+        active scan session - created silently, named after the exam and the
+        date, the first time - and starting it seals the session's previous
+        open batch (the finite-workflow seal trigger, ADR-0005). While this
+        page holds a batch it is still open and takes the scans added to the
+        list, exactly as before.
+
+        Raises:
+            _RunRefusedError: The run must not start: the session is closed,
+                the operator declined a template change, or the batch held is
+                sealed.
         """
         database = self.database
         identity = self._batch_identity()
@@ -933,25 +1208,89 @@ class ScanPage(WorkflowPage):
                     self.state.batch_id,
                     [entry.path for entry in self.state.entries] or list(paths),
                 )
+            except BatchSealedError as exc:
+                QMessageBox.information(
+                    self,
+                    "Batch sealed",
+                    f"{exc.user_message}\n\nReopen the scan session, or start a new "
+                    "one from the Session menu, then process again.",
+                )
+                raise _RunRefusedError(
+                    "This batch is sealed. Reopen the scan session or start a new one."
+                ) from exc
             except OMRScannerError:
                 _LOGGER.exception("Could not register added scans in batch %s", self.state.batch_id)
             return self.state.batch_id
-        try:
-            batch_id = create_batch(
-                database,
-                [entry.path for entry in self.state.entries] or list(paths),
-                identity=identity,
-                source_folder=paths[0].parent if paths else None,
-                settings=self._batch_settings(),
-            )
-        except OMRScannerError:
-            # Losing durability must not lose the run: the batch still
-            # processes, exports and renames, it simply cannot be resumed. The
-            # label says so rather than a dialog interrupting the operator.
-            _LOGGER.exception("Could not register a batch; this run will not be resumable")
-            return None
-        self.state.batch_id = batch_id
+        batch_id = self._start_session_batch(
+            [entry.path for entry in self.state.entries] or list(paths),
+            identity,
+            role=role,
+            source_folder=paths[0].parent if paths else None,
+        )
+        if batch_id is not None:
+            self.state.batch_id = batch_id
+            self._refresh_session_label()
         return batch_id
+
+    def _start_session_batch(
+        self,
+        paths: Sequence[Path],
+        identity: BatchIdentity,
+        *,
+        role: BatchRole,
+        source_folder: Path | None,
+        scan_session_id: str | None = None,
+    ) -> str | None:
+        """Register a new batch in the active (or named) session; ask before a template change."""
+        database = self.database
+        if database is None:
+            return None
+        acknowledge = False
+        while True:
+            try:
+                return scan_sessions.start_batch(
+                    database,
+                    paths,
+                    identity=identity,
+                    source_folder=source_folder,
+                    settings=self._batch_settings(),
+                    role=role,
+                    scan_session_id=scan_session_id,
+                    started_by=self._operator,
+                    acknowledge_template_change=acknowledge,
+                )
+            except TemplatePinError as exc:
+                if acknowledge or not self._confirm_template_change(exc):
+                    raise _RunRefusedError(
+                        "Not started: the template differs from this scan session's."
+                    ) from exc
+                acknowledge = True
+            except ScanSessionError as exc:
+                QMessageBox.information(self, "Scan session", exc.user_message)
+                raise _RunRefusedError(exc.user_message) from exc
+            except OMRScannerError:
+                # Losing durability must not lose the run: the batch still
+                # processes, exports and renames, it simply cannot be resumed.
+                # The label says so rather than a dialog interrupting.
+                _LOGGER.exception("Could not register a batch; this run will not be resumable")
+                return None
+
+    def _confirm_template_change(self, error: TemplatePinError) -> bool:
+        """Ask before a batch joins a session pinned to a different template.
+
+        The modal is the whole method, so a test replaces it. Continuing is
+        recorded in the audit ledger against the operator.
+        """
+        answer = QMessageBox.warning(
+            self,
+            "Template differs from this scan session",
+            f"{error.user_message}\n\nA scan session should hold batches read with "
+            "one template. Add this batch to the session anyway? (Or cancel, and "
+            "start a new scan session from the Scan session menu.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     def adopt_batch(self, batch_id: str) -> bool:
         """Load a stored batch into the scan list, results and all.
@@ -1305,17 +1644,62 @@ class ScanPage(WorkflowPage):
     def reprocess_all(self) -> bool:
         """Discard every result and process the whole list again.
 
-        The stored batch is abandoned rather than overwritten: this run reads
-        everything afresh, so it is a new batch, and keeping the old rows means
-        a mistaken click does not destroy the previous run's record.
+        The stored batch is never overwritten: this run reads everything
+        afresh into a new **reprocess** batch of the same scan session, and a
+        batch-supersession record says the new batch replaces the old one
+        (0.1.1 phase 2). The old batch - its rows, results, conflicts and
+        history - stays, sealed and inspectable, so a mistaken click destroys
+        nothing and the replacement is explicit rather than implied by "the
+        newest batch". Without a stored batch it is an ordinary run.
         """
+        database = self.database
+        identity = self._batch_identity()
+        original = self.state.batch_id
+        new_batch: str | None = None
+        if database is not None and identity is not None and original is not None:
+            if self._worker is not None and self._worker.isRunning():
+                return False
+            # Scans added to the list since the batch was registered belong to
+            # what is being re-read; record them before it is sealed.
+            try:
+                add_scans_to_batch(database, original, [entry.path for entry in self.state.entries])
+            except OMRScannerError:
+                _LOGGER.info("Batch %s is sealed; re-reading its own scans only", original)
+            new_batch = self._start_reprocess(original, identity)
+            if new_batch is None:
+                return False
         for entry in self.state.entries:
             entry.processed = None
         self._preview_cache.clear()
         self._allocator = FilenameAllocator(self.state.output_dir)
-        self.state.batch_id = None
+        self.state.batch_id = new_batch
         self._rebuild_scan_table()
+        self._refresh_session_label()
         return self.process_all()
+
+    def _start_reprocess(self, original: str, identity: BatchIdentity) -> str | None:
+        """Create the superseding reprocess batch, asking before a template change."""
+        database = self.database
+        if database is None:
+            return None
+        acknowledge = False
+        while True:
+            try:
+                return scan_sessions.start_reprocess_batch(
+                    database,
+                    original,
+                    identity=identity,
+                    settings=self._batch_settings(),
+                    started_by=self._operator,
+                    acknowledge_template_change=acknowledge,
+                )
+            except TemplatePinError as exc:
+                if acknowledge or not self._confirm_template_change(exc):
+                    return None
+                acknowledge = True
+            except ScanSessionError as exc:
+                QMessageBox.information(self, "Reprocess", exc.user_message)
+                return None
 
     def resume_batch(self) -> bool:
         """Process only the scans this batch never finished.
@@ -1462,7 +1846,12 @@ class ScanPage(WorkflowPage):
         # Register (or reuse) the durable batch before a single sheet is read,
         # so that a crash one second into the run still leaves a resumable
         # record of what was supposed to happen.
-        batch_id = self._ensure_batch(paths)
+        try:
+            batch_id = self._ensure_batch(paths)
+        except _RunRefusedError as refused:
+            self._reset_progress_panel()
+            self.progress_label.setText(refused.reason)
+            return False
         recorder: BatchRecorder | None = None
         database = self.database
         if batch_id is not None and database is not None:
@@ -1804,6 +2193,7 @@ class ScanPage(WorkflowPage):
         except OMRScannerError:
             _LOGGER.exception("Could not record the final state of batch %s", batch_id)
         self._refresh_batch_state_label()
+        self._refresh_session_label()
 
     def _report_persistence_failure(self, message: str) -> None:
         """Tell the operator that results were produced but not stored.
@@ -2365,10 +2755,13 @@ class ScanPage(WorkflowPage):
                 "Wait for the batch that is running to finish, then import the rescan.",
             )
             return False
+        database = self.database
+        found = scan_sessions.batch_info(database, batch_id) if database is not None else None
+        if found is not None and found.membership is BatchMembership.SEALED:
+            return self._import_rescans_into_new_batch(batch_id, found.scan_session_id, paths)
         if self.state.batch_id != batch_id and not self.adopt_batch(batch_id):
             return False
         wanted = list(collect_scan_files(paths))
-        database = self.database
         known = (
             {path.resolve() for path in scan_ids_by_path(database, batch_id)}
             if database is not None
@@ -2394,6 +2787,57 @@ class ScanPage(WorkflowPage):
         run = [entry.path for entry in self.state.entries if entry.path.resolve() in resolved]
         _LOGGER.info("Importing %d rescan file(s) into batch %s", len(run), batch_id)
         return self._start_batch(run)
+
+    def _import_rescans_into_new_batch(
+        self, original_batch: str, scan_session_id: str | None, paths: Sequence[Path]
+    ) -> bool:
+        """Read rescans of a **sealed** batch's sheets into a new ``rescan`` batch.
+
+        A sealed batch never gains members (ADR-0005), so the rescans become a
+        new batch of the same scan session. Nothing else changes for the
+        operator: the replacement is still confirmed on the Resolve stage, and
+        a confirmed replacement still counts in the original's batch.
+        """
+        database = self.database
+        identity = self._batch_identity()
+        if database is None or identity is None:
+            return False
+        known = {path.resolve() for path in scan_ids_by_path(database, original_batch)}
+        wanted = [path for path in collect_scan_files(paths) if path.resolve() not in known]
+        if not wanted:
+            QMessageBox.information(
+                self,
+                "Already in this batch",
+                "These files are already part of the original batch and were not "
+                "imported as rescans. A rescan is a new scan of the paper, saved as "
+                "a new file.",
+            )
+            return False
+        try:
+            batch_id = self._start_session_batch(
+                wanted,
+                identity,
+                role=BatchRole.RESCAN,
+                source_folder=wanted[0].parent,
+                scan_session_id=scan_session_id,
+            )
+        except _RunRefusedError:
+            return False
+        if batch_id is None:
+            return False
+        self.state.entries = [ScanEntry(path=path) for path in wanted]
+        self.state.batch_id = batch_id
+        self._preview_cache.clear()
+        self._rebuild_scan_table()
+        self._refresh_batch_state_label()
+        self._refresh_session_label()
+        _LOGGER.info(
+            "Importing %d rescan file(s) for sealed batch %s into rescan batch %s",
+            len(wanted),
+            original_batch,
+            batch_id,
+        )
+        return self._start_batch(wanted)
 
     def _export_resolutions(self) -> dict[Path, SheetResolution]:
         """The human decisions that apply to this batch, or none."""

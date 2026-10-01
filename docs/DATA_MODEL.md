@@ -213,6 +213,47 @@ same hashes `OmrTemplate` computes for Phase 4's calibration staleness check,
 so a template edited between two halves of a batch is detected by the same
 mechanism in both places.
 
+**Lifecycle columns (migration 14, 0.1.1 phase 2; mapped `deferred` so a
+schema-13 database opened read-only still reads):**
+
+| Field | Type | Notes |
+|---|---|---|
+| `scan_session_id` | str(32), nullable, FK `scan_session` (`RESTRICT`) | The session the batch belongs to. NULL only before the upgrade backfill; Project Health reports any that remain. |
+| `sealed_at` / `sealed_by` | datetime, nullable / str | Membership: NULL = **open** (may gain members); set = **sealed** (never gains another; `total_scans` final). Not the same as completed. |
+| `role` | str(20), default `scan` | `scan`, `rescan`, `reprocess` or `legacy` (`domain.scan_sessions.BatchRole`). |
+
+Index `ix_scan_batch_session (scan_session_id, created_at)`.
+
+### ScanSession - *implemented (0.1.1 phase 2)*
+
+Table `scan_session`. The examination-level aggregation unit
+(ADR-0005). Fields: `scan_session_id` (UUID hex), `project_id` (from
+`project_setting`), `name`, `state` (`open` / `closed`), `origin`
+(`implicit`, `operator`, `backfill`), the **pinned template identity**
+(`template_id`, `template_name`, `geometry_fingerprint`,
+`recognition_fingerprint`, `engine_version`; empty until the first batch),
+`created_at/by`, `closed_at/by`, `reopened_at/by`, `reopen_count`,
+`final_outputs_stale_since` (set on reopen; tying individual generated reports
+to a session is session-level reporting's), `merged_into_session_id` (set when
+*Combine* emptied it), `notes`. Index `ix_scan_session_state`.
+
+The active session is `project_setting['active_scan_session']`; the upgrade
+report is `project_setting['scan_session_backfill']` (JSON). Lifecycle events
+are `audit_event` rows with `entity_type` `scan_session` or `scan_batch`
+(actions `session_created`, `session_renamed`, `session_closed`,
+`session_reopened`, `session_activated`, `batch_attached`, `batch_sealed`,
+`batch_superseded`, `supersede_reversed`, `session_combined`, `template_ack`,
+`session_backfilled`).
+
+### BatchSupersession - *implemented (0.1.1 phase 2)*
+
+Table `batch_supersession`: `supersession_id`, `superseded_batch_id`,
+`superseding_batch_id` (both FK `scan_batch`, `RESTRICT`), `reason`,
+`recorded_by`, `recorded_at`, and the audited reversal `reversed_at`,
+`reversed_by`, `reversal_reason`. Never deleted; a live record has
+`reversed_at IS NULL`. Rules: never self, same session, superseded batch
+sealed, at most one live superseding batch, no cycle (chains allowed).
+
 ### BatchScan - *implemented (Phase 5)*
 
 One scanned sheet inside a batch. Table `batch_scan`, unique on
@@ -639,7 +680,7 @@ when the standing command is a machine `withdrawn` - and is not undoable. Phase 
 | `report_layout_config` | Header/logo/font/page-setup configuration, project or per-set. | Phase 9 (migration 6) |
 | `generated_report` | One report-generation attempt and its provenance. | Phase 9 (migration 6) |
 | `batch_scan_history` | A scan's superseded status/outcome/result, archived before reprocessing. Append-only, trigger-enforced, like `audit_event`. | Phase 10 (migration 7) |
-| `processing_manifest` | A reproducibility snapshot, assembled from Phases 5-9's own tables rather than duplicating them. | Phase 10 (migration 7) |
+| `processing_manifest` | A reproducibility snapshot, assembled from Phases 5-9's own tables rather than duplicating them. **Written** since 0.1.1 phase 2 at every seal (`trigger: sealed`) and at the end of every run (`trigger: run_finished`) by `services/processing_manifest.py`; before that nothing wrote it (defect 6). | Phase 10 (migration 7) |
 | `project_set` | The project's own registry of examination sets: code, description, order, stable id. | Project configuration (migration 8) |
 | `candidate_roster.set_id` | Which set an attendance list belongs to. NULL for a roster imported before attendance was per-set. | Per-set attendance (migration 9) |
 | `report_template_association.set_id` / `source_kind` | Which set a result template belongs to, and whether it arrived as that set's attendance workbook. | Per-set attendance (migration 9) |
@@ -647,6 +688,34 @@ when the standing command is a machine `withdrawn` - and is not undoable. Phase 
 | `scan_rejection` | Reject & Rescan: one scan's standing lifecycle position (rejected pending rescan / superseded by a confirmed replacement / exact re-import of rejected content / undone), the reason, the operator's case identity, the replacement link and the image's file state. History in `audit_event` (`entity_type='scan_lifecycle'`). | Reject & Rescan (migration 11) |
 | `answer_key_revision.created_by` / template identity / `source_sha256` / `source_metadata_json` | Answer-key provenance. | Answer Key rework (migration 12) |
 | `project_set.canonical_code` / `physical_mark` | Canonical set identity (unique where not NULL) and the optional printed mark. | Set identity, 0.1.1-A (migration 13) |
+| `scan_session`, `batch_supersession`; `scan_batch.scan_session_id` / `sealed_at` / `sealed_by` / `role` | Scan sessions, finite-batch membership, batch roles and first-class batch supersession. | Scan sessions, 0.1.1 phase 2 (migration 14) |
+
+### Schema version 14 (scan sessions, 0.1.1 phase 2)
+
+`_migration_014_scan_sessions` creates `scan_session` and `batch_supersession`
+(`create_all` on those tables), adds the four `scan_batch` columns guarded by
+`PRAGMA table_info`, and creates `ix_scan_batch_session`. **Structure only.**
+
+The data step - assigning pre-session batches to sessions - is
+`scan_sessions.backfill_legacy_batches`, run by `open_project` on the first
+writable open after the migration, idempotent and audited:
+
+- each batch becomes its own one-batch `legacy` session, and is sealed;
+- two batches share a session only when joined by confirmed cross-batch
+  rescans (`scan_rejection.state = superseded_by_replacement`, original and
+  replacement in different batches) **unambiguously**: exactly two batches
+  connected, every link one direction, the replacement batch newer, the same
+  template identity. In such a pair, a newer batch that holds nothing but
+  confirmed replacements is labelled `rescan`;
+- everything else stays separate and is listed in
+  `project_setting['scan_session_backfill']` and by Project Health
+  (`SCAN_SESSION_BACKFILL_AMBIGUOUS`);
+- the session of the most recently created batch becomes active.
+
+No existing row of any other table is changed. A schema-13 project opened
+read-only is not migrated; it reads as virtual one-batch sessions. A schema-13
+build refuses a schema-14 project with the existing "created with a newer
+version of OMRFlow" message.
 
 ### Schema version 13 (set identity, phase 0.1.1-A)
 

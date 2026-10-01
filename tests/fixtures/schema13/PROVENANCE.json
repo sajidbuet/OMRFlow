@@ -1,0 +1,11 @@
+{
+  "written_by_version": "0.1.1-alpha.0",
+  "schema_version": 13,
+  "written_at": "2026-10-01T04:48:16+00:00",
+  "projects": [
+    "ambiguous_chain",
+    "linked_rescan",
+    "one_batch",
+    "two_unrelated"
+  ]
+}

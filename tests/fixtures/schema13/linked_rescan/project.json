@@ -1,0 +1,11 @@
+{
+  "project_format_version": 3,
+  "project_id": "d441b3c4-3aec-4428-b1cc-ff5c2617ba4e",
+  "name": "linked_rescan",
+  "exam_name": "Schema 13 fixture: linked_rescan",
+  "description": "",
+  "created_at": "2026-10-01T04:48:14.732290Z",
+  "modified_at": "2026-10-01T04:48:14.732290Z",
+  "created_with": "0.1.1-alpha.0",
+  "active_template": null
+}

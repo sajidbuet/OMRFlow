@@ -70,6 +70,7 @@ from omr_scanner.services import (
     project_sets,
     result_analytics,
     scan_lifecycle,
+    scan_sessions,
     scoring,
     scoring_store,
 )
@@ -377,8 +378,9 @@ class ResultsPage(WorkflowPage):
         self.state.batch_id = None
         if session is not None:
             self.state.roster_ids = scoring_store.scoring_rosters(session.database)
-            batches = batch_store.list_batches(session.database, limit=1)
-            self.state.batch_id = batches[0].batch_id if batches else None
+            # The active scan session's batch - never "the most recently
+            # updated one" (0.1.1 phase 2; one batch until session results).
+            self.state.batch_id = scan_sessions.downstream_batch_id(session.database)
             # The project's own template, so Results can mark a reopened
             # project without the Scan stage having been visited. A template
             # the Scan stage loads later still arrives through set_template.
@@ -887,13 +889,18 @@ class ResultsPage(WorkflowPage):
             if database is not None and batch_id is not None
             else None
         )
-        if summary is None or batch_id is None:
+        if summary is None or batch_id is None or database is None:
             self.batch_label.setText("")
+            self.batch_label.setToolTip("")
             return
+        scope = scan_sessions.describe_downstream(database, batch_id)
+        multi = "only this one is read" in scope
         self.batch_label.setText(
             f"Marking <b>batch {batch_id[:8]}</b> · {summary.total} scan(s) from "
             f"{html.escape(summary.source_folder or '(files)')}"
+            + (" · <i>one batch of several in this scan session</i>" if multi else "")
         )
+        self.batch_label.setToolTip(scope)
 
     def _refresh_summary(self) -> None:
         """Show the batch counts, from the read that filled the table."""

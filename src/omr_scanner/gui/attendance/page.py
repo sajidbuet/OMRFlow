@@ -130,11 +130,11 @@ from omr_scanner.gui.theme import (
     Spacing,
 )
 from omr_scanner.services import (
-    batch_store,
     load_template,
     reconciliation_store,
     resolve_active_template,
     scan_lifecycle,
+    scan_sessions,
     set_attendance,
 )
 from omr_scanner.services.candidate_import import (
@@ -1188,7 +1188,19 @@ class AttendancePage(WorkflowPage):
             self.database, self.state.batch_id, self.state.template, self.state.operator
         )
         batch_id = self.state.batch_id
-        self.batch_label.setText(f"Batch: <b>{batch_id[:8]}</b>" if batch_id else "")
+        database = self.database
+        scope = (
+            scan_sessions.describe_downstream(database, batch_id)
+            if database is not None and batch_id
+            else ""
+        )
+        multi = "only this one is read" in scope
+        self.batch_label.setText(
+            (f"Batch: <b>{batch_id[:8]}</b>" + (" · <i>one batch of several</i>" if multi else ""))
+            if batch_id
+            else ""
+        )
+        self.batch_label.setToolTip(scope)
 
     # ------------------------------------------------------------------
     # Sets
@@ -1396,12 +1408,16 @@ class AttendancePage(WorkflowPage):
         self._refresh_inspector_context()
 
     def _latest_batch(self) -> str | None:
-        """The most recent batch in this project, which is what to reconcile."""
+        """The batch to reconcile: the active scan session's (0.1.1 phase 2).
+
+        :func:`omr_scanner.services.scan_sessions.downstream_batch_id` - never
+        "the most recently updated batch", which a retry or a project reopen
+        could change silently. One batch until session-level results exist.
+        """
         database = self.database
         if database is None:
             return None
-        batches = batch_store.list_batches(database, limit=1)
-        return batches[0].batch_id if batches else None
+        return scan_sessions.downstream_batch_id(database)
 
     def set_batch(self, batch_id: str) -> None:
         """Reconcile a particular batch rather than the most recent one."""

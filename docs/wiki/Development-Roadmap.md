@@ -52,10 +52,18 @@ unreleased work on `main` (Reject & Rescan, the Attendance workstation, the
 Answer Key rework; schema 12). `0.1.0-alpha.2` remains the released
 finite-batch Alpha.
 
-| Phase | Implemented | Automated tests | Synthetic campaign | Network share | Real scanners | Production |
+Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
+
+| Revised phase | Implemented | Automated tests | Synthetic campaign | Network share | Real scanners | Production |
 |---|---|---|---|---|---|---|
-| A — Set identity (migration 13) | ✅ on branch `feat/0.1.1-phase1-set-identity`, not merged | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
-| B–G | Pending | — | — | — | — | — |
+| 1 — Set identity (migration 13) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
+| 2 — ScanSession + finite ScanBatch lifecycle (migration 14) | ✅ on branch `feat/0.1.1-phase2-scan-session-lifecycle`, not merged | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
+| 3 — Crash-safe Scan/Resolve persistence | Pending | — | — | — | — | — |
+| 4 — Session-level effective results | Pending | — | — | — | — | — |
+| 5–10 — Intake, continuous processing, quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
+
+Until revised phase 4, a scan session with several batches is **not** added up:
+Attendance, Results and Reports read one batch of it.
 
 **Architecture:** `Project → ScanSession → one or more finite ScanBatch
 objects → sheets`. A *scan batch* stays a finite, auditable processing and

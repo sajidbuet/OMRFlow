@@ -7,7 +7,7 @@ What OMRFlow promises about opening a project written by a different version.
 | | Current source (`0.1.1` development line, unreleased) |
 |---|---|
 | **Project format version** — the shape of `project.json` | **3** |
-| **Database schema version** — the shape of `database.sqlite` | **13** |
+| **Database schema version** — the shape of `database.sqlite` | **14** |
 
 (This table previously read format 2 / schema 9, which no longer matched the
 code; corrected 2026-10-01 from `project_format_version` in a project written
@@ -37,6 +37,34 @@ of the data.
 **A migration that cannot complete stops.**
 It fails with a message and leaves the project as it was, rather than
 half-applying.
+
+## Schema 14 — scan sessions (`0.1.1` line, phase 2)
+
+Opening an older project in a build of this line applies migration 14 (two new
+tables, four columns on `scan_batch`), after the usual backup. Then, on that
+first **writable** open, every existing batch is put in a **scan session**:
+
+- each batch gets its own one-batch session, and is sealed (its list of scans
+  is final; it can still be resumed and reviewed);
+- two batches share one session only when joined by confirmed rescans in an
+  unambiguous way; anything less clear is left separate and listed in Project
+  Health;
+- unrelated batches are **never** combined automatically. *Combine Into This
+  Session* on the Scan stage does it, explicitly, if you want it.
+
+Stored results, keys, attendance, reconciliation and reports are not changed.
+Attendance, Results and Reports then read the newest batch of the active
+session **by creation time** — previously "the most recently updated batch".
+For almost every project that is the same batch; if a project had an older
+batch retried after a newer one was processed, the newer one is now read.
+
+A schema-13 build refuses a schema-14 project with *"This project was created
+with a newer version of OMRFlow."* A read-only open in the new build does not
+migrate, and shows each batch as its own session.
+
+Tested: automated upgrade tests from four schema-13 projects written by the
+schema-13 build (`tests/fixtures/schema13/`). Not yet performed: an upgrade
+through an installed release build.
 
 ## Schema 13 — set identity (`0.1.1` line, phase A)
 

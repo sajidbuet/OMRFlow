@@ -67,8 +67,22 @@ See
 ## Reprocessing
 
 **Reprocess** re-reads sheets that already have results — after changing
-thresholds, say. The superseded reading is **archived before** the sheet is
-reset, so a sheet processed twice keeps both readings on record.
+thresholds, say. From the `0.1.1` development line it reads them into a **new
+reprocess batch** of the same scan session and records that the new batch
+**supersedes** the old one; the old batch stays, complete and inspectable.
+(*Retry Failed* still re-reads failures in place, archiving the superseded
+reading first.)
+
+## Scan sessions
+
+Every batch belongs to a **scan session** — the examination sitting. The first
+*Process All* creates one automatically; a later *Process All* in the same
+project adds a new batch to it, and the earlier batch is **sealed** (its list of
+scans is final; it can still be resumed). The *Session* button on the Scan
+stage offers New, Rename, Close, Reopen and Combine; a single-folder
+examination never needs it. Until session-level results arrive, Attendance,
+Results and Reports read **one batch** of the active session — not a total
+over all of them. Details: `docs/scan_workflow.md` §12b.
 
 ## Reading the outcome
 
