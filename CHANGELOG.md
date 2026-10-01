@@ -12,6 +12,11 @@ produced them, because that is how the work was sequenced and how
 
 ## [Unreleased]
 
+Development of the **`0.1.1-alpha.0`** line has begun: `__version__` is now
+`0.1.1-alpha.0` in source builds. Nothing on this line has been released or
+tagged; the last release is `v0.1.0-alpha.2`. The plan is
+[`development/releases/0.1.1-alpha.0/ROADMAP.md`](development/releases/0.1.1-alpha.0/ROADMAP.md).
+
 ### Added
 
 - **Results Dashboard tab.** The Results stage now has two tabs: *Results*
