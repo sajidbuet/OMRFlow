@@ -62,7 +62,8 @@ from omr_scanner.database.models import (
 )
 from omr_scanner.domain.reconciliation import ReconciliationStatus
 from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState
-from omr_scanner.services import project_backup, scan_lifecycle, scan_provenance
+from omr_scanner.services import project_backup, scan_lifecycle, scan_provenance, set_identity
+from omr_scanner.services.set_identity import SetCodeMap, distinct_codes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.database.engine import ProjectDatabase
@@ -386,22 +387,31 @@ def _unresolved_reconciliation_issue(database: ProjectDatabase) -> list[HealthIs
 
 
 def _missing_verified_key_issue(database: ProjectDatabase) -> list[HealthIssue]:
+    """Recognised sets with no verified key, compared through set identity.
+
+    A sheet's reading is what the *paper* says, so it is translated to its
+    logical set first (``A`` -> ``10`` for a Set 10 printed as ``A``), and
+    keys are matched canonically (a key stored as ``a`` is Set ``A``'s).
+    """
+    identity = set_identity.load(database)
     with database.session() as session:
         recognised_sets = {
-            code
+            identity.logical_for_physical(code)
             for (code,) in session.execute(
                 select(BatchScan.set_code_value).where(BatchScan.set_code_value != "")
             ).all()
         }
-        verified_sets = {
-            code
+        verified_sets = SetCodeMap(
+            (code, True)
             for (code,) in session.execute(
                 select(AnswerKeyRevision.set_code).where(
                     AnswerKeyRevision.status == "verified"
                 )
             ).all()
-        }
-    missing = sorted(recognised_sets - verified_sets)
+        )
+    missing = sorted(
+        code for code in distinct_codes(sorted(recognised_sets)) if code not in verified_sets
+    )
     if not missing:
         return []
     return [
@@ -413,6 +423,28 @@ def _missing_verified_key_issue(database: ProjectDatabase) -> list[HealthIssue]:
                 + ", ".join(missing)
             ),
         )
+    ]
+
+
+def _set_identity_issues(database: ProjectDatabase) -> list[HealthIssue]:
+    """Defined sets whose codes now canonicalise alike (``A`` and ``a``).
+
+    Created by builds before phase 0.1.1-A, which compared set codes
+    exactly. Never merged automatically: reported here by name, and the
+    set-dependent stages refuse to score, verify or generate for them until an
+    operator renames or removes one in Project Configuration.
+    """
+    found = set_identity.collisions(database)
+    return [
+        HealthIssue(
+            level=HealthLevel.WARNING,
+            code="SET_CODE_COLLISION",
+            message=item.describe()
+            + " Rename or remove one in Project Configuration -> Sets; until then "
+            "reconciliation, answer-key verification, scoring and reports for it "
+            "are refused.",
+        )
+        for item in found
     ]
 
 
@@ -496,6 +528,7 @@ def full_check(database: ProjectDatabase, project_root: Path) -> HealthReport:
             _unresolved_conflict_issue,
             _unresolved_reconciliation_issue,
             _missing_verified_key_issue,
+            _set_identity_issues,
         ):
             try:
                 issues += check(database)

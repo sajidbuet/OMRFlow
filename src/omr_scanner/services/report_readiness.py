@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from omr_scanner.domain.reconciliation import AttendanceState, ReconciliationStatus
 from omr_scanner.domain.reporting import ReadinessIssue, ReadinessIssueKind, ReadinessReport
 from omr_scanner.domain.scoring import ResultStatus
+from omr_scanner.domain.set_identity import same_set
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -262,7 +263,7 @@ def _cross_reference_issues(
                         roll=row.roll,
                     )
                 )
-            elif result.set_code and result.set_code != set_code:
+            elif result.set_code and not same_set(result.set_code, set_code):
                 issues.append(
                     ReadinessIssue(
                         ReadinessIssueKind.SET_MISMATCH,
@@ -277,7 +278,7 @@ def _cross_reference_issues(
             continue
         if entry.effective_attendance is AttendanceState.PRESENT:
             result = results_by_candidate.get(entry.candidate_id)
-            if result is not None and result.set_code == set_code:
+            if result is not None and same_set(result.set_code, set_code):
                 issues.append(
                     ReadinessIssue(
                         ReadinessIssueKind.CANDIDATE_MISSING_FROM_TEMPLATE,

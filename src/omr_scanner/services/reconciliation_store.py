@@ -76,7 +76,7 @@ from omr_scanner.domain.reconciliation import (
 )
 from omr_scanner.domain.scan_lifecycle import LifecycleState
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import scan_lifecycle
+from omr_scanner.services import scan_lifecycle, set_identity
 from omr_scanner.services.reconciliation import (
     ReconciliationInput,
     count_entries,
@@ -800,10 +800,16 @@ def _placements(
     choose what is reconciled and to report what was left out. Decided on the
     **effective** set code - after any Resolve-stage correction - never on
     what the machine read.
-    """
-    from omr_scanner.services import project_sets
 
-    defined = {item.code for item in project_sets.list_sets(database)}
+    Membership is decided by **set identity**, not by string: the effective
+    code (already logical - see
+    :func:`~omr_scanner.services.review_store.effective_set_codes`) and the
+    roster's set are each resolved to a defined set and compared by stable id.
+    A code two colliding legacy sets share resolves to neither, so it is
+    placed as undefined rather than silently given to one of them.
+    """
+    identity = set_identity.load(database)
+    target = identity.logical(set_code)
     cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
     readings = _batch_readings(database, batch_id)
     placements: dict[int, tuple[ScriptSetPlacement, str]] = {}
@@ -816,17 +822,31 @@ def _placements(
         if case is not None:
             # A lifecycle decision outranks the set code: a rejected or
             # superseded scan is never IN_SET, whatever its code says.
-            placements[scan_id] = _lifecycle_placement(case, found, set_code, defined)
+            placements[scan_id] = _lifecycle_placement(case, found, set_code, identity)
             continue
         if found.unresolved or not code or "?" in code or "_" in code:
             placements[scan_id] = (ScriptSetPlacement.UNRESOLVED, code)
-        elif code == set_code:
+            continue
+        belongs = identity.logical(code)
+        if belongs is not None and target is not None and belongs.set_id == target.set_id:
             placements[scan_id] = (ScriptSetPlacement.IN_SET, code)
-        elif code in defined:
+        elif belongs is not None:
             placements[scan_id] = (ScriptSetPlacement.OTHER_SET, code)
         else:
             placements[scan_id] = (ScriptSetPlacement.UNDEFINED, code)
     return placements
+
+
+def _in_set(identity: set_identity.SetIdentity, code: str, set_code: str) -> bool:
+    """Whether ``code`` names the same defined set as ``set_code``.
+
+    Through set identity: both are resolved to a defined set and compared by
+    stable id. A project that defines no sets compares canonically.
+    """
+    if not identity.has_sets:
+        return set_identity.same_set(code, set_code)
+    found, target = identity.logical(code), identity.logical(set_code)
+    return found is not None and target is not None and found.set_id == target.set_id
 
 
 def _case_set_code(case: RescanCase, found: EffectiveIdentifier | None) -> str:
@@ -853,9 +873,14 @@ def _lifecycle_placement(
     case: RescanCase,
     found: EffectiveIdentifier | None,
     set_code: str,
-    defined: set[str],
+    identity: set_identity.SetIdentity,
 ) -> tuple[ScriptSetPlacement, str]:
-    """Place a rejected, superseded, re-imported, excluded or deferred scan."""
+    """Place a rejected, superseded, re-imported, excluded or deferred scan.
+
+    The declared set is logical (what the operator said the paper is), and
+    the effective one is already translated, so both resolve through
+    :meth:`~omr_scanner.domain.set_identity.SetIdentity.logical`.
+    """
     code = _case_set_code(case, found)
     if case.state is LifecycleState.EXCLUDED:
         return ScriptSetPlacement.EXCLUDED, code
@@ -863,9 +888,9 @@ def _lifecycle_placement(
         return ScriptSetPlacement.DEFERRED, code
     if case.state is not LifecycleState.REJECTED_PENDING_RESCAN:
         return ScriptSetPlacement.SUPERSEDED, code
-    if code and code == set_code:
+    if code and _in_set(identity, code, set_code):
         return ScriptSetPlacement.REJECTED, code
-    if code and code in defined:
+    if code and identity.is_defined(code):
         return ScriptSetPlacement.OTHER_SET, code
     return ScriptSetPlacement.REJECTED_UNPLACED, code
 
@@ -914,7 +939,9 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
     in_set = unresolved = undefined = rescan = superseded = elsewhere = 0
     excluded = deferred = 0
     others: dict[str, int] = {}
+    identity = set_identity.load(database)
     for placement, code in _placements(database, batch_id, set_code).values():
+        mine = not code or _in_set(identity, code, set_code)
         if placement is ScriptSetPlacement.IN_SET:
             in_set += 1
         elif placement is ScriptSetPlacement.OTHER_SET:
@@ -924,15 +951,15 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
         elif placement in (ScriptSetPlacement.REJECTED, ScriptSetPlacement.REJECTED_UNPLACED):
             rescan += 1
         elif placement is ScriptSetPlacement.SUPERSEDED:
-            if code == set_code or not code:
+            if mine:
                 superseded += 1
         elif placement is ScriptSetPlacement.COUNTED_ELSEWHERE:
             elsewhere += 1
         elif placement is ScriptSetPlacement.EXCLUDED:
-            if code == set_code or not code:
+            if mine:
                 excluded += 1
         elif placement is ScriptSetPlacement.DEFERRED:
-            if code == set_code or not code:
+            if mine:
                 deferred += 1
         else:
             undefined += 1
@@ -1024,13 +1051,18 @@ def batch_scripts(
     cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
     keep: set[int] | None = None
     if set_code is not None:
+        sets = set_identity.load(database)
         keep = {
             scan_id
             for scan_id, (placement, _code) in _placements(
                 database, batch_id, set_code
             ).items()
             if placement in (ScriptSetPlacement.IN_SET, ScriptSetPlacement.REJECTED)
-            or (placement is ScriptSetPlacement.DEFERRED and _code == set_code)
+            or (
+                placement is ScriptSetPlacement.DEFERRED
+                and bool(_code)
+                and _in_set(sets, _code, set_code)
+            )
         }
     with database.session() as session:
         rows = session.scalars(
@@ -1222,6 +1254,12 @@ def reconcile_batch(
     # of another set is outside this universe - not an unknown candidate - and
     # one whose set code is unsettled waits on the Resolve stage.
     set_code = _set_code_of_roster(database, roster_id)
+    if set_code is not None:
+        # Two legacy sets sharing one canonical code: which scripts are this
+        # set's cannot be decided, so the operator renames one first.
+        set_identity.require_no_collision(
+            set_identity.load(database), purpose="Reconciliation", codes=(set_code,)
+        )
     scripts = batch_scripts(database, batch_id, set_code=set_code)
 
     with database.session() as session:

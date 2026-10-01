@@ -56,6 +56,7 @@ from omr_scanner.domain.scoring import (
     canonical_answer_string,
     score_answers,
 )
+from omr_scanner.domain.set_identity import canonical_code
 from omr_scanner.recognition.models import MarkStatus
 
 if TYPE_CHECKING:
@@ -250,9 +251,11 @@ def usable_set_code(value: str) -> str:
     operator looking for a key rather than at the sheet.
 
     A set code is usable only when every printed position resolved to a real
-    symbol.
+    symbol. It is returned in canonical form
+    (:func:`~omr_scanner.domain.set_identity.canonical_code`) - for an
+    ordinary code exactly the upper-casing this function always applied.
     """
-    cleaned = value.strip().upper()
+    cleaned = canonical_code(value)
     if not cleaned or any(character in RESERVED_SYMBOLS for character in cleaned):
         return ""
     return cleaned

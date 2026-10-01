@@ -97,6 +97,7 @@ from omr_scanner.domain.template import (
 )
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.recognition.models import UNRESOLVED_CHARACTER
+from omr_scanner.services import set_identity
 from omr_scanner.services.conflict_policy import (
     DetectedConflict,
     detect_conflicts,
@@ -711,11 +712,14 @@ def sync_undefined_set_codes(database: ProjectDatabase, batch_id: str) -> int:
     defined no sets has nothing to compare against. A conflict nobody acted on
     is withdrawn when it no longer applies (the set was added, or another
     correction made the code valid); one a person decided is left alone.
-    """
-    from omr_scanner.services import project_sets
 
-    defined = {item.code for item in project_sets.list_sets(database)}
-    effective = effective_set_codes(database, batch_id)
+    "In the list" is decided by set identity
+    (:mod:`omr_scanner.services.set_identity`): ``a`` is Set ``A``, and ``A``
+    read off a sheet is Set ``10`` when Set 10 is printed as ``A``. A reading
+    two colliding legacy sets share names neither, and is raised here.
+    """
+    identity = set_identity.load(database)
+    effective = effective_set_codes(database, batch_id, identity=identity)
     moment = _now()
     with database.session() as session:
         # "Still in dispute" is judged on every *other* set-code conflict. The
@@ -755,16 +759,30 @@ def sync_undefined_set_codes(database: ProjectDatabase, batch_id: str) -> int:
             ).all()
         }
         flagged: set[int] = set()
+        defined = ", ".join(
+            sorted(
+                f"{item.code} (printed {item.physical_mark})" if item.physical_mark else item.code
+                for item in identity.sets
+            )
+        )
         for scan_id, found in effective.items():
             value = found.value
             if (
-                not defined
+                not identity.has_sets
                 or scan_id in disputed
                 or not value
                 or any(marker in value for marker in UNREAD_SET_CODE_MARKERS)
-                or value in defined
+                or identity.is_defined(value)
             ):
                 continue
+            read = found.as_read or value
+            why = (
+                f"Read as '{read}', which more than one of this project's sets "
+                f"shares ({defined}). Rename one of them in Project Configuration."
+                if identity.is_ambiguous(read)
+                else f"Read as '{read}', which is not one of this project's sets "
+                f"({defined})."
+            )
             row = existing.get(scan_id)
             if row is not None and ConflictState(row.state).is_human_touched:
                 # Somebody has already decided about this sheet's set code.
@@ -780,12 +798,9 @@ def sync_undefined_set_codes(database: ProjectDatabase, batch_id: str) -> int:
                     label=label,
                 ),
                 observation=MachineObservation(
-                    value=value,
+                    value=read,
                     status="resolved",
-                    detail=(
-                        f"Read as '{value}', which is not one of this project's sets "
-                        f"({', '.join(sorted(defined))})."
-                    ),
+                    detail=why,
                 ),
                 severity=1,
             )
@@ -2775,6 +2790,10 @@ class EffectiveIdentifier:
             duplicate-identifier conflict does **not** set this: the ID was read
             perfectly well, and it is Phase 7's job to say two sheets share it.
         reviewer / reason: Who decided, and why, when a human did.
+        as_read: For a **set code** only: the value on the paper after review,
+            before translation to a logical set (see
+            :func:`effective_set_codes`). ``""`` for a Student ID, whose
+            :attr:`value` is already what the paper says.
     """
 
     scan_id: int
@@ -2784,11 +2803,21 @@ class EffectiveIdentifier:
     unresolved: bool = False
     reviewer: str = ""
     reason: str = ""
+    as_read: str = ""
+
+    @property
+    def paper_value(self) -> str:
+        """What the paper reads now, after review: :attr:`as_read` or :attr:`value`."""
+        return self.as_read or self.value
 
     @property
     def was_corrected(self) -> bool:
-        """Whether a person changed what the machine read."""
-        return self.source is ValueSource.HUMAN and self.value != self.machine_value
+        """Whether a person changed what the machine read.
+
+        Judged on the paper's value, so translating ``A`` to Set ``10`` is not
+        mistaken for a correction.
+        """
+        return self.source is ValueSource.HUMAN and self.paper_value != self.machine_value
 
 
 _IDENTIFIER_IS_UNKNOWN: frozenset[ConflictType] = frozenset(
@@ -2908,7 +2937,10 @@ worst available outcome - worse than no mark at all.
 
 
 def effective_set_codes(
-    database: ProjectDatabase, batch_id: str
+    database: ProjectDatabase,
+    batch_id: str,
+    *,
+    identity: set_identity.SetIdentity | None = None,
 ) -> dict[int, EffectiveIdentifier]:
     """Return every sheet's question-paper set after Phase 6 review.
 
@@ -2920,7 +2952,34 @@ def effective_set_codes(
     Multi-character set codes (``"10"``, ``"X1"``) are carried through
     unchanged: a positional correction replaces one position's whole symbol and
     the code is reassembled from symbols - see :class:`_FieldDecisions`.
+
+    **The physical -> logical translation boundary** (phase 0.1.1-A). The
+    value assembled above is what the *paper* says after review - what
+    recognition read, or what a reviewer corrected it to on the sheet. It is
+    then translated once, here, with
+    :meth:`~omr_scanner.domain.set_identity.SetIdentity.logical_for_physical`:
+    :attr:`EffectiveIdentifier.value` becomes the logical set (``"10"`` for a
+    sheet reading ``"A"`` when Set 10 is printed as ``A``; the defined spelling
+    ``"A"`` for a reading ``"a"``) and :attr:`EffectiveIdentifier.as_read`
+    keeps the paper's value for provenance. A value naming no defined set, or
+    two colliding ones, is left exactly as read. Nothing stored is rewritten.
+
+    Args:
+        database: The open project database.
+        batch_id: The batch.
+        identity: The project's sets, when the caller already loaded them.
     """
+    sets = identity if identity is not None else set_identity.load(database)
+    return {
+        scan_id: replace(
+            item, as_read=item.value, value=sets.logical_for_physical(item.value)
+        )
+        for scan_id, item in _paper_set_codes(database, batch_id).items()
+    }
+
+
+def _paper_set_codes(database: ProjectDatabase, batch_id: str) -> dict[int, EffectiveIdentifier]:
+    """Every sheet's set code as the paper reads it after review, untranslated."""
     with database.session() as session:
         scans = session.scalars(
             select(BatchScan).where(BatchScan.batch_id == batch_id)

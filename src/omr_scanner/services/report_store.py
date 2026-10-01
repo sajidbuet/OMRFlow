@@ -53,7 +53,7 @@ from omr_scanner.domain.reporting import (
 from omr_scanner.domain.scoring import ResultStatus
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.reporting import excel as rx
-from omr_scanner.services import reconciliation_store, scan_lifecycle, scoring_store
+from omr_scanner.services import reconciliation_store, scan_lifecycle, scoring_store, set_identity
 from omr_scanner.services.answer_key import plan_for
 from omr_scanner.services.report_readiness import (
     acknowledge_incomplete_results,
@@ -66,10 +66,18 @@ from omr_scanner.services.report_template import (
     TemplateRoster,
     read_template,
 )
+from omr_scanner.services.set_identity import (
+    SetCodeMap,
+    distinct_codes,
+    group_by_set,
+    same_set,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
     from pathlib import Path
+
+    from sqlalchemy.orm import Session
 
     from omr_scanner.database.engine import ProjectDatabase
     from omr_scanner.domain.reconciliation import ReconciliationEntry
@@ -107,7 +115,9 @@ def known_sets(database: ProjectDatabase, roster_id: int, batch_id: str) -> tupl
         if item.set_code
     }
     from_associations = set(list_template_associations(database))
-    return tuple(sorted(from_keys | from_results | from_associations))
+    # One entry per logical set: "a" from an old key and "A" from a result
+    # are the same set.
+    return distinct_codes(sorted(from_keys | from_results | from_associations))
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,14 +175,12 @@ def set_overview(
     policy = scoring_store.active_policy(database)
     associations = list_template_associations(database)
 
-    by_set: dict[str, list[StoredResult]] = {}
-    for item in results:
-        if item.set_code:
-            by_set.setdefault(item.set_code, []).append(item)
+    by_set = group_by_set((item.set_code, item) for item in results if item.set_code)
 
-    codes = set(by_set) | set(keys) | set(associations)
+    # Grouped by logical set (canonically), one row per set.
+    codes = distinct_codes(sorted({*by_set, *keys, *associations}))
     overviews = []
-    for code in sorted(codes):
+    for code in codes:
         rows = by_set.get(code, ())
         stored_key = keys.get(code)
         overviews.append(
@@ -270,11 +278,7 @@ def associate_template(
     digest = _hash_file(template_path)
     moment = _now()
     with database.session() as session:
-        row = session.scalars(
-            select(ReportTemplateAssociation).where(
-                ReportTemplateAssociation.set_code == set_code
-            )
-        ).first()
+        row = _association_row(session, set_code)
         if row is None:
             row = ReportTemplateAssociation(set_code=set_code, created_at=moment)
             session.add(row)
@@ -350,26 +354,45 @@ def _hash_file(path: Path) -> str:
         ) from exc
 
 
+def _association_row(
+    session: Session, set_code: str, *, unlinked_only: bool = False
+) -> ReportTemplateAssociation | None:
+    """The association row for one set, compared canonically.
+
+    ``report_template_association.set_code`` is stored as it was written; a
+    template associated under ``"a"`` is Set ``A``'s. Exact matches are
+    preferred, so a legacy pair of rows ``A`` / ``a`` still finds its own.
+    """
+    statement = select(ReportTemplateAssociation).order_by(
+        ReportTemplateAssociation.association_id
+    )
+    if unlinked_only:
+        statement = statement.where(ReportTemplateAssociation.set_id.is_(None))
+    rows = [row for row in session.scalars(statement).all() if same_set(row.set_code, set_code)]
+    # set-identity: exact - prefer the row stored under this very spelling.
+    exact = [row for row in rows if row.set_code == set_code]
+    found = exact or rows
+    return found[0] if found else None
+
+
 def get_template_association(
     database: ProjectDatabase, set_code: str
 ) -> StoredTemplateAssociation | None:
     """Return the stored template association for one set, or ``None``."""
     with database.session() as session:
-        row = session.scalars(
-            select(ReportTemplateAssociation).where(
-                ReportTemplateAssociation.set_code == set_code
-            )
-        ).first()
+        row = _association_row(session, set_code)
         return _to_association(row) if row is not None else None
 
 
 def list_template_associations(
     database: ProjectDatabase,
-) -> dict[str, StoredTemplateAssociation]:
-    """Every set's template association, keyed by set code."""
+) -> SetCodeMap[StoredTemplateAssociation]:
+    """Every set's template association, keyed by set code (compared canonically)."""
     with database.session() as session:
-        rows = session.scalars(select(ReportTemplateAssociation)).all()
-        return {row.set_code: _to_association(row) for row in rows}
+        rows = session.scalars(
+            select(ReportTemplateAssociation).order_by(ReportTemplateAssociation.association_id)
+        ).all()
+        return SetCodeMap((row.set_code, _to_association(row)) for row in rows)
 
 
 def get_template_association_for_set(
@@ -392,12 +415,7 @@ def get_template_association_for_set(
         if row is not None:
             return _to_association(row)
 
-        row = session.scalars(
-            select(ReportTemplateAssociation).where(
-                ReportTemplateAssociation.set_code == set_code,
-                ReportTemplateAssociation.set_id.is_(None),
-            )
-        ).first()
+        row = _association_row(session, set_code, unlinked_only=True)
         return _to_association(row) if row is not None else None
 
 
@@ -497,6 +515,21 @@ def _to_layout_settings(row: ReportLayoutConfig) -> rx.LayoutSettings:
     )
 
 
+def _layout_row(session: Session, set_code: str) -> ReportLayoutConfig | None:
+    """One set's layout row (``""`` is the project default), compared canonically."""
+    rows = [
+        row
+        for row in session.scalars(
+            select(ReportLayoutConfig).order_by(ReportLayoutConfig.config_id)
+        ).all()
+        if same_set(row.set_code, set_code)
+    ]
+    # set-identity: exact - prefer the row stored under this very spelling.
+    exact = [row for row in rows if row.set_code == set_code]
+    found = exact or rows
+    return found[0] if found else None
+
+
 def get_layout_config(database: ProjectDatabase, set_code: str = "") -> StoredLayoutConfig:
     """Return one set's layout configuration, falling back to the project default.
 
@@ -509,9 +542,7 @@ def get_layout_config(database: ProjectDatabase, set_code: str = "") -> StoredLa
     configuration.
     """
     with database.session() as session:
-        row = session.scalars(
-            select(ReportLayoutConfig).where(ReportLayoutConfig.set_code == set_code)
-        ).first()
+        row = _layout_row(session, set_code)
         if row is not None:
             return StoredLayoutConfig(
                 config_id=row.config_id, set_code=row.set_code,
@@ -563,9 +594,7 @@ def save_layout_config(
 
     moment = _now()
     with database.session() as session:
-        row = session.scalars(
-            select(ReportLayoutConfig).where(ReportLayoutConfig.set_code == set_code)
-        ).first()
+        row = _layout_row(session, set_code)
         if row is None:
             row = ReportLayoutConfig(set_code=set_code, created_at=moment)
             session.add(row)
@@ -875,6 +904,18 @@ def resolve_set_sources(database: ProjectDatabase, set_id: str) -> SetSources:
         raise SetGenerationRefusedError(
             f"No set with id {set_id!r}",
             user_message="That set no longer exists in this project.",
+        )
+    identity = set_identity.load(database)
+    if identity.is_colliding(exam_set.code):
+        found = tuple(
+            item for item in identity.collisions if same_set(item.canonical, exam_set.code)
+        )
+        raise SetGenerationRefusedError(
+            f"Set {exam_set.code} collides with another set's code",
+            user_message=(
+                f"Set {exam_set.code}'s result cannot be generated yet. "
+                + set_identity.describe_collisions(found)
+            ),
         )
 
     roster = reconciliation_store.active_roster(database, set_id)

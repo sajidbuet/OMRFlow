@@ -22,7 +22,7 @@ What this module will not do:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -35,6 +35,7 @@ from omr_scanner.domain.scoring import (
     AnswerKeyStatus,
     answer_labels_for,
 )
+from omr_scanner.domain.set_identity import SetIdentity, canonical_code, same_set
 from omr_scanner.domain.template import QuestionBlockFieldDefinition
 from omr_scanner.errors import OMRScannerError
 
@@ -686,7 +687,9 @@ def key_from_scan(result: ScanResult, plan: QuestionPlan) -> ScannedKey:
     return ScannedKey(
         answers="".join(characters),
         plan=plan,
-        set_code=result.set_code_value.strip().upper(),
+        # What the paper says, canonicalised: a raw *physical* reading. The
+        # logical set is decided by `check_sheet_set`.
+        set_code=canonical_code(result.set_code_value),
         unreadable=tuple(unreadable),
         registered=registered,
         warnings=tuple(result.warnings),
@@ -726,13 +729,39 @@ class SetCodeCheck(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SetCodeVerdict:
-    """The outcome of comparing a sheet's set field with the chosen set."""
+    """The outcome of comparing a sheet's set field with the chosen set.
+
+    Attributes:
+        check: See :class:`SetCodeCheck`.
+        selected: The logical set the operator chose.
+        read: What the sheet's set field reads - the **physical** mark, as
+            recognised.
+        read_is_defined: Whether :attr:`read` names one of the project's sets.
+        message: One sentence for the review panel.
+        read_set: The logical set :attr:`read` names (``"10"`` for a sheet
+            reading ``A`` when Set 10 is printed as ``A``), or ``""``.
+        printed: What the chosen set is printed as on the sheet.
+    """
 
     check: SetCodeCheck
     selected: str
     read: str
     read_is_defined: bool = False
     message: str = ""
+    read_set: str = ""
+    printed: str = ""
+
+    @property
+    def read_label(self) -> str:
+        """The read set for a sentence: ``"10 (A on sheet)"``, or just the reading."""
+        if self.read_set and not same_set(self.read_set, self.read):
+            return f"{self.read_set} ({self.read} on sheet)"
+        return self.read_set or self.read
+
+    @property
+    def sheet_set(self) -> str:
+        """The logical set to file a key under "as marked on the sheet"."""
+        return self.read_set or self.read
 
 
 def set_field_symbols(template: OmrTemplate) -> tuple[tuple[str, ...], int] | None:
@@ -757,8 +786,8 @@ def can_print_set_code(template: OmrTemplate, code: str) -> bool:
     if found is None or not code:
         return False
     symbols, positions = found
-    wanted = code.strip().upper()
-    options = {symbol.upper() for symbol in symbols}
+    wanted = canonical_code(code)
+    options = {canonical_code(symbol) for symbol in symbols}
 
     def fits(rest: str, remaining: int) -> bool:
         if not rest:
@@ -780,32 +809,58 @@ def check_sheet_set(
     selected: str,
     read: str,
     defined: Sequence[str] = (),
+    identity: SetIdentity | None = None,
 ) -> SetCodeVerdict:
     """Compare the set read off a solution sheet with the set the operator chose.
 
     The operator's choice is authoritative for a solution sheet - they are
     telling OMRFlow which paper this key answers - but a sheet that clearly
     says otherwise must not be filed silently under the chosen set.
+
+    Args:
+        template: The project's template.
+        selected: The logical set chosen.
+        read: What the sheet's set field reads (physical).
+        defined: The set codes the page offers, used when ``identity`` is not
+            given (sets with no physical marks).
+        identity: The project's sets with their physical marks. The read mark
+            is compared with **the chosen set's printed mark**, so a Set 10
+            printed as ``A`` matches a sheet reading ``A``.
+
+    Comparisons go through :mod:`omr_scanner.domain.set_identity`.
     """
+    if identity is None:
+        from omr_scanner.domain.exam_sets import ExamSet
+
+        identity = SetIdentity(
+            ExamSet(set_id=code, code=code) for code in dict.fromkeys(defined) if code
+        )
     chosen = selected.strip()
     seen = read.strip()
     if seen and set(seen) <= RESERVED_SYMBOLS:
         # Every position blank ("__") or unresolved ("??"): nothing legible.
         seen = ""
-    known = {code.strip().upper() for code in defined}
-    is_defined = seen.upper() in known
-    if not can_print_set_code(template, chosen):
+    chosen_set = identity.logical(chosen)
+    printed = chosen_set.printed_as if chosen_set is not None else chosen
+    mapped = not same_set(printed, chosen)
+    read_found = identity.for_reading(seen) if seen else None
+    read_set = read_found.code if read_found is not None else ""
+    is_defined = read_found is not None
+    if not can_print_set_code(template, printed):
+        target = f"Set {chosen} (printed as {printed})" if mapped else f"Set {chosen}"
         return SetCodeVerdict(
             SetCodeCheck.UNREPRESENTABLE,
             chosen,
             seen,
             is_defined,
             message=(
-                f"This template's set field cannot print Set {chosen}, so the "
+                f"This template's set field cannot print {target}, so the "
                 "set marked on the sheet could not be used to confirm it"
                 + (f" (the sheet reads '{seen}')" if seen else "")
                 + ". The answers are imported into the set you selected."
             ),
+            read_set=read_set,
+            printed=printed,
         )
     if not seen:
         return SetCodeVerdict(
@@ -816,19 +871,34 @@ def check_sheet_set(
                 "No set is marked on this sheet (or it could not be read). The "
                 f"answers are imported into Set {chosen}, the set you selected."
             ),
+            printed=printed,
         )
-    if seen.upper() == chosen.upper():
+    same_chosen = (
+        read_found is not None
+        and chosen_set is not None
+        and read_found.set_id == chosen_set.set_id
+    )
+    if same_chosen or same_set(seen, printed):
         return SetCodeVerdict(
             SetCodeCheck.MATCH, chosen, seen, is_defined,
-            message=f"The sheet is marked Set {seen}, matching your selection.",
+            message=(
+                f"The sheet is marked {seen}, which is Set {chosen}, matching your selection."
+                if mapped
+                else f"The sheet is marked Set {seen}, matching your selection."
+            ),
+            read_set=read_set or chosen,
+            printed=printed,
         )
-    return SetCodeVerdict(
-        SetCodeCheck.MISMATCH,
-        chosen,
-        seen,
-        is_defined,
+    verdict = SetCodeVerdict(
+        SetCodeCheck.MISMATCH, chosen, seen, is_defined, read_set=read_set, printed=printed
+    )
+    return replace(
+        verdict,
         message=(
-            f"This sheet appears to be Set {seen}, but you selected Set {chosen}."
+            f"This sheet appears to be Set {verdict.read_label}, but you selected "
+            f"Set {chosen}"
+            + (f" (printed as {printed})" if mapped else "")
+            + "."
             + ("" if is_defined else f" Set {seen} is not one of this project's sets.")
         ),
     )

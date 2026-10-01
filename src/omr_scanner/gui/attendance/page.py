@@ -147,6 +147,7 @@ from omr_scanner.services.reconciliation_leads import (
     owner_leads,
     script_leads,
 )
+from omr_scanner.services.set_identity import same_set
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.exam_sets import ExamSet
@@ -1914,7 +1915,7 @@ class AttendancePage(WorkflowPage):
         for case in scan_lifecycle.list_dispositions(
             database, self.state.batch_id, states=(state,)
         ):
-            if set_code and case.set_code and case.set_code != set_code:
+            if set_code and case.set_code and not same_set(case.set_code, set_code):
                 continue  # another set's sheet
             haystack = " ".join(
                 (case.source_name, case.identity, case.recognised_candidate_id)

@@ -82,6 +82,7 @@ from omr_scanner.domain.scoring import (
     ScoringPolicy,
     score_answers,
 )
+from omr_scanner.domain.set_identity import distinct_codes, group_by_set
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -1119,15 +1120,16 @@ def analyse(
         settings: Thresholds.
     """
     found = sorted({record.set_code for record in records if record.set_code})
-    ordered = list(dict.fromkeys([*set_codes, *found]))
+    # One scope per logical set: a result stored as "A" belongs to a set
+    # defined as "a" (compared through set identity).
+    ordered = list(distinct_codes([*set_codes, *found]))
     top = (
         maximum_possible
         if maximum_possible is not None
         else max((float(record.mark) for record in records), default=0.0)
     )
-    by_set = {
-        code: [record for record in records if record.set_code == code] for code in ordered
-    }
+    grouped = group_by_set((record.set_code, record) for record in records if record.set_code)
+    by_set = {code: grouped.get(code, []) for code in ordered}
     populated = [code for code in ordered if by_set[code]]
     overall_note = ""
     if len(populated) > 1:

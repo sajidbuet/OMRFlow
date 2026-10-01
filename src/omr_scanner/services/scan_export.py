@@ -56,6 +56,7 @@ from omr_scanner.errors import ReportingError
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Mapping, Sequence
 
+    from omr_scanner.domain.set_identity import SetIdentity
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services.batch_processor import ProcessedScan
     from omr_scanner.services.recognition_models import AnswerView
@@ -81,7 +82,18 @@ end, so a reader that indexes the earlier columns positionally still works.
 ``value_source`` is ``machine`` for a sheet nobody has reviewed and ``human``
 once any value on it has been decided by a named reviewer; ``unresolved_conflicts``
 is how many of that sheet's disputes are still waiting. Together they stop an
-export presenting unreviewed ambiguity as finished data."""
+export presenting unreviewed ambiguity as finished data.
+
+``set_code`` is the set **as read** off the paper (after review). For a
+project whose sets carry physical marks, :data:`LOGICAL_SET_COLUMN` is
+appended after these columns with the logical set it stands for."""
+
+LOGICAL_SET_COLUMN = "set"
+"""The logical examination set (*Set*), beside ``set_code`` (*Set (as read)*).
+
+Written only when the project maps a set to a different printed mark
+(phase 0.1.1-A), so the export of every other project is unchanged column
+for column."""
 
 CSV_ENCODING = "utf-8"
 """The file's text encoding. Values may contain any script the template does -
@@ -167,6 +179,7 @@ def build_rows(
     template: OmrTemplate,
     *,
     resolutions: Mapping[Path, SheetResolution] | None = None,
+    identity: SetIdentity | None = None,
 ) -> tuple[tuple[str, ...], ...]:
     """Build the header row and one row per scan.
 
@@ -178,6 +191,8 @@ def build_rows(
         resolutions: Human decisions to apply, keyed by source path. Omitted
             (the default) exports exactly what the machine read, which is what
             a caller with no project open gets.
+        identity: The project's sets. When any is printed as a different mark,
+            :data:`LOGICAL_SET_COLUMN` is added with each sheet's logical set.
 
     Returns:
         The header followed by one row per scan, every cell already a string.
@@ -190,7 +205,12 @@ def build_rows(
     before export.
     """
     numbers = question_numbers(template)
-    header = (*BASE_COLUMNS, *(f"Q{number}" for number in numbers))
+    mapped = identity is not None and identity.has_physical_marks
+    header = (
+        *BASE_COLUMNS,
+        *((LOGICAL_SET_COLUMN,) if mapped else ()),
+        *(f"Q{number}" for number in numbers),
+    )
     overrides = resolutions or {}
 
     rows: list[tuple[str, ...]] = [header]
@@ -198,17 +218,24 @@ def build_rows(
         result = item.result
         answers = {answer.number: answer for answer in result.answers}
         decided = overrides.get(result.source_path, EMPTY_RESOLUTION)
+        as_read = decided.set_code or result.set_code_value
+        logical = (
+            (identity.logical_for_physical(as_read),)
+            if mapped and identity is not None
+            else ()
+        )
         rows.append(
             (
                 result.source_path.name,
                 item.output_name,
                 decided.identifier or result.identifier_value,
-                decided.set_code or result.set_code_value,
+                as_read,
                 result.registration.value,
                 result.outcome.value,
                 str(result.warning_count),
                 decided.source,
                 str(decided.unresolved),
+                *logical,
                 *(
                     decided.answer_for(number, answers)
                     for number in numbers
@@ -224,6 +251,7 @@ def write_scan_results(
     stream: io.TextIOBase,
     *,
     resolutions: Mapping[Path, SheetResolution] | None = None,
+    identity: SetIdentity | None = None,
 ) -> None:
     """Write the CSV body into an already-open text stream.
 
@@ -234,9 +262,12 @@ def write_scan_results(
             supplies line endings itself, and letting Python translate them too
             produces blank lines between records on Windows.
         resolutions: Human decisions to apply; see :func:`build_rows`.
+        identity: The project's sets; see :func:`build_rows`.
     """
     writer = csv.writer(stream)
-    writer.writerows(build_rows(processed, template, resolutions=resolutions))
+    writer.writerows(
+        build_rows(processed, template, resolutions=resolutions, identity=identity)
+    )
 
 
 def export_scan_results(
@@ -246,6 +277,7 @@ def export_scan_results(
     *,
     include_bom: bool = True,
     resolutions: Mapping[Path, SheetResolution] | None = None,
+    identity: SetIdentity | None = None,
 ) -> Path:
     """Write a batch's results to ``path``.
 
@@ -256,6 +288,7 @@ def export_scan_results(
         include_bom: Write UTF-8 with a byte-order mark. See
             :data:`BOM_ENCODING` for why that is the default.
         resolutions: Human decisions to apply; see :func:`build_rows`.
+        identity: The project's sets; see :func:`build_rows`.
 
     Returns:
         The path actually written.
@@ -280,7 +313,12 @@ def export_scan_results(
         temporary_path = Path(temporary_name)
         try:
             with os.fdopen(descriptor, "w", encoding=encoding, newline="") as stream:
-                write_scan_results(processed, template, stream, resolutions=resolutions)
+                # `identity` only when given: a caller without a project calls
+                # exactly what it always did.
+                extra = {"identity": identity} if identity is not None else {}
+                write_scan_results(
+                    processed, template, stream, resolutions=resolutions, **extra
+                )
                 stream.flush()
                 os.fsync(stream.fileno())
             temporary_path.replace(destination)
@@ -302,10 +340,13 @@ def render_scan_results(
     template: OmrTemplate,
     *,
     resolutions: Mapping[Path, SheetResolution] | None = None,
+    identity: SetIdentity | None = None,
 ) -> str:
     """Return the CSV as a string, for tests and for previewing before saving."""
     buffer = io.StringIO(newline="")
-    write_scan_results(processed, template, buffer, resolutions=resolutions)
+    write_scan_results(
+        processed, template, buffer, resolutions=resolutions, identity=identity
+    )
     return buffer.getvalue()
 
 
@@ -314,6 +355,7 @@ __all__ = [
     "BOM_ENCODING",
     "CSV_ENCODING",
     "EMPTY_RESOLUTION",
+    "LOGICAL_SET_COLUMN",
     "SheetResolution",
     "build_rows",
     "export_scan_results",

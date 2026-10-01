@@ -101,7 +101,7 @@ from omr_scanner.domain.scan_lifecycle import (
     RescanCounts,
 )
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import review_store
+from omr_scanner.services import review_store, set_identity
 from omr_scanner.services.scan_provenance import hash_file, is_virtual_source
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -398,21 +398,28 @@ def outstanding_for_set(
     A case whose set code (declared, or the scan's current effective code) is
     this set's belongs to it. So does one whose set code is **unknown**, or
     names no defined set: such a sheet could be anybody's, and a report that
-    ignored it would look complete when it might not be.
+    ignored it would look complete when it might not be. Set codes are
+    compared through :mod:`omr_scanner.services.set_identity`.
     """
-    from omr_scanner.services import project_sets
-
-    defined = {item.code for item in project_sets.list_sets(database)}
+    identity = set_identity.load(database)
     return tuple(
         case
         for case in cases_by_scan(database, batch_id).values()
-        if case.is_outstanding
-        and (
-            case.set_code == set_code
-            or not case.set_code
-            or (bool(defined) and case.set_code not in defined)
-        )
+        if case.is_outstanding and _may_belong(identity, case.set_code, set_code)
     )
+
+
+def _may_belong(identity: set_identity.SetIdentity, code: str, set_code: str) -> bool:
+    """Whether a case with set ``code`` may be one of ``set_code``'s sheets.
+
+    Its own set, an unknown set, or a set that names no defined set (or two
+    colliding ones) - the last two could be anybody's.
+    """
+    if not code:
+        return True
+    if set_identity.same_set(code, set_code):
+        return True
+    return identity.has_sets and not identity.is_defined(code)
 
 
 # ----------------------------------------------------------------------
@@ -581,18 +588,21 @@ def reject_scan(
     declared_id = declared_candidate_id.strip()
     declared_set = declared_set_code.strip()
     if declared_set:
-        from omr_scanner.services import project_sets
-
-        defined = {item.code for item in project_sets.list_sets(database)}
-        if defined and declared_set not in defined:
-            raise LifecycleError(
-                f"Declared set code {declared_set!r} is not a defined set",
-                user_message=(
-                    f"'{declared_set}' is not one of this project's sets "
-                    f"({', '.join(sorted(defined))}). Leave it empty if the set "
-                    "is not known."
-                ),
-            )
+        # The declared set is logical - what the operator says the paper is -
+        # and is stored in the defined set's own spelling ("a" -> "A").
+        identity = set_identity.load(database)
+        if identity.has_sets:
+            found = identity.logical(declared_set)
+            if found is None:
+                raise LifecycleError(
+                    f"Declared set code {declared_set!r} is not a defined set",
+                    user_message=(
+                        f"'{declared_set}' is not one of this project's sets "
+                        f"({', '.join(sorted(identity.codes))}). Leave it empty if "
+                        "the set is not known."
+                    ),
+                )
+            declared_set = found.code
 
     with database.session() as session:
         scan = _require_scan(session, scan_id)
@@ -1187,18 +1197,12 @@ def deferred_for_set(
     set's, unknown, or no defined set's may be this set's, and a result that
     ignored it would look complete when it might not be.
     """
-    from omr_scanner.services import project_sets
-
-    defined = {item.code for item in project_sets.list_sets(database)}
+    identity = set_identity.load(database)
     return tuple(
         case
         for case in cases_by_scan(database, batch_id).values()
         if case.state is LifecycleState.DEFERRED
-        and (
-            case.set_code == set_code
-            or not case.set_code
-            or (bool(defined) and case.set_code not in defined)
-        )
+        and _may_belong(identity, case.set_code, set_code)
     )
 
 
@@ -1396,7 +1400,11 @@ def _candidate(
     read = readings.identifiers.get(scan.scan_id)
     code = readings.set_codes.get(scan.scan_id)
     code_value = "" if code is None or code.unresolved else code.value
-    agrees = None if not (wanted_set and code_value) else code_value == wanted_set
+    agrees = (
+        None
+        if not (wanted_set and code_value)
+        else set_identity.same_set(code_value, wanted_set)
+    )
     return ReplacementCandidate(
         scan_id=scan.scan_id,
         source_name=scan.filename or "",
