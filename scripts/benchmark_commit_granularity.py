@@ -50,7 +50,11 @@ if str(REPOSITORY_ROOT / "src") not in sys.path:  # pragma: no cover - script bo
     sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from omr_scanner.evaluation import stress_dataset  # noqa: E402
-from omr_scanner.services import batch_store, create_project  # noqa: E402
+from omr_scanner.services import (  # noqa: E402
+    RecognitionOptions,
+    batch_store,
+    create_project,
+)
 from omr_scanner.services.batch_processor import (  # noqa: E402
     BatchOptions,
     ProcessedScan,
@@ -59,6 +63,9 @@ from omr_scanner.services.batch_processor import (  # noqa: E402
 from omr_scanner.services.template_service import load_template  # noqa: E402
 
 ADAPTIVE = "adaptive"
+SCAN_OPTIONS = BatchOptions(recognition=RecognitionOptions(keep_bubble_measurements=False))
+"""The Scan stage's engine options: per-bubble measurements are not kept
+(``ScanPage._engine_options``), so stored results have their real size."""
 
 
 def _default_template() -> object:
@@ -215,7 +222,7 @@ def _end_to_end(
 
         started = time.perf_counter()
         process_batch(
-            paths, template, options=BatchOptions(), on_result=on_result, workers=workers  # type: ignore[arg-type]
+            paths, template, options=SCAN_OPTIONS, on_result=on_result, workers=workers  # type: ignore[arg-type]
         )
         recorder.flush()
         elapsed = time.perf_counter() - started
@@ -272,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Recognising once with {arguments.workers} worker(s) ...", flush=True)
         started = time.perf_counter()
         report = process_batch(
-            paths, template, options=BatchOptions(), workers=arguments.workers
+            paths, template, options=SCAN_OPTIONS, workers=arguments.workers
         )
         recognition_s = time.perf_counter() - started
         outcomes = list(report.processed)
