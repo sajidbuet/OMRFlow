@@ -50,16 +50,25 @@ alternative design would have needed a column for. *No migration was needed.*
 
 ### 2. Commit granularity: one sheet per commit whenever the writer keeps up
 
-Measured (PHASE_C_HANDOFF.md, `scripts/benchmark_commit_granularity.py`): one
-work unit costs ≈ 13-14 ms on the development machine's local SSD (rollback
-journal, `synchronous=FULL`); strictly one sheet per commit cut end-to-end
-throughput by 18-29 % at 4-8 workers. The Scan stage therefore uses
-`BatchRecorder(commit_when_idle=True)`: a sheet is committed **as soon as it
-arrives** unless less time has passed since the previous commit finished than
-that commit took; only then does it join the next commit, still bounded by 25
-sheets / 2 s. Arrivals slower than a commit are committed one by one; a backlog
-coalesces, and throughput matches grouped commits. What a crash can lose is
-only work that was never shown as done (§3).
+Measured (PHASE_C_HANDOFF.md, `scripts/benchmark_commit_granularity.py`, three
+runs): one work unit costs 12.0-12.8 ms mean (p95 18-20 ms) on the development
+machine's local SSD (rollback journal, `synchronous=FULL`) - a writer ceiling
+of ≈ 78 sheets/s, against recognition of ≈ 19-22 sheets/s on 8 workers. **Per-
+sheet commits are therefore practical here.** End-to-end throughput varied
+4-27 sheets/s between repetitions of the same configuration, so it could not
+separate the policies; grouping 25 sheets raised the time a read sheet waited
+to be saved from ≈ 20-47 ms to ≈ 0.5-1 s on average.
+
+The Scan stage uses `BatchRecorder(commit_when_idle=True)`: a sheet is
+committed **as soon as it arrives** unless less time has passed since the
+previous commit finished than that commit took; only then does it join the next
+commit, still bounded by 25 sheets / 2 s. When arrivals are spaced this is
+exactly one sheet per commit; results released in a burst (the in-order release
+of a multi-core run) shared commits in the runs measured (1.7-3.6 sheets per
+commit on average). It keeps per-sheet durability wherever the writer keeps up
+and, unlike a strict rule, cannot let a slow disk or share cap recognition at
+1 / commit time - that slower storage was **not** measured. What a crash can
+lose is only work that was never shown as done (§3).
 
 ### 3. What the operator is shown is committed state
 
@@ -162,7 +171,11 @@ it (ADR-0002); SMB is Phase 10's qualification.
   recovery skip complete sheets, but needs a schema change for a state this
   build cannot produce; the batch status already marks the only window
   (batch-scope state) that remains.
-* **Strict one-sheet-per-transaction.** Measured 18-29 % slower; the adaptive
-  policy gives the same per-sheet durability whenever the writer keeps up.
+* **Strict one-sheet-per-transaction.** Practical on the measured SSD, and the
+  adaptive policy behaves the same whenever the writer keeps up; rejected only
+  because on storage where a commit is slower than a sheet's recognition it
+  would throttle the run instead of grouping.
+* **Keeping the 25-sheet / 2 s groups.** Up to two seconds of finished work per
+  crash, and a sheet waits ≈ 0.5-1 s to be shown as saved.
 * **Starting Resume automatically on open.** Recovery repairs state; reading
   sheets is the operator's decision.

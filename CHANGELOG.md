@@ -45,9 +45,9 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
     were *not saved*.
   - *R1* - Resolve opens on its own after a reopen, with every committed
     decision and exactly the unresolved queue.
-  Each sheet is committed alone whenever the database keeps up (measured:
-  strict one-per-commit cost 18-29 % throughput, so a backlog may share a
-  commit, ≤ 25 sheets / 2 s). Process All on a restored batch reads only what
+  Each sheet is committed alone whenever the database keeps up (measured
+  ≈ 12-13 ms per sheet on a local SSD); only a burst may share a commit,
+  ≤ 25 sheets / 2 s. Process All on a restored batch reads only what
   is not saved. Recovery never creates a session, batch or supersession. New
   Project Health findings for the states this rules out. Tested with a
   real-process kill matrix (ACCEPTANCE_CRITERIA §5.4 cases 1-15 at 40 sheets,

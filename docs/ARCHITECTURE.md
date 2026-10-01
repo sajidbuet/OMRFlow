@@ -515,8 +515,9 @@ Four decisions worth carrying forward:
   and the conflicts it implies for that sheet, in one transaction
   (`record_results(..., template=...)`). The Scan stage commits each sheet on
   its own whenever the writer keeps up (`BatchRecorder.commit_when_idle`) and
-  lets only a backlog share a commit, bounded by 25 sheets / 2 seconds - the
-  measured compromise between one `fsync` per sheet and throughput. What the
+  lets only a burst share a commit, bounded by 25 sheets / 2 seconds (one unit
+  measured at ≈ 12-13 ms on a local SSD, well under a sheet's recognition time;
+  slower storage not measured). What the
   page counts as processed is what `on_commit` reported, never a buffered or
   worker-returned sheet.
 - **A storage failure is not a recognition failure.** `BatchRecorder` records

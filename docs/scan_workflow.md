@@ -537,9 +537,10 @@ again) is completed when the run ends, before the batch is marked finished.
 Each sheet is committed on its own **whenever the database keeps up**; only
 when sheets arrive faster than a commit takes do the waiting ones share the
 next commit (never more than 25, never older than 2 seconds). Measured on the
-development machine's local SSD, one sheet costs about 14 ms to commit; strict
-one-per-commit cost 18-29 % of throughput at 4-8 workers, the adaptive rule
-none measurable.
+development machine's local SSD, one sheet costs about 12-13 ms to commit -
+well under the time recognition takes per sheet there, so in practice sheets
+are saved one by one or a few at a time, within tens of milliseconds of being
+read.
 
 **Progress shows saved sheets only.** "637 / 1,000 processed" counts sheets
 whose unit has committed. A sheet a worker has read but that is not yet saved

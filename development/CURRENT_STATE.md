@@ -49,10 +49,12 @@ Update this file at the end of every phase.
   (re-imports, duplicate IDs, undefined set codes) is completed by
   `scan_recovery.complete_batch_review_state` before a batch leaves `running`
   - at run end, on stop-and-exit, and in recovery. Closes S1.
-- **Commit granularity measured**: ≈ 13-14 ms per work unit on the local SSD;
-  strict one-sheet commits cost 18-29 % throughput at 4-8 workers, so the Scan
-  stage commits each sheet alone whenever the writer keeps up and coalesces
-  only a backlog (`BatchRecorder.commit_when_idle`, ≤ 25 sheets / 2 s).
+- **Commit granularity measured**: ≈ 12-13 ms per work unit on the local SSD
+  (writer ceiling ≈ 78 sheets/s vs recognition ≈ 20 sheets/s), so per-sheet
+  commits are practical; the Scan stage commits each sheet alone whenever the
+  writer keeps up and lets only a burst share a commit
+  (`BatchRecorder.commit_when_idle`, ≤ 25 sheets / 2 s). End-to-end throughput
+  was too noisy across repetitions to separate the policies.
 - **Committed state only on screen** (S3): `BatchWorker` counts a sheet and
   draws its row from `BatchRecorder.on_commit`; read-but-unsaved sheets are
   *saving* (`ProgressSnapshot.in_flight`); a failing store's sheets are listed
