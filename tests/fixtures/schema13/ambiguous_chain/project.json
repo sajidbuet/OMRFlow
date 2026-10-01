@@ -1,0 +1,11 @@
+{
+  "project_format_version": 3,
+  "project_id": "63ec366f-f849-4df3-ba76-3a0e1101a0a5",
+  "name": "ambiguous_chain",
+  "exam_name": "Schema 13 fixture: ambiguous_chain",
+  "description": "",
+  "created_at": "2026-10-01T04:48:15.728424Z",
+  "modified_at": "2026-10-01T04:48:15.728424Z",
+  "created_with": "0.1.1-alpha.0",
+  "active_template": null
+}

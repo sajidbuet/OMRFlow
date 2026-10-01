@@ -47,6 +47,8 @@ desktop.ini
 # Except the synthetic schema-12 upgrade fixtures (no candidate data), written by
 # tests/fixtures/schema12/make_schema12_projects.py with the schema-12 build.
 !tests/fixtures/schema12/*/database.sqlite
+# ... and the schema-13 ones (tests/fixtures/schema13/make_schema13_projects.py).
+!tests/fixtures/schema13/*/database.sqlite
 *.log
 /projects/
 # Both spellings deliberately. Git on Windows matches these case-insensitively,
