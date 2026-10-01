@@ -48,20 +48,22 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select, text
+from sqlalchemy import exists, func, select, text
 from sqlalchemy.exc import DBAPIError
 
 from omr_scanner.database.migrations import SCHEMA_VERSION
 from omr_scanner.database.models import (
     AnswerKeyRevision,
+    AuditEvent,
     BatchScan,
+    BatchStatus,
     ReconciliationEntryRow,
     ReviewConflict,
     ScanBatch,
     ScanJobStatus,
 )
 from omr_scanner.domain.reconciliation import ReconciliationStatus
-from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState
+from omr_scanner.domain.review import RESOLUTION_TYPES, ConflictState, ReviewAction
 from omr_scanner.services import (
     project_backup,
     scan_lifecycle,
@@ -282,6 +284,120 @@ def _stale_job_issues(database: ProjectDatabase) -> list[HealthIssue]:
             ),
         )
     ]
+
+
+def _crash_consistency_issues(database: ProjectDatabase) -> list[HealthIssue]:
+    """States an abnormal termination could leave and recovery must not (0.1.1 phase 3).
+
+    Bounded: five aggregate queries, none of which loads a row. See
+    ``docs/decisions/ADR-0006-crash-safe-scan-work-units.md``.
+
+    * a batch still ``running`` at rest - repaired by the next writable open;
+    * a committed sheet status with no stored result - impossible for any
+      writer of this build;
+    * a failed sheet with a stored result and no conflict, in a batch that
+      has review state - a failed read always raises exactly one conflict, so
+      this is review state a crash left incomplete;
+    * a conflict whose sheet has no stored result - review state with no
+      recognition behind it;
+    * a conflict whose history opens more than once - duplicated detection.
+    """
+    terminal = [
+        ScanJobStatus.COMPLETED.value,
+        ScanJobStatus.WARNING.value,
+        ScanJobStatus.FAILED.value,
+    ]
+    with database.session() as session:
+        running = session.scalar(
+            select(func.count())
+            .select_from(ScanBatch)
+            .where(ScanBatch.status == BatchStatus.RUNNING.value)
+        )
+        without_result = session.scalar(
+            select(func.count())
+            .select_from(BatchScan)
+            .where(BatchScan.status.in_(terminal))
+            .where(BatchScan.result_json == "")
+        )
+        reviewed_batches = select(ReviewConflict.batch_id).distinct()
+        failed_unreviewed = session.scalar(
+            select(func.count())
+            .select_from(BatchScan)
+            .where(BatchScan.status == ScanJobStatus.FAILED.value)
+            .where(BatchScan.result_json != "")
+            .where(BatchScan.batch_id.in_(reviewed_batches))
+            .where(~exists().where(ReviewConflict.scan_id == BatchScan.scan_id))
+        )
+        orphaned = session.scalar(
+            select(func.count())
+            .select_from(ReviewConflict)
+            .join(BatchScan, BatchScan.scan_id == ReviewConflict.scan_id)
+            .where(BatchScan.result_json == "")
+            .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
+        )
+        detections = (
+            select(AuditEvent.conflict_id)
+            .where(AuditEvent.action == ReviewAction.DETECTED.value)
+            .where(AuditEvent.conflict_id != 0)
+            .group_by(AuditEvent.conflict_id)
+            .having(func.count() > 1)
+            .subquery()
+        )
+        duplicated = session.scalar(select(func.count()).select_from(detections))
+
+    issues: list[HealthIssue] = []
+    if running:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.WARNING,
+                code="BATCH_LEFT_RUNNING",
+                message=(
+                    f"{running} batch(es) are recorded as running. Unless a batch is being "
+                    "processed right now, a run was interrupted; reopening the project "
+                    "for editing recovers it."
+                ),
+            )
+        )
+    if without_result:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.ERROR,
+                code="SCAN_COMPLETED_WITHOUT_RESULT",
+                message=(
+                    f"{without_result} scan(s) are recorded as read but have no stored "
+                    "recognition result."
+                ),
+            )
+        )
+    if failed_unreviewed:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.ERROR,
+                code="SCAN_REVIEW_STATE_MISSING",
+                message=(
+                    f"{failed_unreviewed} unreadable scan(s) have no review conflict, so "
+                    "Resolve would not list them. Reopening the project for editing "
+                    "re-derives them from the stored results."
+                ),
+            )
+        )
+    if orphaned:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.ERROR,
+                code="REVIEW_STATE_WITHOUT_RECOGNITION",
+                message=f"{orphaned} conflict(s) belong to scans that have no stored result.",
+            )
+        )
+    if duplicated:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.ERROR,
+                code="CONFLICT_DETECTED_TWICE",
+                message=f"{duplicated} conflict(s) record their detection more than once.",
+            )
+        )
+    return issues
 
 
 def _source_scan_issues(database: ProjectDatabase) -> list[HealthIssue]:
@@ -720,6 +836,7 @@ def full_check(database: ProjectDatabase, project_root: Path) -> HealthReport:
         for check in (
             _schema_version_issue,
             _stale_job_issues,
+            _crash_consistency_issues,
             _source_scan_issues,
             _unresolved_conflict_issue,
             _unresolved_reconciliation_issue,
