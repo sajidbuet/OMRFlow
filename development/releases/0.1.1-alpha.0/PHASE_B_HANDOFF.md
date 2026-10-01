@@ -148,9 +148,9 @@ Full suite and gates (main checkout, where the local real-sheet tests run):
 
 | | Result |
 |---|---|
-| pytest (full) | FINAL_PYTEST |
-| ruff | FINAL_RUFF |
-| mypy | FINAL_MYPY |
+| pytest (full) | **6,241 passed, 16 skipped, 0 failed**, 4 `stress` deselected (59 min 00 s), main checkout at `272fdd5`. +73 passed against the baseline (the new tests); same 16 skips (environment / env-gated) |
+| ruff | `ruff check .`: All checks passed |
+| mypy | `mypy src`: no issues in 206 source files |
 
 ## Validation status
 
