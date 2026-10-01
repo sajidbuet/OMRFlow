@@ -275,6 +275,27 @@ class TestResolveAfterReopen:
         window.close_project()
 
 
+class TestClosingJoinsTheScanWorkers:
+    def test_closing_the_window_waits_for_a_preview_still_being_read(
+        self, qtbot, tmp_path, workspace, template, sheets, outcomes
+    ):
+        # Found by the crash harness: with no batch running, the window's
+        # close did not shut the Scan page down, so a preview worker still
+        # reading a sheet outlived the window and aborted the process at exit.
+        root, _batch_id = _interrupted_project(
+            workspace, template, sheets, outcomes, committed=4
+        )
+        window = _window(qtbot, tmp_path)
+        assert window.open_project_at(root) is True
+        scan = window._scan_page()
+        assert scan is not None and not scan.is_processing
+        scan.select_scan(0)
+        preview = scan._preview_worker
+        assert preview is not None, "selecting a row starts the preview worker"
+        window.close()
+        assert not preview.isRunning()
+
+
 class TestCompletedCountIsCommitted:
     def test_a_read_but_uncommitted_sheet_is_in_flight_not_processed(
         self, qtbot, project_session, template, sheets, monkeypatch

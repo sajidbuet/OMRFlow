@@ -2083,12 +2083,15 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             logger.info("Window closing: stopping the running batch first")
-            page = self._scan_page()
-            if page is not None:
-                # Cancel *and wait*: the pool has to be torn down and the last
-                # results flushed before the database goes away, or the run is
-                # neither finished nor properly resumable.
-                page.shutdown_batch()
+        page = self._scan_page()
+        if page is not None:
+            # Cancel *and wait*: the pool has to be torn down and the last
+            # results flushed before the database goes away, or the run is
+            # neither finished nor properly resumable. Called with no batch
+            # running too: the page's preview worker may still be reading a
+            # sheet, and a QThread alive when the process exits aborts it
+            # (0xC0000005, seen by the 0.1.1 phase 3 crash harness).
+            page.shutdown_batch()
 
         # The review page may be part-way through decoding a sheet. Same rule,
         # same reason: no thread may outlive the window, and none may still be
