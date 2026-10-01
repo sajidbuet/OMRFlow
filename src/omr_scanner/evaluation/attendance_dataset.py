@@ -900,8 +900,40 @@ def write_ground_truth(population: Population, directory: Path) -> tuple[Path, P
     return candidates_path, reconciliation_path
 
 
+def parse_set_spec(text: str) -> tuple[tuple[str, ...], dict[str, str]]:
+    """Read a comma-separated set list, with optional printed marks.
+
+    ``"10=A, 11=B, 12"`` -> ``(("10", "11", "12"), {"10": "A", "11": "B"})``:
+    logical Set 10 printed on the sheet as ``A``, and so on; a set without
+    ``=`` prints its own code. Order is kept and a repeated set is listed
+    once, because the roster is dealt round-robin over this sequence.
+
+    Raises:
+        ValueError: An entry has an empty side of ``=``.
+    """
+    codes: list[str] = []
+    marks: dict[str, str] = {}
+    for chunk in text.split(","):
+        entry = chunk.strip()
+        if not entry:
+            continue
+        code, separator, mark = (part.strip() for part in entry.partition("="))
+        if not code or (separator and not mark):
+            raise ValueError(f"'{entry}' is not a set code or a 'code=mark' pair")
+        if code in codes:
+            continue
+        codes.append(code)
+        if mark and mark != code:
+            marks[code] = mark
+    return tuple(codes), marks
+
+
 def bind_case(
-    case: SheetCase, candidate: SyntheticCandidate, layout: FieldLayout
+    case: SheetCase,
+    candidate: SyntheticCandidate,
+    layout: FieldLayout,
+    *,
+    physical_marks: Mapping[str, str] | None = None,
 ) -> SheetCase:
     """Give ``case`` the identity ``candidate``'s script should carry.
 
@@ -920,6 +952,8 @@ def bind_case(
             while the truth file claimed the population's - a dataset that
             disagreed with its own answer key, and one no test comparing
             metadata to metadata would have caught.
+        physical_marks: Logical set -> printed mark, for sets printed as
+            another mark; see below.
 
     Returns:
         The same case with its identifier and set fields replaced, in both the
@@ -938,6 +972,12 @@ def bind_case(
     options per digit column, so a blank digit is an empty tuple and an
     over-marked one has two entries. Nothing new had to be taught to the
     renderer for these cases to exist.
+
+    ``physical_marks`` (logical set -> printed mark) makes a sheet of a set
+    printed as another mark carry that **physical** mark in its set field,
+    rendered and in ``set_code`` / ``set_marks``, with the logical set kept in
+    :attr:`~omr_scanner.evaluation.test_cases.SheetCase.logical_set`. A set
+    not in the mapping is marked with its own code, as always.
     """
     roll = candidate.observed_roll or ""
     conflict = candidate.conflict
@@ -969,7 +1009,10 @@ def bind_case(
         marks = tuple((digit,) for digit in roll)
         ambiguous = False
 
-    set_code = candidate.observed_set or ""
+    logical_set = candidate.observed_set or ""
+    marks_by_set = physical_marks or {}
+    printed = marks_by_set.get(logical_set, "")
+    set_code = printed or logical_set
     set_marks: tuple[tuple[str, ...], ...]
     if candidate.observed_set is None:
         set_marks = ()
@@ -997,12 +1040,15 @@ def bind_case(
         marks=rendered,
         roll=roll,
         intended_roll=written_roll(candidate),
-        intended_set=written_set(candidate),
+        # What the candidate writes beside the bubbles is what the paper
+        # prints for their set - its physical mark when it has one.
+        intended_set=marks_by_set.get(written_set(candidate), written_set(candidate)),
         roll_marks=marks,
         roll_ambiguous=ambiguous,
         set_code=set_code,
         set_marks=set_marks,
         set_ambiguous=candidate.observed_set is None,
+        logical_set=logical_set if printed else "",
         # Both scripts of a duplicate pair share a group, which is how the
         # existing ground truth already expresses "these two are the same
         # candidate".
@@ -1119,6 +1165,7 @@ __all__ = [
     "SyntheticCandidate",
     "bind_case",
     "expected_states",
+    "parse_set_spec",
     "plan_population",
     "summarise",
     "write_ground_truth",

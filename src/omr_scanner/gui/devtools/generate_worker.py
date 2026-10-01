@@ -136,6 +136,7 @@ class DatasetWorker(QThread):
                 performance=request.performance,
                 on_progress=self._on_sheet,
                 should_cancel=lambda: self._cancelled,
+                physical_marks=dict(request.physical_marks) or None,
             )
         except Exception as exc:
             self._tracker.fail()

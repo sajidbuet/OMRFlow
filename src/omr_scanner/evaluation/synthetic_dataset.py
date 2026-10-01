@@ -915,6 +915,11 @@ def render_case(
         # The same for the set code, which a staged wrong or blank set makes
         # differ from `set_code`.
         metadata["written_set_code"] = written_set.value or None
+    if effective.logical_set:
+        # A set printed as a different mark: `set_code` is the physical mark
+        # the bubbles carry, and this is the examination set it stands for.
+        # Absent for every sheet of an unmapped dataset.
+        metadata["logical_set"] = effective.logical_set
     if effective.intended is not None:
         # The candidate's intended answers against their own set's key, before
         # any test condition was laid over them. Present only when the
@@ -1192,6 +1197,7 @@ def generate_dataset(
     performance: PerformancePolicy | None = None,
     on_progress: Callable[[GenerationProgress], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    physical_marks: Mapping[str, str] | None = None,
 ) -> DatasetManifest:
     """Write a complete labelled dataset to disk.
 
@@ -1258,6 +1264,13 @@ def generate_dataset(
             thread, so a GUI caller must marshal to the main thread.
         should_cancel: Polled before each sheet; returning ``True`` stops the
             run and writes a manifest describing what was actually produced.
+        physical_marks: Logical set -> the mark printed on its sheets, for an
+            examination whose sets are printed as other marks (Set ``10``
+            printed as ``A``). Applies to the roster's sets (``population``)
+            and their solution sheets: each sheet's set field is marked with
+            the physical mark, its ground truth keeps it as ``set_code`` and
+            records the logical set as ``metadata["logical_set"]``, and keys
+            stay keyed by logical set. Omitted, nothing changes.
 
     Returns:
         The manifest, already written.
@@ -1334,7 +1347,7 @@ def generate_dataset(
         # twice. See `attendance_dataset.bind_case` for why the two concerns
         # are split this way.
         cases = [
-            bind_case(case, candidate, layout)
+            bind_case(case, candidate, layout, physical_marks=physical_marks)
             for case, candidate in zip(cases, sheets, strict=True)
         ]
 
@@ -1342,14 +1355,16 @@ def generate_dataset(
     # against it, the solution sheets show it, the text files state it and the
     # manifest records it - four readers of one object, never four draws.
     key_sets, answer_sets = _answer_key_sets(cases, population, sheets, seed=seed)
-    keys = generate_answer_keys(template, layout, key_sets, seed=seed)
+    keys = generate_answer_keys(
+        template, layout, key_sets, seed=seed, physical_marks=physical_marks
+    )
     solution_files: dict[str, SolutionFiles] = {}
     if generate_solutions and keys:
         # Named now rather than after the candidate sheets are written, so two
         # set codes that sanitise to one file name are refused before any work.
         solution_files = solution_file_names(list(keys), chosen_format.suffix)
-        for code in keys:
-            if code and not set_code_markable(layout, code):
+        for code, key in keys.items():
+            if code and not set_code_markable(layout, key.printed_set):
                 _LOGGER.warning(
                     "Set code '%s' cannot be marked on this template's set-code "
                     "field; its solution sheet leaves the field blank, as the "
@@ -1533,6 +1548,10 @@ def generate_dataset(
         write_workbooks(population, output_dir / ATTENDANCE_DIRNAME)
         write_ground_truth(population, truths)
         manifest.generator["attendance"] = summarise_population(population)
+    if physical_marks:
+        # Logical set -> printed mark. Recorded only when used, so an unmapped
+        # dataset's manifest is unchanged.
+        manifest.generator["physical_marks"] = dict(sorted(physical_marks.items()))
 
     save_manifest(manifest, output_dir / MANIFEST_FILENAME)
 

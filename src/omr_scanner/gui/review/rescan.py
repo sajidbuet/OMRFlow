@@ -63,9 +63,10 @@ from omr_scanner.gui.theme import (
     Color,
     Spacing,
 )
+from omr_scanner.services.set_identity import same_set
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from omr_scanner.domain.scan_lifecycle import (
         PurgePlan,
@@ -96,6 +97,9 @@ class RejectScanDialog(QDialog):
         set_codes: The project's defined set codes, offered for the optional
             set; empty when the project defines none.
         parent: Optional Qt parent.
+        set_labels: How each code is shown - ``"Set 10 (A on sheet)"`` for a
+            set printed as another mark. The value chosen is always the
+            logical code.
     """
 
     def __init__(
@@ -105,6 +109,7 @@ class RejectScanDialog(QDialog):
         recognised_set: str,
         set_codes: Sequence[str] = (),
         parent: QWidget | None = None,
+        set_labels: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("rejectScanDialog")
@@ -159,10 +164,16 @@ class RejectScanDialog(QDialog):
         self.set_combo = QComboBox()
         self.set_combo.setObjectName("rejectDeclaredSetCombo")
         self.set_combo.addItem(UNKNOWN_SET, userData="")
+        labels = set_labels or {}
         for code in set_codes:
-            self.set_combo.addItem(f"Set {code}", userData=code)
-        if recognised_set and recognised_set in set_codes:
-            self.set_combo.setCurrentIndex(self.set_combo.findData(recognised_set))
+            self.set_combo.addItem(labels.get(code, f"Set {code}"), userData=code)
+        # The recognised set is matched through set identity: "a" selects Set A.
+        matching = next(
+            (code for code in set_codes if recognised_set and same_set(code, recognised_set)),
+            None,
+        )
+        if matching is not None:
+            self.set_combo.setCurrentIndex(self.set_combo.findData(matching))
         form.addRow("Set on paper", self.set_combo)
         layout.addLayout(form)
 

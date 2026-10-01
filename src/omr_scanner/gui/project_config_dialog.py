@@ -9,7 +9,12 @@ Responsibilities:
     * Present and save the examination name
       (:func:`omr_scanner.services.project_service.update_exam_name`).
     * Add, edit, delete and reorder sets
-      (:mod:`omr_scanner.services.project_sets`).
+      (:mod:`omr_scanner.services.project_sets`), including each set's
+      optional *Printed on sheet as* mark - the symbol the paper carries when
+      it is not the set's code (Set 10 printed as ``A``).
+    * Make a set-code collision visible: two sets an earlier build kept apart
+      that now name one set (``A`` and ``a``) are shown in red with a banner
+      naming them, so the operator renames or removes one.
 
 What does NOT belong here:
     * Validation rules. Every rule lives in
@@ -48,6 +53,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -68,12 +74,20 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.domain.exam_sets import ExamSet
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import project_sets, update_exam_name
+from omr_scanner.services import project_sets, set_identity, update_exam_name
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services import ProjectSession
 
-COLUMN_HEADERS = ("Set", "Description")
+COLUMN_HEADERS = ("Set", "Description", "Printed on sheet as")
+"""The set table's columns. *Printed on sheet as* was appended (``0.1.1``) so
+the first two keep their positions."""
+
+MARK_COLUMN = 2
+
+NO_MARK_TEXT = "(the set code)"
+"""What the *Printed on sheet as* column shows for a set printed as its code."""
 
 EXAM_NAME_PLACEHOLDER = "e.g. Recruitment Exam, Bangladesh Submarine Cable Regulatory Authority"
 
@@ -114,12 +128,13 @@ class SetEditorDialog(QDialog):
         code: str = "",
         description: str = "",
         title: str = "Add Set",
+        physical_mark: str = "",
     ) -> None:
         super().__init__(parent)
         self.setObjectName("setEditorDialog")
         self.setWindowTitle(title)
         self.setModal(True)
-        self.resize(520, 140)
+        self.resize(520, 170)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -142,6 +157,16 @@ class SetEditorDialog(QDialog):
             "e.g. Name of Post: Assistant Engineer (Electrical)"
         )
         form.addRow("Description:", self.description_edit)
+
+        self.mark_edit = QLineEdit(physical_mark)
+        self.mark_edit.setObjectName("setPhysicalMarkEdit")
+        self.mark_edit.setPlaceholderText("Leave empty if the sheet prints the set code")
+        self.mark_edit.setToolTip(
+            "What the sheet's set-code bubbles carry for this set, when that is not "
+            "the set code - for example A for a Set 10 whose papers offer A-D. "
+            "Scans reading this mark are filed under this set."
+        )
+        form.addRow("Printed on sheet as:", self.mark_edit)
         layout.addLayout(form)
 
         self.buttons = QDialogButtonBox(
@@ -159,6 +184,10 @@ class SetEditorDialog(QDialog):
         decides what "blank" means.
         """
         return self.code_edit.text(), self.description_edit.text()
+
+    def mark(self) -> str:
+        """The *Printed on sheet as* mark currently entered, untrimmed."""
+        return self.mark_edit.text()
 
 
 class ProjectConfigDialog(QDialog):
@@ -180,6 +209,8 @@ class ProjectConfigDialog(QDialog):
 
         self._session = session
         self._sets: tuple[ExamSet, ...] = ()
+        self._collisions: tuple[set_identity.SetCollision, ...] = ()
+        self._template = _project_template(session)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_exam_group())
@@ -265,8 +296,19 @@ class ProjectConfigDialog(QDialog):
         header = self.sets_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(MARK_COLUMN, QHeaderView.ResizeMode.ResizeToContents)
         self.sets_table.itemSelectionChanged.connect(self._refresh_buttons)
         self.sets_table.doubleClicked.connect(self._prompt_edit_set)
+
+        # Shown only while two sets an earlier build kept apart now name one
+        # set. Above the table, in red, because every set-dependent stage
+        # refuses to proceed until it is resolved here.
+        self.collision_label = QLabel("")
+        self.collision_label.setObjectName("projectSetsCollisionLabel")
+        self.collision_label.setWordWrap(True)
+        self.collision_label.setStyleSheet(f"color: {_ERROR_COLOR};")
+        self.collision_label.setVisible(False)
+        layout.addWidget(self.collision_label)
         layout.addWidget(self.sets_table, stretch=1)
 
         self.sets_status_label = QLabel(NO_SETS_TEXT)
@@ -349,6 +391,9 @@ class ProjectConfigDialog(QDialog):
             the table is only a rendering of this.
         """
         self._sets = project_sets.list_sets(self._session.database)
+        identity = set_identity.SetIdentity(self._sets)
+        self._collisions = identity.collisions
+        colliding = {item.set_id for item in identity.colliding_sets()}
         self.sets_table.setRowCount(len(self._sets))
         for row, item in enumerate(self._sets):
             code_cell = QTableWidgetItem(item.code)
@@ -361,6 +406,25 @@ class ProjectConfigDialog(QDialog):
             description_cell = QTableWidgetItem(item.description)
             description_cell.setToolTip(item.description)
             self.sets_table.setItem(row, 1, description_cell)
+            mark_cell = QTableWidgetItem(item.physical_mark or NO_MARK_TEXT)
+            mark_cell.setToolTip(
+                f"Sheets marked '{item.physical_mark}' are {item.display_label}."
+                if item.physical_mark
+                else f"The sheet prints {item.code} itself."
+            )
+            self.sets_table.setItem(row, MARK_COLUMN, mark_cell)
+            if item.set_id in colliding:
+                for column in range(len(COLUMN_HEADERS)):
+                    cell = self.sets_table.item(row, column)
+                    if cell is not None:
+                        cell.setForeground(QColor(_ERROR_COLOR))
+                code_cell.setToolTip(
+                    f"Internal id: {item.set_id}\nThis code is the same set code as "
+                    "another set's (compared without regard to case). Rename or "
+                    "remove one of them."
+                )
+        self.collision_label.setText(set_identity.describe_collisions(self._collisions))
+        self.collision_label.setVisible(bool(self._collisions))
         self._refresh_buttons()
         self.suggest_button.setVisible(bool(self.suggested_codes()))
         if not self._sets:
@@ -371,6 +435,11 @@ class ProjectConfigDialog(QDialog):
     def sets(self) -> tuple[ExamSet, ...]:
         """The sets this dialog last read from the database."""
         return self._sets
+
+    @property
+    def collisions(self) -> tuple[set_identity.SetCollision, ...]:
+        """Sets whose codes canonicalise alike, as last read."""
+        return self._collisions
 
     def selected_set(self) -> ExamSet | None:
         """The set currently selected, or ``None``.
@@ -396,15 +465,23 @@ class ProjectConfigDialog(QDialog):
                 return True
         return False
 
-    def add_set(self, code: str, description: str = "") -> bool:
+    def add_set(self, code: str, description: str = "", physical_mark: str = "") -> bool:
         """Define a new set. No dialog.
 
         Returns:
-            Whether it was stored. A refusal - a blank or duplicate code - is
-            reported beside the table, with the message the service produced.
+            Whether it was stored. A refusal - a blank or duplicate code, or a
+            printed mark that is ambiguous or that the project's template
+            cannot print - is reported beside the table, with the message the
+            service produced.
         """
         try:
-            created = project_sets.add_set(self._session.database, code, description)
+            created = project_sets.add_set(
+                self._session.database,
+                code,
+                description,
+                physical_mark=physical_mark,
+                template=self._template,
+            )
         except OMRScannerError as exc:
             self._set_status(self.sets_status_label, exc.user_message, ok=False)
             return False
@@ -416,12 +493,21 @@ class ProjectConfigDialog(QDialog):
         return True
 
     def edit_set(
-        self, set_id: str, code: str | None = None, description: str | None = None
+        self,
+        set_id: str,
+        code: str | None = None,
+        description: str | None = None,
+        physical_mark: str | None = None,
     ) -> bool:
-        """Change an existing set's code and/or description. No dialog."""
+        """Change an existing set's code, description and/or printed mark. No dialog."""
         try:
             updated = project_sets.update_set(
-                self._session.database, set_id, code=code, description=description
+                self._session.database,
+                set_id,
+                code=code,
+                description=description,
+                physical_mark=physical_mark,
+                template=self._template,
             )
         except OMRScannerError as exc:
             self._set_status(self.sets_status_label, exc.user_message, ok=False)
@@ -429,7 +515,7 @@ class ProjectConfigDialog(QDialog):
         self.refresh_sets()
         self.select_set(updated.set_id)
         self._set_status(
-            self.sets_status_label, f"Updated {updated.display_label}.", ok=True
+            self.sets_status_label, f"Updated {updated.label_with_mark}.", ok=True
         )
         return True
 
@@ -514,7 +600,7 @@ class ProjectConfigDialog(QDialog):
         if editor.exec() != QDialog.DialogCode.Accepted:
             return
         code, description = editor.values()
-        self.add_set(code, description)
+        self.add_set(code, description, editor.mark())
 
     def _prompt_edit_set(self) -> None:
         """Ask for the selected set's new code and description, then save it."""
@@ -526,11 +612,17 @@ class ProjectConfigDialog(QDialog):
             code=current.code,
             description=current.description,
             title=f"Edit {current.display_label}",
+            physical_mark=current.physical_mark,
         )
         if editor.exec() != QDialog.DialogCode.Accepted:
             return
         code, description = editor.values()
-        self.edit_set(current.set_id, code=code, description=description)
+        self.edit_set(
+            current.set_id,
+            code=code,
+            description=description,
+            physical_mark=editor.mark(),
+        )
 
     def _prompt_adopt_suggestions(self) -> None:
         """Show which codes were found, then add them if the operator agrees."""
@@ -615,9 +707,25 @@ class ProjectConfigDialog(QDialog):
             button.setEnabled(False)
 
 
+def _project_template(session: ProjectSession) -> OmrTemplate | None:
+    """The project's template, used to check a printed mark can be printed.
+
+    ``None`` when the project has none or it cannot be read; a mark is then
+    checked for ambiguity only, never refused for printability.
+    """
+    try:
+        from omr_scanner.services.project_template import load_project_template
+
+        return load_project_template(session.project).template
+    except (OMRScannerError, OSError, AttributeError):  # pragma: no cover - defensive
+        return None
+
+
 __all__ = [
     "COLUMN_HEADERS",
     "EXAM_NAME_SAVED_TEXT",
+    "MARK_COLUMN",
+    "NO_MARK_TEXT",
     "NO_SETS_TEXT",
     "ProjectConfigDialog",
     "SetEditorDialog",
