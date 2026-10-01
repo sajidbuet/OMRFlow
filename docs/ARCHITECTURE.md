@@ -527,6 +527,40 @@ the row, so a project being *opened* proves nobody does.
 `batch_store.recover_interrupted` is called once, from `MainWindow._adopt_session`,
 before any page sees the session.
 
+## Scan sessions and finite batches (0.1.1 phase 2)
+
+Decision record: [ADR-0005](decisions/ADR-0005-scan-sessions-and-finite-batches.md).
+
+```text
+Project → ScanSession → one or more finite ScanBatch objects → sheets
+```
+
+- `domain/scan_sessions.py` holds the vocabulary and the pure rules (session
+  state, batch membership and role, supersession, upgrade-backfill grouping);
+  `services/scan_sessions.py` applies them to the project database, each
+  transition in one transaction with its `audit_event`.
+- A batch is **finite**: once `scan_batch.sealed_at` is set,
+  `batch_store.add_scans_to_batch` refuses new members. The Scan stage starts
+  batches through `scan_sessions.start_batch`, which joins the **active
+  session** (created implicitly by the first *Process All*), seals the
+  session's previous open batch, and asks before a template differing from the
+  session's pin. `batch_store.create_batch` (tools, stress runner, tests)
+  attaches to the active session without sealing anything.
+- *Reprocess All* is `scan_sessions.start_reprocess_batch`: a `reprocess` batch
+  superseding the original through `batch_supersession`. Nothing is deleted.
+- Downstream stages read **one** batch until session-level results exist:
+  `scan_sessions.downstream_batch_id` (the active session's newest primary,
+  non-superseded batch by creation). `list_batches(limit=1)` and `updated_at`
+  no longer choose what is reconciled, scored or reported.
+- The upgrade backfill runs on the first writable open
+  (`project_service._backfill_scan_sessions`); a pre-session project opened
+  read-only is shown as virtual one-batch sessions (the lifecycle columns are
+  mapped `deferred`).
+- Processing manifests are written at every seal and at the end of every run
+  (`services/processing_manifest.py`).
+- Not here: session aggregation (revised phase 4) and crash-safe Scan/Resolve
+  recovery (revised phase 3).
+
 ## The Calibration workflow (Phase 4)
 
 `omr_scanner.gui.calibration` verifies a template against representative

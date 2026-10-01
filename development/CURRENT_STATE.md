@@ -40,7 +40,32 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Set identity (`0.1.1-alpha.0` phase A, 2026-10-01 — implemented; automated tests passing; branch `feat/0.1.1-phase1-set-identity`, not merged)
+### Scan sessions and finite batches (`0.1.1` revised phase 2, 2026-10-01 — implemented; automated tests passing; branch `feat/0.1.1-phase2-scan-session-lifecycle`, not merged)
+
+- `Project → ScanSession → finite ScanBatch` (ADR-0005). `domain/scan_sessions.py`
+  (rules) and `services/scan_sessions.py` (lifecycle, every transition audited
+  in its own transaction).
+- Schema 14 (migration 14): `scan_session`, `batch_supersession`;
+  `scan_batch.scan_session_id`, `sealed_at`/`sealed_by`, `role`.
+- The first *Process All* creates a session silently and makes it active; a
+  later *Process All* (also after reopening the project) creates a new batch in
+  the same session and seals the previous one. A sealed batch refuses new
+  members (`BatchSealedError`); a rescan for one goes into a `rescan` batch.
+  *Reprocess All* creates a superseding `reprocess` batch; nothing is deleted.
+- Session menu on the Scan stage: New, Rename, Close (seals), Reopen (marks
+  final outputs stale), Combine. Template pinning per session.
+- Attendance, Results and Reports read `scan_sessions.downstream_batch_id` -
+  the active session's newest primary, non-superseded batch by creation - not
+  `list_batches(limit=1)`. **A multi-batch session is not aggregated yet**
+  (revised phase 4).
+- Upgrade backfill on the first writable open: one legacy session per batch;
+  two batches grouped only by an unambiguous confirmed cross-batch rescan;
+  ambiguous cases reported. Read-only schema-13 projects show virtual sessions.
+- `processing_manifest` written at every seal and every run end (defect 6).
+- Not done: crash-safe Scan/Resolve recovery (S1, S2, S3, R1) - revised phase 3.
+  Details: `development/releases/0.1.1-alpha.0/PHASE_B_HANDOFF.md`.
+
+### Set identity (`0.1.1-alpha.0` phase A, 2026-10-01 — implemented; automated tests passing; merged into `main` at `ce3f082`)
 
 - Source builds report `0.1.1-alpha.0` (`_version.py`); nothing released.
 - One canonical set identity, `NFKC + strip + upper`

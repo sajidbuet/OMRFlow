@@ -590,7 +590,8 @@ started, OMRFlow says exactly what changed and asks before continuing:
 
 Nothing is silently invalidated and nothing is silently mixed. **Reprocess**
 remains the way to read everything afresh under the new settings; it starts a
-new batch and leaves the old record intact.
+new `reprocess` batch that **supersedes** the old one (see 12b) and leaves the
+old record intact.
 
 ### Retry
 
@@ -614,6 +615,42 @@ remaining sheets are still worth reading, and the results stay in memory where
 they can still be exported), but when it ends OMRFlow says so in a dialog and
 asks you to export the CSV before closing. A run whose results could not be
 written is never reported as a clean success.
+
+## 12b. Scan sessions and finite batches (0.1.1)
+
+Decision record: `docs/decisions/ADR-0005-scan-sessions-and-finite-batches.md`.
+
+- **A scan session** groups every batch of one examination sitting. The first
+  *Process All* in a project creates one silently, named after the exam and
+  the date; the Scan stage header names it (*Scan session: … - open, 1
+  batch(es)*). Nothing new is asked in a single-folder examination.
+- **A later *Process All*** - after reopening the project, or after clearing
+  the list - creates a **new batch in the same session**, not an unrelated
+  one. Starting it **seals** the previous batch: its list of scans is final.
+- **Sealed is not finished.** A sealed batch still resumes, retries and is
+  reviewed; it only never gains new scans. Adding scans while the page still
+  holds a batch it has not sealed works exactly as before.
+- **Rescans.** A rescan imported for a sheet whose batch is still open goes into
+  that batch, as before. One whose batch is sealed goes into a new **rescan**
+  batch of the same session. Either way the replacement is confirmed on the
+  Resolve stage and counts in the original's batch.
+- ***Reprocess*** creates a **reprocess** batch over the same files and
+  records that it **supersedes** the original. The original batch is kept,
+  sealed, with every row, result, conflict and history entry.
+- **Session menu** (*Session* button beside the header): New Scan Session,
+  Rename, Close Session (seals every open batch; refused while a batch runs),
+  Reopen Session (any final export made while it was closed is stale), Combine
+  Into This Session (explicit and audited; refused for a closed target, a
+  different template identity, or a sheet that would be counted twice).
+- **Template pinning.** A session remembers the template of its first batch.
+  Processing a batch with a different template asks first; continuing is
+  recorded in the audit ledger.
+- **Downstream, for now:** Attendance, Results and Reports read **one** batch -
+  the active session's newest scan/reprocess batch that is not superseded -
+  never "the most recently updated batch". A session of several batches is not
+  yet added up; that arrives with session-level results.
+- A **processing manifest** (what the batch was run with) is stored at the end
+  of every run and whenever a batch is sealed.
 
 ---
 

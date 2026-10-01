@@ -208,21 +208,30 @@ further unreleased work — see below).
 batches (one scanner or many, finite imports or continuous watched folders,
 later rescans), session-level attendance, results and reports, robust rescan
 provenance, and set-code identity improvements. **In development, not
-released:** [plan](development/releases/0.1.1-alpha.0/ROADMAP.md). Phase A (set
-identity) is implemented and its automated tests pass, on branch
-`feat/0.1.1-phase1-set-identity`; phases B–G (scan sessions, session-level
-results, intake, continuous processing, operator GUI, qualification) are
-pending.
+released:** [plan](development/releases/0.1.1-alpha.0/ROADMAP.md), built in
+ten revised phases.
 
-| `0.1.1` phase | Implemented | Automated tests | Synthetically validated | Real-scan validated | Network-share validated | Production qualified |
+- **Completed (implemented, tests passing, merged):** phase 1, set identity.
+- **Under testing (implemented, tests passing, not merged):** phase 2, scan
+  sessions and finite batches, on branch
+  `feat/0.1.1-phase2-scan-session-lifecycle`.
+- **Pending:** phases 3–10 - crash-safe Scan/Resolve persistence, session-level
+  results (a session of several batches is **not** added up until then),
+  intake, continuous processing, quality/session controls, operational GUI,
+  automated qualification, SMB / installed build / release gate.
+
+| `0.1.1` revised phase | Implemented | Automated tests | Synthetically validated | Real-scan validated | Network-share validated | Production qualified |
 |---|---|---|---|---|---|---|
-| A — Set identity | ✅ (branch, unmerged) | ✅ passing | n/a for this phase | ❌ | n/a | ❌ |
-| B — Scan sessions and finite batches | ⚪ pending | — | — | — | — | — |
-| C — Session-level results | ⚪ pending | — | — | — | — | — |
-| D — Intake sources and ledger | ⚪ pending | — | — | — | — | — |
-| E — Continuous processing | ⚪ pending | — | — | — | — | — |
-| F — Operational GUI | ⚪ pending | — | — | — | — | — |
-| G — Qualification and release | ⚪ pending | — | — | — | — | — |
+| 1 — Set identity | ✅ merged | ✅ passing | n/a for this phase | ❌ | n/a | ❌ |
+| 2 — ScanSession + finite ScanBatch lifecycle | ✅ (branch, unmerged) | ✅ passing | n/a for this phase | ❌ | n/a | ❌ |
+| 3 — Crash-safe Scan/Resolve persistence | ⚪ pending | — | — | — | — | — |
+| 4 — Session-level effective results | ⚪ pending | — | — | — | — | — |
+| 5 — Intake sources + ledger | ⚪ pending | — | — | — | — | — |
+| 6 — Continuous-processing engine | ⚪ pending | — | — | — | — | — |
+| 7 — Quality / rescan / session controls | ⚪ pending | — | — | — | — | — |
+| 8 — Operational GUI | ⚪ pending | — | — | — | — | — |
+| 9 — Automated qualification | ⚪ pending | — | — | — | — | — |
+| 10 — SMB / installed build / Alpha release gate | ⚪ pending | — | — | — | — | — |
 
 Phases 0–10 are implemented; Phase 11 takes OMRFlow from "implemented and
 synthetically tested" to a qualified stable release.
@@ -270,6 +279,7 @@ synthetically tested" to a qualified stable release.
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
 | Answer Key stage (Step 7) rework | 🟠 **Implemented — under real-world validation.** One real solution sheet (ECE-0000) and four real scans used as stand-ins read 500/500 against a visual transcription with no false confident read; one dialog defect found and fixed; no operator use yet. The stage reads the project's own template (Scan need not be visited), shows every defined set's key state, keeps the key string and question table in step, reviews a marked solution sheet before anything is saved, records per-revision provenance (migration 12), and never uses a key that no longer fits the template. See below |
+| Scan sessions & finite batches (`0.1.1` revised phase 2) | 🟠 **Implemented — automated tests passing; not used with a real scanner or by an operator; not production qualified.** Every batch belongs to a scan session (created silently by the first Process All); a later Process All - also after reopening the project - adds a new batch to the same session and seals the previous one; Reprocess creates a superseding batch and deletes nothing; minimal Session menu; migration 14 with upgrade backfill tested from schema-13 projects written by the schema-13 build. Downstream stages read one batch of the session until session-level results (phase 4). Crash-safe recovery is phase 3. [Handoff](development/releases/0.1.1-alpha.0/PHASE_B_HANDOFF.md) |
 | Set identity (`0.1.1` phase A) | 🟠 **Implemented — automated tests passing; not used with a real scanner or real paper; not production qualified.** Set codes compare without regard to case, width or surrounding spaces everywhere (one function, enforced by an architecture test); a set may be *Printed on sheet as* another mark (Set 10 as `A`), translated once after Resolve with the raw reading kept; migration 13, with legacy `A` / `a` pairs kept, reported and blocking only their own set-dependent stages. Upgrade tested from schema-12 projects written by the schema-12 build. Counts and limitations: [handoff](development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md) |
 | Synthetic written Student ID & set code; used-reference cleanup | 🟠 **Implemented — automated tests passing; inspected visually on generated sheets and a real used sample form, not yet used in a real session.** The *intended* Student ID and set code (not the bubbled ones) are written in the boxes above their bubbles; a used reference form has its old writing **and its old bubble marks** removed first, keeping the printed rings, labels and borders. On the sample: 110/110 filled bubbles removed, none of the 390 unfilled touched; generated sheets read back 100/100. Full suite after the set-code and cleanup work: 5817 passed, 15 skipped, 0 failed. See below |
 

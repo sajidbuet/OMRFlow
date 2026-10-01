@@ -33,6 +33,11 @@ On the **Scan** stage:
    `sheet10`.
 3. **Clear Scan List** empties the list without touching the files.
 
+The batch you process joins the project's **scan session** (created by the
+first *Process All*, named in the Scan stage header). Scans added later go into
+a **new batch of the same session**; a rescan for a sheet whose batch is sealed
+goes into a new *rescan* batch. See [Processing](Processing#scan-sessions).
+
 ## Duplicate and changed scans
 
 OMRFlow hashes each imported image's contents. It can therefore tell you
