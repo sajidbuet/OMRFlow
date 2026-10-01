@@ -191,9 +191,15 @@ file). "Re-read" = sheets committed before the kill that a later run
 submitted to recognition (from the submission log); every case also asserts
 `attempt_count == 1` on every row (an independent, database-side witness).
 
-Figures from the final full-suite run (`tests/crash/test_crash_matrix.py`,
-evidence written via `OMRFLOW_CRASH_EVIDENCE`); every case had also passed in
-development runs before it.
+Figures from a full-suite run of `tests/crash/test_crash_matrix.py` (evidence
+written via `OMRFLOW_CRASH_EVIDENCE`). **Stability:** while hardening the
+harness, matrix runs failed intermittently for three harness-side reasons and
+one product defect, each diagnosed rather than retried - a child's exit abort
+after its clean close (see *Known limitations*), a read-only inspection
+meeting a hot journal (ditto), a clean-close trigger that never fired
+(scheduled from a thread with no event loop), and the preview worker
+outliving the window (fixed, discrepancy 6). After those, three consecutive
+runs: 16/16 passed each (36 child processes per run).
 
 | # | Case | Kill point (state) | Scale | Committed at kill | Retried by resume | Re-read | Verdict |
 |---|---|---|---|---|---|---|---|
@@ -207,8 +213,8 @@ development runs before it.
 | 8 | Unresolved stay unresolved | (case 6's project, 3 reopens) | | - | - | - | **Pass** - queue = exactly the 3 unresolved, each reopen |
 | 9 | Repeated restarts | 3 reopens after the kill | | - | - | - | **Pass** - snapshot identical: 6 conflicts, 12 audit rows, 1 session, 1 batch, 0 supersessions, 40 scans; reconciliation/result/rejection/report/history tables unchanged |
 | 10 | Results after interruption | Two kills, at 13 and 26 committed (cumulative) | 40 / 2 w | 14, then 26 | 14 | 0 | **Pass** - per-sheet results (status + full result JSON minus timings), conflicts, effective IDs and set codes, reconciliation counts and all 43 `candidate_result` rows equal the uninterrupted reference |
-| 11 | Kills at 1/25/50/75/99 % | One project killed at each point in turn, resumed between | 40 / 2 w | 1, 10, 20, 30, 39 | 39, 30, 20, 10, then 1 | 0 at every step | **Pass** - final semantics equal the reference |
-| 11 (stress) | Same, at scale (`-m stress`) | as above | **1,000 / 4 w** | 11, 250, 502, 752, 990 | 989, 750, 498, 248, then 10 | 0 at every step | **Pass** (3 min 34 s, final code) - final semantics equal a 1,000-sheet uninterrupted reference |
+| 11 | Kills at 1/25/50/75/99 % | One project paused and killed at ≥ 1, 10, 20, 30, 39 committed in turn, restarted between | 40 / 2 w | 1, 11, 21, 32, 40 | submitted per restart: 39, 29, 19, 8 (the 99 % kill left nothing) | 0 at every step | **Pass** - final semantics equal the reference |
+| 11 (stress) | Same, at scale (`-m stress`) | ≥ 10, 250, 500, 750, 990 | **1,000 / 4 w** | 10, 250, 500, 751, 991 | submitted per restart: 990, 750, 500, 249, then 9 | 0 at every step | **Pass** (2 min 07 s, final code) - final semantics equal a 1,000-sheet uninterrupted reference |
 | 12 | Integrity | Straight after a kill at 12 commits, before any reopen | 40 / 2 w | ≥ 12 | - | - | **Pass** - `quick_check`/`integrity_check` `ok`, no FK rows, no health error; `BATCH_LEFT_RUNNING` + `STALE_PROCESSING_JOBS` before the reopen, gone after |
 | 13a | Recognition committed, batch-scope review not yet | Paused after every result committed, before the batch pass | 40 / 2 w | 40 | 0 (reopen recognises nothing) | 0 | **Pass** - 0 duplicate-ID conflicts at the kill, 4 after the reopen; all conflicts = the reference; a second reopen changed nothing |
 | 13b | An earlier build's results without conflicts | Pre-phase-3 write path (`legacy_scan`) paused after 20 commits | 40 / 2 w | 20, **0 conflicts** | 20 | 0 | **Pass** - the reopen created exactly the reference's conflicts for those sheets (1), none detected twice; after resume all conflicts = the reference |
@@ -255,20 +261,23 @@ conflicts it actually creates.
 | File | Tests | Kind |
 |---|---|---|
 | `tests/integration/test_crash_safe_persistence.py` | 28 | headless: work unit atomic and rolled back together; recognition-only path unchanged; `on_commit` reports only committed sheets; failing store commits nothing; adaptive policy one-by-one when spaced, coalescing a backlog within the bound; conflicts an earlier build never wrote created exactly once; marked batch not re-derived but completed; batch-scope state after a crash; recovery never recognises; missing template recovers status and warns; repair of a failed sheet without its conflict; in-flight → pending; recorded failures stay failures; no manifest written; no new session/batch/supersession; sealed stays sealed; closed stays closed; repeated recovery identical; progress from rows; restore targets (unfinished / finished batch); Resolve decisions across a reopen; Project Health findings fire and stay silent; withdrawn-conflict re-sync regression; stored results round-trip for re-derivation |
-| `tests/gui/test_crash_reopen_gui.py` | 8 | Scan shows the interrupted batch from committed rows before Resume; same session and batch; Resume reads only the uncommitted; Process All on a restored batch skips the committed; sealed batch shown sealed and resumes its members; Resolve opens with decisions and the exact queue without Scan; read-but-uncommitted is in flight, not processed; failing store counts nothing ("not saved") |
+| `tests/gui/test_crash_reopen_gui.py` | 9 | closing the window joins a preview worker still reading; Scan shows the interrupted batch from committed rows before Resume; same session and batch; Resume reads only the uncommitted; Process All on a restored batch skips the committed; sealed batch shown sealed and resumes its members; Resolve opens with decisions and the exact queue without Scan; read-but-uncommitted is in flight, not processed; failing store counts nothing ("not saved") |
 | `tests/crash/test_crash_matrix.py` | 16 (+1 `stress`) | real-process kill / restart matrix above |
-| **Total new** | **52** in the default run, **+1** `stress` | |
+| **Total new** | **53** in the default run, **+1** `stress` | |
 
 No existing test was edited.
 
-Final runs (branch, after the last code change `f7a76a8`):
+Final runs (branch, after the last code change `2729446` and harness change
+`c463834`):
 
 | | Result |
 |---|---|
-| pytest (full, worktree) | **6,280 passed, 29 skipped, 0 failed**, 5 `stress` deselected (56 min 18 s) |
+| pytest (full, worktree) | **6,281 passed, 29 skipped, 0 failed**, 5 `stress` deselected (50 min 10 s) |
 | the 13 extra skips | `tests/local/test_real_marked_sheets.py`, whose real-sheet fixture (`Scratch/Project1`, untracked) exists only in the main checkout; run there against this branch's `src`: **13 passed** (`tests/local` is unchanged on the branch) |
-| ⇒ equivalent | **6,293 passed, 16 skipped, 0 failed** = baseline 6,241 + 52 new; the same 16 environment skips |
-| `-m stress` crash series | 1 passed (1,000 sheets, 3 min 34 s) |
+| ⇒ equivalent | **6,294 passed, 16 skipped, 0 failed** = baseline 6,241 + 53 new; the same 16 environment skips |
+| `-m stress` crash series | 1 passed (1,000 sheets, 2 min 07 s) |
+| teardown aborts after a clean close, in that full run | 1 (accepted per *Known limitations*); hot journals met: 0 |
+| earlier full run (before the preview-worker fix) | 6,280 passed, 29 skipped, 0 failed (56 min 18 s) |
 | `tests/gui` alone (during development) | 1,839 passed, 2 skipped |
 | ruff | `ruff check src tests tools scripts`: All checks passed |
 | mypy | no issues in 208 source files |
@@ -337,10 +346,25 @@ loss.
   database (pre-existing).
 * The headless stress CLI (`tools/benchmark_stress.py`) still records
   recognition only, as before.
-* The child process leaves via `os._exit` after the application's own close
-  path: the offscreen Qt teardown at interpreter exit aborted it
-  (`0xC0000409`, `0xC0000005`) after the project was released while the
-  harness was built. Not investigated; not observed in the GUI test suite.
+* **Process exit faults after a clean close.** With `faulthandler` armed, the
+  child records an access violation inside `os._exit` (DLL unload of the
+  offscreen Qt / OpenCV / NumPy stack) in nearly every run; in a minority it
+  becomes the exit code (`0xC0000005`): 2 aborts among 108 child launches
+  over three consecutive matrix runs (the killed launches never reach exit),
+  both *after* the child's clean-close record, with
+  the project and database already released. The harness accepts such an
+  abort only after a clean close and counts it in the evidence. Whether the
+  installed application shows the same at exit was not examined. One cause of
+  exit aborts *was* found and fixed (discrepancy 6: the preview worker).
+* **A read-only open straight after a crash can fail.** A kill that lands
+  inside a commit leaves SQLite's hot rollback journal; SQLite rolls it back
+  on the next open that can write - which the application's normal reopen is
+  - but a read-only open (the safe mode of Phase 10) fails with *"attempt to
+  write a readonly database"* until then. The harness rolls the journal back
+  on a writable connection before inspecting; the product's read-only mode
+  was not changed. This also plausibly explains the earlier
+  `test_stress_kill_resume[100]` "read-only database on resume" flake noted
+  in the README (not re-investigated).
 * One `tests/gui -x` run during development appeared stalled for > 45 minutes
   while three other test/benchmark runs shared the machine; it was killed and
   a full verbose re-run passed (1,839 passed, 2 skipped). Cause not
@@ -365,10 +389,13 @@ loss.
 4. The prompt's suggested open order puts recovery before template settling;
    it runs after, because recovery re-derives conflicts against the template.
 5. The wiki recovery page claimed safety under power loss; corrected.
-6. A defect outside the four: stop-and-exit (`ScanPage.shutdown_batch`)
-   skipped the batch-scope passes; fixed. An idempotence defect in
-   `sync_conflicts` (`is` on a string) re-withdrew withdrawn conflicts on every
-   re-sync; fixed.
+6. Defects outside the four, found and fixed: stop-and-exit
+   (`ScanPage.shutdown_batch`) skipped the batch-scope passes; `sync_conflicts`
+   (`is` on a string) re-withdrew withdrawn conflicts on every re-sync;
+   `MainWindow.closeEvent` joined the Scan page's workers only while a batch
+   was running, so a preview worker still reading a sheet outlived the window
+   and aborted the process at exit (found from `faulthandler` stacks in the
+   crash harness; regression test fails without the fix).
 
 ## Phase 4 starting point
 

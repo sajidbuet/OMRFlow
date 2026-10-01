@@ -57,6 +57,9 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   `WITHDRAWN` audit event** each time (an identity comparison on a string).
 - **Stop-and-exit mid-run skipped the batch-wide review checks** and marked
   the batch cancelled without them.
+- **Closing the window could abort the process at exit** when the Scan stage's
+  preview worker was still reading a sheet (no batch running): the window now
+  waits for it, as it already did for a running batch.
 - **`processing_manifest` is now written** - at every batch seal and at the
   end of every processing run (`0.1.0-alpha.2` defect 6).
 - **A lower-case set code could not find its answer key** (latent
