@@ -1179,6 +1179,9 @@ class ScanPage(WorkflowPage):
             "output_dir": str(self.state.output_dir) if self.state.output_dir else "",
             "processing_mode": self.state.processing.mode.value,
             "diagnostics": self.state.processing.writes_diagnostics,
+            # Every result this stage records commits with its conflicts
+            # (ADR-0006); recovery relies on this to skip re-deriving them.
+            scan_recovery.WORK_UNIT_SETTING: True,
         }
 
     def _ensure_batch(

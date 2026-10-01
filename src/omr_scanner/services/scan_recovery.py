@@ -17,7 +17,9 @@ The durable Scan work unit (what "a sheet is completed" means):
     **before** the batch's status leaves ``running``. A batch still ``running``
     when a project is opened therefore means exactly "its batch-scope review
     state may be incomplete", which is what :func:`recover_on_open` repairs.
-    No marker column was needed: the batch status already carries the fact.
+    No marker column was needed: the batch status already carries the fact,
+    and a batch's settings record whether its writer used the work unit at all
+    (:data:`WORK_UNIT_SETTING`).
 
 Responsibilities:
     * :func:`complete_batch_review_state` - the batch-scope passes, in order.
@@ -73,6 +75,27 @@ _LOGGER = logging.getLogger(__name__)
 RESYNC_WINDOW = 500
 """Stored results re-derived per transaction during recovery. Bounds memory
 to one window of decoded results whatever the batch size."""
+
+WORK_UNIT_SETTING = "review_state_with_results"
+"""Key in a batch's ``settings_json`` recording that **every** result in it is
+committed together with its sheet's conflicts (ADR-0006).
+
+Written by the Scan stage when it registers a batch. Recovery trusts it to
+skip re-deriving per-sheet review state for an interrupted batch - measured at
+about 6 ms a stored result, which is minutes for a large batch - and still runs
+the targeted repair and the batch-scope passes. A batch without it (registered
+by an earlier build, or by a recognition-only tool) is re-derived in full,
+once. A setting rather than a column: no migration for one boolean of
+provenance the batch already has a place for."""
+
+
+def has_atomic_review_state(settings_json: str) -> bool:
+    """Whether a batch's settings say its results were committed with their conflicts."""
+    try:
+        settings = json.loads(settings_json or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(settings, dict) and settings.get(WORK_UNIT_SETTING) is True
 
 _STALE = (ScanJobStatus.QUEUED.value, ScanJobStatus.PROCESSING.value)
 _RESUMABLE = tuple(status.value for status in ScanJobStatus if status.is_resumable)
@@ -265,11 +288,13 @@ def recover_on_open(
     1. ``queued``/``processing`` rows (sheets submitted to a worker, never
        committed) return to ``pending`` - retryable, **never** ``failed``,
        never completed;
-    2. every stored result's per-sheet review state is re-derived from
-       ``result_json`` (no image is read). For a sheet committed by this build
-       it is already complete and nothing is written; for one committed by an
-       earlier build - which wrote conflicts only when a whole run ended - the
-       missing conflicts are created, once;
+    2. per-sheet review state is re-derived from ``result_json`` (no image is
+       read). A batch the Scan stage registered (:data:`WORK_UNIT_SETTING`)
+       committed every result with its conflicts, so only the targeted repair
+       below applies to it. Any other batch - one an earlier build wrote, which
+       saved conflicts only when a whole run ended - has every stored result
+       re-derived: missing conflicts are created, once, and a sheet already
+       complete is left without a write;
     3. the batch-scope passes (:func:`complete_batch_review_state`);
     4. only then the status: ``interrupted`` while work remains, otherwise
        the terminal status its rows imply. Until this step commits the batch
@@ -330,7 +355,10 @@ def recover_on_open(
         resynced = 0
         if template is not None:
             resynced = _resync_rows(
-                database, batch_id, template, only_failed_without_conflicts=False
+                database,
+                batch_id,
+                template,
+                only_failed_without_conflicts=has_atomic_review_state(batch.settings_json),
             )
         else:
             message = (

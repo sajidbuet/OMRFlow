@@ -388,6 +388,29 @@ class TestRecoveryCompletesReviewState:
             )
         assert detected == len(expected)
 
+    def test_a_scan_stage_batch_is_not_re_derived_but_still_completed(
+        self, project, sheets, outcomes, template
+    ):
+        # The Scan stage marks its batches: every result committed with its
+        # conflicts. Recovery then skips the per-row re-derivation (minutes on
+        # a large batch) and still completes the batch-scope state.
+        session, path = project
+        database = session.database
+        batch_id = batch_store.create_batch(
+            database,
+            sheets,
+            identity=batch_store.BatchIdentity.of(template, path),
+            settings={scan_recovery.WORK_UNIT_SETTING: True},
+        )
+        _set_running(database, batch_id, sheets)
+        batch_store.record_results(database, batch_id, outcomes, template=template)
+
+        report = scan_recovery.recover_on_open(database, templates=[template])
+
+        assert report.batches[0].sheets_resynced == 0
+        kinds = {row[1] for row in _conflict_identities(database, batch_id)}
+        assert ConflictType.IDENTIFIER_DUPLICATE.value in kinds
+
     def test_batch_scope_review_state_is_completed_after_a_crash(
         self, project, sheets, outcomes, template
     ):
