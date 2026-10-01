@@ -119,13 +119,11 @@ from omr_scanner.services import (
     scan_ids_by_path,
     scan_lifecycle,
     scan_paths,
+    scan_recovery,
     scan_sessions,
     set_batch_status,
     set_identity,
     sheet_resolutions,
-    sync_conflicts,
-    sync_duplicate_identifiers,
-    sync_undefined_set_codes,
 )
 from omr_scanner.services.batch_store import BatchSealedError
 from omr_scanner.services.recognition_models import utc_timestamp
@@ -139,6 +137,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.evaluation.session import BenchmarkComparison, BenchmarkSession
     from omr_scanner.gui.pages.catalog import WorkflowPageSpec
     from omr_scanner.services import ProjectDatabase, ProjectSession, SheetResolution
+    from omr_scanner.services.run_hooks import RunHooks
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -322,6 +321,15 @@ class ScanPage(WorkflowPage):
         self._last_snapshot = ProgressSnapshot()
         self._final_report: BatchReport | None = None
         self._batch_started_at = ""
+        self._run_persisted = False
+        """Whether the current/last run committed through a recorder - and so
+        whether its counts are committed counts (0.1.1 phase 3, S3)."""
+        self._restored_batch_id: str | None = None
+        """The batch :meth:`adopt_batch` loaded from the project, while held."""
+        self.run_hooks: RunHooks | None = None
+        """Observation points at a run's durable boundaries. ``None`` in the
+        application; injected by the real-process crash harness only
+        (:mod:`omr_scanner.services.run_hooks`)."""
 
         # The last benchmark this page produced, kept so the banner's "Show
         # Results" can reopen it without re-running anything.
@@ -1325,13 +1333,63 @@ class ScanPage(WorkflowPage):
             for path in paths
         ]
         self.state.batch_id = batch_id
+        self._restored_batch_id = batch_id
         self._preview_cache.clear()
         self._allocator = FilenameAllocator(self.state.output_dir)
         self._rebuild_scan_table()
         self._refresh_batch_state_label()
+        self.show_stored_progress()
+        self._refresh_conflict_label()
         self._refresh_controls()
         _LOGGER.info(
             "Reopened batch %s: %s", batch_id, summary.resume_label
+        )
+        return True
+
+    def show_stored_progress(self) -> bool:
+        """Render the held batch's progress from committed rows (0.1.1 phase 3, S2).
+
+        Returns:
+            Whether there was a stored batch to show.
+
+        What a reopened project shows *before* Resume is pressed: counts from
+        one grouped query over the batch's rows - never a stored percentage
+        or the counter a previous process held in memory. Recognised means a
+        committed result, failures included (a failed sheet is retryable on
+        request); pending is everything a Resume would read.
+        """
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is None or batch_id is None or self.is_processing:
+            return False
+        progress = scan_recovery.scan_progress(database, batch_id)
+        if progress is None:
+            return False
+        total = progress.total
+        self.progress_bar.setRange(0, max(total, 1))
+        self.progress_bar.setValue(progress.recognised)
+        percent = (progress.recognised / total * 100.0) if total else 0.0
+        self.progress_bar.setFormat(f"{percent:.1f}%")
+        if progress.pending:
+            self.progress_label.setText(
+                f"Batch {progress.status.replace('_', ' ')} - press Resume to read the "
+                f"{format_count(progress.pending)} remaining scan(s)."
+            )
+        else:
+            self.progress_label.setText("Batch restored - every scan has been read.")
+        retryable = (
+            f" · {format_count(progress.failed)} failed (retryable)" if progress.failed else ""
+        )
+        self.progress_counts_label.setText(
+            f"{format_count(progress.recognised)} / {format_count(total)} recognised"
+            f"{retryable} · {format_count(progress.pending)} pending"
+        )
+        self.progress_timing_label.setText("Restored from the project database")
+        self.progress_rate_label.setText("")
+        self.progress_outcome_label.setText(
+            f"Successful {format_count(progress.completed)} · "
+            f"Review {format_count(progress.warning)} · "
+            f"Failed {format_count(progress.failed)}"
         )
         return True
 
@@ -1631,8 +1689,30 @@ class ScanPage(WorkflowPage):
     # Processing
     # ------------------------------------------------------------------
     def process_all(self) -> bool:
-        """Process every scan in the list. Returns whether a run started."""
-        return self._start_batch([entry.path for entry in self.state.entries])
+        """Process every scan in the list. Returns whether a run started.
+
+        On a batch restored from the project after an interruption (0.1.1
+        phase 3), "every scan" means every scan **not already committed**:
+        what a previous process read and saved is never re-read by Process
+        All - that is Reprocess All's job, which keeps the original batch.
+        """
+        paths = [entry.path for entry in self.state.entries]
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is not None and batch_id is not None and batch_id == self._restored_batch_id:
+            remaining = set(resumable_scans(database, batch_id))
+            members = set(scan_paths(database, batch_id))
+            paths = [path for path in paths if path in remaining or path not in members]
+            if not paths:
+                QMessageBox.information(
+                    self,
+                    "Nothing to process",
+                    "Every scan in this batch has already been read and saved. Use "
+                    "Retry Failed for unreadable scans, or Reprocess All to read "
+                    "everything again into a new batch.",
+                )
+                return False
+        return self._start_batch(paths)
 
     def process_selected(self) -> bool:
         """Process the selected rows, or the current one when nothing is selected."""
@@ -1858,10 +1938,19 @@ class ScanPage(WorkflowPage):
             try:
                 mark_queued(database, batch_id, paths)
                 set_batch_status(database, batch_id, BatchStatus.RUNNING)
-                recorder = BatchRecorder(database=database, batch_id=batch_id)
+                # The durable work unit (ADR-0006): each sheet's result and
+                # the conflicts it implies commit together, one sheet per
+                # transaction whenever the writer keeps up.
+                recorder = BatchRecorder(
+                    database=database,
+                    batch_id=batch_id,
+                    template=self.state.template,
+                    commit_when_idle=True,
+                )
             except OMRScannerError:
                 _LOGGER.exception("Could not mark batch %s as running", batch_id)
                 recorder = None
+        self._run_persisted = recorder is not None
 
         _LOGGER.info(
             "Batch started: %d scan(s), %d worker(s), mode %s, diagnostics %s, "
@@ -1881,6 +1970,7 @@ class ScanPage(WorkflowPage):
             self,
             workers=workers,
             recorder=recorder,
+            hooks=self.run_hooks,
         )
         worker.progress.connect(self._on_progress)
         worker.scan_done.connect(self._on_scan_done)
@@ -1992,8 +2082,14 @@ class ScanPage(WorkflowPage):
             # One decimal, and computed from the exact counts rather than from
             # the widget: 9,999 of 10,000 must not read as 100%.
             self.progress_bar.setFormat(f"{snapshot.percent:.1f}%")
+            # `completed` is committed sheets only (S3). A sheet a worker has
+            # read but the store has not yet saved is named separately and is
+            # never counted as processed.
+            saving = (
+                f" · {format_count(snapshot.in_flight)} saving" if snapshot.in_flight else ""
+            )
             self.progress_counts_label.setText(
-                f"{format_count(completed)} / {format_count(total)} processed"
+                f"{format_count(completed)} / {format_count(total)} processed{saving}"
             )
 
         if snapshot.state is BatchState.PROCESSING:
@@ -2026,6 +2122,10 @@ class ScanPage(WorkflowPage):
 
     def _on_batch_finished(self, report: BatchReport) -> None:
         """Finish a run: settle its stored state, summarise it, re-enable."""
+        if self._worker is None:
+            # `shutdown_batch` already settled this run; this is its report
+            # arriving late.
+            return
         self._refresh_timer.stop()
         snapshot = self._worker.progress_snapshot() if self._worker is not None else None
         persistence_failure = (
@@ -2035,10 +2135,18 @@ class ScanPage(WorkflowPage):
         self._worker = None
         self._final_report = report
 
-        self._settle_batch_state(report)
-        # Conflicts are detected from the finished results, in this process,
-        # after the pool has been torn down - see `_generate_conflicts`.
+        # Every sheet's own conflicts committed with its result. What is left
+        # is the batch-scope review state, and it is completed *before* the
+        # batch leaves `running` (ADR-0006): a crash in between leaves a
+        # running batch, which the next open repairs.
+        hooks = self.run_hooks
+        batch_id = self.state.batch_id
+        if hooks is not None:
+            hooks.run_recognised(batch_id)
         self._generate_conflicts(report)
+        if hooks is not None:
+            hooks.review_state_completed(batch_id)
+        self._settle_batch_state(report)
         if snapshot is not None:
             self._last_snapshot = snapshot
         self._render_completion(report, self._last_snapshot)
@@ -2080,23 +2188,25 @@ class ScanPage(WorkflowPage):
         self.review_requested.emit(self.state.batch_id)
         return True
 
-    def _generate_conflicts(self, report: BatchReport) -> None:
-        """Record what this run could not decide, for human review (Phase 6).
+    def _generate_conflicts(self, report: BatchReport) -> None:  # noqa: ARG002 - kept for callers
+        """Complete this batch's batch-scope review state (Phase 6, ADR-0006).
 
-        Runs in the coordinating process, once, after the batch has finished -
-        never inside a worker. Two reasons, and both are architectural rather
-        than convenience:
+        Runs in the coordinating process, once, after the run has finished -
+        never inside a worker. A worker process must not open the project
+        database: SQLite is a single-writer store and Phase 5 keeps it that
+        way by construction.
 
-        * A worker process must not open the project database. SQLite is a
-          single-writer store and Phase 5 keeps it that way by construction;
-          letting eight processes write conflicts would be exactly the shared
-          mutable state the worker pool exists to avoid.
-        * A duplicate identifier is not a property of one sheet - both sheets
-          are perfectly legible - so it cannot be seen while reading one.
+        **Since 0.1.1 phase 3 each sheet's own conflicts are not written
+        here**: they commit in the same transaction as the sheet's result
+        (:func:`omr_scanner.services.batch_store.record_results`), so a sheet
+        is never saved as read while its conflicts are missing. What remains is
+        what depends on the whole batch - re-import links, duplicate
+        identifiers (both sheets are perfectly legible, so a duplicate cannot
+        be seen while reading one) and undefined set codes - via
+        :func:`omr_scanner.services.scan_recovery.complete_batch_review_state`,
+        which the next project open also runs if a crash stops it here.
 
-        Detection is idempotent: re-running a batch, resuming it or retrying a
-        failed sheet updates the existing conflicts rather than creating a
-        second set, because a conflict's identity is
+        Detection is idempotent: a conflict's identity is
         ``(batch, scan, type, zone, group)``.
 
         Never fatal. A batch that read ten thousand sheets correctly is not
@@ -2111,25 +2221,8 @@ class ScanPage(WorkflowPage):
             self.conflict_label.setText("")
             return
 
-        rows = scan_ids_by_path(database, batch_id)
-        total = 0
         try:
-            for item in report.processed:
-                scan_id = rows.get(item.source_path)
-                if scan_id is None:
-                    continue
-                total += sync_conflicts(
-                    database,
-                    batch_id=batch_id,
-                    scan_id=scan_id,
-                    result=item.result,
-                    template=template,
-                )
-            # Before duplicate detection: a re-import of a rejected scan's
-            # exact bytes is linked back to it and must not take part.
-            scan_lifecycle.sync_reimports(database, batch_id)
-            duplicates = sync_duplicate_identifiers(database, batch_id)
-            sync_undefined_set_codes(database, batch_id)
+            duplicates = scan_recovery.complete_batch_review_state(database, batch_id)
         except OMRScannerError:
             _LOGGER.exception("Conflicts could not be recorded for batch %s", batch_id)
             self.conflict_label.setText(
@@ -2219,9 +2312,15 @@ class ScanPage(WorkflowPage):
         )
 
     def _render_completion(self, report: BatchReport, snapshot: ProgressSnapshot) -> None:
-        """Show the final state: exactly 100%, or an honest partial count."""
+        """Show the final state: exactly 100%, or an honest partial count.
+
+        With a project, "processed" is the sheets whose work unit committed
+        (S3) - normally every sheet the run read; fewer only when the store
+        failed, and the difference is then named as not saved.
+        """
         total = max(snapshot.total, report.total)
-        processed = report.total
+        processed = snapshot.completed if self._run_persisted else report.total
+        unsaved = max(report.total - processed, 0) if self._run_persisted else 0
         if total > 0:
             self.progress_bar.setRange(0, total)
             self.progress_bar.setValue(processed)
@@ -2230,17 +2329,18 @@ class ScanPage(WorkflowPage):
         duration = format_duration(snapshot.elapsed_seconds or report.elapsed_seconds)
         average = report.total / report.elapsed_seconds if report.elapsed_seconds > 0 else 0.0
 
+        not_saved = f" · {format_count(unsaved)} not saved" if unsaved else ""
         if report.cancelled:
             self.progress_label.setText("Batch cancelled.")
             self.progress_counts_label.setText(
                 f"{format_count(processed)} / {format_count(total)} processed · "
-                f"{format_count(max(total - processed, 0))} not processed"
+                f"{format_count(max(total - processed, 0))} not processed{not_saved}"
             )
             self.progress_timing_label.setText(f"Stopped after {duration}")
         else:
             self.progress_label.setText("Batch processing complete.")
             self.progress_counts_label.setText(
-                f"{format_count(processed)} / {format_count(total)} processed"
+                f"{format_count(processed)} / {format_count(total)} processed{not_saved}"
             )
             self.progress_timing_label.setText(
                 f"Completed in {duration} · Remaining {format_duration(0)}"
@@ -2255,10 +2355,15 @@ class ScanPage(WorkflowPage):
             f"Average {format_rate(average)} · {report.worker_count} "
             f"worker{'' if report.worker_count == 1 else 's'}{written}"
         )
+        successful, review, failed = (
+            (snapshot.successful, snapshot.warnings, snapshot.failed)
+            if self._run_persisted
+            else (report.complete_count, report.review_count, report.failed_count)
+        )
         self.progress_outcome_label.setText(
-            f"Successful {format_count(report.complete_count)} · "
-            f"Review {format_count(report.review_count)} · "
-            f"Failed {format_count(report.failed_count)}"
+            f"Successful {format_count(successful)} · "
+            f"Review {format_count(review)} · "
+            f"Failed {format_count(failed)}"
         )
 
         self.cancel_button.setText("Cancel Processing")
@@ -3028,21 +3133,32 @@ class ScanPage(WorkflowPage):
         """
         self._refresh_timer.stop()
         worker = self._worker
-        if worker is not None and worker.isRunning():
-            worker.cancel()
-            worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+        if worker is not None:
+            was_running = worker.isRunning()
+            if was_running:
+                worker.cancel()
+                worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
             # `finished_report` may never be delivered - the event loop is on
-            # its way out - so the batch's stored state is settled here rather
-            # than relying on a signal that might not arrive.
+            # its way out, and a run that ended a moment ago may still have it
+            # queued - so the batch's stored state is settled here rather than
+            # relying on a signal that might not arrive. In the ADR-0006
+            # order: the batch-scope review state first, then the status.
             database = self.database
             batch_id = self.state.batch_id
             if database is not None and batch_id is not None:
                 try:
-                    mark_cancelled(database, batch_id)
+                    scan_recovery.complete_batch_review_state(database, batch_id)
+                    if was_running:
+                        mark_cancelled(database, batch_id)
+                    else:
+                        finalise_batch(database, batch_id)
                 except OMRScannerError:
                     _LOGGER.exception(
-                        "Could not mark batch %s cancelled during shutdown", batch_id
+                        "Could not settle batch %s during shutdown", batch_id
                     )
+            # Settled here; a `finished_report` still queued must not settle
+            # it a second time (see `_on_batch_finished`).
+            self._worker = None
         if self._preview_worker is not None and self._preview_worker.isRunning():
             self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
 

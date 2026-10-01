@@ -131,10 +131,10 @@ from omr_scanner.services import (
     diagnostics,
     load_template,
     open_project,
-    recover_interrupted,
     resolve_active_template,
     review_store,
     scan_lifecycle,
+    scan_recovery,
     scan_sessions,
     set_active_template,
 )
@@ -1645,15 +1645,29 @@ class MainWindow(QMainWindow):
         if self._session is not None:
             self._session.close()
         self._session = session
+        # The open sequence (0.1.1 phase 3, ADR-0006). `open_project` has
+        # already migrated the schema and run the scan-session backfill; the
+        # active scan session is whatever that left. Then, in order:
+        #
+        # 1. the project's template is settled - before any page sees the
+        #    session, so Template, Calibrate and Scan all receive it already
+        #    resolved (doing it per page would mean three disk scans and three
+        #    chances to disagree), and so recovery can re-derive review state
+        #    against it;
+        # 2. interrupted work is recovered: stale rows back to pending,
+        #    missing review state re-derived from stored results, batch-scope
+        #    passes, then the batch status - never a new session, batch or
+        #    supersession, and never a recognition;
+        # 3. every page adopts the project;
+        # 4. Scan and Resolve reconstruct their persisted state.
+        #
+        # Nothing here starts processing: Resume stays the operator's command.
+        self._adopt_project_template(session)
         if not session.read_only:
             self._recover_interrupted_batches(session)
-        # Before any page sees the session: a project that names no template
-        # but owns exactly one adopts it here, once, so Template, Calibrate
-        # and Scan all receive it already resolved. Doing it per page would
-        # mean three disk scans and three chances to disagree.
-        self._adopt_project_template(session)
         self._remember_recent_project(session.root)
         self._broadcast_project_change()
+        self._restore_persisted_work(session)
         self.statusBar().showMessage(f"Project '{session.name}' is open", STATUS_MESSAGE_MS)
 
     def _adopt_project_template(self, session: ProjectSession) -> None:
@@ -1774,19 +1788,55 @@ class MainWindow(QMainWindow):
         make a resumed batch skip exactly the sheets that were in flight when
         the crash happened - the ones most likely to be missing.
 
+        Since 0.1.1 phase 3 this is
+        :func:`~omr_scanner.services.scan_recovery.recover_on_open`, which also
+        completes the review state a crash can leave incomplete, from stored
+        results only - see that function for the exact order.
+
         Never fatal: a project that cannot be repaired still opens, because
         the operator can do plenty with it that has nothing to do with batches.
         """
+        templates = []
+        active = resolve_active_template(session.project)
+        if active is not None:
+            try:
+                templates.append(load_template(active))
+            except OMRScannerError:
+                logger.warning("The project template could not be loaded for recovery")
         try:
-            batches, scans = recover_interrupted(session.database)
+            report = scan_recovery.recover_on_open(session.database, templates=templates)
         except OMRScannerError:
             logger.exception("Could not recover interrupted batch state")
             return
-        if scans:
+        if report.scans_returned or report.interrupted_batches:
             self.statusBar().showMessage(
-                f"Recovered {scans} scan(s) from {batches} interrupted batch(es)",
+                f"Recovered {report.scans_returned} scan(s) from "
+                f"{report.interrupted_batches} interrupted batch(es)",
                 STATUS_MESSAGE_MS,
             )
+
+    def _restore_persisted_work(self, session: ProjectSession) -> None:
+        """Show Scan and Resolve as the project left them (0.1.1 phase 3, S2/R1).
+
+        The Scan stage adopts the active scan session's newest batch when it
+        still has unfinished scans - committed results, failures and what is
+        left to read, from the database, before Resume is pressed. Resolve
+        opens on the batch the downstream stages read (or that same batch),
+        with every committed decision applied and exactly the unresolved
+        conflicts queued - without visiting Scan first. Nothing is processed.
+        """
+        try:
+            targets = scan_recovery.restore_targets(session.database)
+        except OMRScannerError:
+            logger.exception("Could not work out which batch to restore")
+            return
+        scan_page = self._scan_page()
+        if scan_page is not None and targets.scan_batch_id is not None:
+            scan_page.adopt_batch(targets.scan_batch_id)
+        resolve = self._resolve_page()
+        if resolve is not None and targets.resolve_batch_id is not None:
+            template = scan_page.state.template if scan_page is not None else None
+            resolve.load_batch(targets.resolve_batch_id, template)
 
     def _broadcast_project_change(self) -> None:
         """Push the current session to every page, the footer and the chrome.
