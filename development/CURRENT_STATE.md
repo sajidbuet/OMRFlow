@@ -39,6 +39,31 @@ Update this file at the end of every phase.
   new project is created. Add / Edit / Delete / Move Up / Move Down, each
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
+
+### Set identity (`0.1.1-alpha.0` phase A, 2026-10-01 — implemented; automated tests passing; branch `feat/0.1.1-phase1-set-identity`, not merged)
+
+- Source builds report `0.1.1-alpha.0` (`_version.py`); nothing released.
+- One canonical set identity, `NFKC + strip + upper`
+  (`domain/set_identity.py`, used through `services/set_identity.py`): `a`,
+  ` A ` and full-width `Ａ` are Set `A` everywhere; `05` ≠ `5`. Defining `a`
+  beside `A` is refused. Every set-code comparison in `services/`, `domain/`
+  and `database/` goes through it (architecture test
+  `tests/unit/test_set_identity_architecture.py`). Fixes defect 5 (a
+  lower-case set could not find its key).
+- Optional physical mark per set (*Printed on sheet as*): Set `10` printed as
+  `A`. Raw readings are kept; `review_store.effective_set_codes` is the one
+  physical -> logical translation (`value` logical, `as_read` raw). Resolve
+  shows *Set 10 (A on sheet)*; the Answer Key check compares the read mark with
+  the chosen set's mark; the synthetic generator marks the physical value
+  (`--sets 10=A,11=B`); the scan CSV adds a `set` column for mapped projects.
+- Schema 13 (migration 13): `project_set.canonical_code` (unique where not
+  NULL), `project_set.physical_mark`. Legacy `A` / `a` pairs are kept, never
+  merged, reported by Project Health and Project Configuration, and block
+  reconciliation, key verification, scoring and reports for the pair until
+  renamed.
+- Not validated with a real scanner, real paper, or in production. Details,
+  test counts and limitations: `development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md`.
+
 ### Per-set attendance and set-aware reporting (examination-sets enhancement, Part 2)
 
 - Each set has **its own attendance workbook**. `candidate_roster.set_id`

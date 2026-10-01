@@ -19,6 +19,33 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
 
 ### Added
 
+- **Canonical set identity and printed set marks (`0.1.1` phase A; schema
+  13).** Set codes are compared without regard to case, compatibility width
+  or surrounding spaces (`unicodedata.normalize("NFKC", code).strip().upper()`)
+  in one place, `domain/set_identity.py`, used by every stage; an architecture
+  test forbids direct comparisons. Defining `a` beside `A` is now refused
+  (reverses the documented exact-match rule). A set may be *Printed on sheet
+  as* another mark (Set `10` as `A`): Project Configuration validates the mark
+  against the template and against every other set; the effective set after
+  Resolve is the logical set while the raw reading is kept; Resolve shows
+  *Set 10 (A on sheet)* and accepts the logical code in the set-code editor;
+  the Answer Key solution-sheet check compares the read mark with the chosen
+  set's mark; the synthetic generator marks the physical value (`10=A` in the
+  set list); the scan-results CSV gains a `set` column for mapped projects.
+  Migration 13 adds `project_set.canonical_code` (unique where not NULL) and
+  `project_set.physical_mark`; a legacy `A` / `a` pair is kept, never merged,
+  reported by Project Health and Project Configuration, and blocks only its own
+  reconciliation, key verification, scoring and reports until renamed.
+  Implemented; automated tests passing; not used with a real scanner or real
+  paper. See `development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md`.
+
+### Fixed
+
+- **A lower-case set code could not find its answer key** (latent
+  `0.1.0-alpha.2` defect 5): keys were stored as typed and looked up
+  upper-cased, and the registry compared exactly. All lookups are now
+  canonical.
+
 - **Results Dashboard tab.** The Results stage now has two tabs: *Results*
   (the existing stage, unchanged) and a read-only *Dashboard* with statistics
   for *Overall Exam* or one set: scored-script count, mean, median, mode,

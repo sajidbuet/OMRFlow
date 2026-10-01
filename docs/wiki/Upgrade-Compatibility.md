@@ -4,10 +4,14 @@ What OMRFlow promises about opening a project written by a different version.
 
 ## The two version numbers that matter
 
-| | This release |
+| | Current source (`0.1.1` development line, unreleased) |
 |---|---|
-| **Project format version** — the shape of `project.json` | **2** |
-| **Database schema version** — the shape of `database.sqlite` | **9** |
+| **Project format version** — the shape of `project.json` | **3** |
+| **Database schema version** — the shape of `database.sqlite` | **13** |
+
+(This table previously read format 2 / schema 9, which no longer matched the
+code; corrected 2026-10-01 from `project_format_version` in a project written
+by current code and `SCHEMA_VERSION` in `database/migrations.py`.)
 
 Both appear in the diagnostic bundle (**Application menu → Tools → Create
 Diagnostic Bundle…**). The schema a build *expects* is recorded as
@@ -33,6 +37,27 @@ of the data.
 **A migration that cannot complete stops.**
 It fails with a message and leaves the project as it was, rather than
 half-applying.
+
+## Schema 13 — set identity (`0.1.1` line, phase A)
+
+Opening a schema-12 project (written by `0.1.0-alpha.2` or the unreleased
+work after it) in a `0.1.1` source build applies migration 13: two columns on
+`project_set` and a unique index. A backup is taken first, as for every
+migration. Nothing else changes — scans, review decisions, answer keys,
+results and reports keep their stored values. If the project defines two sets
+that differ only in case (`A` and `a`), both are kept and the conflict is
+reported; see [Examination Sets](Examination-Sets).
+
+**Going back is not possible.** Once migrated, a `0.1.0-alpha.2` build refuses
+the project with *"This project was created with a newer version of OMRFlow.
+Please update OMRFlow to open it."* This was checked by opening a migrated
+project with the schema-12 code (`0ed96ed`); keep the pre-migration backup if
+you may need the older build. A **read-only** open in the new build does not
+migrate, so a schema-12 project can be inspected without upgrading it.
+
+Tested: automated upgrade tests from schema-12 projects written by the
+schema-12 build itself (`tests/fixtures/schema12/`). Not yet performed: an
+upgrade through an installed release build.
 
 ## What is *not* promised, before 1.0
 
