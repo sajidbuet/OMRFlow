@@ -61,6 +61,7 @@ from omr_scanner.database.models import (
     Base,
     BatchScan,
     BatchScanHistory,
+    BatchSupersession,
     CandidateResult,
     CandidateRoster,
     GeneratedReport,
@@ -77,6 +78,7 @@ from omr_scanner.database.models import (
     ReviewConflict,
     ScanBatch,
     ScanRejection,
+    ScanSession,
     SchemaMigration,
     ScoringPolicyRevision,
 )
@@ -582,6 +584,58 @@ def _migration_013_set_identity(connection: Connection) -> None:
     )
 
 
+SCAN_BATCH_LIFECYCLE_COLUMNS: tuple[tuple[str, str], ...] = (
+    (
+        "scan_session_id",
+        "VARCHAR(32) NULL REFERENCES scan_session(scan_session_id) ON DELETE RESTRICT",
+    ),
+    ("sealed_at", "DATETIME NULL"),
+    ("sealed_by", "VARCHAR(200) NOT NULL DEFAULT ''"),
+    ("role", "VARCHAR(20) NOT NULL DEFAULT 'scan'"),
+)
+
+
+def _migration_014_scan_sessions(connection: Connection) -> None:
+    """Add scan sessions, finite-batch membership and batch supersession.
+
+    Structure only (ADR-0005):
+
+    * ``scan_session`` - the examination-level container, with its pinned
+      template identity and close / reopen record;
+    * ``batch_supersession`` - one batch replacing another, with reason, actor,
+      time and an audited reversal;
+    * on ``scan_batch``: ``scan_session_id`` (nullable at the database level),
+      ``sealed_at`` / ``sealed_by`` (membership: NULL = open) and ``role``
+      (``scan`` for every existing row until the backfill re-labels it), each
+      guarded by ``PRAGMA table_info``, plus an index by session.
+
+    **No data is moved here.** Assigning existing batches to sessions is the
+    upgrade *backfill*
+    (:func:`omr_scanner.services.scan_sessions.backfill_legacy_batches`), run on
+    the first writable open after this migration and audited, because grouping
+    batches is a decision about examination data, not structure.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[ScanSession.__tablename__],
+            Base.metadata.tables[BatchSupersession.__tablename__],
+        ],
+    )
+    existing = {
+        row[1] for row in connection.execute(text("PRAGMA table_info(scan_batch)")).all()
+    }
+    for name, ddl in SCAN_BATCH_LIFECYCLE_COLUMNS:
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE scan_batch ADD COLUMN {name} {ddl}"))
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_scan_batch_session "
+            "ON scan_batch (scan_session_id, created_at)"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -668,6 +722,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "project_set.physical_mark"
         ),
         apply=_migration_013_set_identity,
+    ),
+    Migration(
+        version=14,
+        description=(
+            "Scan sessions: scan_session, batch_supersession; scan_batch."
+            "scan_session_id/sealed_at/sealed_by/role"
+        ),
+        apply=_migration_014_scan_sessions,
     ),
 )
 

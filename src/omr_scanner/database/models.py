@@ -115,6 +115,11 @@ class SettingKey:
     EXAM_NAME = "exam_name"
     PROJECT_FORMAT_VERSION = "project_format_version"
     CREATED_WITH = "created_with"
+    ACTIVE_SCAN_SESSION = "active_scan_session"
+    """The ``scan_session.scan_session_id`` the operator is working in (0.1.1 phase 2)."""
+    SCAN_SESSION_BACKFILL = "scan_session_backfill"
+    """JSON upgrade report written by the scan-session backfill: when it ran,
+    the sessions it created and every ambiguous relationship it left alone."""
 
 
 # ----------------------------------------------------------------------
@@ -219,6 +224,7 @@ class ScanBatch(Base):
     """
 
     __tablename__ = "scan_batch"
+    __table_args__ = (Index("ix_scan_batch_session", "scan_session_id", "created_at"),)
 
     batch_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -238,9 +244,128 @@ class ScanBatch(Base):
     )
     total_scans: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # --- Scan sessions (migration 14, 0.1.1 phase 2) -----------------------
+    # Deferred: an ordinary `select(ScanBatch)` does not name them, so a
+    # schema-13 project opened read-only (never migrated) still reads every
+    # batch. `services.scan_sessions` reads them explicitly, after checking the
+    # schema has them.
+    scan_session_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("scan_session.scan_session_id", ondelete="RESTRICT"),
+        nullable=True,
+        deferred=True,
+    )
+    """The session the batch belongs to. NULL only before the upgrade backfill."""
+    sealed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, deferred=True
+    )
+    """When membership became final. NULL = OPEN (may gain members)."""
+    sealed_by: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default="", deferred=True
+    )
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="scan", server_default="scan", deferred=True
+    )
+    """:class:`~omr_scanner.domain.scan_sessions.BatchRole` value."""
+
     def __repr__(self) -> str:
         """Return a debugging representation naming the batch and its state."""
         return f"ScanBatch(batch_id={self.batch_id!r}, status={self.status!r})"
+
+
+# ----------------------------------------------------------------------
+# 0.1.1 phase 2: scan sessions and batch supersession
+# ----------------------------------------------------------------------
+class ScanSession(Base):
+    """The examination-level unit a project's finite batches are grouped into.
+
+    ``Project -> ScanSession -> ScanBatch -> sheets``; see
+    ``docs/decisions/ADR-0005-scan-sessions-and-finite-batches.md``. A session
+    pins the template identity of its first batch so it cannot silently mix
+    batches read against different geometry or thresholds.
+    """
+
+    __tablename__ = "scan_session"
+    __table_args__ = (Index("ix_scan_session_state", "state", "created_at"),)
+
+    scan_session_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    origin: Mapped[str] = mapped_column(String(20), nullable=False, default="implicit")
+    """``implicit`` (created by Process All), ``operator`` (New Session) or
+    ``backfill`` (upgrade)."""
+    template_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    template_name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    geometry_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    recognition_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=""
+    )
+    engine_version: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    """The pinned template identity; empty until the first batch is attached."""
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    reopened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reopened_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    reopen_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    final_outputs_stale_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    """Set on reopen: any final output generated while the session was closed is
+    stale from this moment. Report scope (which outputs belong to a session) is
+    session-level reporting's to add."""
+    merged_into_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    """Set when *Combine* emptied this session into another one."""
+    notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the session and its state."""
+        return f"ScanSession(id={self.scan_session_id!r}, state={self.state!r})"
+
+
+class BatchSupersession(Base):
+    """One batch replacing another as its session's effective reading.
+
+    First-class rather than a ``supersedes_batch_id`` column, so that the reason,
+    the operator, the moment and an audited **reversal** are part of the record,
+    and a later reading (Reprocess All, a whole-batch rescan, an algorithmic
+    re-read) is expressed the same way. Never deleted: a reversal sets
+    :attr:`reversed_at`; the row stays as history.
+    """
+
+    __tablename__ = "batch_supersession"
+    __table_args__ = (
+        Index("ix_batch_supersession_superseded", "superseded_batch_id", "reversed_at"),
+        Index("ix_batch_supersession_superseding", "superseding_batch_id"),
+    )
+
+    supersession_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    superseded_batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="RESTRICT"), nullable=False
+    )
+    superseding_batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="RESTRICT"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reversed_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    reversal_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    @property
+    def is_live(self) -> bool:
+        """Whether this supersession is in force."""
+        return self.reversed_at is None
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming both batches."""
+        return (
+            f"BatchSupersession({self.superseded_batch_id!r} -> "
+            f"{self.superseding_batch_id!r}, live={self.is_live})"
+        )
 
 
 class BatchScan(Base):
