@@ -34,6 +34,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -1308,6 +1309,15 @@ class ProjectSet(Base):
     relationship, because an operator may legitimately correct a code
     (a typo, a renumbered paper) long after data has been attached to the set
     it names.
+
+    Set identity (migration 13, phase 0.1.1-A): :attr:`canonical_code` is
+    the canonical logical identity of :attr:`code`
+    (:func:`omr_scanner.domain.set_identity.canonical_code`), unique where not
+    NULL. It is NULL only for the second and later of a group of sets that a
+    project created before canonical identity existed and whose codes now
+    collide (``A`` and ``a``): those rows are kept, reported, and never merged.
+    :attr:`physical_mark` is what the sheet prints for the set when that is not
+    :attr:`code` (Set ``10`` printed as ``A``); ``""`` means the code itself.
     """
 
     __tablename__ = "project_set"
@@ -1317,6 +1327,14 @@ class ProjectSet(Base):
         # even if some future caller forgets to.
         UniqueConstraint("code", name="project_set_code"),
         Index("ix_project_set_order", "display_order"),
+        # One set per canonical identity. Partial, because a colliding legacy
+        # row deliberately carries NULL until an operator renames it.
+        Index(
+            "ux_project_set_canonical_code",
+            "canonical_code",
+            unique=True,
+            sqlite_where=text("canonical_code IS NOT NULL"),
+        ),
     )
 
     set_id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -1325,6 +1343,10 @@ class ProjectSet(Base):
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    canonical_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    physical_mark: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="", server_default=""
+    )
 
     def __repr__(self) -> str:
         """Return a debugging representation naming the set and its code."""

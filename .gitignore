@@ -44,6 +44,9 @@ desktop.ini
 # developer creates one inside the working tree for convenience.
 *.sqlite
 *.sqlite-journal
+# Except the synthetic schema-12 upgrade fixtures (no candidate data), written by
+# tests/fixtures/schema12/make_schema12_projects.py with the schema-12 build.
+!tests/fixtures/schema12/*/database.sqlite
 *.log
 /projects/
 # Both spellings deliberately. Git on Windows matches these case-insensitively,

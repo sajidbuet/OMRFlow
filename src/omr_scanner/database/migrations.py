@@ -80,6 +80,7 @@ from omr_scanner.database.models import (
     SchemaMigration,
     ScoringPolicyRevision,
 )
+from omr_scanner.domain.set_identity import canonical_code
 from omr_scanner.errors import DatabaseError, SchemaVersionError
 
 logger = logging.getLogger(__name__)
@@ -506,6 +507,81 @@ def _migration_012_answer_key_provenance(connection: Connection) -> None:
             )
 
 
+def _migration_013_set_identity(connection: Connection) -> None:
+    """Give every examination set a canonical identity and an optional printed mark.
+
+    Two additive columns on ``project_set`` and one partial unique index:
+
+    * ``canonical_code`` - the set's code in canonical form
+      (:func:`omr_scanner.domain.set_identity.canonical_code`: NFKC, trimmed,
+      upper case), unique where not NULL.
+    * ``physical_mark`` - what the sheet prints for the set when that is not
+      its code; ``''`` (the sheet prints the code) for every existing set.
+
+    **Why filling ``canonical_code`` belongs in the migration**, against this
+    module's "structure, not data" rule: it is not examination data but a
+    deterministic function of a column already in the same row - index
+    metadata, in effect - and the unique index it backs is meaningless until it
+    is filled. The table holds tens of rows, so there is no progress to report.
+
+    **Collisions are kept, never merged.** A project created before canonical
+    identity may define both ``A`` and ``a``. The first of such a group in the
+    operator's order (``display_order``, then ``code``, the order
+    :func:`omr_scanner.services.project_sets.list_sets` lists them in) receives
+    the canonical code; every later one keeps ``NULL``. No row is deleted or
+    renamed, and nothing that names a set code elsewhere -
+    ``batch_scan.set_code_value``, answer-key revisions, results, generated
+    reports, rejection records - is rewritten. The collision is reported by
+    Project Health and Project Configuration, and the set-dependent stages
+    refuse to proceed until the operator renames or removes one of the sets.
+    """
+    existing = {
+        row[1] for row in connection.execute(text("PRAGMA table_info(project_set)")).all()
+    }
+    if "canonical_code" not in existing:
+        connection.execute(
+            text("ALTER TABLE project_set ADD COLUMN canonical_code VARCHAR(32) NULL")
+        )
+    if "physical_mark" not in existing:
+        connection.execute(
+            text(
+                "ALTER TABLE project_set ADD COLUMN physical_mark VARCHAR(32) "
+                "NOT NULL DEFAULT ''"
+            )
+        )
+
+    rows = connection.execute(
+        text(
+            "SELECT set_id, code, canonical_code FROM project_set "
+            "ORDER BY display_order, code, set_id"
+        )
+    ).all()
+    taken = {str(row[2]) for row in rows if row[2] is not None}
+    for set_id, code, current in rows:
+        if current is not None:
+            continue
+        wanted = canonical_code(str(code))
+        if wanted in taken:
+            logger.warning(
+                "Set %r collides with another set's canonical code %r; it is kept "
+                "without a canonical code until an operator renames it",
+                code,
+                wanted,
+            )
+            continue
+        taken.add(wanted)
+        connection.execute(
+            text("UPDATE project_set SET canonical_code = :wanted WHERE set_id = :set_id"),
+            {"wanted": wanted, "set_id": set_id},
+        )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_project_set_canonical_code "
+            "ON project_set (canonical_code) WHERE canonical_code IS NOT NULL"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -584,6 +660,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "identity, source hash and metadata"
         ),
         apply=_migration_012_answer_key_provenance,
+    ),
+    Migration(
+        version=13,
+        description=(
+            "Set identity: project_set.canonical_code (unique where not NULL), "
+            "project_set.physical_mark"
+        ),
+        apply=_migration_013_set_identity,
     ),
 )
 

@@ -1,0 +1,9 @@
+{
+  "written_by_version": "0.1.0-alpha.2",
+  "schema_version": 12,
+  "written_at": "2026-10-01T02:56:32+00:00",
+  "projects": [
+    "colliding_sets",
+    "unique_sets"
+  ]
+}
