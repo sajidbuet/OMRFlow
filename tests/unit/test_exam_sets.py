@@ -141,10 +141,18 @@ class TestConflictDetection:
         existing = (self._set("a", "10"), self._set("b", "11"))
         assert find_conflicting_set("11", existing, ignoring="b") is None
 
-    def test_comparison_is_case_sensitive(self) -> None:
-        """`a` and `A` are different codes everywhere else in the application."""
+    def test_comparison_is_canonical_not_case_sensitive(self) -> None:
+        """`a` and `A` are one set code (0.1.1-alpha.0, ROADMAP A3).
+
+        This test used to assert the opposite - that ``"a"`` was free beside
+        ``"A"`` - which is the exact-match decision phase 0.1.1-A reverses:
+        every layer now compares set codes through
+        ``omr_scanner.domain.set_identity``, so the registry must too.
+        """
         existing = (self._set("a", "A"),)
-        assert find_conflicting_set("a", existing) is None
+        conflict = find_conflicting_set("a", existing)
+        assert conflict is not None
+        assert conflict.set_id == "a"
 
 
 class TestExamSetValue:

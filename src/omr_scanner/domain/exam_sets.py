@@ -42,11 +42,19 @@ application already passes around:
     Nothing in this phase changes those existing columns or adds a foreign
     key to them. This module only introduces the definition side; wiring the
     references to it belongs to the phase that needs it.
+
+    Since phase 0.1.1-A a code is compared through
+    :mod:`omr_scanner.domain.set_identity`, never byte for byte: ``"a"`` and
+    ``"A"`` are one set. A set may also carry a *physical mark* - the symbol
+    printed on the sheet when that differs from its logical code (Set 10
+    printed as ``A``).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from omr_scanner.domain.set_identity import canonical_code, same_set, token_owner
 
 MAX_SET_CODE_LENGTH = 32
 """Longest accepted set code.
@@ -82,17 +90,40 @@ class ExamSet:
         display_order: Position in the operator's own ordering, ascending.
             Ties are broken by :attr:`code` so that a listing is always
             deterministic.
+        physical_mark: What is printed on (and read off) the sheet for this
+            set, when that is not :attr:`code` - ``"A"`` for a Set 10 whose
+            papers carry an ``A``-``D`` set field. ``""`` means the sheet
+            prints the code itself, which is every set defined before this
+            existed.
     """
 
     set_id: str
     code: str
     description: str = ""
     display_order: int = 0
+    physical_mark: str = ""
 
     @property
     def display_label(self) -> str:
         """How this set is named in a sentence: ``"Set 10"``."""
         return f"Set {self.code}"
+
+    @property
+    def canonical_code(self) -> str:
+        """The canonical logical identity; see :mod:`omr_scanner.domain.set_identity`."""
+        return canonical_code(self.code)
+
+    @property
+    def printed_as(self) -> str:
+        """What the sheet carries for this set: the physical mark, else the code."""
+        return self.physical_mark or self.code
+
+    @property
+    def label_with_mark(self) -> str:
+        """``"Set 10 (A on sheet)"`` for a mapped set, :attr:`display_label` otherwise."""
+        if self.physical_mark and not same_set(self.physical_mark, self.code):
+            return f"Set {self.code} ({self.physical_mark} on sheet)"
+        return self.display_label
 
 
 def normalise_exam_name(raw: str) -> str:
@@ -153,10 +184,13 @@ def validate_set_code(raw: str) -> str:
 
     Control characters (a newline pasted in from a spreadsheet, most
     realistically) are rejected rather than stripped: a code is matched
-    exactly against what recognition reads off a sheet and against
+    against what recognition reads off a sheet and against
     ``answer_key_revision.set_code``, and a value that *looks* like ``10``
     in a table but really ends in a line break would fail those comparisons
     for reasons invisible on screen.
+
+    The operator's spelling is stored as typed (trimmed); comparison is
+    canonical (:func:`~omr_scanner.domain.set_identity.canonical_code`).
     """
     code = normalise_set_code(raw)
     if not code:
@@ -197,28 +231,69 @@ def find_conflicting_set(
     Returns:
         The conflicting set, or ``None`` when ``code`` is free.
 
-    Comparison is exact, not case-folded: ``set_code`` is matched byte for
-    byte everywhere else in the application (SQLite compares ``VARCHAR``
-    case-sensitively by default, and recognition reports exactly what it
-    read), so treating ``"a"`` and ``"A"`` as the same set here would
-    disagree with every other layer.
+    **Canonical, not exact** (changed in phase 0.1.1-A, reversing the
+    original exact-match decision). Comparison goes through
+    :func:`~omr_scanner.domain.set_identity.canonical_code`, so defining
+    ``"a"`` when ``"A"`` exists is refused: every other layer now compares set
+    codes the same way, and two sets that differ only in case would be one set
+    to recognition, scoring and the answer keys. A code is also refused when
+    another set is *printed* as it (Set 10 printed as ``A`` and a new Set
+    ``A``), because a sheet reading ``A`` could then mean either.
     """
-    for candidate in existing:
-        if ignoring is not None and candidate.set_id == ignoring:
-            continue
-        if candidate.code == code:
-            return candidate
-    return None
+    return token_owner(code, existing, ignoring=ignoring)
+
+
+def validate_physical_mark(raw: str) -> str:
+    """Return the physical mark to store, ``""`` for none, or raise.
+
+    The same character rules as :func:`validate_set_code`; an empty value is
+    allowed and means the sheet prints the set's own code. Whether the mark
+    can be printed on the project's template is a separate check
+    (:func:`omr_scanner.services.answer_key.can_print_set_code`).
+    """
+    mark = normalise_set_code(raw)
+    if not mark:
+        return ""
+    try:
+        return validate_set_code(mark)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace("A set code", "A printed set mark")) from exc
+
+
+def find_conflicting_mark(
+    mark: str,
+    code: str,
+    existing: tuple[ExamSet, ...],
+    *,
+    ignoring: str | None = None,
+) -> ExamSet | None:
+    """Return the set a physical mark would make ambiguous, if any.
+
+    Args:
+        mark: The proposed mark, already validated; ``""`` never conflicts.
+        code: The code of the set the mark is for. A mark equal to it is
+            redundant but harmless.
+        existing: The project's current sets.
+        ignoring: The set being edited.
+
+    A mark may not be any *other* set's code or mark: a sheet reading it
+    would otherwise name two sets.
+    """
+    if not mark or same_set(mark, code):
+        return None
+    return token_owner(mark, existing, ignoring=ignoring)
 
 
 __all__ = [
     "MAX_EXAM_NAME_LENGTH",
     "MAX_SET_CODE_LENGTH",
     "ExamSet",
+    "find_conflicting_mark",
     "find_conflicting_set",
     "normalise_description",
     "normalise_exam_name",
     "normalise_set_code",
     "validate_exam_name",
+    "validate_physical_mark",
     "validate_set_code",
 ]
