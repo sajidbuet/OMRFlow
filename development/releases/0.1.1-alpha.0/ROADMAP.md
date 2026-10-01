@@ -172,7 +172,7 @@ processing, the operator GUI, and qualification.
 | Phase | Title | Depends on | Proposed migration | Prompt | Status |
 |---|---|---|---|---|---|
 | **0.1.1-A** | Set identity (and the version bump) | — | 13 (taken) | [01](prompts/01-set-identity.md) | Implemented; tested — [handoff](PHASE_A_HANDOFF.md) |
-| **0.1.1-B** | Scan sessions and finite batches | A | 14 (taken) | [02](prompts/02-scan-sessions.md) | Lifecycle part implemented; tested (revised phase 2, [handoff](PHASE_B_HANDOFF.md)). Crash-safety part (S1–S3, R1) moved to revised phase 3 — pending |
+| **0.1.1-B** | Scan sessions and finite batches | A | 14 (taken) | [02](prompts/02-scan-sessions.md) | Lifecycle part implemented; tested; merged (revised phase 2, [handoff](PHASE_B_HANDOFF.md)). Crash-safety part (S1–S3, R1) implemented; tested, incl. a real-process kill matrix; branch, not merged (revised phase 3, no migration, [handoff](PHASE_C_HANDOFF.md)) |
 | **0.1.1-C** | Session-level review, reconciliation, scoring and reporting | B | 15 | [03](prompts/03-session-results.md) | Pending |
 | **0.1.1-D** | Intake sources and ledger | B | 16 | [04](prompts/04-intake-ledger.md) | Pending |
 | **0.1.1-E** | Continuous processing, quality decisions and session controls | C, D | as needed | [05](prompts/05-continuous-processing.md) | Pending |
@@ -192,8 +192,8 @@ and crash safety gets its own phase:
 | Revised phase | Scope | From roadmap phase | Status |
 |---|---|---|---|
 | **1** Set Identity Foundation | Canonical set identity, physical marks, migration 13 | A | Implemented; tested; merged |
-| **2** ScanSession + finite ScanBatch lifecycle | Sessions, sealing, roles, supersession, backfill, pinning, manifests, minimal menu, migration 14 | B (lifecycle) | Implemented; tested; branch, not merged |
-| **3** Crash-safe Scan/Resolve persistence | S1, S2, S3, R1; durable-completion invariant; real-kill matrix (ACCEPTANCE §5.4) | **B (crash safety, moved here)** | Pending |
+| **2** ScanSession + finite ScanBatch lifecycle | Sessions, sealing, roles, supersession, backfill, pinning, manifests, minimal menu, migration 14 | B (lifecycle) | Implemented; tested; merged |
+| **3** Crash-safe Scan/Resolve persistence | S1, S2, S3, R1; durable-completion invariant; real-kill matrix (ACCEPTANCE §5.4) | **B (crash safety, moved here)** | Implemented; tested (cases 1–15 with real process kills at 40 sheets; 1/25/50/75/99 % also at 1,000); branch `feat/0.1.1-phase3-crash-safe-persistence`, not merged; no migration (ADR-0006, [handoff](PHASE_C_HANDOFF.md)) |
 | **4** Session-level effective results | Effective scan set, session Resolve queue, reconciliation, scoring, Results, Reports, final export | C | Pending |
 | **5** Intake sources + ledger | | D | Pending |
 | **6** Continuous-processing engine | Unit scheduler, writer strategy, restart sequence | E (first part) | Pending |

@@ -572,6 +572,32 @@ change - or a state change without its event - cannot be committed. If the
 write fails, neither happens, and a test asserts exactly that by making the
 event insert explode mid-transaction.
 
+### After a crash, a forced close or a restart (0.1.1 phase 3)
+
+Because each decision is its own transaction, a decision that was confirmed is
+kept whatever happens to the process afterwards - this was tested by killing a
+real OMRFlow process from outside after several corrections
+(`tests/crash/test_crash_matrix.py`, cases 5-9 and 15). On the next open:
+
+- **Resolve opens on its own**, on the batch the later stages read (or the
+  batch the Scan stage was interrupted on), without a visit to Scan or a click
+  on *Review Conflicts*.
+- Every committed decision is applied: the machine's reading, the correction,
+  the effective value and the full history are as they were.
+- The queue is **exactly** the unresolved conflicts - nothing decided comes
+  back, nothing undecided is missing - and the summary reads e.g.
+  *120 total · 73 unresolved · 47 resolved*, counted from the stored rows.
+- Reopening repeatedly writes nothing: no conflict, decision or ledger row is
+  added by a reopen.
+
+The sheet's own conflicts are saved together with its recognition result
+([ADR-0006](decisions/ADR-0006-crash-safe-scan-work-units.md)), so a sheet the
+Scan stage counted as processed always has its conflicts in this queue; the
+batch-wide duplicate-ID and set-code conflicts of an interrupted batch are
+completed by the reopen, before Resolve shows the queue. What is **not** kept:
+which row was selected, and the redo list, which lives in memory only (an
+undone decision cannot be *redone* after a restart).
+
 ---
 
 ## 9. Export
@@ -604,6 +630,10 @@ always be regenerated.
 A conflict's identity is `(batch, scan, type, zone, group)`, enforced by a
 unique constraint. Re-running a batch, resuming one, or retrying a failed sheet
 therefore **updates** the existing conflicts rather than creating a second set.
+Re-synchronising a sheet whose reading has not changed writes nothing at all -
+including, since 0.1.1 phase 3, a sheet whose conflict the machine had already
+withdrawn (an identity comparison used to re-withdraw it, with a fresh event,
+on every re-sync).
 
 If a re-read changes what the machine saw, that is recorded too - as a
 `RE_RECOGNISED` event, before the observation is updated. Even the machine does

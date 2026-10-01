@@ -38,6 +38,12 @@ first *Process All*, named in the Scan stage header). Scans added later go into
 a **new batch of the same session**; a rescan for a sheet whose batch is sealed
 goes into a new *rescan* batch. See [Processing](Processing#scan-sessions).
 
+If OMRFlow was closed or stopped part-way through a batch, reopening the
+project brings the Scan stage back on that batch - the same session, the same
+batch, its saved results and what is still pending - before you press
+anything; **Resume Batch** reads only what is left. See
+[Recovery After Interrupted Processing](Recovery-After-Interrupted-Processing).
+
 ## Duplicate and changed scans
 
 OMRFlow hashes each imported image's contents. It can therefore tell you

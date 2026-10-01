@@ -54,14 +54,20 @@ the pool out while diagnosing something.
 
 ## If a batch is interrupted
 
-Nothing is lost. Every sheet's result is committed as it finishes, so:
+Nothing you saw counted is lost. Each sheet is saved **as one unit** - its
+result together with the review conflicts it raises - as soon as it is read,
+and the progress line counts only saved sheets (a sheet read but not yet saved
+shows as *saving*). So:
 
-- **Resume Batch** continues from where it stopped, without reprocessing
-  anything already done.
+- reopening the project shows the interrupted batch straight away, with
+  *recognised / failed / pending* read from the database;
+- **Resume Batch** continues from where it stopped, without reading anything
+  already saved again;
 - **Retry Failed** re-attempts only the failures.
 
-This holds for a cancellation, a crash, a power loss or closing the window.
-See
+This was tested by cancelling, by closing the window and by killing a real
+OMRFlow process mid-run (0.1.1 phase 3). A real power cut was **not** tested;
+it is covered only as far as SQLite and your storage are. See
 [Recovery After Interrupted Processing](Recovery-After-Interrupted-Processing).
 
 ## Reprocessing
