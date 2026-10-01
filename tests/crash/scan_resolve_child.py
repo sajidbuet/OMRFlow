@@ -152,6 +152,18 @@ def _reconstructed(window: object) -> dict[str, object]:
     }
 
 
+def _leave(code: int) -> None:
+    """End the child once the application's own close path has run.
+
+    Directly, not through the interpreter's teardown of the offscreen
+    QApplication, which is not what is under test. (An abort at exit seen while
+    this harness was built was traced, with ``faulthandler``, to the Scan
+    page's preview worker still running; the window's close now joins it.)
+    """
+    sys.stdout.flush()
+    os._exit(code)
+
+
 def _legacy_scan(arguments: argparse.Namespace, log: EvidenceLog) -> int:
     """The pre-phase-3 write path, killed before its run's conflict pass."""
     from omr_scanner.database.models import BatchStatus
@@ -219,6 +231,12 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
 
     log = EvidenceLog(arguments.log)
+    # A native crash (access violation) leaves every thread's Python stack
+    # here, beside the evidence log, instead of only an exit code.
+    import faulthandler
+
+    fault_file = arguments.log.with_suffix(".fault.txt").open("w", encoding="utf-8")
+    faulthandler.enable(file=fault_file, all_threads=True)
     log.write("child_started", action=arguments.action, argv=sys.argv[1:])
     if arguments.action == "legacy_scan":
         return _legacy_scan(arguments, log)
@@ -258,12 +276,7 @@ def main(argv: list[str] | None = None) -> int:
         exit_code["value"] = code
         window.close()  # the ordinary close path: closeEvent, project released
         log.write("closed_cleanly", code=code)
-        # Straight out once the application's own close path has run: the
-        # offscreen Qt teardown at interpreter exit aborted the child
-        # (0xC0000409 / 0xC0000005) while this harness was built, after the
-        # project and its database had been released. Not what is under test.
-        sys.stdout.flush()
-        os._exit(code)
+        _leave(code)
 
     if arguments.action == "inspect":
         QTimer.singleShot(0, finish)
@@ -382,13 +395,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":  # pragma: no cover - child entry point
-    code = main()
-    # The application's own close path has already run (the window closed,
-    # the project and its database released). Leaving through the
-    # interpreter's normal teardown destroys the offscreen QApplication and
-    # its widgets in an order that aborted the child with 0xC0000409 on
-    # Windows while this harness was built - after `closed_cleanly` was
-    # logged and with no database open. That is not what is under test, so
-    # the child exits directly.
-    sys.stdout.flush()
-    os._exit(code)
+    _leave(main())

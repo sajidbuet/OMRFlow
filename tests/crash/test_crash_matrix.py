@@ -70,7 +70,16 @@ def evidence(case: str, **facts: Any) -> None:
         return
     directory = Path(target)
     directory.mkdir(parents=True, exist_ok=True)
-    payload = {"case": case, "sheets": SHEETS, "workers": WORKERS, **facts}
+    payload = {
+        "case": case,
+        "sheets": SHEETS,
+        "workers": WORKERS,
+        **facts,
+        # Cumulative over the module so far - see harness.run_to_exit and
+        # harness.settle_journal.
+        "teardown_aborts_after_clean_close_so_far": list(h.TEARDOWN_ABORTS),
+        "hot_journals_rolled_back_so_far": len(h.HOT_JOURNALS_ROLLED_BACK),
+    }
     (directory / f"{case}.json").write_text(
         json.dumps(payload, indent=2, default=str), encoding="utf-8"
     )
@@ -350,6 +359,7 @@ def test_case_02_forced_kill_halfway_through_scan(tmp_path, sheets_dir):
     found = assert_consistent(project)
     evidence(
         "case_02", kill_point=f"free-running kill once >= {SHEETS // 2} commits logged",
+        kill_landed_inside_a_commit=killed.hot_journal,
         committed_before=len(committed), retried=len(again),
         reread=reread_count(committed, later),
         reopened_counts=opened(later)["scan_counts_label"], health=found.health_codes,
@@ -682,6 +692,7 @@ def chain(
                 ),
                 "submitted_this_run": len(resubmitted),
                 "resubmitted_committed": len(resubmitted & previous),
+                "kill_landed_inside_a_commit": killed.hot_journal,
             }
         )
         assert previous <= committed  # nothing committed is ever lost
