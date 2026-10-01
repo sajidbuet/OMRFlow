@@ -58,6 +58,7 @@ from omr_scanner.gui.theme import ANSWER_KEY_STAGE_STYLESHEET, VARIANT_PRIMARY, 
 from omr_scanner.gui.widgets.status_chips import StatusChipStrip
 from omr_scanner.services import group_cells
 from omr_scanner.services.answer_key import ReadingKind, SetCodeCheck
+from omr_scanner.services.set_identity import same_set
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.template import OmrTemplate
@@ -200,7 +201,7 @@ class SolutionSheetDialog(QDialog):
         self.keep_set_radio = QRadioButton(f"Import into Set {verdict.selected} (your selection)")
         self.keep_set_radio.setObjectName("keepSelectedSetRadio")
         self.sheet_set_radio = QRadioButton(
-            f"Import into Set {verdict.read} (as marked on the sheet)"
+            f"Import into Set {verdict.read_label} (as marked on the sheet)"
         )
         self.sheet_set_radio.setObjectName("useSheetSetRadio")
         needs_choice = verdict.check is SetCodeCheck.MISMATCH
@@ -302,9 +303,10 @@ class SolutionSheetDialog(QDialog):
 
     def choose_set(self, code: str) -> None:
         """Decide which set a mismatched sheet is for."""
-        if code == self.reading.verdict.read and self.sheet_set_radio.isEnabled():
+        verdict = self.reading.verdict
+        if same_set(code, verdict.sheet_set) and self.sheet_set_radio.isEnabled():
             self.sheet_set_radio.setChecked(True)
-        elif code == self.reading.verdict.selected:
+        elif same_set(code, verdict.selected):
             self.keep_set_radio.setChecked(True)
 
     def _on_chosen(self, number: int, label: str) -> None:
@@ -404,10 +406,14 @@ class SolutionSheetDialog(QDialog):
         return "".join(self._answers.get(number, BLANK) for number in self._numbers)
 
     def target_set(self) -> str:
-        """The set the answers are for."""
+        """The *logical* set the answers are for.
+
+        "As marked on the sheet" means the set the sheet's mark names - Set 10
+        for a sheet marked ``A`` when Set 10 is printed as ``A``.
+        """
         verdict = self.reading.verdict
         if verdict.check is SetCodeCheck.MISMATCH and self.sheet_set_radio.isChecked():
-            return verdict.read
+            return verdict.sheet_set
         return verdict.selected
 
     def set_decision(self) -> str:
@@ -416,11 +422,11 @@ class SolutionSheetDialog(QDialog):
         if verdict.check is not SetCodeCheck.MISMATCH:
             return ""
         if self.sheet_set_radio.isChecked():
-            return f"operator chose the sheet's set ({verdict.read})"
+            return f"operator chose the sheet's set ({verdict.read_label})"
         if self.keep_set_radio.isChecked():
             return (
                 f"operator kept the selected set ({verdict.selected}) over the "
-                f"sheet's ({verdict.read})"
+                f"sheet's ({verdict.read_label})"
             )
         return ""
 
@@ -464,9 +470,9 @@ class SolutionSheetDialog(QDialog):
             (
                 tone,
                 {
-                    SetCodeCheck.MATCH: f"Sheet reads Set {verdict.read}",
+                    SetCodeCheck.MATCH: f"Sheet reads Set {verdict.read_label}",
                     SetCodeCheck.BLANK: "Set not marked",
-                    SetCodeCheck.MISMATCH: f"Sheet reads Set {verdict.read}",
+                    SetCodeCheck.MISMATCH: f"Sheet reads Set {verdict.read_label}",
                     SetCodeCheck.UNREPRESENTABLE: "Set not confirmable",
                 }[verdict.check],
             )

@@ -78,6 +78,7 @@ from omr_scanner.errors import OMRScannerError
 from omr_scanner.evaluation.attendance_dataset import (
     ConflictProfile,
     ConflictRates,
+    parse_set_spec,
     plan_population,
 )
 from omr_scanner.evaluation.fold_plans import FoldCorner, FoldPolicy, FoldSeverity
@@ -257,7 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated question-paper sets, e.g. 10,11,12. Given, the run "
             "also writes one attendance workbook per set and the reconciliation "
             "ground truth, and --count becomes the size of the candidate roster "
-            "rather than the number of images."
+            "rather than the number of images. Write 10=A for a logical Set 10 "
+            "whose sheets are printed (and marked) as A."
         ),
     )
     parser.add_argument(
@@ -395,9 +397,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Those performance settings cannot be used: {exc}", file=sys.stderr)
         return EXIT_FAILED
 
-    set_codes = tuple(
-        code.strip() for code in arguments.sets.split(",") if code.strip()
-    )
+    try:
+        set_codes, physical_marks = parse_set_spec(arguments.sets)
+    except ValueError as exc:
+        print(f"Those sets cannot be used: {exc}", file=sys.stderr)
+        return EXIT_FAILED
     try:
         image_format = ImageFormat.parse(arguments.format)
         render = page_render_size(template, arguments.dpi)
@@ -483,6 +487,7 @@ def main(argv: list[str] | None = None) -> int:
             generate_solutions=not arguments.no_solutions,
             performance=performance,
             on_progress=None if arguments.quiet else report,
+            physical_marks=physical_marks or None,
         )
     except ReferenceScanError as exc:
         # Its own branch because the operator can act on it: the file they

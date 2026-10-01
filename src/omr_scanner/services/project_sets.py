@@ -15,6 +15,12 @@ Responsibilities:
       whole project, uniqueness of a code - into a
       :class:`ProjectSetError` carrying a message a dialog can show
       unchanged.
+    * Keeping ``project_set.canonical_code`` (migration 13) equal to the
+      canonical form of each set's code, so the database's own unique index
+      guards set identity even against a caller that skipped the checks here.
+    * A set's optional *physical mark* - what the sheet prints for it when
+      that is not its code - validated for ambiguity and, when the project's
+      template is supplied, for whether the template can print it.
     * :func:`references_to_set`, the single place that decides whether a set
       may be deleted.
 
@@ -23,6 +29,7 @@ What does NOT belong here:
     * The examination *name*. That lives in ``project.json`` with the rest of
       the project's identity - see
       :func:`omr_scanner.services.project_service.update_exam_name`.
+    * The identity rule itself - :mod:`omr_scanner.domain.set_identity`.
     * Any change to how answer keys, scoring, reconciliation or reports
       behave. This module only reads those tables, and only in
       :func:`suggest_sets_from_existing_data`, which exists so the interface
@@ -44,21 +51,27 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import OperationalError
 
 from omr_scanner.database.models import AnswerKeyRevision, BatchScan, ProjectSet
 from omr_scanner.domain.exam_sets import (
     ExamSet,
+    find_conflicting_mark,
     find_conflicting_set,
     normalise_description,
-    normalise_set_code,
+    validate_physical_mark,
     validate_set_code,
 )
-from omr_scanner.errors import OMRScannerError
+from omr_scanner.domain.set_identity import SetIdentity, canonical_code, distinct_codes
+from omr_scanner.errors import DatabaseError, OMRScannerError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
 
+    from sqlalchemy.orm import Session
+
     from omr_scanner.database.engine import ProjectDatabase
+    from omr_scanner.domain.template import OmrTemplate
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,6 +109,7 @@ def _to_domain(row: ProjectSet) -> ExamSet:
         code=row.code,
         description=row.description,
         display_order=row.display_order,
+        physical_mark=row.physical_mark or "",
     )
 
 
@@ -109,16 +123,36 @@ def list_sets(database: ProjectDatabase) -> tuple[ExamSet, ...]:
         The sets, ordered by ``display_order`` then ``code``. Empty for a
         project that has not defined any - including every project created
         before this feature existed.
+
+    A project opened **read-only** is never migrated, so one written before
+    migration 13 has no ``physical_mark`` column. Its sets are then read from
+    the columns it does have, each printed as its own code - which is exactly
+    what that project meant - rather than failing every stage that asks.
     """
-    with database.session() as session:
-        rows = (
-            session.execute(
-                select(ProjectSet).order_by(ProjectSet.display_order, ProjectSet.code)
+    try:
+        with database.session() as session:
+            rows = (
+                session.execute(
+                    select(ProjectSet).order_by(ProjectSet.display_order, ProjectSet.code)
+                )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
+            return tuple(_to_domain(row) for row in rows)
+    except DatabaseError as exc:
+        if not (database.read_only and isinstance(exc.__cause__, OperationalError)):
+            raise
+        _LOGGER.info("project_set predates migration 13; reading its legacy columns")
+    with database.session() as session:
+        legacy = session.execute(
+            select(
+                ProjectSet.set_id, ProjectSet.code, ProjectSet.description, ProjectSet.display_order
+            ).order_by(ProjectSet.display_order, ProjectSet.code)
+        ).all()
+        return tuple(
+            ExamSet(set_id=set_id, code=code, description=description, display_order=order)
+            for set_id, code, description, order in legacy
         )
-        return tuple(_to_domain(row) for row in rows)
 
 
 def get_set(database: ProjectDatabase, set_id: str) -> ExamSet | None:
@@ -129,57 +163,137 @@ def get_set(database: ProjectDatabase, set_id: str) -> ExamSet | None:
 
 
 def set_by_code(database: ProjectDatabase, code: str) -> ExamSet | None:
-    """Return the set using ``code``, or ``None``.
+    """Return the set whose logical code is ``code``, compared canonically, or ``None``.
 
-    The lookup later phases will use to resolve a code printed on a sheet, or
-    named by an answer key, to the set an operator defined.
+    ``None`` too when two legacy sets collide on that code - see
+    :meth:`~omr_scanner.domain.set_identity.SetIdentity.logical`.
     """
-    wanted = normalise_set_code(code)
-    with database.session() as session:
-        row = session.execute(
-            select(ProjectSet).where(ProjectSet.code == wanted)
-        ).scalar_one_or_none()
-        return None if row is None else _to_domain(row)
+    return SetIdentity(list_sets(database)).logical(code)
 
 
-def add_set(database: ProjectDatabase, code: str, description: str = "") -> ExamSet:
+def _validated_code(code: str) -> str:
+    try:
+        return validate_set_code(code)
+    except ValueError as exc:
+        raise ProjectSetError(str(exc), user_message=str(exc)) from exc
+
+
+def _validated_mark(
+    mark: str,
+    code: str,
+    existing: Sequence[ExamSet],
+    *,
+    ignoring: str | None,
+    template: OmrTemplate | None,
+) -> str:
+    """Return the physical mark to store for a set with ``code``, or raise."""
+    try:
+        wanted = validate_physical_mark(mark)
+    except ValueError as exc:
+        raise ProjectSetError(str(exc), user_message=str(exc)) from exc
+    if not wanted:
+        return ""
+    if canonical_code(wanted) == canonical_code(code):
+        # Printed as its own code: no mapping to store.
+        return ""
+    conflict = find_conflicting_mark(wanted, code, tuple(existing), ignoring=ignoring)
+    if conflict is not None:
+        message = (
+            f"'{wanted}' cannot be the printed mark for Set {code}: it already "
+            f"names {conflict.label_with_mark}. A sheet reading '{wanted}' would "
+            "then mean two sets."
+        )
+        raise ProjectSetError(f"Ambiguous physical mark {wanted!r}", user_message=message)
+    if template is not None:
+        from omr_scanner.services.answer_key import can_print_set_code, set_field_symbols
+
+        if set_field_symbols(template) is not None and not can_print_set_code(template, wanted):
+            message = (
+                f"The template's set field cannot print '{wanted}'. Choose a mark "
+                "the sheet's set-code bubbles can carry."
+            )
+            raise ProjectSetError(f"Unprintable physical mark {wanted!r}", user_message=message)
+    return wanted
+
+
+def _refresh_canonical_codes(session: Session) -> None:
+    """Make every row's ``canonical_code`` the canonical form of its code.
+
+    The first set of any colliding group, in the operator's order, holds the
+    canonical code; any later one holds NULL (migration 13's rule). Cleared
+    first and refilled after a flush, so the partial unique index never sees
+    two rows claiming one value mid-update.
+    """
+    rows = session.scalars(
+        select(ProjectSet).order_by(
+            ProjectSet.display_order, ProjectSet.code, ProjectSet.set_id
+        )
+    ).all()
+    wanted: dict[str, str | None] = {}
+    taken: set[str] = set()
+    for row in rows:
+        value = canonical_code(row.code)
+        wanted[row.set_id] = None if value in taken else value
+        taken.add(value)
+    if all(row.canonical_code == wanted[row.set_id] for row in rows):
+        return
+    for row in rows:
+        row.canonical_code = None
+    session.flush()
+    for row in rows:
+        row.canonical_code = wanted[row.set_id]
+    session.flush()
+
+
+def add_set(
+    database: ProjectDatabase,
+    code: str,
+    description: str = "",
+    *,
+    physical_mark: str = "",
+    template: OmrTemplate | None = None,
+) -> ExamSet:
     """Define a new set.
 
     Args:
         database: The open project database.
-        code: The operator-visible code, trimmed and validated here.
+        code: The operator-visible logical code, trimmed and validated here.
         description: Free text; trimmed, otherwise unrestricted.
+        physical_mark: What the sheet prints for this set, when that is not
+            ``code``; ``""`` for none.
+        template: The project's template, when known, to check that the
+            sheet's set field can print the mark.
 
     Returns:
         The stored set, with the stable identifier that was generated for it.
 
     Raises:
         ProjectSetError: The code is blank or malformed, or another set
-            already uses it. An existing set is never overwritten.
+            already uses it (compared canonically, so ``a`` when ``A``
+            exists is refused); or the mark is malformed, names another set,
+            or cannot be printed. An existing set is never overwritten.
     """
-    try:
-        wanted = validate_set_code(code)
-    except ValueError as exc:
-        raise ProjectSetError(str(exc), user_message=str(exc)) from exc
-
+    wanted = _validated_code(code)
     existing = list_sets(database)
     conflict = find_conflicting_set(wanted, existing)
     if conflict is not None:
         message = (
-            f"Set '{wanted}' already exists in this project"
+            f"Set '{wanted}' already exists in this project as {conflict.label_with_mark}"
             f"{f' ({conflict.description})' if conflict.description else ''}. "
-            "Set codes must be unique - choose a different code, or edit the "
-            "existing set instead."
+            "Set codes must be unique - and are compared without regard to case - "
+            "so choose a different code, or edit the existing set instead."
         )
         raise ProjectSetError(
             f"Duplicate set code {wanted!r}", user_message=message
         )
+    mark = _validated_mark(physical_mark, wanted, existing, ignoring=None, template=template)
 
     record = ExamSet(
         set_id=_new_set_id(),
         code=wanted,
         description=normalise_description(description),
         display_order=_next_display_order(existing),
+        physical_mark=mark,
     )
     moment = _now()
     with database.session() as session:
@@ -189,11 +303,19 @@ def add_set(database: ProjectDatabase, code: str, description: str = "") -> Exam
                 code=record.code,
                 description=record.description,
                 display_order=record.display_order,
+                physical_mark=record.physical_mark,
                 created_at=moment,
                 updated_at=moment,
             )
         )
-    _LOGGER.info("Defined set %r (%s)", record.code, record.set_id)
+        session.flush()
+        _refresh_canonical_codes(session)
+    _LOGGER.info(
+        "Defined set %r (%s)%s",
+        record.code,
+        record.set_id,
+        f" printed as {record.physical_mark!r}" if record.physical_mark else "",
+    )
     return record
 
 
@@ -207,8 +329,10 @@ def update_set(
     *,
     code: str | None = None,
     description: str | None = None,
+    physical_mark: str | None = None,
+    template: OmrTemplate | None = None,
 ) -> ExamSet:
-    """Change a set's code, its description, or both.
+    """Change a set's code, description or physical mark.
 
     Args:
         database: The open project database.
@@ -217,18 +341,23 @@ def update_set(
         code: New code, or ``None`` to leave it alone.
         description: New description, or ``None`` to leave it alone. Pass
             ``""`` to clear it.
+        physical_mark: New printed mark, ``""`` to remove it, or ``None`` to
+            leave it alone.
+        template: The project's template, when known, to check printability.
 
     Returns:
         The set as stored after the change.
 
     Raises:
         ProjectSetError: No such set, the new code is malformed, or another
-            set already uses the new code.
+            set already uses the new code (canonically); or the mark is
+            malformed, ambiguous or unprintable.
 
     :attr:`~omr_scanner.domain.exam_sets.ExamSet.set_id` never changes, which
     is the whole point of it existing: a code corrected from ``"1O"`` to
     ``"10"`` must not detach whatever a later phase has already linked to
-    that set.
+    that set. Renaming one of two colliding legacy sets (``A`` / ``a``) is how
+    an operator resolves the collision.
     """
     existing = list_sets(database)
     current = next((item for item in existing if item.set_id == set_id), None)
@@ -240,17 +369,30 @@ def update_set(
 
     new_code = current.code
     if code is not None:
-        try:
-            new_code = validate_set_code(code)
-        except ValueError as exc:
-            raise ProjectSetError(str(exc), user_message=str(exc)) from exc
-        conflict = find_conflicting_set(new_code, existing, ignoring=set_id)
+        new_code = _validated_code(code)
+        # Keeping a colliding legacy set's own spelling (an edit of its
+        # description only) is not a new conflict; any other code is checked.
+        unchanged = new_code == current.code  # set-identity: exact (unchanged spelling)
+        conflict = (
+            None if unchanged else find_conflicting_set(new_code, existing, ignoring=set_id)
+        )
         if conflict is not None:
             message = (
-                f"Set '{new_code}' already exists in this project. "
-                "Set codes must be unique."
+                f"Set '{new_code}' already exists in this project as "
+                f"{conflict.label_with_mark}. Set codes must be unique, and are "
+                "compared without regard to case."
             )
             raise ProjectSetError(f"Duplicate set code {new_code!r}", user_message=message)
+
+    new_mark = current.physical_mark
+    if physical_mark is not None or code is not None:
+        new_mark = _validated_mark(
+            current.physical_mark if physical_mark is None else physical_mark,
+            new_code,
+            existing,
+            ignoring=set_id,
+            template=template,
+        )
 
     new_description = (
         current.description if description is None else normalise_description(description)
@@ -265,14 +407,18 @@ def update_set(
             )
         row.code = new_code
         row.description = new_description
+        row.physical_mark = new_mark
         row.updated_at = _now()
+        session.flush()
+        _refresh_canonical_codes(session)
 
-    _LOGGER.info("Updated set %s (code %r)", set_id, new_code)
+    _LOGGER.info("Updated set %s (code %r, mark %r)", set_id, new_code, new_mark)
     return ExamSet(
         set_id=set_id,
         code=new_code,
         description=new_description,
         display_order=current.display_order,
+        physical_mark=new_mark,
     )
 
 
@@ -337,6 +483,10 @@ def delete_set(database: ProjectDatabase, set_id: str) -> None:
                 user_message="That set no longer exists in this project.",
             )
         session.delete(row)
+        session.flush()
+        # Deleting one of two colliding sets hands the canonical code to the
+        # other.
+        _refresh_canonical_codes(session)
     _LOGGER.info("Deleted set %s", set_id)
 
 
@@ -355,6 +505,10 @@ def reorder_sets(database: ProjectDatabase, ordered_ids: Sequence[str]) -> tuple
             set of identifiers. Reordering is a permutation; accepting a
             partial list would silently decide an order for whatever was left
             out.
+
+    The order of two colliding legacy sets does **not** move the canonical
+    code from one to the other: reordering is not a decision about identity,
+    and nothing should change which of them is treated as holding it.
     """
     existing = list_sets(database)
     if sorted(ordered_ids) != sorted(item.set_id for item in existing):
@@ -421,7 +575,7 @@ def replace_all_sets(
 
     Raises:
         ProjectSetError: Any code is blank, malformed or repeated within
-            ``definitions``.
+            ``definitions`` (canonically: ``A`` and ``a`` are one code).
 
     Used when a project is first configured, where "these are the sets" is
     one decision rather than a sequence of additions. Every set is given a
@@ -441,14 +595,14 @@ def replace_all_sets(
     validated: list[tuple[str, str]] = []
     seen: set[str] = set()
     for code, description in definitions:
-        try:
-            wanted = validate_set_code(code)
-        except ValueError as exc:
-            raise ProjectSetError(str(exc), user_message=str(exc)) from exc
-        if wanted in seen:
-            message = f"Set '{wanted}' is listed more than once. Set codes must be unique."
+        wanted = _validated_code(code)
+        if canonical_code(wanted) in seen:
+            message = (
+                f"Set '{wanted}' is listed more than once. Set codes must be unique, "
+                "and are compared without regard to case."
+            )
             raise ProjectSetError(f"Duplicate set code {wanted!r}", user_message=message)
-        seen.add(wanted)
+        seen.add(canonical_code(wanted))
         validated.append((wanted, normalise_description(description)))
 
     moment = _now()
@@ -460,6 +614,7 @@ def replace_all_sets(
                     code=code,
                     description=description,
                     display_order=position,
+                    canonical_code=canonical_code(code),
                     created_at=moment,
                     updated_at=moment,
                 )
@@ -480,7 +635,9 @@ def suggest_sets_from_existing_data(database: ProjectDatabase) -> tuple[str, ...
         database: The open project database.
 
     Returns:
-        The codes, sorted, with anything already in the registry removed.
+        The codes, sorted, with anything already in the registry removed -
+        compared canonically, and as printed marks too, so a sheet reading
+        ``A`` for a Set 10 printed as ``A`` is not offered as a new set.
 
     Read-only, and offered rather than applied. A project that predates the
     set registry still names set codes in places that record *what happened* -
@@ -494,8 +651,8 @@ def suggest_sets_from_existing_data(database: ProjectDatabase) -> tuple[str, ...
     whose papers were never scanned would be missing, and nothing in the data
     says so. The operator sees the suggestion and decides.
     """
+    identity = SetIdentity(list_sets(database))
     with database.session() as session:
-        defined = set(session.execute(select(ProjectSet.code)).scalars())
         from_keys = {
             code
             for code in session.execute(
@@ -512,8 +669,16 @@ def suggest_sets_from_existing_data(database: ProjectDatabase) -> tuple[str, ...
             ).scalars()
             if code and code.strip()
         }
-    candidates = {code.strip() for code in (from_keys | from_scans)} - defined
-    return tuple(sorted(candidates))
+    candidates = distinct_codes(
+        sorted(code.strip() for code in (from_keys | from_scans))
+    )
+    return tuple(
+        sorted(
+            code
+            for code in candidates
+            if identity.for_reading(code) is None and not identity.is_ambiguous(code)
+        )
+    )
 
 
 __all__ = [

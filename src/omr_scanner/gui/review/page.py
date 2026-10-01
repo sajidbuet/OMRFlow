@@ -154,6 +154,7 @@ from omr_scanner.services import (
     reopen,
     scan_lifecycle,
     scan_source_path,
+    set_identity,
     split_field_value,
     split_marks,
     undo_decision,
@@ -2131,16 +2132,37 @@ class ResolvePage(WorkflowPage):
         result = bundle.result if bundle is not None else None
         assessment = result.scan_quality if result is not None else None
         shape = self._field_shape_for(conflict)
+        current = join_field_value(self.current_field_values(shape)) if shape is not None else ""
         self.machine_summary_label.setText(
-            _machine_summary_html(
-                conflict,
-                self._machine_marks(conflict),
-                join_field_value(self.current_field_values(shape))
-                if shape is not None
-                else "",
-            )
+            _machine_summary_html(conflict, self._machine_marks(conflict), current)
         )
-        self.evidence_label.setText(_evidence_html(conflict, assessment))
+        evidence = _evidence_html(conflict, assessment)
+        if conflict.field.kind is FieldKind.SET_CODE:
+            evidence += self._set_reading_html(current or conflict.observation.value)
+        self.evidence_label.setText(evidence)
+
+    def describe_set_reading(self, paper_value: str) -> str:
+        """``"Set 10 (A on sheet)"`` for a set code read or corrected on the paper.
+
+        The logical set the paper's mark names, through
+        :mod:`omr_scanner.services.set_identity`; ``""`` when no project is
+        open, the value is empty, or it names no defined set.
+        """
+        database = self.database
+        if database is None or not paper_value:
+            return ""
+        identity = set_identity.load(database)
+        found = identity.for_reading(paper_value)
+        if found is None:
+            return ""
+        return identity.describe(found.code, as_read=paper_value)
+
+    def _set_reading_html(self, paper_value: str) -> str:
+        """One evidence line naming the logical set a set-code reading means."""
+        label = self.describe_set_reading(paper_value)
+        if not label:
+            return ""
+        return f"Reads as: <b>{html.escape(label)}</b><br>"
 
     def _refresh_sheet_progress(self, conflict: ConflictRecord) -> None:
         """Say where in this sheet the reviewer is, and how much is left.
@@ -2658,6 +2680,27 @@ class ResolvePage(WorkflowPage):
         """
         return split_field_value(shape, text)
 
+    def _field_edit_text(self) -> str:
+        """What the field editor holds, as the value to write on the *paper*.
+
+        For the set code, a typed **logical** code of a set printed as another
+        mark is translated to that mark - typing ``10`` for a Set 10 printed as
+        ``A`` records ``A``, because the review ledger keeps what the paper
+        says and the template's set field offers ``A``, not ``10``. The
+        translation is set identity's
+        (:meth:`~omr_scanner.domain.set_identity.SetIdentity.physical_for_logical`);
+        anything else is passed through unchanged.
+        """
+        text = self.field_edit_input.text()
+        database = self.database
+        if self.state.editing_kind is not FieldKind.SET_CODE or database is None:
+            return text
+        identity = set_identity.load(database)
+        found = identity.logical(text)
+        if found is None or not found.physical_mark:
+            return text
+        return identity.physical_for_logical(found.code)
+
     def _validate_field_value(
         self, shape: FieldShape, text: str
     ) -> tuple[list[str] | None, str]:
@@ -2794,9 +2837,7 @@ class ResolvePage(WorkflowPage):
         shape = self.state.editing_field
         if shape is None:
             return
-        values, problem = self._validate_field_value(
-            shape, self.field_edit_input.text()
-        )
+        values, problem = self._validate_field_value(shape, self._field_edit_text())
         self.field_edit_status.setToolTip("")
         self.field_edit_apply.setText(FIELD_EDIT_APPLY_TEXT)
         if values is None:
@@ -2836,6 +2877,11 @@ class ResolvePage(WorkflowPage):
             for position, (machine, typed) in sorted(plan.overrides.items())
         )
         parts.append(f"Changed positions: <b>{positions}</b>")
+        if self.state.editing_kind is FieldKind.SET_CODE:
+            # Straight after the values, so a narrow row clips it last.
+            meaning = self.describe_set_reading(join_field_value(plan.proposed))
+            if meaning:
+                parts[0] += f" = <b>{html.escape(meaning)}</b>"
         text = (
             f"<span style='color:{Color.TEXT_TERTIARY};'>"
             + " &middot; ".join(parts)
@@ -2876,9 +2922,7 @@ class ResolvePage(WorkflowPage):
             return False
         if self.state.batch_id is None or not self.field_edit_apply.isEnabled():
             return False
-        values, problem = self._validate_field_value(
-            shape, self.field_edit_input.text()
-        )
+        values, problem = self._validate_field_value(shape, self._field_edit_text())
         if values is None:
             _LOGGER.info("Field edit refused: %s", problem)
             return False
@@ -3536,12 +3580,14 @@ class ResolvePage(WorkflowPage):
             )
             return False
         identity = scan_lifecycle.current_identity(database, scan_id)
+        sets = project_sets.list_sets(database)
         dialog = RejectScanDialog(
             scan_name,
             identity[0],
             identity[1],
-            [item.code for item in project_sets.list_sets(database)],
+            [item.code for item in sets],
             self,
+            set_labels={item.code: item.label_with_mark for item in sets},
         )
         if dialog.exec() != RejectScanDialog.DialogCode.Accepted:
             return False

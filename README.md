@@ -207,8 +207,22 @@ further unreleased work — see below).
 **Next development target: `v0.1.1-alpha.0`** — scan sessions made of finite
 batches (one scanner or many, finite imports or continuous watched folders,
 later rescans), session-level attendance, results and reports, robust rescan
-provenance, and set-code identity improvements. *Planned, awaiting review, not
-implemented:* [plan](development/releases/0.1.1-alpha.0/ROADMAP.md).
+provenance, and set-code identity improvements. **In development, not
+released:** [plan](development/releases/0.1.1-alpha.0/ROADMAP.md). Phase A (set
+identity) is implemented and its automated tests pass, on branch
+`feat/0.1.1-phase1-set-identity`; phases B–G (scan sessions, session-level
+results, intake, continuous processing, operator GUI, qualification) are
+pending.
+
+| `0.1.1` phase | Implemented | Automated tests | Synthetically validated | Real-scan validated | Network-share validated | Production qualified |
+|---|---|---|---|---|---|---|
+| A — Set identity | ✅ (branch, unmerged) | ✅ passing | n/a for this phase | ❌ | n/a | ❌ |
+| B — Scan sessions and finite batches | ⚪ pending | — | — | — | — | — |
+| C — Session-level results | ⚪ pending | — | — | — | — | — |
+| D — Intake sources and ledger | ⚪ pending | — | — | — | — | — |
+| E — Continuous processing | ⚪ pending | — | — | — | — | — |
+| F — Operational GUI | ⚪ pending | — | — | — | — | — |
+| G — Qualification and release | ⚪ pending | — | — | — | — | — |
 
 Phases 0–10 are implemented; Phase 11 takes OMRFlow from "implemented and
 synthetically tested" to a qualified stable release.
@@ -227,7 +241,7 @@ synthetically tested" to a qualified stable release.
 
 | | |
 |---|---|
-| Automated suite | Full local run after the Results Dashboard work, 2026-10-01: **6,066 passed, 15 skipped, 0 failed** (38 min 29 s; 4 `stress` tests deselected); `ruff` (src, tests, tools, scripts) and `mypy` (201 files) clean. Previously: full local run after the Attendance dispositions work, 2026-09-30: **5,972 passed, 16 skipped, 3 failed** (1 h 05 min; 4 `stress` tests deselected). One failure was an expected enumeration assertion (two new placements), since updated and passing; the other two (`test_developer_tools` small-screen tab focus, `test_stress_kill_resume[100]` read-only database on resume) pass when rerun alone and did not touch this change — recorded as load/environment flakiness, not fixed. `ruff` clean; `mypy` reports the same 2 pre-existing errors as `main`. Previously: full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
+| Automated suite | Full local run on branch `feat/0.1.1-phase1-set-identity` (0.1.1 phase A), 2026-10-01: **6,168 passed, 16 skipped, 0 failed** (39 min 24 s; 4 `stress` tests deselected); `ruff` and `mypy` (203 files) clean. Previously: full local run after the Results Dashboard work, 2026-10-01: **6,066 passed, 15 skipped, 0 failed** (38 min 29 s; 4 `stress` tests deselected); `ruff` (src, tests, tools, scripts) and `mypy` (201 files) clean. Previously: full local run after the Attendance dispositions work, 2026-09-30: **5,972 passed, 16 skipped, 3 failed** (1 h 05 min; 4 `stress` tests deselected). One failure was an expected enumeration assertion (two new placements), since updated and passing; the other two (`test_developer_tools` small-screen tab focus, `test_stress_kill_resume[100]` read-only database on resume) pass when rerun alone and did not touch this change — recorded as load/environment flakiness, not fixed. `ruff` clean; `mypy` reports the same 2 pre-existing errors as `main`. Previously: full local run after the preview-freeze fix and hang watchdog, 2026-09-30: **5,925 passed, 15 skipped, 0 failed** (36 min 59 s; 4 `stress` tests deselected); `ruff` and `mypy` clean. After the Results button fix: 5,911 passed; after the answer-key verification fix: 5,906; after the Step 7 real-sheet fixes: 5,900; after the Step 7 rework: 5,878. Earlier runs, before merging: 5,617 passed, 15 skipped after the Reject & Rescan hardening (2026-09-29); 5,608 passed, 3 skipped with answer keys and solution sheets (2026-09-29). 4 `stress` tests deselected by default; `ruff` and `mypy` clean on each branch |
 | Cross-platform CI | 🟠 Tests and packaging green on Windows and Ubuntu ([run 36210285696](https://github.com/sajidbuet/OMRFlow/actions/runs/36210285696), 2026-09-26); the lint/type gate was red from 2026-09-25, when SQLAlchemy 2.1 respelled a query annotation — corrected, awaiting a confirming run |
 | Synthetic end-to-end | ✅ Passing, from source |
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
@@ -256,6 +270,7 @@ synthetically tested" to a qualified stable release.
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
 | Answer Key stage (Step 7) rework | 🟠 **Implemented — under real-world validation.** One real solution sheet (ECE-0000) and four real scans used as stand-ins read 500/500 against a visual transcription with no false confident read; one dialog defect found and fixed; no operator use yet. The stage reads the project's own template (Scan need not be visited), shows every defined set's key state, keeps the key string and question table in step, reviews a marked solution sheet before anything is saved, records per-revision provenance (migration 12), and never uses a key that no longer fits the template. See below |
+| Set identity (`0.1.1` phase A) | 🟠 **Implemented — automated tests passing; not used with a real scanner or real paper; not production qualified.** Set codes compare without regard to case, width or surrounding spaces everywhere (one function, enforced by an architecture test); a set may be *Printed on sheet as* another mark (Set 10 as `A`), translated once after Resolve with the raw reading kept; migration 13, with legacy `A` / `a` pairs kept, reported and blocking only their own set-dependent stages. Upgrade tested from schema-12 projects written by the schema-12 build. Counts and limitations: [handoff](development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md) |
 | Synthetic written Student ID & set code; used-reference cleanup | 🟠 **Implemented — automated tests passing; inspected visually on generated sheets and a real used sample form, not yet used in a real session.** The *intended* Student ID and set code (not the bubbled ones) are written in the boxes above their bubbles; a used reference form has its old writing **and its old bubble marks** removed first, keeping the printed rings, labels and borders. On the sample: 110/110 filled bubbles removed, none of the 390 unfilled touched; generated sheets read back 100/100. Full suite after the set-code and cleanup work: 5817 passed, 15 skipped, 0 failed. See below |
 
 #### Results Dashboard (2026-10-01)

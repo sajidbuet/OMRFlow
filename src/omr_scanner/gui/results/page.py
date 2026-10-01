@@ -509,7 +509,9 @@ class ResultsPage(WorkflowPage):
                 for answers in data.answers.values()
                 if answers.set_code
             }
-            missing |= needed - set(data.keys)
+            # `data.keys` compares set codes canonically; a set difference on
+            # its spellings would not.
+            missing |= {code for code in needed if code not in data.keys}
             for entry in data.entries:
                 outcome = scoring.score_candidate(
                     scoring_store.inputs_for_candidate(data, entry)

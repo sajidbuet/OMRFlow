@@ -71,6 +71,7 @@ from omr_scanner.services import (
     reconciliation_store,
     review_store,
     scan_lifecycle,
+    set_identity,
 )
 from omr_scanner.services.answer_key import QuestionPlan, compatibility_issues, plan_for
 from omr_scanner.services.scoring import (
@@ -81,9 +82,16 @@ from omr_scanner.services.scoring import (
     score_candidate,
     working_script,
 )
+from omr_scanner.services.set_identity import (
+    SetCodeMap,
+    canonical_code,
+    distinct_codes,
+    group_by_set,
+    same_set,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from sqlalchemy.orm import Session
 
@@ -238,14 +246,23 @@ def save_key(
     A new revision is always created. Editing a stored revision in place would
     silently change what an existing result was computed from, which is the one
     thing Phase 8 must never do.
+
+    Revisions are numbered per **logical** set: a revision stored earlier under
+    ``"a"`` and one stored now under ``"A"`` are revisions 1 and 2 of one set.
+    The code is stored as given; it is compared canonically.
     """
     with database.session() as session:
-        highest = session.scalars(
-            select(func.max(AnswerKeyRevision.revision)).where(
-                AnswerKeyRevision.set_code == key.set_code
-            )
-        ).first()
-        revision = int(highest or 0) + 1
+        highest = max(
+            (
+                int(revision)
+                for code, revision in session.execute(
+                    select(AnswerKeyRevision.set_code, AnswerKeyRevision.revision)
+                ).all()
+                if same_set(code, key.set_code)
+            ),
+            default=0,
+        )
+        revision = highest + 1
         row = AnswerKeyRevision(
             set_code=key.set_code,
             revision=revision,
@@ -323,6 +340,7 @@ def verify_key(
                 "who checked it."
             ),
         )
+    identity = set_identity.load(database)
     with database.session() as session:
         row = session.get(AnswerKeyRevision, key_id)
         if row is None:
@@ -348,13 +366,18 @@ def verify_key(
                         f"the active template: {problems[0]}"
                     ),
                 )
+        set_identity.require_no_collision(
+            identity, purpose="Verifying this answer key", codes=(row.set_code,)
+        )
         for other in session.scalars(
             select(AnswerKeyRevision)
-            .where(AnswerKeyRevision.set_code == row.set_code)
             .where(AnswerKeyRevision.status == AnswerKeyStatus.VERIFIED.value)
             .where(AnswerKeyRevision.key_id != key_id)
         ).all():
-            other.status = AnswerKeyStatus.SUPERSEDED.value
+            # One verified revision per *logical* set, whatever spelling an
+            # earlier revision was stored under.
+            if same_set(other.set_code, row.set_code):
+                other.status = AnswerKeyStatus.SUPERSEDED.value
         row.status = AnswerKeyStatus.VERIFIED.value
         row.verified_at = _now()
         row.verified_by = name
@@ -367,27 +390,37 @@ def verify_key(
 
 
 def verified_key(database: ProjectDatabase, set_code: str) -> StoredKey | None:
-    """Return the verified key for one set, or ``None``."""
-    with database.session() as session:
-        row = session.scalars(
-            select(AnswerKeyRevision)
-            .where(AnswerKeyRevision.set_code == set_code.strip().upper())
-            .where(AnswerKeyRevision.status == AnswerKeyStatus.VERIFIED.value)
-            .order_by(AnswerKeyRevision.revision.desc())
-            .limit(1)
-        ).first()
-        return _stored(row) if row is not None else None
+    """Return the verified key for one set, or ``None``.
+
+    Compared canonically, so a key stored as ``"a"`` is Set ``A``'s - the
+    lookup that once upper-cased only one side (defect 5 of
+    ``0.1.0-alpha.2``).
+    """
+    return verified_keys(database).get(set_code)
 
 
-def verified_keys(database: ProjectDatabase) -> dict[str, StoredKey]:
-    """Return every set's verified key, keyed by set code."""
+def verified_keys(database: ProjectDatabase) -> SetCodeMap[StoredKey]:
+    """Return every set's verified key, keyed by set code, compared canonically.
+
+    ``keys.get("a")`` finds a key stored under ``"A"``. Should two verified
+    revisions of one logical set exist - possible only in data written before
+    canonical identity, under two spellings - the most recently verified wins
+    and the other is listed in :attr:`~omr_scanner.domain.set_identity.SetCodeMap.shadowed`;
+    :func:`verify_key` now supersedes across spellings, so it cannot recur.
+    """
     with database.session() as session:
         rows = session.scalars(
             select(AnswerKeyRevision)
             .where(AnswerKeyRevision.status == AnswerKeyStatus.VERIFIED.value)
-            .order_by(AnswerKeyRevision.set_code)
+            .order_by(
+                AnswerKeyRevision.verified_at.desc(),
+                AnswerKeyRevision.revision.desc(),
+                AnswerKeyRevision.key_id.desc(),
+            )
         ).all()
-        return {row.set_code: _stored(row) for row in rows}
+        found = SetCodeMap((row.set_code, _stored(row)) for row in rows)
+    # Iterated in set-code order, as the dictionary this replaces was.
+    return SetCodeMap((code, found[code]) for code in sorted(found))
 
 
 def get_key(database: ProjectDatabase, key_id: int) -> StoredKey | None:
@@ -400,25 +433,23 @@ def get_key(database: ProjectDatabase, key_id: int) -> StoredKey | None:
 def list_keys(
     database: ProjectDatabase, *, set_code: str = ""
 ) -> tuple[StoredKey, ...]:
-    """Return stored revisions, newest first, optionally for one set."""
+    """Return stored revisions, newest first, optionally for one set (canonically)."""
     with database.session() as session:
-        statement = select(AnswerKeyRevision)
-        if set_code.strip():
-            statement = statement.where(
-                AnswerKeyRevision.set_code == set_code.strip().upper()
-            )
         rows = session.scalars(
-            statement.order_by(
+            select(AnswerKeyRevision).order_by(
                 AnswerKeyRevision.set_code, AnswerKeyRevision.revision.desc()
             )
         ).all()
-        return tuple(_stored(row) for row in rows)
+        wanted = set_code.strip()
+        return tuple(
+            _stored(row) for row in rows if not wanted or same_set(row.set_code, wanted)
+        )
 
 
 def known_set_codes(database: ProjectDatabase) -> tuple[str, ...]:
-    """Every set code a key has been written for."""
+    """Every set a key has been written for, one spelling per logical set."""
     with database.session() as session:
-        return tuple(
+        return distinct_codes(
             sorted(
                 {
                     value
@@ -518,10 +549,11 @@ def key_overview(
     verified one when there is one, else the newest draft; it is that key
     which is checked against ``plan``, so a verified key that no longer fits
     reads as :attr:`SetKeyState.STALE` and is never reported as ready.
+
+    Revisions are grouped by logical set, so a key stored as ``"a"`` counts
+    for Set ``A``.
     """
-    by_set: dict[str, list[StoredKey]] = {}
-    for stored in list_keys(database):
-        by_set.setdefault(stored.set_code, []).append(stored)
+    by_set = group_by_set((stored.set_code, stored) for stored in list_keys(database))
 
     overview: list[SetKeyOverview] = []
     for code in set_codes:
@@ -530,9 +562,10 @@ def key_overview(
             overview.append(SetKeyOverview(code, SetKeyState.MISSING))
             continue
         latest = max(revisions, key=lambda item: item.revision)
-        verified = next(
+        verified = max(
             (item for item in revisions if item.key.status is AnswerKeyStatus.VERIFIED),
-            None,
+            key=lambda item: item.revision,
+            default=None,
         )
         used = verified or latest
         issues = compatibility_issues(used.key, plan) if plan is not None else ()
@@ -741,7 +774,8 @@ class BatchInputs:
     entries: tuple[ReconciliationEntry, ...]
     results: dict[int, ScanResult]
     answers: dict[int, CandidateAnswers]
-    keys: dict[str, StoredKey]
+    keys: Mapping[str, StoredKey]
+    """Verified keys by set code, compared canonically (:class:`SetCodeMap`)."""
     policy: StoredPolicy
 
 
@@ -947,7 +981,15 @@ def score_batch(
 
     Results are written per candidate inside one transaction at the end, so a
     cancelled run leaves the previous results intact rather than a mixture.
+
+    Raises:
+        SetCollisionError: Two of the project's sets share one canonical code
+            (legacy ``A`` and ``a``). Which key marks such a script cannot be
+            decided, so nothing is scored until the operator renames one.
     """
+    set_identity.require_no_collision(
+        set_identity.load(database), purpose="Calculate Results"
+    )
     data = gather_inputs(database, roster_id, batch_id, template)
     wanted = set(candidates) if candidates is not None else None
     targets = [
@@ -1284,7 +1326,7 @@ def list_results(
 
 def stale_reasons_for(
     row: CandidateResult,
-    keys: dict[str, StoredKey],
+    keys: Mapping[str, StoredKey],
     policy: StoredPolicy,
     current: BatchInputs | None,
     entry: ReconciliationEntry | None,
@@ -1343,7 +1385,7 @@ def stale_reasons_for(
         if answers is not None and status is ResultStatus.SCORED:
             if answers.answers != row.answer_string:
                 reasons.append(StaleReason.ANSWERS)
-            if answers.set_code != row.set_code:
+            if not same_set(answers.set_code, row.set_code):
                 reasons.append(StaleReason.SET_CODE)
     return tuple(dict.fromkeys(reasons))
 
@@ -1416,7 +1458,8 @@ def summarise(results: Sequence[StoredResult]) -> ResultCounts:
     by_set: dict[str, int] = {}
     for item in results:
         if item.status is ResultStatus.SCORED and item.set_code:
-            by_set[item.set_code] = by_set.get(item.set_code, 0) + 1
+            code = canonical_code(item.set_code)
+            by_set[code] = by_set.get(code, 0) + 1
     return ResultCounts(
         registered=len(results),
         scored=sum(1 for item in results if item.status is ResultStatus.SCORED),

@@ -57,7 +57,7 @@ Why each set has its own random stream:
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from omr_scanner.errors import OMRScannerError
@@ -108,11 +108,20 @@ class SyntheticAnswerKey:
             ground truth use.
         plan: The template's questions and uppercased labels, as the Answer Key
             stage reads them.
+        physical_mark: What the set's sheets print in the set-code field when
+            that is not :attr:`set_code` (a logical Set ``10`` printed as
+            ``A``); ``""`` when the sheet prints the code itself.
     """
 
     set_code: str
     answers: dict[int, str]
     plan: QuestionPlan
+    physical_mark: str = ""
+
+    @property
+    def printed_set(self) -> str:
+        """What the solution sheet marks in its set-code field."""
+        return self.physical_mark or self.set_code
 
     @property
     def key_string(self) -> str:
@@ -120,13 +129,20 @@ class SyntheticAnswerKey:
         return "".join(self.answers[number].strip().upper() for number in self.plan.numbers)
 
     def describe(self) -> dict[str, Any]:
-        """The key as manifest data."""
-        return {
+        """The key as manifest data.
+
+        ``physical_mark`` is present only for a mapped set, so the manifest of
+        every other dataset is unchanged.
+        """
+        found: dict[str, Any] = {
             "set_code": self.set_code,
             "first_question": self.plan.first_question,
             "question_count": self.plan.question_count,
             "answers": self.key_string,
         }
+        if self.physical_mark:
+            found["physical_mark"] = self.physical_mark
+        return found
 
 
 def question_plan(template: OmrTemplate) -> QuestionPlan | None:
@@ -169,6 +185,7 @@ def generate_answer_keys(
     set_codes: Sequence[str],
     *,
     seed: int,
+    physical_marks: Mapping[str, str] | None = None,
 ) -> dict[str, SyntheticAnswerKey]:
     """Return one independently drawn key per set, in ``set_codes`` order.
 
@@ -178,6 +195,9 @@ def generate_answer_keys(
             here, never from an assumption of four.
         set_codes: The sets to key. Duplicates are keyed once.
         seed: The dataset's master seed.
+        physical_marks: Logical set -> the mark its sheets print, for sets
+            printed as something other than their code. The key itself is
+            drawn exactly as without a mapping.
 
     Returns:
         ``{set code: key}``, empty when the template has no questions.
@@ -200,7 +220,12 @@ def generate_answer_keys(
             if not options:
                 raise ValueError(f"Question {number} offers no options to key")
             answers[number] = rng.choice(list(options))
-        keys[set_code] = SyntheticAnswerKey(set_code=set_code, answers=answers, plan=plan)
+        keys[set_code] = SyntheticAnswerKey(
+            set_code=set_code,
+            answers=answers,
+            plan=plan,
+            physical_mark=(physical_marks or {}).get(set_code, ""),
+        )
     return keys
 
 
@@ -279,11 +304,14 @@ def solution_case(key: SyntheticAnswerKey, layout: FieldLayout, *, index: int) -
         for position in range(layout.identifier_columns):
             builder.blank_identifier_column(position)
     if key.set_code:
-        builder.set_code(key.set_code)
+        # The *physical* mark: a Set 10 printed as A is marked A, exactly as
+        # its candidates' sheets are.
+        builder.set_code(key.printed_set)
     for number, label in key.answers.items():
         builder.answer(number, (label,))
     builder.tag(TestCaseTag.BASELINE, TestCaseTag.ALL_ANSWERED)
-    return builder.build(notes=f"Solution sheet for set {key.set_code or '(none)'}.")
+    case = builder.build(notes=f"Solution sheet for set {key.set_code or '(none)'}.")
+    return replace(case, logical_set=key.set_code) if key.physical_mark else case
 
 
 def solution_stem(set_code: str) -> str:
@@ -383,7 +411,7 @@ def describe_solutions(
         "sets": [
             {
                 **key.describe(),
-                "set_code_marked": set_code_markable(layout, code),
+                "set_code_marked": set_code_markable(layout, key.printed_set),
                 "sheet": f"{SOLUTION_DIRNAME}/{files[code].sheet}",
                 "answer_key": f"{SOLUTION_DIRNAME}/{files[code].answer_key}",
                 "ground_truth": f"{SOLUTION_DIRNAME}/{files[code].ground_truth}",

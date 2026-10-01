@@ -378,6 +378,11 @@ class SheetCase:
             the set-code boxes, as opposed to :attr:`set_code`, the bubbles'
             reading. A wrongly bubbled, double-marked or blank set code is
             still written correctly. ``""`` when there is none.
+        logical_set: The **logical** examination set this sheet belongs to,
+            when its set is printed as a different mark (Set ``10`` printed as
+            ``A``): :attr:`set_code` and :attr:`set_marks` then hold the
+            physical mark the bubbles carry. ``""`` when the sheet prints the
+            set code itself, which is every dataset made without a mapping.
     """
 
     index: int
@@ -405,6 +410,7 @@ class SheetCase:
     intended: IntendedResponse | None = None
     intended_roll: str = ""
     intended_set: str = ""
+    logical_set: str = ""
 
     @property
     def tag_values(self) -> tuple[str, ...]:

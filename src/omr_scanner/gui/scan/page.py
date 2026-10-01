@@ -116,6 +116,7 @@ from omr_scanner.services import (
     scan_lifecycle,
     scan_paths,
     set_batch_status,
+    set_identity,
     sheet_resolutions,
     sync_conflicts,
     sync_duplicate_identifiers,
@@ -2296,9 +2297,17 @@ class ScanPage(WorkflowPage):
         # application - never by editing a result. What recognition read stays
         # in the project database whatever this file says.
         resolutions = self._export_resolutions()
+        database = self.database
+        # A project whose sets are printed as other marks gets a logical
+        # *Set* column beside the *Set (as read)* `set_code` column.
+        identity = set_identity.load(database) if database is not None else None
         try:
             written = export_scan_results(
-                processed, self.state.template, path, resolutions=resolutions
+                processed,
+                self.state.template,
+                path,
+                resolutions=resolutions,
+                identity=identity,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Export results")

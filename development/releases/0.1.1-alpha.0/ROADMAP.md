@@ -1,9 +1,11 @@
 # `0.1.1-alpha.0` roadmap — scan sessions, multi-source intake and set identity
 
-> **The single authoritative plan for `0.1.1-alpha.0`.** Status: **planned —
-> reconciled 2026-09-30, awaiting review. Nothing in it is implemented.** The
-> running application is `0.1.0-alpha.2` (`src/omr_scanner/_version.py`) and
-> stays so until implementation begins (§9).
+> **The single authoritative plan for `0.1.1-alpha.0`.** Status: **in
+> implementation.** Reconciled 2026-09-30. Phase **A (set identity)** is
+> implemented and tested on branch `feat/0.1.1-phase1-set-identity` (not yet
+> merged; see [PHASE_A_HANDOFF.md](PHASE_A_HANDOFF.md)); phases B–G are not
+> implemented. Source builds on that branch report `0.1.1-alpha.0` (§9);
+> nothing is released.
 >
 > Written against `main` at `128512d` (code as of `c30e809`, **schema 12**).
 > It reconciles and replaces two earlier plans (§11). Canonical project status
@@ -166,7 +168,7 @@ processing, the operator GUI, and qualification.
 
 | Phase | Title | Depends on | Proposed migration | Prompt | Status |
 |---|---|---|---|---|---|
-| **0.1.1-A** | Set identity (and the version bump) | — | 13 | [01](prompts/01-set-identity.md) | Pending |
+| **0.1.1-A** | Set identity (and the version bump) | — | 13 (taken) | [01](prompts/01-set-identity.md) | Implemented; tested — [handoff](PHASE_A_HANDOFF.md) |
 | **0.1.1-B** | Scan sessions and finite batches | A | 14 | [02](prompts/02-scan-sessions.md) | Pending |
 | **0.1.1-C** | Session-level review, reconciliation, scoring and reporting | B | 15 | [03](prompts/03-session-results.md) | Pending |
 | **0.1.1-D** | Intake sources and ledger | B | 16 | [04](prompts/04-intake-ledger.md) | Pending |
@@ -521,7 +523,7 @@ qualified*, *released*. Each phase is tracked on separate tracks:
 
 | Phase | Implemented | Tested | Synthetic | Network share | Real scanners | Production |
 |---|---|---|---|---|---|---|
-| A | Pending | Pending | n/a | n/a | Pending | Pending |
+| A | **Done** (branch, unmerged) | **Passing** | n/a | n/a | Pending | Pending |
 | B | Pending | Pending | n/a | n/a | Pending | Pending |
 | C | Pending | Pending | Pending | n/a | Pending | Pending |
 | D | Pending | Pending | Pending | Pending | Pending | Pending |

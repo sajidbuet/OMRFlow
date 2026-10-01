@@ -82,7 +82,7 @@ from omr_scanner.gui.theme import (
     Spacing,
 )
 from omr_scanner.gui.theme.stylesheet import ANSWER_KEY_STATE_PROPERTY
-from omr_scanner.services import project_sets, scoring_store
+from omr_scanner.services import project_sets, scoring_store, set_identity
 from omr_scanner.services.answer_key import (
     KeyDraft,
     QuestionPlan,
@@ -101,6 +101,7 @@ from omr_scanner.services.project_template import (
     load_project_template,
 )
 from omr_scanner.services.scoring_store import SetKeyOverview, SetKeyState
+from omr_scanner.services.set_identity import canonical_code, distinct_codes, same_set
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from PySide6.QtCore import QAbstractItemModel, QModelIndex, QPersistentModelIndex
@@ -628,27 +629,32 @@ class AnswerKeyPage(WorkflowPage):
 
         The project's defined sets first, in their order; then any set a key was
         stored for but is no longer defined, so an old key is never hidden;
-        then codes a processed batch contained.
+        then codes a processed batch contained. One entry per **logical** set:
+        a key stored as ``a`` is offered as the defined Set ``A``, never as a
+        second set (compared through :mod:`omr_scanner.services.set_identity`).
         """
-        codes: list[str] = list(self.defined_set_codes())
         database = self.database
         stored = scoring_store.known_set_codes(database) if database is not None else ()
-        for code in (*stored, *self.state.offered_codes):
-            if code and code not in codes:
-                codes.append(code)
-        if self.state.set_code and self.state.set_code not in codes:
-            codes.append(self.state.set_code)
-        return tuple(codes)
+        return distinct_codes(
+            code
+            for code in (
+                *self.defined_set_codes(),
+                *stored,
+                *self.state.offered_codes,
+                self.state.set_code,
+            )
+            if code
+        )
 
     def offer_set_codes(self, codes: list[str]) -> None:
         """Add set codes seen in a batch to the chooser.
 
         Called by the main window once a batch has been reconciled, so an
         operator of a project without defined sets does not have to remember
-        which papers were sat.
+        which papers were sat. The codes are the batch's *logical* sets.
         """
-        for code in sorted({item.strip().upper() for item in codes if item.strip()}):
-            if code not in self.state.offered_codes:
+        for code in sorted({canonical_code(item) for item in codes if item.strip()}):
+            if not any(same_set(code, known) for known in self.state.offered_codes):
                 self.state.offered_codes.append(code)
         self._refresh_sets(load=not self.state.set_code)
 
@@ -656,9 +662,16 @@ class AnswerKeyPage(WorkflowPage):
         """A typed code, matched to a defined set's exact spelling when there is one."""
         code = text.strip()
         for known in self.set_codes():
-            if known.upper() == code.upper():
+            if same_set(known, code):
                 return known
-        return code.upper()
+        return canonical_code(code)
+
+    def project_set_identity(self) -> set_identity.SetIdentity:
+        """The project's sets with their printed marks (empty without a project)."""
+        database = self.database
+        if database is None:
+            return set_identity.SetIdentity(())
+        return set_identity.load(database)
 
     def _refresh_sets(self, *, load: bool) -> None:
         """Rebuild the chooser, the tiles and the readiness summary."""
@@ -1330,6 +1343,7 @@ class AnswerKeyPage(WorkflowPage):
                 plan,
                 selected_set=self.state.set_code,
                 defined_sets=self.set_codes(),
+                identity=self._sheet_identity(),
             )
         except OMRScannerError as exc:
             QMessageBox.warning(
@@ -1346,6 +1360,16 @@ class AnswerKeyPage(WorkflowPage):
             target_set=dialog.target_set(),
             decision=dialog.set_decision(),
         )
+
+    def _sheet_identity(self) -> set_identity.SetIdentity | None:
+        """The identity a solution sheet's set mark is checked with.
+
+        The project's defined sets with their printed marks; ``None`` for a
+        project that defines none, which keeps the check to the codes this page
+        offers.
+        """
+        identity = self.project_set_identity()
+        return identity if identity.has_sets else None
 
     def _run_solution_dialog(self, dialog: SolutionSheetDialog) -> bool:
         """Show the review dialog; whether the operator accepted it."""

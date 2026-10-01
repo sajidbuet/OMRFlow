@@ -108,6 +108,21 @@ code as printed on the paper, and what it means. Table `project_set`.
 | `description` | text | Free text, e.g. `Name of Post: Assistant Engineer (Electrical)`. May be empty and may be long. |
 | `display_order` | int | The operator's own ordering, renumbered densely from zero. |
 | `created_at`, `updated_at` | datetime (UTC, aware) | |
+| `canonical_code` | str(32), nullable | *Migration 13.* The canonical logical identity of `code`: `unicodedata.normalize("NFKC", code).strip().upper()` (`domain/set_identity.py`). Unique where not NULL (partial unique index `ux_project_set_canonical_code`). NULL only for the second and later of a group of legacy sets whose codes now collide (`A` / `a`); see *Schema version 13*. Maintained by `services/project_sets.py` on every add, edit and delete. |
+| `physical_mark` | str(32) | *Migration 13.* What the sheet prints (and recognition reads) for this set when it is not `code` — Set `10` printed as `A`. `''` means the sheet prints the code itself (every set defined before migration 13). Within a project each canonical code **and** each canonical mark names at most one set. |
+
+**Set identity (phase 0.1.1-A).** Every comparison of set codes - registry,
+Resolve, reconciliation placement, Reject & Rescan's declared set, scoring and
+key lookup, verified keys, report associations, readiness, the Answer Key stage,
+Project Health - goes through `omr_scanner.domain.set_identity` (re-exported by
+`services/set_identity.py`); `tests/unit/test_set_identity_architecture.py`
+forbids direct comparisons in `services/`, `domain/` and `database/`. Stored
+references (`batch_scan.set_code_value`, the review ledger,
+`answer_key_revision.set_code`, `candidate_result.set_code`,
+`generated_report.set_code`, `scan_rejection.*_set_code`) are **not rewritten**;
+they are compared canonically. The one physical -> logical translation is
+`review_store.effective_set_codes`: its `value` is the logical set and its
+`as_read` the paper's value after review.
 
 **How this relates to the `set_code` that Phases 8 and 9 already use.**
 `answer_key_revision.set_code`, `report_template_association.set_code`,
@@ -630,6 +645,37 @@ when the standing command is a machine `withdrawn` - and is not undoable. Phase 
 | `report_template_association.set_id` / `source_kind` | Which set a result template belongs to, and whether it arrived as that set's attendance workbook. | Per-set attendance (migration 9) |
 | `candidate_roster.source_path` | The full path an attendance file was imported from. Empty for a roster imported before migration 10. | Attendance file provenance (migration 10) |
 | `scan_rejection` | Reject & Rescan: one scan's standing lifecycle position (rejected pending rescan / superseded by a confirmed replacement / exact re-import of rejected content / undone), the reason, the operator's case identity, the replacement link and the image's file state. History in `audit_event` (`entity_type='scan_lifecycle'`). | Reject & Rescan (migration 11) |
+| `answer_key_revision.created_by` / template identity / `source_sha256` / `source_metadata_json` | Answer-key provenance. | Answer Key rework (migration 12) |
+| `project_set.canonical_code` / `physical_mark` | Canonical set identity (unique where not NULL) and the optional printed mark. | Set identity, 0.1.1-A (migration 13) |
+
+### Schema version 13 (set identity, phase 0.1.1-A)
+
+`_migration_013_set_identity` adds `project_set.canonical_code` (nullable) and
+`project_set.physical_mark` (`NOT NULL DEFAULT ''`), each guarded by
+`PRAGMA table_info`, fills `canonical_code`, and creates the partial unique
+index `ux_project_set_canonical_code ... WHERE canonical_code IS NOT NULL`.
+
+Filling `canonical_code` in the migration is a deliberate exception to "a
+migration changes structure, not data": the value is a deterministic function
+of `code` in the same row (index metadata, in effect), the index is meaningless
+without it, and the table holds tens of rows.
+
+**Collisions are kept, never merged.** Rows are visited in the operator's order
+(`display_order`, `code`, `set_id`); the first of a group whose codes
+canonicalise alike (`A`, `a`) receives the canonical code, every later one keeps
+NULL. Nothing is deleted, renamed or merged, and no other table is touched.
+Project Health reports `SET_CODE_COLLISION` by name, Project Configuration shows
+the pair in red with a banner, and reconciliation of a colliding set's roster,
+answer-key verification for it, *Calculate Results* and report generation for
+it are refused until the operator renames or removes one. A reading of the
+shared code resolves to **neither** set. Renaming or deleting one recomputes the
+column (`project_sets._refresh_canonical_codes`). Reordering does not move the
+canonical code.
+
+A project opened **read-only** is never migrated; `project_sets.list_sets`
+then reads the legacy columns and treats every set as printing its own code.
+A schema-12 build refuses a schema-13 project with the existing "created with a
+newer version of OMRFlow" message.
 
 ### Schema version 11 (Reject & Rescan)
 

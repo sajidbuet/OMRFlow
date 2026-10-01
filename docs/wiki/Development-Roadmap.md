@@ -46,10 +46,16 @@ Per-phase detail for 0–10: `development/ROADMAP.md` and the
 
 ## Next development target — v0.1.1-alpha.0
 
-**Status: planned, awaiting review — nothing implemented.** Baseline:
-`v0.1.0-alpha.2` plus the unreleased work on `main` (Reject & Rescan, the
-Attendance workstation, the Answer Key rework; schema 12). `0.1.0-alpha.2`
-remains the finite-batch Alpha baseline.
+**Status: in development (not released).** Source builds report
+`0.1.1-alpha.0` since 2026-10-01. Baseline: `v0.1.0-alpha.2` plus the
+unreleased work on `main` (Reject & Rescan, the Attendance workstation, the
+Answer Key rework; schema 12). `0.1.0-alpha.2` remains the released
+finite-batch Alpha.
+
+| Phase | Implemented | Automated tests | Synthetic campaign | Network share | Real scanners | Production |
+|---|---|---|---|---|---|---|
+| A — Set identity (migration 13) | ✅ on branch `feat/0.1.1-phase1-set-identity`, not merged | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
+| B–G | Pending | — | — | — | — | — |
 
 **Architecture:** `Project → ScanSession → one or more finite ScanBatch
 objects → sheets`. A *scan batch* stays a finite, auditable processing and

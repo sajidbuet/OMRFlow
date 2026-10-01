@@ -70,6 +70,7 @@ from omr_scanner.evaluation.attendance_dataset import (
     ConflictProfile,
     ConflictRates,
     Population,
+    parse_set_spec,
     plan_population,
 )
 from omr_scanner.evaluation.fold_plans import NO_FOLDS
@@ -294,6 +295,10 @@ class GenerationRequest:
     include_reconciliation_edge_cases: bool = True
     generate_solutions: bool = True
     performance: PerformancePolicy = DEFAULT_PERFORMANCE
+    physical_marks: tuple[tuple[str, str], ...] = ()
+    """``(logical set, printed mark)`` pairs: sets whose sheets print a
+    different mark (``10=A`` in the dialog's set field). Empty - the default
+    for every existing caller - prints each set's own code."""
 
     def population(self) -> Population | None:
         """The candidate roster this request implies, or ``None``.
@@ -537,7 +542,8 @@ class GenerateDatasetDialog(QDialog):
         self.sets_edit.setObjectName("datasetSetsEdit")
         self.sets_edit.setToolTip(
             "Comma-separated question-paper sets. One workbook is written per "
-            "set, and set codes are never assumed to be a single digit."
+            "set, and set codes are never assumed to be a single digit. Write "
+            "10=A for a Set 10 whose sheets are printed (and marked) as A."
         )
         form.addRow("Sets:", self.sets_edit)
 
@@ -1054,14 +1060,21 @@ class GenerateDatasetDialog(QDialog):
 
         Order is preserved and duplicates dropped, because the roster is dealt
         round-robin across this sequence and a set listed twice would quietly
-        get double the candidates.
+        get double the candidates. ``10=A`` contributes the logical set ``10``;
+        see :meth:`selected_physical_marks`. A malformed entry yields no sets,
+        which the dialog already refuses with a message.
         """
-        seen: list[str] = []
-        for chunk in self.sets_edit.text().split(","):
-            code = chunk.strip()
-            if code and code not in seen:
-                seen.append(code)
-        return tuple(seen)
+        try:
+            return parse_set_spec(self.sets_edit.text())[0]
+        except ValueError:
+            return ()
+
+    def selected_physical_marks(self) -> tuple[tuple[str, str], ...]:
+        """``(logical set, printed mark)`` pairs typed as ``10=A``."""
+        try:
+            return tuple(parse_set_spec(self.sets_edit.text())[1].items())
+        except ValueError:
+            return ()
 
     def _on_attendance_toggled(self) -> None:
         """Enable the attendance controls, and re-describe what they will make."""
@@ -1366,6 +1379,7 @@ class GenerateDatasetDialog(QDialog):
             include_reconciliation_edge_cases=self.edge_case_checkbox.isChecked(),
             generate_solutions=self.solutions_checkbox.isChecked(),
             performance=self.performance_policy(),
+            physical_marks=self.selected_physical_marks() if with_attendance else (),
         )
 
     def _on_accept(self) -> None:

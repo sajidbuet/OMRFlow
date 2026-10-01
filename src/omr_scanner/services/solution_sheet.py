@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from omr_scanner.domain.set_identity import same_set
 from omr_scanner.services.answer_key import (
     QuestionPlan,
     ScannedKey,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
     from pathlib import Path
 
+    from omr_scanner.domain.set_identity import SetIdentity
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services.recognition_models import ScanResult
 
@@ -88,7 +90,16 @@ class SolutionSheetReading:
             and offset < len(read)
             and final_answers[offset] != read[offset]
         ]
+        mapping: dict[str, Any] = {}
+        if self.verdict.printed and not same_set(self.verdict.printed, self.verdict.selected):
+            # A mapped set: record the logical set the sheet's mark names and
+            # the mark the chosen set is printed with, beside the raw reading.
+            mapping = {
+                "sheet_set_logical": self.verdict.read_set,
+                "selected_set_printed_as": self.verdict.printed,
+            }
         return {
+            **mapping,
             "kind": "solution_sheet",
             "file_name": self.path.name,
             "read_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -113,8 +124,13 @@ def read_solution_sheet(
     *,
     selected_set: str,
     defined_sets: Sequence[str] = (),
+    identity: SetIdentity | None = None,
 ) -> SolutionSheetReading:
     """Recognise ``path`` with the project's template and describe it for review.
+
+    ``identity`` - the project's sets with their physical marks - lets the
+    sheet's printed set mark be compared with the chosen set's mark; see
+    :func:`~omr_scanner.services.answer_key.check_sheet_set`.
 
     Uses :class:`~omr_scanner.services.recognition_service.RecognitionEngine`
     with its default options - the same engine, registration and the
@@ -129,7 +145,11 @@ def read_solution_sheet(
     result = RecognitionEngine().process(path, template)
     scanned = key_from_scan(result, plan)
     verdict = check_sheet_set(
-        template, selected=selected_set, read=scanned.set_code, defined=defined_sets
+        template,
+        selected=selected_set,
+        read=scanned.set_code,
+        defined=defined_sets,
+        identity=identity,
     )
     try:
         digest = hash_file(path)
