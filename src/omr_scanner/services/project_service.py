@@ -315,7 +315,26 @@ def open_project(
         raise
     logger.info("Opened project '%s' at %s", metadata.name, layout.root)
 
-    return _start_session(Project(metadata, layout), database, lock=lock)
+    opened = _start_session(Project(metadata, layout), database, lock=lock)
+    _backfill_scan_sessions(database)
+    return opened
+
+
+def _backfill_scan_sessions(database: ProjectDatabase) -> None:
+    """Assign pre-session batches to scan sessions, once, after migration 14.
+
+    The upgrade step ADR-0005 describes - a data decision, so it runs here on
+    the first writable open rather than inside the migration. Idempotent (only
+    batches with no session are touched) and never fatal: a project whose
+    backfill failed still opens, and Project Health reports the batches that
+    still have no session.
+    """
+    from omr_scanner.services import scan_sessions
+
+    try:
+        scan_sessions.backfill_legacy_batches(database)
+    except OMRScannerError:
+        logger.exception("Scan-session backfill failed; batches remain unassigned")
 
 
 def _backup_before_migration_if_needed(layout: ProjectLayout) -> None:

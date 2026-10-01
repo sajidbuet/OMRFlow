@@ -59,6 +59,7 @@ from omr_scanner.database.models import (
     ScanBatch,
     ScanJobStatus,
 )
+from omr_scanner.errors import OMRScannerError
 from omr_scanner.services.recognition_models import (
     ENGINE_VERSION,
     RecognitionOutcome,
@@ -75,6 +76,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.services.batch_processor import ProcessedScan
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class BatchSealedError(OMRScannerError):
+    """A scan was added to a sealed batch, whose membership is final."""
+
 
 FLUSH_EVERY_SCANS = 25
 """How many finished sheets a recorder buffers before committing.
@@ -305,41 +311,78 @@ def create_batch(
 
     Every scan starts :attr:`~omr_scanner.database.models.ScanJobStatus.PENDING`.
     Nothing is marked processing until a run actually claims it.
+
+    **Every batch belongs to a scan session** (0.1.1 phase 2). This
+    lower-level entry point attaches the batch to the project's *active* scan
+    session, creating one implicitly when there is none, and never seals
+    another batch. The Scan stage uses
+    :func:`omr_scanner.services.scan_sessions.start_batch` instead, which also
+    seals the session's previous open batch and asks before a template change.
+    See :func:`omr_scanner.services.scan_sessions.attach_new_batch` for how a
+    template that differs from the session's pin is handled here.
+    """
+    from omr_scanner.services import scan_sessions
+
+    return scan_sessions.attach_new_batch(
+        database,
+        paths,
+        identity=identity,
+        source_folder=source_folder,
+        settings=settings,
+        batch_id=batch_id,
+    )
+
+
+def insert_batch(
+    session: Session,
+    paths: Sequence[Path],
+    *,
+    identity: BatchIdentity,
+    source_folder: Path | None = None,
+    settings: dict[str, Any] | None = None,
+    batch_id: str | None = None,
+    scan_session_id: str | None = None,
+    role: str = "scan",
+) -> str:
+    """Add a batch and its scan rows to an open transaction; return its id.
+
+    The single place a ``scan_batch`` row is constructed, so the session
+    service can create, attach and audit a batch in **one** transaction.
     """
     identifier = batch_id if batch_id is not None else new_batch_id()
     moment = _now()
-    with database.session() as session:
-        session.add(
-            ScanBatch(
-                batch_id=identifier,
-                created_at=moment,
-                updated_at=moment,
-                source_folder=str(source_folder) if source_folder is not None else "",
-                template_id=identity.template_id,
-                template_name=identity.template_name,
-                template_path=identity.template_path,
-                geometry_fingerprint=identity.geometry_fingerprint,
-                recognition_fingerprint=identity.recognition_fingerprint,
-                engine_version=identity.engine_version,
-                settings_json=json.dumps(settings or {}, sort_keys=True),
-                status=BatchStatus.NEW.value,
-                total_scans=len(paths),
-            )
+    session.add(
+        ScanBatch(
+            batch_id=identifier,
+            created_at=moment,
+            updated_at=moment,
+            source_folder=str(source_folder) if source_folder is not None else "",
+            template_id=identity.template_id,
+            template_name=identity.template_name,
+            template_path=identity.template_path,
+            geometry_fingerprint=identity.geometry_fingerprint,
+            recognition_fingerprint=identity.recognition_fingerprint,
+            engine_version=identity.engine_version,
+            settings_json=json.dumps(settings or {}, sort_keys=True),
+            status=BatchStatus.NEW.value,
+            total_scans=len(paths),
+            scan_session_id=scan_session_id,
+            role=role,
         )
-        # Flush the parent before adding the children. `batch_scan.batch_id`
-        # is a real foreign key and SQLite enforces it immediately (the engine
-        # turns `PRAGMA foreign_keys` on), so the batch row has to be on disk
-        # inside this transaction before any scan row can reference it.
-        session.flush()
-        session.add_all(
-            _scan_row(identifier, index, path) for index, path in enumerate(paths)
-        )
+    )
+    # Flush the parent before adding the children. `batch_scan.batch_id`
+    # is a real foreign key and SQLite enforces it immediately (the engine
+    # turns `PRAGMA foreign_keys` on), so the batch row has to be on disk
+    # inside this transaction before any scan row can reference it.
+    session.flush()
+    session.add_all(_scan_row(identifier, index, path) for index, path in enumerate(paths))
     _LOGGER.info(
-        "Batch %s registered: %d scan(s) from %s with template '%s'",
+        "Batch %s registered: %d scan(s) from %s with template '%s' (%s)",
         identifier,
         len(paths),
         source_folder or "(files)",
         identity.template_name,
+        role,
     )
     return identifier
 
@@ -386,16 +429,25 @@ def add_scans_to_batch(
     Returns:
         How many scans were registered.
 
-    What makes a **rescan** possible: the replacement for a rejected sheet has
-    to be read into the batch the original belongs to, because reconciliation,
-    scoring and reporting all work per batch. Before this existed a file added
-    to a batch that had already been registered was processed but silently
-    never stored - :func:`record_results` only updates rows that exist.
+    Why it exists: before it, a file added to a batch that had already been
+    registered was processed but silently never stored - :func:`record_results`
+    only updates rows that exist. It extends only an **open** batch - the one
+    the Scan stage is building, including a rescan read in the same sitting. A
+    rescan for a sheet in a *sealed* batch goes into a new ``rescan`` batch of
+    the same session instead, and still counts in the original's batch through
+    its confirmed Reject & Rescan link.
 
     New rows are appended at the end of the batch order and start
     :attr:`~omr_scanner.database.models.ScanJobStatus.PENDING`, exactly as
     :func:`create_batch` registers them, so resume, retry and reprocessing
     treat them like any other scan.
+
+    Raises:
+        BatchSealedError: The batch is **sealed** (0.1.1 phase 2): its
+            membership is final, so a rescan or a late file belongs in a new
+            batch of the same scan session instead. Raised only when ``paths``
+            contains a file that is not already a member: offering a sealed
+            batch its own members (a resume of its unfinished sheets) is fine.
     """
     if not paths:
         return 0
@@ -409,6 +461,18 @@ def add_scans_to_batch(
                 select(BatchScan.source_path).where(BatchScan.batch_id == batch_id)
             ).all()
         )
+        newcomers = [path for path in paths if str(path) not in known]
+        sealed_at = session.scalar(
+            select(ScanBatch.sealed_at).where(ScanBatch.batch_id == batch_id)
+        )
+        if newcomers and sealed_at is not None:
+            raise BatchSealedError(
+                f"Batch {batch_id} is sealed; {len(newcomers)} new scan(s) refused",
+                user_message=(
+                    "This batch is sealed: its list of scans is final. New scans "
+                    "go into a new batch of the same scan session."
+                ),
+            )
         highest = session.scalar(
             select(func.max(BatchScan.batch_index)).where(BatchScan.batch_id == batch_id)
         )
@@ -1108,6 +1172,11 @@ def finalise_batch(database: ProjectDatabase, batch_id: str) -> BatchSummary | N
     else:
         status = BatchStatus.COMPLETED
     set_batch_status(database, batch_id, status)
+    # A run boundary: record what the batch was run with (defect 6 of
+    # 0.1.0-alpha.2 - the manifest table existed and nothing wrote it).
+    from omr_scanner.services import processing_manifest
+
+    processing_manifest.record(database, batch_id, trigger="run_finished")
     return load_summary(database, batch_id)
 
 
@@ -1202,6 +1271,7 @@ __all__ = [
     "OUTCOME_TO_STATUS",
     "BatchIdentity",
     "BatchRecorder",
+    "BatchSealedError",
     "BatchStatus",
     "BatchSummary",
     "CompatibilityVerdict",
@@ -1216,6 +1286,7 @@ __all__ = [
     "delete_batch",
     "failed_scans",
     "finalise_batch",
+    "insert_batch",
     "list_batches",
     "load_summary",
     "mark_cancelled",
