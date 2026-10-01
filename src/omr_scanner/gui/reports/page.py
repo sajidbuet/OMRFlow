@@ -50,9 +50,9 @@ from omr_scanner.gui.reports.layout_dialog import ReportLayoutDialog
 from omr_scanner.gui.reports.template_dialog import TemplateMappingDialog
 from omr_scanner.gui.reports.worker import ReportGenerationWorker, ReportJob, ReportRunResult
 from omr_scanner.services import (
-    batch_store,
     reconciliation_store,
     report_store,
+    scan_sessions,
     set_attendance,
 )
 
@@ -364,8 +364,9 @@ class ReportsPage(WorkflowPage):
             # one rather than "whichever roster is active".
             roster = reconciliation_store.active_roster(session.database, None)
             self.state.roster_id = roster.roster_id if roster else None
-            batches = batch_store.list_batches(session.database, limit=1)
-            self.state.batch_id = batches[0].batch_id if batches else None
+            # The active scan session's batch - never "the most recently
+            # updated one" (0.1.1 phase 2; one batch until session results).
+            self.state.batch_id = scan_sessions.downstream_batch_id(session.database)
         self.refresh_table()
         self._update_enabled()
 
