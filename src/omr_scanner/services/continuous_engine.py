@@ -417,6 +417,7 @@ class ContinuousEngine:
         self._owned: set[str] = set()
         self._skipped: dict[str, str] = {}
         self._compatible: set[str] = set()
+        self._prepared: set[str] = set()
         self._worker_lost: dict[int, int] = defaultdict(int)
         self._last_poll: dict[str, datetime] = {}
         self._last_error = ""
@@ -802,6 +803,43 @@ class ContinuousEngine:
                 )
             )
 
+    def _prepare(self, runnable: Sequence[str]) -> None:
+        """Give a batch intake did not register its registration step, once.
+
+        A unit registered by intake carries every sheet's verified hash and its
+        duplicate links. A batch registered otherwise - *Add Folder*,
+        *Reprocess All*, a resumed batch of an earlier build - gets exactly the
+        step the finite Scan stage's worker runs before reading: the manual
+        source's ledger and content hashes
+        (:func:`~omr_scanner.services.intake.record_manual_batch`) and phase 4's
+        exact-duplicate rule (:func:`~omr_scanner.services.intake.link_exact_duplicates`).
+        Both are idempotent. Never fatal: like the finite path, a batch whose
+        hashing fails is still read.
+        """
+        due = [batch_id for batch_id in runnable if batch_id not in self._prepared]
+        if not due:
+            return
+        with self._database.session() as session:
+            unhashed = {
+                str(batch_id)
+                for (batch_id,) in session.execute(
+                    select(BatchScan.batch_id)
+                    .where(BatchScan.batch_id.in_(due))
+                    .where(BatchScan.status.in_(CLAIMABLE))
+                    .where(BatchScan.content_sha256 == "")
+                    .distinct()
+                ).all()
+            }
+        for batch_id in due:
+            if batch_id in unhashed:
+                try:
+                    intake_service.record_manual_batch(self._database, batch_id)
+                    intake_service.link_exact_duplicates(self._database, batch_id)
+                except Exception as exc:
+                    self._last_error = f"Hashing unit {batch_id[:8]} failed: {exc}"
+                    _LOGGER.exception("Registration step for batch %s failed", batch_id)
+            self._prepared.add(batch_id)
+
     def _claim_and_submit(self) -> int:
         free = self._limits.max_in_flight - len(self._in_flight)
         if free <= 0:
@@ -809,6 +847,7 @@ class ContinuousEngine:
         runnable = self._runnable_batches()
         if not runnable:
             return 0
+        self._prepare(runnable)
         try:
             claims = claim_scans(self._database, runnable, min(free, self._limits.claim_window))
         except OMRScannerError as exc:
