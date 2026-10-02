@@ -329,12 +329,18 @@ def _backfill_scan_sessions(database: ProjectDatabase) -> None:
     backfill failed still opens, and Project Health reports the batches that
     still have no session.
     """
-    from omr_scanner.services import scan_sessions
+    from omr_scanner.services import scan_sessions, session_population
 
     try:
         scan_sessions.backfill_legacy_batches(database)
     except OMRScannerError:
         logger.exception("Scan-session backfill failed; batches remain unassigned")
+    # Migration 15's upgrade step: record, once, the store each session's
+    # existing downstream state is already in, so it can never drift.
+    try:
+        session_population.bind_downstream_stores(database)
+    except OMRScannerError:
+        logger.exception("Binding scan sessions' downstream stores failed")
 
 
 def _backup_before_migration_if_needed(layout: ProjectLayout) -> None:

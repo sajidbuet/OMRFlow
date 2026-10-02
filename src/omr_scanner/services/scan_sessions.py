@@ -207,6 +207,11 @@ def has_lifecycle_schema(database: ProjectDatabase) -> bool:
     return database.schema_version >= LIFECYCLE_SCHEMA_VERSION
 
 
+def has_scope_schema(database: ProjectDatabase) -> bool:
+    """Whether the database records session scope (schema 15 or later)."""
+    return database.schema_version >= 15
+
+
 def _audit(
     session: Session,
     *,
@@ -1225,8 +1230,31 @@ def describe_downstream(database: ProjectDatabase, batch_id: str | None) -> str:
 # ----------------------------------------------------------------------
 # Combine
 # ----------------------------------------------------------------------
+def downstream_holders(
+    database: ProjectDatabase, session_ids: Sequence[str]
+) -> dict[str, str]:
+    """``session id -> its downstream store`` for each of ``session_ids`` holding any.
+
+    A session "holds downstream state" once Attendance has reconciled or
+    Results has scored against it - the operator decisions a combine must not
+    silently lose (0.1.1 phase 4).
+    """
+    from omr_scanner.services import session_population
+
+    found: dict[str, str] = {}
+    for scan_session_id in dict.fromkeys(session_ids):
+        store = session_population.held_store(database, scan_session_id)
+        if store is not None:
+            found[scan_session_id] = store
+    return found
+
+
 def combine_problems(
-    database: ProjectDatabase, source_ids: Sequence[str], target_id: str
+    database: ProjectDatabase,
+    source_ids: Sequence[str],
+    target_id: str,
+    *,
+    keep_downstream_of: str | None = None,
 ) -> tuple[str, ...]:
     """Every reason *Combine into one session* would be refused (empty = allowed).
 
@@ -1237,11 +1265,34 @@ def combine_problems(
     the same file path, or the same content hash where one was recorded.
     Session-level duplicate *identity* (two scripts for one candidate) is the
     effective-scan-set service's to judge, later.
+
+    **Downstream decisions (0.1.1 phase 4).** A combined session has one
+    downstream store. When more than one of the sessions already holds
+    Attendance / Results state, combining would leave all but one session's
+    reconciliation decisions outside the combined session; that is refused
+    unless the operator names, in ``keep_downstream_of``, the session whose
+    decisions the combined session keeps (the others stay in the database as
+    history and the choice is audited).
     """
     problems: list[str] = []
     sources = [item for item in dict.fromkeys(source_ids) if item != target_id]
     if not sources:
         return ("Choose at least one other scan session to combine into this one.",)
+    holders = downstream_holders(database, [target_id, *sources])
+    if len(holders) > 1 and keep_downstream_of not in holders:
+        with database.session() as session:
+            names = [
+                (row.name if row is not None else item[:8])
+                for item in holders
+                for row in (session.get(ScanSession, item),)
+            ]
+        problems.append(
+            "More than one of these scan sessions already has Attendance or Results "
+            f"decisions ({", ".join(repr(item) for item in names)}). A combined session "
+            "keeps one session's decisions; choose which, or the combine is refused."
+        )
+    elif keep_downstream_of is not None and keep_downstream_of not in holders:
+        problems.append("The session chosen to keep decisions from holds none.")
     with database.session() as session:
         project_id = _project_id(session)
         target = session.get(ScanSession, target_id)
@@ -1319,6 +1370,7 @@ def combine_scan_sessions(
     *,
     combined_by: str,
     reason: str = "",
+    keep_downstream_of: str | None = None,
 ) -> CombineOutcome:
     """Move every batch of the source sessions into the open target session.
 
@@ -1335,12 +1387,16 @@ def combine_scan_sessions(
             "Combine needs an operator",
             user_message="Set your name in File > Settings before combining scan sessions.",
         )
-    problems = combine_problems(database, source_ids, target_id)
+    problems = combine_problems(
+        database, source_ids, target_id, keep_downstream_of=keep_downstream_of
+    )
     if problems:
         raise ScanSessionError(
             "Combine refused", user_message="Cannot combine: " + " ".join(problems)
         )
     sources = [item for item in dict.fromkeys(source_ids) if item != target_id]
+    holders = downstream_holders(database, [target_id, *sources])
+    kept = keep_downstream_of if keep_downstream_of in holders else next(iter(holders), None)
     moved: list[str] = []
     moment = _now()
     with database.session() as session:
@@ -1385,6 +1441,31 @@ def combine_scan_sessions(
             )
             if _setting(session, SettingKey.ACTIVE_SCAN_SESSION) == source_id:
                 _activate(session, target_id, actor=combined_by)
+        if has_scope_schema(database):
+            # The combined session's store is a recorded choice, never the
+            # derivation rule over the merged batch list (which could move).
+            target.downstream_batch_id = holders[kept] if kept is not None else None
+            for source_id in sources:
+                _require(session, source_id).downstream_batch_id = None
+            if len(holders) > 1 and kept is not None:
+                _audit(
+                    session,
+                    action=SessionAction.COMBINED,
+                    entity_type=SESSION_ENTITY,
+                    entity_id=target_id,
+                    actor=combined_by,
+                    previous_value=",".join(sorted(holders)),
+                    new_value=kept,
+                    reason=reason,
+                    detail=(
+                        f"downstream decisions kept from session {kept[:8]} (store "
+                        f"{holders[kept][:8]}); the other session(s)' decisions are "
+                        "retained as history under "
+                        + ", ".join(
+                            store[:8] for owner, store in holders.items() if owner != kept
+                        )
+                    ),
+                )
         if not target.template_id and moved:
             first = session.execute(
                 select(

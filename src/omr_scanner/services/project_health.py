@@ -811,6 +811,18 @@ def _session_population_issues(database: ProjectDatabase) -> list[HealthIssue]:
         holders = session.execute(
             select(ReconciliationRun.batch_id).distinct()
         ).scalars().all()
+        bound: dict[str, str] = {}
+        if scan_sessions.has_scope_schema(database):
+            from omr_scanner.database.models import ScanSession
+
+            bound = {
+                str(owner): str(store)
+                for owner, store in session.execute(
+                    select(ScanSession.scan_session_id, ScanSession.downstream_batch_id).where(
+                        ScanSession.downstream_batch_id.is_not(None)
+                    )
+                ).all()
+            }
     replacement_of: dict[int, int] = {}
     for scan_id, filed_batch, state, replacement, scan_batch in rows:
         if scan_batch is not None and filed_batch != scan_batch:
@@ -870,15 +882,30 @@ def _session_population_issues(database: ProjectDatabase) -> list[HealthIssue]:
         owner = batch_session.get(str(batch_id))
         if owner:
             per_session.setdefault(owner, []).append(str(batch_id))
-    for _owner, batches in sorted(per_session.items()):
+    for owner, batches in sorted(per_session.items()):
+        if owner in bound:
+            # A bound session reads exactly its recorded store; other batches
+            # holding rows are history a combine kept, by an audited choice.
+            continue
         if len(batches) > 1:
             issues.append(
                 HealthIssue(
                     HealthLevel.WARNING,
                     "SESSION_DOWNSTREAM_SPLIT",
                     f"{len(batches)} batches of one scan session hold reconciliation "
-                    "state; Attendance, Results and Reports read only the oldest "
+                    "state and the session records no downstream store; Attendance, "
+                    "Results and Reports read the oldest "
                     "(" + ", ".join(sorted(item[:8] for item in batches)) + ").",
+                )
+            )
+    for owner, store in sorted(bound.items()):
+        if batch_session.get(store) != owner:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.ERROR,
+                    "SESSION_STORE_NOT_IN_SESSION",
+                    f"Scan session {owner[:8]} records its downstream store as batch "
+                    f"{store[:8]}, which is not one of its batches.",
                 )
             )
     return issues

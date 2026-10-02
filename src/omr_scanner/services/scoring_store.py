@@ -971,7 +971,7 @@ def score_batch(
             (legacy ``A`` and ``a``). Which key marks such a script cannot be
             decided, so nothing is scored until the operator renames one.
     """
-    batch_id = session_population.population_key(database, batch_id)
+    batch_id = session_population.bind_store(database, batch_id)
     set_identity.require_no_collision(
         set_identity.load(database), purpose="Calculate Results"
     )

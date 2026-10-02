@@ -1248,7 +1248,8 @@ def reconcile_batch(
     classification left behind from a roster that is no longer active.
     Operator decisions are *not* touched: they are the input, not the output.
     """
-    batch_id = _key(database, batch_id)
+    # The first downstream write fixes the session's store (migration 15).
+    batch_id = session_population.bind_store(database, batch_id)
     candidates = roster_candidates(database, roster_id)
     # A set's roster is reconciled against that set's scripts only. A script
     # of another set is outside this universe - not an unknown candidate - and

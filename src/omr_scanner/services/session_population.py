@@ -55,7 +55,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from omr_scanner.database.models import (
     BatchScan,
@@ -64,6 +64,7 @@ from omr_scanner.database.models import (
     ReconciliationRun,
     ScanBatch,
     ScanRejection,
+    ScanSession,
 )
 from omr_scanner.domain.session_population import (
     SheetDisposition,
@@ -189,8 +190,137 @@ def session_of_batch(database: ProjectDatabase, batch_id: str) -> str:
     return str(found) if found else f"{LONE_BATCH_PREFIX}{batch_id}"
 
 
+SCOPE_SCHEMA_VERSION = 15
+"""The schema (migration 15) that records a session's bound downstream store."""
+
+
+def _has_scope(database: ProjectDatabase) -> bool:
+    return database.schema_version >= SCOPE_SCHEMA_VERSION
+
+
+def _bound_store(session: Session, database: ProjectDatabase, scan_session_id: str) -> str | None:
+    """The store recorded on the session, if any (migration 15)."""
+    if scan_session_id.startswith(LONE_BATCH_PREFIX) or not _has_scope(database):
+        return None
+    found = session.scalar(
+        select(ScanSession.downstream_batch_id).where(
+            ScanSession.scan_session_id == scan_session_id
+        )
+    )
+    return str(found) if found else None
+
+
+def _store_for(
+    session: Session, database: ProjectDatabase, scan_session_id: str, batches: Sequence[str]
+) -> str:
+    """The session's downstream store: the **bound** one, else the derivation rule.
+
+    Once bound (migration 15) the store is a recorded fact of the session and
+    never re-derived - adding, combining or superseding batches cannot move it.
+    An unbound session (no downstream state yet, or a project not yet opened
+    writable since the upgrade) falls back to :func:`_key_for`.
+    """
+    bound = _bound_store(session, database, scan_session_id)
+    if bound is not None:
+        return bound
+    return _key_for(session, batches)
+
+
+def _holding(session: Session, batches: Sequence[str]) -> set[str]:
+    """Which of ``batches`` already hold reconciliation or result rows."""
+    if not batches:
+        return set()
+    return set(
+        session.scalars(
+            select(ReconciliationRun.batch_id).where(ReconciliationRun.batch_id.in_(batches))
+        ).all()
+    ) | set(
+        session.scalars(
+            select(CandidateResult.batch_id)
+            .where(CandidateResult.batch_id.in_(batches))
+            .distinct()
+        ).all()
+    )
+
+
+def held_store(database: ProjectDatabase, scan_session_id: str) -> str | None:
+    """The store a session's downstream state is in, or ``None`` when it holds none."""
+    with database.session() as session:
+        batches = [item for item, _created in _session_batches(session, scan_session_id)]
+        store = _store_for(session, database, scan_session_id, batches)
+        if store and store in _holding(session, [store]):
+            return store
+        return None
+
+
+def bind_store(database: ProjectDatabase, batch_id: str) -> str:
+    """Record the store of ``batch_id``'s session on the session, if not yet recorded.
+
+    Called by every downstream *write* (reconciliation, scoring) before it
+    writes, so the first downstream state a session receives fixes its store.
+    Returns the store (``batch_id`` itself for a batch with no session).
+    """
+    scan_session_id = session_of_batch(database, batch_id)
+    if (
+        database.read_only
+        or scan_session_id.startswith(LONE_BATCH_PREFIX)
+        or not _has_scope(database)
+    ):
+        return population_key(database, batch_id)
+    with database.session() as session:
+        bound = _bound_store(session, database, scan_session_id)
+        if bound is not None:
+            return bound
+        batches = [item for item, _created in _session_batches(session, scan_session_id)]
+        store = _key_for(session, batches) or batch_id
+        session.execute(
+            update(ScanSession)
+            .where(ScanSession.scan_session_id == scan_session_id)
+            .values(downstream_batch_id=store)
+        )
+    _LOGGER.info("Scan session %s: downstream store bound to batch %s", scan_session_id, store)
+    return store
+
+
+def bind_downstream_stores(database: ProjectDatabase) -> int:
+    """Bind every unbound session that already holds downstream state. Idempotent.
+
+    Run on a writable open after migration 15 (the session-scope upgrade
+    step): a session upgraded from schema 14 has its downstream rows under the
+    batch the old rule chose, and that choice is recorded once, here, so it
+    can never drift afterwards. Returns how many sessions were bound.
+    """
+    if database.read_only or not _has_scope(database):
+        return 0
+    bound = 0
+    with database.session() as session:
+        sessions = session.scalars(
+            select(ScanSession.scan_session_id).where(ScanSession.downstream_batch_id.is_(None))
+        ).all()
+        for scan_session_id in sessions:
+            batches = [
+                item for item, _created in _session_batches(session, str(scan_session_id))
+            ]
+            holding = _holding(session, batches)
+            if not holding:
+                continue
+            store = next(item for item in batches if item in holding)
+            session.execute(
+                update(ScanSession)
+                .where(ScanSession.scan_session_id == scan_session_id)
+                .values(downstream_batch_id=store)
+            )
+            bound += 1
+    if bound:
+        _LOGGER.info("Bound the downstream store of %d scan session(s)", bound)
+    return bound
+
+
 def _key_for(session: Session, batches: Sequence[str]) -> str:
-    """The oldest of ``batches`` already holding downstream state, else the oldest."""
+    """The oldest of ``batches`` already holding downstream state, else the oldest.
+
+    The derivation rule for a session whose store is not bound yet.
+    """
     if not batches:
         return ""
     holding = set(
@@ -224,7 +354,7 @@ def population_key(database: ProjectDatabase, batch_id: str) -> str:
     session_id = session_of_batch(database, batch_id)
     with database.session() as session:
         batches = [item for item, _created in _session_batches(session, session_id)]
-        key = _key_for(session, batches)
+        key = _store_for(session, database, session_id, batches)
     return key or batch_id
 
 
@@ -232,7 +362,9 @@ def session_key(database: ProjectDatabase, scan_session_id: str) -> str | None:
     """The population key of a scan session, or ``None`` when it has no batch."""
     with database.session() as session:
         batches = [item for item, _created in _session_batches(session, scan_session_id)]
-        return _key_for(session, batches) or None
+        if not batches:
+            return None
+        return _store_for(session, database, scan_session_id, batches) or None
 
 
 # ----------------------------------------------------------------------
@@ -254,7 +386,7 @@ def session_population(database: ProjectDatabase, scan_session_id: str) -> Sessi
     with database.session() as session:
         batch_rows = _session_batches(session, scan_session_id)
         batches = [item for item, _created in batch_rows]
-        key = _key_for(session, batches)
+        key = _store_for(session, database, scan_session_id, batches)
         superseded: set[str] = set()
         if _has_sessions(database):
             superseded = {

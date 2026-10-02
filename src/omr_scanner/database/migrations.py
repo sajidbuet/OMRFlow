@@ -636,6 +636,61 @@ def _migration_014_scan_sessions(connection: Connection) -> None:
     )
 
 
+SESSION_SCOPE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    (
+        "scan_session",
+        "downstream_batch_id",
+        "VARCHAR(32) NULL REFERENCES scan_batch(batch_id) ON DELETE SET NULL",
+    ),
+    ("generated_report", "scan_session_id", "VARCHAR(32) NULL"),
+    ("generated_report", "is_final", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("generated_report", "session_closed_at", "DATETIME NULL"),
+)
+
+SESSION_SCOPE_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS ix_batch_scan_identifier ON batch_scan (identifier_value)",
+    "CREATE INDEX IF NOT EXISTS ix_batch_scan_content ON batch_scan (content_sha256)",
+    "CREATE INDEX IF NOT EXISTS ix_review_conflict_type_value "
+    "ON review_conflict (conflict_type, machine_value)",
+    "CREATE INDEX IF NOT EXISTS ix_generated_report_session "
+    "ON generated_report (scan_session_id, generated_at)",
+)
+
+
+def _migration_015_session_scope(connection: Connection) -> None:
+    """Persist a scan session's downstream scope and its final outputs' provenance.
+
+    Structure only (ADR-0007, revised):
+
+    * ``scan_session.downstream_batch_id`` - the session's **bound downstream
+      store**: the one ``batch_id`` value its reconciliation and results rows
+      are keyed by. Recorded on the session, so the store can never move
+      because batches are added, combined or superseded; ``NULL`` until the
+      session first holds downstream state (bound by
+      :func:`omr_scanner.services.session_population.bind_downstream_stores`
+      on the first writable open, and by the first reconciliation or scoring).
+    * ``generated_report.scan_session_id`` / ``is_final`` /
+      ``session_closed_at`` - which session an output was generated from,
+      whether it was a final export, and the close it came from. A final
+      output is current only while its session is still closed by that same
+      close (reopening and re-closing produce a different ``closed_at``).
+    * indexes for the bounded paths: ``batch_scan.identifier_value`` (the
+      duplicate-ID groups a correction touches), ``batch_scan.content_sha256``
+      (exact-content duplicates at registration) and
+      ``review_conflict(conflict_type, machine_value)`` (a group's records).
+
+    Every column is additive and nullable or defaulted; nothing is rebuilt.
+    """
+    for table, name, ddl in SESSION_SCOPE_COLUMNS:
+        existing = {
+            row[1] for row in connection.execute(text(f"PRAGMA table_info({table})")).all()
+        }
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+    for statement in SESSION_SCOPE_INDEXES:
+        connection.execute(text(statement))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -730,6 +785,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "session link, seal and role columns"
         ),
         apply=_migration_014_scan_sessions,
+    ),
+    Migration(
+        version=15,
+        description=(
+            "Session scope: scan_session.downstream_batch_id; generated_report "
+            "session, final flag and close; bounded-lookup indexes"
+        ),
+        apply=_migration_015_session_scope,
     ),
 )
 

@@ -314,11 +314,24 @@ class ScanSession(Base):
         DateTime(timezone=True), nullable=True
     )
     """Set on reopen: any final output generated while the session was closed is
-    stale from this moment. Report scope (which outputs belong to a session) is
-    session-level reporting's to add."""
+    stale from this moment (each output also records the close it came from,
+    :attr:`GeneratedReport.session_closed_at`)."""
     merged_into_session_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     """Set when *Combine* emptied this session into another one."""
     notes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    # --- Session scope (migration 15, 0.1.1 phase 4) -------------------------
+    # Deferred like scan_batch's lifecycle columns, so a schema-14 project
+    # opened read-only (never migrated) still reads every session.
+    downstream_batch_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("scan_batch.batch_id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+        deferred=True,
+    )
+    """The session's **bound downstream store**: the ``batch_id`` value its
+    reconciliation and result rows are keyed by. ``NULL`` until it first holds
+    downstream state. Never derived from batch history once set - see ADR-0007."""
 
     def __repr__(self) -> str:
         """Return a debugging representation naming the session and its state."""
@@ -1306,6 +1319,22 @@ class GeneratedReport(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     generated_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     application_version: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+
+    # --- Scope and finality (migration 15, 0.1.1 phase 4), deferred ---------
+    scan_session_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, deferred=True
+    )
+    """The scan session the output was generated from (``None``: before
+    migration 15, or a batch belonging to no session)."""
+    is_final: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", deferred=True
+    )
+    """A Final Export (from a CLOSED session), as opposed to a preview."""
+    session_closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, deferred=True
+    )
+    """The ``closed_at`` of the close the output came from. A final output is
+    current only while its session is closed by that same close."""
 
     def __repr__(self) -> str:
         """Return a debugging representation. Deliberately names no candidate."""
