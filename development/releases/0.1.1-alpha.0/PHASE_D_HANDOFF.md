@@ -496,3 +496,29 @@ This is scripted driving, **not** operator validation.
 | M | Phase 3 crash/reopen invariants | crash matrix 16/16; 1,000-sheet series |
 | N | No image reread to reconstruct | population tests delete every image first |
 | O | No later-phase scope pulled in | no intake, sources, scheduler or watched folders added |
+
+### Test results (completion audit, 2026-10-02)
+
+| Run | Result |
+|---|---|
+| Full suite, branch at `88426a0`, worktree | **6,419 passed, 29 skipped, 0 failed**, 5 `stress` deselected (2 h 38 min; a previous run of the same suite took 64 min - the machine was slower) |
+| The run before it | 6,414 passed, 29 skipped, **5 failed**. All five were tests encoding behaviour this audit intentionally changed, or a real defect it found, each fixed and re-run before the final run: two reopen-GUI tests whose "duplicate ID" sheets were byte-identical images (now written as two different scans); the audit-action length guard (two new action names were too long - renamed); a recovery test that closed a session with unread sheets (closure checks); a schema-13 upgrade test pinned to schema 14 |
+| `tests/crash` (non-stress) | 16 passed (the crash matrix now names the dataset's identical image and asserts it is read zero times) |
+| `tests/crash -m stress` (1,000-sheet kill series) | 1 passed |
+| `tests/local` (13 real-sheet tests) from the main checkout against the branch's `src` | 13 passed, 10 skipped (fixture-dependent, as on `main`) |
+| `ruff check src tests tools scripts` / `mypy` | clean / no issues (212 files) |
+
+New tests in this audit:
+- `test_duplicate_sync_bounded` (16)
+- `test_exact_duplicates` (12) and `test_exact_duplicates_gui` (1)
+- `test_final_export_lifecycle` (9) and `test_close_and_export_gui` (4)
+- `test_session_store_binding` (9)
+- `test_session_scope_migration` (5)
+- `test_golden_one_batch` (1)
+- `test_generated_session_ground_truth` (2)
+- `test_renamed_export` (1)
+- `test_results_dashboard_population` (1)
+- `test_duplicate_grouping_gui` (1)
+- a batch-filter test in `test_session_resolve_gui` (1)
+
+Tests updated, each with an in-test explanation: the crash matrix, the reopen GUI fixture, two `test_scan_sessions` closes, `test_crash_safe_persistence`'s closed session, the schema-13 upgrade pin, a Resolve GUI fixture, and the bounded-sync spy.
