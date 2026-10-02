@@ -99,7 +99,7 @@ def _reconcile_and_score(session, roster_id: int, batch_id: str, template) -> No
     )
 
 
-def _set_up(workspace: Path, name: str, rolls: list[str], template):
+def _set_up(workspace: Path, name: str, rolls: list[str], template) -> tuple[object, object, int]:
     from omr_scanner.services import (
         candidate_import,
         create_project,
