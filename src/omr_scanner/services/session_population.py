@@ -53,11 +53,13 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import func, select, update
 
 from omr_scanner.database.models import (
+    AuditEvent,
     BatchScan,
     BatchSupersession,
     CandidateResult,
@@ -304,12 +306,31 @@ def bind_downstream_stores(database: ProjectDatabase) -> int:
             holding = _holding(session, batches)
             if not holding:
                 continue
-            store = next(item for item in batches if item in holding)
+            store = _key_for(session, batches)
             session.execute(
                 update(ScanSession)
                 .where(ScanSession.scan_session_id == scan_session_id)
                 .values(downstream_batch_id=store)
             )
+            others = [item for item in batches if item in holding and item != store]
+            if others:
+                # Recorded, because which decisions stay authoritative is a
+                # decision about examination data, not structure.
+                session.add(
+                    AuditEvent(
+                        occurred_at=datetime.now(UTC), batch_id=store, scan_id=0,
+                        conflict_id=0, entity_type="scan_session",
+                        entity_id=str(scan_session_id), action="downstream_store_bound",
+                        new_value=store,
+                        detail=(
+                            f"Upgrade: the session's downstream store is batch {store[:8]}, "
+                            "the one the previous version showed; earlier Attendance / "
+                            "Results state under "
+                            + ", ".join(item[:8] for item in others)
+                            + " is kept as history."
+                        ),
+                    )
+                )
             bound += 1
     if bound:
         _LOGGER.info("Bound the downstream store of %d scan session(s)", bound)
@@ -317,27 +338,36 @@ def bind_downstream_stores(database: ProjectDatabase) -> int:
 
 
 def _key_for(session: Session, batches: Sequence[str]) -> str:
-    """The oldest of ``batches`` already holding downstream state, else the oldest.
+    """The store of a session whose store is not bound yet - the derivation rule.
 
-    The derivation rule for a session whose store is not bound yet.
+    * No batch holds downstream state: the session's oldest batch (the first
+      downstream write then binds it).
+    * One batch holds it: that batch.
+    * Several hold it - only possible in data written before 0.1.1 phase 4,
+      where downstream read one batch, the session's **newest** non-superseded
+      one, and an operator could reconcile again after a later batch
+      arrived: the newest holder not superseded by a *Reprocess All*, which is
+      the state the previous build showed last. The others are history (the
+      upgrade binding records which, :func:`bind_downstream_stores`).
     """
     if not batches:
         return ""
-    holding = set(
-        session.scalars(
-            select(ReconciliationRun.batch_id).where(ReconciliationRun.batch_id.in_(batches))
+    holding = _holding(session, batches)
+    held = [item for item in batches if item in holding]
+    if not held:
+        return batches[0]
+    if len(held) == 1:
+        return held[0]
+    superseded = {
+        str(item)
+        for item in session.scalars(
+            select(BatchSupersession.superseded_batch_id).where(
+                BatchSupersession.reversed_at.is_(None)
+            )
         ).all()
-    ) | set(
-        session.scalars(
-            select(CandidateResult.batch_id)
-            .where(CandidateResult.batch_id.in_(batches))
-            .distinct()
-        ).all()
-    )
-    for batch_id in batches:
-        if batch_id in holding:
-            return batch_id
-    return batches[0]
+    }
+    live = [item for item in held if item not in superseded]
+    return (live or held)[-1]
 
 
 def population_key(database: ProjectDatabase, batch_id: str) -> str:

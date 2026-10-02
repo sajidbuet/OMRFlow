@@ -1,0 +1,11 @@
+{
+  "written_by_version": "0.1.1-alpha.0",
+  "schema_version": 14,
+  "written_at": "2026-10-02T06:23:46+00:00",
+  "projects": [
+    "one_session",
+    "split_state"
+  ],
+  "first_batch_of_split_state": "a74148e36b5e403aaf71639b17a39ea2",
+  "second_batch_of_split_state": "fd727af9bb38418280d65e3c4a6a02e9"
+}
