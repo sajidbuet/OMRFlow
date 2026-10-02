@@ -167,8 +167,48 @@ outcome = service.register(scan_session_id=..., source_id=...,
   repeated); refuses rows that are not ready, of another source, or intended for
   another session; a **closed** session diverts the rows to `held` and creates
   nothing - never reopens, never starts another session.
-* Nothing is recognised: the batch is ordinary, ready for the unchanged
-  `process_batch` (phase 6).
+* Nothing is recognised: the batch is ordinary input for the continuous
+  engine (below) or the unchanged `process_batch`.
+
+## Processing registered units (revised phase 6)
+
+The continuous engine (`services/continuous_engine.py`,
+[ADR-0009](decisions/ADR-0009-continuous-engine-single-writer.md)) is the
+caller of the API above. Headless in this phase - nothing in the GUI starts
+it yet.
+
+```python
+engine = ContinuousEngine(database, scan_session_id=session_id, template=template,
+                          recogniser=ProcessRecogniser(template, workers=8),
+                          intake_factory=lambda: IntakeService(database, project_root),
+                          limits=EngineLimits.for_workers(8),
+                          unit_policy=UnitPolicy(max_unit_size=200, trickle_seconds=30))
+engine.start()                       # scan recovery, then intake recovery
+while running:
+    engine.poll_intake()             # reconcile sources whose poll interval passed
+    engine.form_units()              # register due units (finite, sealed, one source)
+    engine.step(wait=0.2)            # collect, commit, finish units, claim, submit
+engine.shutdown()                    # drain in-flight; leave nothing claimed
+```
+
+* **Unit rule** (`domain.processing.plan_units`): a source's oldest ready files,
+  in `(ready_at, intake_file_id)` order; a unit as soon as `max_unit_size` are
+  ready, or whatever is ready once the oldest has waited `trickle_seconds`.
+  Sources are served by their oldest ready file. Starting values, **not
+  validated**.
+* **Processing**: sheets are claimed (`pending -> processing`, one
+  transaction) before they reach a worker, read from the verified project copy
+  (never the scanner's share), and committed through the phase 3 work unit;
+  only then are they counted. A unit's batch-scope pass (session-wide duplicate
+  Student IDs, undefined set codes, re-imports) runs when it has nothing
+  unfinished, before it leaves `running`.
+* **Source outage**: an unreachable source stops nothing - its registered
+  copies are read as usual and other sources continue.
+* **Caught up** (`EngineStatus.caught_up`): nothing in flight, nothing
+  claimable, nothing ready - *as of now*. The session stays open; closing it
+  is an operator decision (phase 7).
+* Held, unreadable, unsupported and duplicate-content files are never claimed;
+  what to do with them is phase 7's.
 
 ## Manual intake
 

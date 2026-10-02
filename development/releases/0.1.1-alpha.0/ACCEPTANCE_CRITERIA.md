@@ -221,6 +221,28 @@ Rules that apply to every section:
   between a unit commit and its conflict sync; recovery resumes the same
   session and sealed unit, never a new session or a superseding batch.
 
+> **Evidence for the first part of E (revised phase 6), on branch
+> `feat/0.1.1-phase6-continuous-engine` (2026-10-02, automated tests on local
+> disks; not network-share, real-scanner or power-loss validated).** E1
+> `test_continuous_engine` (sealed per-source units, arrivals form new units),
+> `test_engine_recovery::TestKillAtEachBoundary` (8 boundaries) and
+> `tests/crash/test_engine_kills.py` (real kills at 6 boundaries; submission
+> log against the database: no committed sheet submitted after a kill); E2
+> unit-end batch-scope pass (`TestResolveAcrossRestarts`,
+> `test_three_sources_arrivals_late_duplicate_and_restart`); the finite GUI
+> path is untouched and its suites pass unchanged; E5
+> `test_engine_contention` (engine + concurrent Resolve decisions, no lock
+> error, latency recorded; `PRAGMA busy_timeout` set); E6
+> `test_processing_rules::TestClaims` (`processing` written by compare-and-set,
+> recovered to `pending`); E9 kill-boundary matrix with intake running,
+> `TestRestartAtProgressPoints` (1/25/50/75/99 %), `TestRepeatedRestarts`,
+> `test_repeated_kills_converge`. **Not yet (revised phase 7):** E3 quality
+> decisions, E4 session snapshot partition, E7 pause / finish-current *policy*
+> and persisted flags (the engine has the mechanical primitives:
+> `pause_intake`, `pause_scheduling`, `cancel_queued`, draining `shutdown`),
+> E8 finish-session validation and held-file decisions. Details:
+> `PHASE_F_HANDOFF.md`.
+
 ### F — Operational GUI
 
 - F1. With one implicit single-batch session, the Scan stage is the

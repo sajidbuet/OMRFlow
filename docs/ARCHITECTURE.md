@@ -691,6 +691,48 @@ See [intake.md](intake.md) and
 - **Health.** `project_health._intake_issues` reports ledger inconsistencies;
   transient states are never findings.
 
+## The continuous-processing engine (0.1.1 revised phase 6)
+
+See [ADR-0009](decisions/ADR-0009-continuous-engine-single-writer.md) and
+[intake.md](intake.md#processing-registered-units-revised-phase-6). Headless;
+no Qt; no thread of its own.
+
+```text
+IntakeService.reconcile / ready_sources  --plan_units-->  IntakeService.register
+        (phase 5: stable, verified, copied)                 (one source, sealed unit)
+                                                                     |
+ContinuousEngine.step():  claim_scans (pending -> processing, batch running; one txn)
+                          -> Recogniser.submit (ticket + path; never an image)
+                          -> Recogniser.poll   (ScanResult per ticket; workers never write)
+                          -> batch_store.record_results(template, claimed_only)   (work unit)
+                          -> acknowledge (count, report)
+                          -> unit finished: complete_batch_review_state -> finalise_batch
+```
+
+- **Layers.** `domain/processing.py` is pure (`EngineState`, `EngineLimits`,
+  `UnitPolicy`, `plan_units`). `services/recognition_pool.py` is the worker
+  boundary (`Recogniser` protocol; `ProcessRecogniser` - a warm `spawn` pool
+  running `parallel_batch.worker_initialise` / `worker_recognise`;
+  `InlineRecogniser`). `services/continuous_engine.py` is the coordinator.
+- **One writer.** Whichever thread drives the engine performs every
+  processing write, each a short transaction; worker modules import no
+  database code (architecture test). `PRAGMA busy_timeout` (5 s,
+  `database.engine.BUSY_TIMEOUT_MS`) covers the one other writer, a Resolve
+  decision.
+- **Bounds.** `max_in_flight` claimed-and-uncommitted sheets bound the futures,
+  the results and the writer backlog together; the backlog of pending work
+  lives in the database.
+- **Restart.** `start()` = `scan_recovery.recover_on_open` then intake recovery;
+  the same session and batches resume. Never run it beside a finite Scan stage
+  run of the same project (both are coordinators; phase 8 integrates them).
+- **Finite path untouched.** *Add Folder -> Process All* still runs
+  `BatchWorker` -> `process_batch` -> `BatchRecorder`; the engine reuses its
+  pieces (`record_results`, `complete_batch_review_state`, `finalise_batch`,
+  `record_manual_batch`, `link_exact_duplicates`) rather than reimplementing
+  them.
+- **Health.** `project_health._processing_issues`: a claim outside a running
+  batch; a watched file registered as two scans.
+
 ## The Calibration workflow (Phase 4)
 
 `omr_scanner.gui.calibration` verifies a template against representative

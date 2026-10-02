@@ -225,6 +225,12 @@ registers a batch: every result in that batch commits in the same transaction
 as its sheet's conflicts, so recovery need not re-derive them. *No schema
 change in phase 3* (schema 14).
 
+A unit registered by the continuous engine (0.1.1 revised phase 6, ADR-0009)
+carries `"review_state_with_results": true` and `"registered_by":
+"continuous_engine"` in `settings_json`, and `status = running` from the
+transaction that first claims one of its sheets until its batch-scope pass has
+run. *No schema change in phase 6* (schema 16).
+
 **Lifecycle columns (migration 14, 0.1.1 phase 2; mapped `deferred` so a
 schema-13 database opened read-only still reads):**
 
@@ -405,6 +411,13 @@ project copy; the original location is the ledger row's `absolute_path`.
 keep) or *resumable*; a test asserts that no state is somehow neither, because
 a scan in such a state would be invisible to both the resume query and the
 completed count.
+
+`processing` is **written** since 0.1.1 revised phase 6: the continuous engine
+claims a sheet (`pending`/`cancelled` -> `processing`, compare-and-set) in one
+transaction before handing it to a worker, and writes its result only onto a
+row still `processing`. Releasing a claim returns it to `pending`. The finite
+Scan stage still marks its run `queued` (unchanged); recovery treats both the
+same - back to `pending`.
 
 Invariants:
 - **original scans are never modified or moved** - only the path is stored, so
