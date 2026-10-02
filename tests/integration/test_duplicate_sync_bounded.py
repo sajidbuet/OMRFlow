@@ -303,7 +303,7 @@ def test_one_correction_in_a_large_session_touches_only_its_groups(sw, monkeypat
     seen: list[int] = []
     real = review_store.detect_duplicate_identifiers
 
-    def spy(identifiers):
+    def spy(identifiers: list[tuple[int, str]]) -> object:
         seen.append(len(identifiers))
         return real(identifiers)
 

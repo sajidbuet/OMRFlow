@@ -1325,6 +1325,7 @@ class ScanPage(WorkflowPage):
             return False
 
         stored = {result.source_path: result for result in completed_results(database, batch_id)}
+        duplicates = scan_lifecycle.duplicate_images(database, batch_id)
         paths = scan_paths(database, batch_id)
         self.state.entries = [
             ScanEntry(
@@ -1332,6 +1333,7 @@ class ScanPage(WorkflowPage):
                 processed=(
                     ProcessedScan(result=stored[path]) if path in stored else None
                 ),
+                duplicate_of=duplicates.get(path, ""),
             )
             for path in paths
         ]
@@ -1977,6 +1979,7 @@ class ScanPage(WorkflowPage):
         )
         worker.progress.connect(self._on_progress)
         worker.scan_done.connect(self._on_scan_done)
+        worker.duplicates_linked.connect(self._on_duplicates_linked)
         worker.finished_report.connect(self._on_batch_finished)
         worker.failed.connect(self._on_batch_failed)
         self._worker = worker
@@ -2027,6 +2030,18 @@ class ScanPage(WorkflowPage):
         :meth:`_refresh_progress` on a timer - so a machine that finishes fifty
         sheets a second does not ask Qt to repaint fifty times a second.
         """
+
+    def _on_duplicates_linked(self, linked: Sequence[scan_lifecycle.DuplicateImage]) -> None:
+        """Mark the run's exact duplicate images in the list: linked, never read."""
+        by_path = {str(item.path): item for item in linked}
+        rows = []
+        for row, entry in enumerate(self.state.entries):
+            found = by_path.get(str(entry.path))
+            if found is not None:
+                entry.duplicate_of = found.original_name or f"scan {found.original_scan_id}"
+                rows.append(row)
+        self._scan_model.mark_dirty(rows)
+        _LOGGER.info("%d exact duplicate image(s) left unread", len(linked))
 
     def _on_scan_done(self, processed: ProcessedScan) -> None:
         """Record one finished scan and mark its row for redrawing.

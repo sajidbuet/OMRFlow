@@ -813,6 +813,9 @@ def describe(population_: SessionPopulation) -> str:
     )
     if left_out:
         parts.append(f"{left_out} rejected / excluded / deferred")
+    duplicates = counts.get(SheetDisposition.EXACT_DUPLICATE, 0)
+    if duplicates:
+        parts.append(f"{duplicates} exact duplicate image(s)")
     unread = counts.get(SheetDisposition.NOT_READ, 0)
     if unread:
         parts.append(f"{unread} not read yet")

@@ -71,6 +71,11 @@ class SheetDisposition(StrEnum):
     REIMPORT_OF_REJECTED = "reimport_of_rejected"
     """The exact bytes of a rejected scan imported again: not a script."""
 
+    EXACT_DUPLICATE = "exact_duplicate"
+    """The exact bytes of an earlier sheet of the session, registered again
+    under another name, folder or batch: linked to it, never read, never a
+    second script (0.1.1 phase 4)."""
+
     EXCLUDED = "excluded"
     """Rejected / excluded on the Attendance stage: never counted."""
 
@@ -114,6 +119,7 @@ _LABELS: dict[SheetDisposition, str] = {
     SheetDisposition.SUPERSEDED_BY_REPLACEMENT: "Replaced by a rescan",
     SheetDisposition.REJECTED_PENDING_RESCAN: "Rejected - rescan awaited",
     SheetDisposition.REIMPORT_OF_REJECTED: "Re-import of a rejected scan",
+    SheetDisposition.EXACT_DUPLICATE: "Exact duplicate image (not read)",
     SheetDisposition.EXCLUDED: "Excluded",
     SheetDisposition.DEFERRED: "Deferred",
     SheetDisposition.BATCH_SUPERSEDED: "Batch read again (superseded)",
@@ -124,12 +130,17 @@ _LIFECYCLE: dict[str, SheetDisposition] = {
     "superseded_by_replacement": SheetDisposition.SUPERSEDED_BY_REPLACEMENT,
     "rejected_pending_rescan": SheetDisposition.REJECTED_PENDING_RESCAN,
     "reimport_of_rejected": SheetDisposition.REIMPORT_OF_REJECTED,
+    "duplicate_content": SheetDisposition.EXACT_DUPLICATE,
     "excluded": SheetDisposition.EXCLUDED,
     "deferred": SheetDisposition.DEFERRED,
 }
 
 READ_STATUSES = frozenset({"completed", "warning", "failed"})
 """``batch_scan.status`` values meaning recognition ran and committed."""
+
+DUPLICATE_STATUS = "duplicate"
+"""``batch_scan.status`` of a registered scan left unread because its bytes
+repeat an earlier sheet of the session."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +178,8 @@ def classify(facts: SheetFacts, session_id: str) -> SheetDisposition:
     if facts.lifecycle != "active":
         # An unknown state from a newer build is "not known to be eligible".
         return _LIFECYCLE.get(facts.lifecycle, SheetDisposition.REJECTED_PENDING_RESCAN)
+    if facts.status == DUPLICATE_STATUS:
+        return SheetDisposition.EXACT_DUPLICATE
     if facts.status not in READ_STATUSES:
         return SheetDisposition.NOT_READ
     if facts.status == "failed":
@@ -240,6 +253,7 @@ def lineage_roots(replacement_of: Mapping[int, int]) -> Lineage:
 
 
 __all__ = [
+    "DUPLICATE_STATUS",
     "READ_STATUSES",
     "Lineage",
     "SheetDisposition",

@@ -45,6 +45,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pathlib import Path
 
 COLUMN_HEADERS = ("Original file", "Roll", "Set", "Status", "Output file")
+
+DUPLICATE_OUTCOME = "duplicate"
+"""A row whose image the scan session already holds byte for byte: linked, not read."""
 COLUMN_COUNT = len(COLUMN_HEADERS)
 
 STATUS_LABELS: dict[str, str] = {
@@ -72,15 +75,20 @@ class ScanEntry:
     Attributes:
         path: The source image.
         processed: Its outcome once it has been through the pipeline.
+        duplicate_of: For an exact duplicate image left unread (0.1.1 phase 4),
+            the file name of the sheet of the scan session it repeats.
     """
 
     path: Path
     processed: ProcessedScan | None = None
+    duplicate_of: str = ""
 
     @property
     def outcome(self) -> str:
         """The outcome's string value, or ``"pending"`` before processing."""
         if self.processed is None:
+            if self.duplicate_of:
+                return DUPLICATE_OUTCOME
             return RecognitionOutcome.PENDING.value
         return self.processed.outcome.value
 
@@ -176,6 +184,8 @@ class ScanTableModel(QAbstractTableModel):
         if column == 2:
             return entry.set_code
         if column == 3:
+            if entry.outcome == DUPLICATE_OUTCOME:
+                return f"Duplicate of {entry.duplicate_of} (not read)"
             return STATUS_LABELS.get(entry.outcome, entry.outcome)
         return entry.output_name
 

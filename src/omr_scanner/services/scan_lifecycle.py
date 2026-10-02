@@ -316,6 +316,7 @@ def session_cases(
         SheetDisposition.SUPERSEDED_BY_REPLACEMENT,
         SheetDisposition.REJECTED_PENDING_RESCAN,
         SheetDisposition.REIMPORT_OF_REJECTED,
+        SheetDisposition.EXACT_DUPLICATE,
         SheetDisposition.EXCLUDED,
         SheetDisposition.DEFERRED,
     )
@@ -397,7 +398,11 @@ def list_cases(
         for item in cases
         if item.state is LifecycleState.REJECTED_PENDING_RESCAN
         or (include_completed and item.state is LifecycleState.SUPERSEDED_BY_REPLACEMENT)
-        or (include_reimports and item.state is LifecycleState.REIMPORT_OF_REJECTED)
+        or (
+            include_reimports
+            and item.state
+            in (LifecycleState.REIMPORT_OF_REJECTED, LifecycleState.DUPLICATE_CONTENT)
+        )
     ]
     kept.sort(key=lambda item: (not item.is_outstanding, item.rejected_at or _now(), item.scan_id))
     return tuple(kept)
@@ -435,6 +440,7 @@ def count_cases(
             outstanding=counts.get(SheetDisposition.REJECTED_PENDING_RESCAN, 0),
             superseded=counts.get(SheetDisposition.SUPERSEDED_BY_REPLACEMENT, 0),
             reimports=counts.get(SheetDisposition.REIMPORT_OF_REJECTED, 0),
+            duplicates=counts.get(SheetDisposition.EXACT_DUPLICATE, 0),
         )
     states = lifecycle_states(database, batch_id)
     return RescanCounts(
@@ -448,6 +454,9 @@ def count_cases(
         ),
         reimports=sum(
             1 for item in states.values() if item is LifecycleState.REIMPORT_OF_REJECTED
+        ),
+        duplicates=sum(
+            1 for item in states.values() if item is LifecycleState.DUPLICATE_CONTENT
         ),
     )
 
@@ -1877,6 +1886,210 @@ def remove_replacement(
 # ----------------------------------------------------------------------
 # Re-imports of rejected content
 # ----------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class DuplicateImage:
+    """A registered scan left unread because its bytes are already in the session.
+
+    Attributes:
+        scan_id: The copy.
+        path: Its source path.
+        original_scan_id: The sheet it repeats.
+        original_name: That sheet's file name, for the operator.
+        state: :attr:`LifecycleState.DUPLICATE_CONTENT`, or
+            :attr:`LifecycleState.REIMPORT_OF_REJECTED` when the sheet it
+            repeats was rejected (the existing re-import rule, applied here
+            before recognition instead of after).
+    """
+
+    scan_id: int
+    path: Path
+    original_scan_id: int
+    original_name: str
+    state: LifecycleState
+
+
+_UNREAD = tuple(status.value for status in ScanJobStatus if status.is_resumable)
+
+
+def link_exact_duplicates(
+    database: ProjectDatabase, batch_id: str, paths: Sequence[Path] | None = None
+) -> tuple[DuplicateImage, ...]:
+    """Leave unread every registered scan whose exact bytes the session already has.
+
+    Run as the last step of registering a run's files, after their content
+    hashes are recorded and **before any sheet is read** (0.1.1 phase 4,
+    ARCHITECTURE_NOTES §9.1): byte-identical images added under another file
+    name, folder or batch of the same scan session become one effective
+    script, at zero recognition cost.
+
+    * A copy of a **rejected or superseded** scan anywhere in the project is a
+      re-import (:func:`sync_reimports`, the existing rule) - now linked
+      before recognition.
+    * A copy of an earlier sheet of a **live** batch of the same session -
+      active, excluded or deferred - is ``duplicate_content``, linked to the
+      earliest such sheet (session batch order, then batch position).
+    * Another session's identical image is not this session's concern; a
+      superseded batch's sheets are not originals (a *Reprocess All* re-reads
+      the same files on purpose).
+
+    Both kinds get ``batch_scan.status = duplicate`` (terminal: resume and
+    retry leave them alone), a ``scan_rejection`` record pointing at the sheet
+    they repeat, and an audit event. Only scans of ``batch_id`` not yet read
+    are considered (only ``paths`` of them, when given). Idempotent.
+    """
+    from omr_scanner.services import scan_sessions, session_population
+
+    sync_reimports(database, batch_id)
+    owner = session_population.session_of_batch(database, batch_id)
+    batches = list(session_population.session_batch_ids(database, owner)) or [batch_id]
+    superseded = set(scan_sessions.live_supersessions(database)) if (
+        scan_sessions.has_lifecycle_schema(database)
+    ) else set()
+    live_batches = [item for item in batches if item not in superseded]
+    order = {item: index for index, item in enumerate(batches)}
+    wanted = {str(item) for item in paths} if paths is not None else None
+    moment = _now()
+    linked: list[DuplicateImage] = []
+    with database.session() as session:
+        targets = [
+            row
+            for row in session.scalars(
+                select(BatchScan)
+                .where(BatchScan.batch_id == batch_id)
+                .where(BatchScan.content_sha256 != "")
+                .where(BatchScan.status.in_(_UNREAD))
+                .order_by(BatchScan.batch_index)
+            ).all()
+            if wanted is None or str(row.source_path) in wanted
+        ]
+        if not targets:
+            return ()
+        hashes = sorted({row.content_sha256 for row in targets})
+        holders = session.execute(
+            select(
+                BatchScan.scan_id, BatchScan.batch_id, BatchScan.batch_index,
+                BatchScan.filename, BatchScan.content_sha256,
+            )
+            .where(BatchScan.batch_id.in_(live_batches))
+            .where(BatchScan.content_sha256.in_(hashes))
+        ).all()
+        holder_ids = [int(item[0]) for item in holders]
+        states = {
+            int(scan_id): LifecycleState(str(state))
+            for scan_id, state in session.execute(
+                select(ScanRejection.scan_id, ScanRejection.state).where(
+                    ScanRejection.scan_id.in_(holder_ids)
+                )
+            ).all()
+        }
+        names = {int(item[0]): str(item[3] or "") for item in holders}
+        not_originals = {
+            LifecycleState.DUPLICATE_CONTENT,
+            LifecycleState.REIMPORT_OF_REJECTED,
+            LifecycleState.REJECTED_PENDING_RESCAN,
+            LifecycleState.SUPERSEDED_BY_REPLACEMENT,
+        }
+        by_hash: dict[str, list[tuple[tuple[int, int, int], int]]] = {}
+        for scan_id, holder_batch, index, _name, digest in holders:
+            by_hash.setdefault(str(digest), []).append(
+                ((order.get(str(holder_batch), len(order)), int(index), int(scan_id)), int(scan_id))
+            )
+        for entries in by_hash.values():
+            entries.sort()
+
+        for row in targets:
+            state = states.get(row.scan_id, LifecycleState.ACTIVE)
+            record = _row_for(session, row.scan_id)
+            if state is LifecycleState.REIMPORT_OF_REJECTED and record is not None:
+                original = int(record.reimport_of_scan_id or 0)
+                row.status = ScanJobStatus.DUPLICATE.value
+                linked.append(
+                    DuplicateImage(
+                        scan_id=row.scan_id, path=Path(row.source_path),
+                        original_scan_id=original,
+                        original_name=names.get(original, "") or _names(
+                            session, [original]
+                        ).get(original, ""),
+                        state=state,
+                    )
+                )
+                continue
+            if state is not LifecycleState.ACTIVE:
+                continue
+            key = (order.get(batch_id, len(order)), int(row.batch_index), int(row.scan_id))
+            first = next(
+                (
+                    scan_id
+                    for holder_key, scan_id in by_hash.get(row.content_sha256, [])
+                    if holder_key < key
+                    and scan_id != row.scan_id
+                    and states.get(scan_id, LifecycleState.ACTIVE) not in not_originals
+                ),
+                None,
+            )
+            if first is None:
+                continue
+            original = first
+            if record is None:
+                record = ScanRejection(scan_id=row.scan_id, batch_id=batch_id, rejected_at=moment)
+                session.add(record)
+            record.state = LifecycleState.DUPLICATE_CONTENT.value
+            record.reason_code = ""
+            record.note = ""
+            record.source_name = row.filename or ""
+            record.source_path = row.source_path or ""
+            record.content_sha256 = row.content_sha256
+            record.reimport_of_scan_id = original
+            record.rejected_by = ""
+            record.rejected_at = moment
+            record.file_state = FileState.PRESENT.value
+            record.updated_at = moment
+            row.status = ScanJobStatus.DUPLICATE.value
+            states[row.scan_id] = LifecycleState.DUPLICATE_CONTENT
+            session.flush()
+            _append_event(
+                session,
+                scan_id=row.scan_id,
+                batch_id=batch_id,
+                action=LifecycleAction.DUPLICATE_CONTENT_LINKED,
+                previous_value=LifecycleState.ACTIVE.value,
+                new_value=LifecycleState.DUPLICATE_CONTENT.value,
+                detail=(
+                    f"Content hash identical to scan {original} "
+                    f"('{names.get(original, '')}') of this scan session; the same image "
+                    "registered again. Not read, not counted."
+                ),
+            )
+            linked.append(
+                DuplicateImage(
+                    scan_id=row.scan_id, path=Path(row.source_path),
+                    original_scan_id=original, original_name=names.get(original, ""),
+                    state=LifecycleState.DUPLICATE_CONTENT,
+                )
+            )
+    if linked:
+        _LOGGER.info(
+            "Batch %s: %d exact duplicate image(s) linked and left unread", batch_id, len(linked)
+        )
+    return tuple(linked)
+
+
+def duplicate_images(database: ProjectDatabase, batch_id: str) -> dict[Path, str]:
+    """``source path -> the file name it repeats`` for a batch's unread duplicate images."""
+    with database.session() as session:
+        rows = session.execute(
+            select(BatchScan.source_path, ScanRejection.reimport_of_scan_id)
+            .join(ScanRejection, ScanRejection.scan_id == BatchScan.scan_id)
+            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.status == ScanJobStatus.DUPLICATE.value)
+        ).all()
+        names = _names(session, [int(item) for _path, item in rows if item is not None])
+    return {
+        Path(str(path)): names.get(int(original), f"scan {original}") if original else ""
+        for path, original in rows
+    }
+
+
 def sync_reimports(database: ProjectDatabase, batch_id: str) -> int:
     """Link active scans whose bytes repeat a rejected scan's. Idempotent.
 

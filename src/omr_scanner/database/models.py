@@ -191,6 +191,12 @@ class ScanJobStatus(StrEnum):
     CANCELLED = "cancelled"
     """Not attempted because the run was stopped. Resume processes these."""
 
+    DUPLICATE = "duplicate"
+    """Never read, on purpose: its bytes are identical to an earlier sheet of
+    the same scan session, found from the content hash at registration
+    (0.1.1 phase 4). Linked to that sheet by its ``scan_rejection`` record
+    (``duplicate_content``). Terminal - resume and retry leave it alone."""
+
     @property
     def is_terminal(self) -> bool:
         """Whether this state represents finished work that resume must keep."""
@@ -198,6 +204,7 @@ class ScanJobStatus(StrEnum):
             ScanJobStatus.COMPLETED,
             ScanJobStatus.WARNING,
             ScanJobStatus.FAILED,
+            ScanJobStatus.DUPLICATE,
         )
 
     @property

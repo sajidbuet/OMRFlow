@@ -936,7 +936,8 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
             + counts.get(SheetDisposition.EFFECTIVE_UNREADABLE, 0),
             rescan_required=counts.get(SheetDisposition.REJECTED_PENDING_RESCAN, 0),
             superseded=counts.get(SheetDisposition.SUPERSEDED_BY_REPLACEMENT, 0)
-            + counts.get(SheetDisposition.REIMPORT_OF_REJECTED, 0),
+            + counts.get(SheetDisposition.REIMPORT_OF_REJECTED, 0)
+            + counts.get(SheetDisposition.EXACT_DUPLICATE, 0),
             counted_elsewhere=counts.get(SheetDisposition.COUNTED_IN_OTHER_SESSION, 0),
             excluded=counts.get(SheetDisposition.EXCLUDED, 0),
             deferred=counts.get(SheetDisposition.DEFERRED, 0),
