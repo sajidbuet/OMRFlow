@@ -254,7 +254,16 @@ class TestReprocessAndRescan:
         assert new.role is BatchRole.REPROCESS and old.superseded_by == reprocess
         assert batch_store.load_summary(database, original).processed == 2
         assert batch_store.load_summary(database, reprocess).processed == 2
-        assert scan_sessions.downstream_batch_id(database) == reprocess
+        # 0.1.1 phase 4 changed this on purpose. Phase 2 pointed downstream at
+        # the reprocess batch; downstream now reads the *session*, under a key
+        # that never moves (its oldest batch), and the population is drawn from
+        # the live batches only - the superseded original contributes nothing.
+        from omr_scanner.services import session_population
+
+        assert scan_sessions.downstream_batch_id(database) == original
+        population = session_population.population(database, original)
+        assert population.live_batch_ids == (reprocess,)
+        assert {population.batch_of[item] for item in population.effective} == {reprocess}
 
     def test_a_rescan_for_a_sealed_batch_becomes_a_rescan_batch(
         self, qtbot, page: ScanPage, project_session, make_scans
