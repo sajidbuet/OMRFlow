@@ -127,6 +127,7 @@ from omr_scanner.services import (
 )
 from omr_scanner.services.batch_store import BatchSealedError
 from omr_scanner.services.recognition_models import utc_timestamp
+from omr_scanner.services.renamed_export import RenamedExport, export_renamed_copies
 from omr_scanner.services.scan_sessions import ScanSessionError, TemplatePinError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -483,6 +484,16 @@ class ScanPage(WorkflowPage):
         self.switch_session_action = self.session_menu.addAction("Switch Scan Session...")
         self.switch_session_action.setObjectName("switchScanSessionAction")
         self.switch_session_action.triggered.connect(self._prompt_switch_scan_session)
+        self.session_menu.addSeparator()
+        self.export_renamed_action = self.session_menu.addAction(
+            "Export Renamed Copies of Session..."
+        )
+        self.export_renamed_action.setObjectName("exportRenamedCopiesAction")
+        self.export_renamed_action.setToolTip(
+            "Copy every sheet that counts in this scan session - after review, across "
+            "all its batches - into a folder, named by Student ID"
+        )
+        self.export_renamed_action.triggered.connect(self._prompt_export_renamed_copies)
         self.session_menu_button.setMenu(self.session_menu)
         session_row.addWidget(self.session_menu_button)
         process_layout.addLayout(session_row)
@@ -1015,6 +1026,32 @@ class ScanPage(WorkflowPage):
         self._refresh_controls()
         self.active_session_changed.emit()
         return True
+
+    def export_renamed_copies_to(self, folder: Path) -> RenamedExport | None:
+        """Copy the active session's effective sheets into ``folder``, renamed. No dialog."""
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return None
+        try:
+            exported = export_renamed_copies(database, current.scan_session_id, folder)
+        except (OMRScannerError, OSError) as exc:
+            QMessageBox.warning(self, "Renamed copies not exported", str(exc))
+            return None
+        missing = (
+            f"; {len(exported.missing_sources)} image(s) no longer on disk"
+            if exported.missing_sources
+            else ""
+        )
+        self.progress_label.setText(
+            f"Exported {len(exported.copies)} renamed cop(ies) of scan session "
+            f"'{current.name}' to {folder}{missing}"
+        )
+        return exported
+
+    def _prompt_export_renamed_copies(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Export renamed copies to")
+        if folder:
+            self.export_renamed_copies_to(Path(folder))
 
     def _prompt_switch_scan_session(self) -> None:
         database = self.database
