@@ -97,7 +97,7 @@ def _write(folder: Path, name: str, content: str) -> Path:
     return path
 
 
-def _set_up(workspace: Path, name: str, rolls: list[str], template):
+def _set_up(workspace: Path, name: str, rolls: list[str], template) -> tuple[object, object, int]:
     from omr_scanner.services import (
         candidate_import,
         create_project,
@@ -122,7 +122,7 @@ def _set_up(workspace: Path, name: str, rolls: list[str], template):
     return session, exam_set, assignment.roster_id
 
 
-def main() -> int:  # noqa: PLR0915 - one linear fixture recipe
+def main() -> int:
     """Write the two fixtures beside this script."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--old-checkout", type=Path, required=True)

@@ -278,6 +278,16 @@ class ScanBatch(Base):
     )
     """:class:`~omr_scanner.domain.scan_sessions.BatchRole` value."""
 
+    # --- Intake (migration 16, 0.1.1 revised phase 5) ------------------------
+    source_id: Mapped[str | None] = mapped_column(
+        String(32),
+        ForeignKey("intake_source.source_id", ondelete="RESTRICT"),
+        nullable=True,
+        deferred=True,
+    )
+    """The intake source the batch's files came from - provenance, never
+    identity. NULL for batches made before intake sources existed."""
+
     def __repr__(self) -> str:
         """Return a debugging representation naming the batch and its state."""
         return f"ScanBatch(batch_id={self.batch_id!r}, status={self.status!r})"
@@ -458,6 +468,23 @@ class BatchScan(Base):
     )
     """Named rather than assumed, so a stronger algorithm can be introduced
     later without reinterpreting old hashes as the new kind."""
+
+    # --- Intake (migration 16, 0.1.1 revised phase 5) ------------------------
+    # Deferred, so a schema-15 project opened read-only still reads every scan.
+    intake_file_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("intake_file.intake_file_id", ondelete="SET NULL"),
+        nullable=True,
+        deferred=True,
+    )
+    """The intake ledger row this scan's file was observed as - provenance.
+    Several scans may name one row (a *Reprocess All* re-reads the same file);
+    the row itself names the one registration that consumed it. NULL for scans
+    registered before intake existed."""
+    registered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, deferred=True
+    )
+    """When intake registered the file into this scan (NULL before migration 16)."""
 
     def __repr__(self) -> str:
         """Return a debugging representation naming the file and its state."""
@@ -1599,3 +1626,221 @@ class ScanRejection(Base):
     def __repr__(self) -> str:
         """Return a debugging representation. Names no candidate."""
         return f"ScanRejection(scan_id={self.scan_id}, state={self.state!r})"
+
+
+# ----------------------------------------------------------------------
+# 0.1.1 revised phase 5: intake sources and the intake ledger (migration 16)
+# ----------------------------------------------------------------------
+class IntakeSource(Base):
+    """A named place scans arrive from: a watched folder, or the manual import.
+
+    **Project-level** - a source outlives any one scan session and is attached
+    to a session when it is used (:class:`IntakeSourceAttachment`). The source
+    that produced a file is provenance; it never decides whose script a file
+    is. Reachability is *source* state and never implies anything about its
+    files' state. See ``docs/intake.md``.
+    """
+
+    __tablename__ = "intake_source"
+    __table_args__ = (Index("ix_intake_source_kind", "kind", "enabled"),)
+
+    source_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    """:class:`~omr_scanner.domain.intake.SourceKind` value."""
+    root_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """The folder, local or UNC, exactly as configured (never normalised away).
+    Empty for the manual source, whose files are recorded by their own path."""
+    recursive: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    exclusions_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    policy_json: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """The source's :class:`~omr_scanner.domain.intake.StabilityPolicy`; empty
+    means the default for its path (local or network)."""
+    ingest_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="copy")
+    """:class:`~omr_scanner.domain.intake.IngestMode` value (ADR-0008)."""
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    """The built-in manual source; at most one per project."""
+    reachability: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    reachability_detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    reachability_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_reconciled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    """The last **successful** full reconciliation."""
+    last_file_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_file_seen_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the source."""
+        return f"IntakeSource(id={self.source_id!r}, kind={self.kind!r}, label={self.label!r})"
+
+
+class IntakeSourceAttachment(Base):
+    """Which scan session a source serves, and when (history, never deleted).
+
+    At most one live attachment per source (``detached_at`` NULL). A file is
+    intended for the session its source was attached to when it was first
+    observed; changing the attachment never moves an existing ledger row.
+    """
+
+    __tablename__ = "intake_source_attachment"
+    __table_args__ = (
+        Index(
+            "uq_intake_attachment_live",
+            "source_id",
+            unique=True,
+            sqlite_where=text("detached_at IS NULL"),
+        ),
+        Index("ix_intake_attachment_session", "scan_session_id"),
+    )
+
+    attachment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("intake_source.source_id", ondelete="RESTRICT"), nullable=False
+    )
+    scan_session_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_session.scan_session_id", ondelete="RESTRICT"), nullable=False
+    )
+    attached_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attached_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    detached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detached_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+
+
+class IntakeFile(Base):
+    """The intake ledger: one row per observed version of one file in one source.
+
+    **Path is not identity.** A row is one ``(source, relative path, content)``
+    - unique once its content hash is known. Unchanged ``(size, mtime_ns)`` is
+    only a cache that spares re-reading a file on every pass. The same path
+    holding new bytes later is a **new** row (``path_reused`` when the old
+    row's content was consumed); the old row is never changed into the new
+    file. Exactly one row per ``(source, relative path)`` is *current*.
+
+    Filesystem intake state only. Once registered, the file's processing state
+    is its :class:`BatchScan` status - never duplicated here. High-volume
+    machine state: polls are not audited.
+    """
+
+    __tablename__ = "intake_file"
+    __table_args__ = (
+        Index(
+            "uq_intake_file_current_path",
+            "source_id",
+            "relative_path",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+        ),
+        Index(
+            "uq_intake_file_content",
+            "source_id",
+            "relative_path",
+            "content_sha256",
+            unique=True,
+        ),
+        Index("ix_intake_file_hash", "content_sha256"),
+        Index("ix_intake_file_state_ready", "state", "ready_at", "intake_file_id"),
+        Index("ix_intake_file_source_state", "source_id", "state"),
+        Index("ix_intake_file_session", "scan_session_id", "state"),
+        Index(
+            "uq_intake_file_batch_scan",
+            "batch_scan_id",
+            unique=True,
+            sqlite_where=text("batch_scan_id IS NOT NULL"),
+        ),
+    )
+
+    intake_file_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("intake_source.source_id", ondelete="RESTRICT"), nullable=False
+    )
+    scan_session_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("scan_session.scan_session_id", ondelete="RESTRICT"), nullable=True
+    )
+    """The session this observation is intended for: its source's live
+    attachment when first observed (NULL while the source served none)."""
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    """``/``-separated, relative to the source root; for the manual source, the
+    file's own path. Provenance and location, not identity."""
+    absolute_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """The path as observed, platform form, never normalised."""
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mtime_ns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    """SHA-256 of the bytes that were hashed **and fully decoded from one read**.
+    NULL until verified."""
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    """:class:`~omr_scanner.domain.intake.IntakeState` value."""
+    state_reason: Mapped[str] = mapped_column(String(30), nullable=False, default="")
+    """:class:`~omr_scanner.domain.intake.IntakeReason` value."""
+    detail: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """The last error or explanation, in plain words."""
+    state_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """When the current ``(size, mtime_ns)`` was first observed. NULL after a
+    restart: stability is never trusted across one."""
+    observations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    """Consecutive observations of the current ``(size, mtime_ns)``."""
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    """Full reads of the current version that failed to decode."""
+    retry_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """When it first became ready - with the row id, the registration order."""
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reverify_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    """Ready before a restart: re-read before registration (order kept)."""
+    present: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    """Seen by the last listing that could have seen it."""
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    """The latest row for its ``(source, relative path)``."""
+    path_reused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    """New bytes at a path whose earlier content was already registered."""
+    previous_intake_file_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("intake_file.intake_file_id", ondelete="RESTRICT"), nullable=True
+    )
+    """The row that held this path before (path reuse), or that already holds
+    these bytes at this path (``unchanged_content``)."""
+    image_format: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    image_width: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    image_height: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    batch_scan_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("batch_scan.scan_id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
+    """The ``batch_scan`` its registration created (or adopted). Unique."""
+    duplicate_of_scan_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("batch_scan.scan_id", ondelete="SET NULL", use_alter=True),
+        nullable=True,
+    )
+    """For ``duplicate_content``: the effective sheet of the session its bytes repeat."""
+    ingest_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """The verified project copy, relative to the project root; empty when
+    read in place (ADR-0008)."""
+    registered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the row and its state."""
+        return (
+            f"IntakeFile(id={self.intake_file_id}, path={self.relative_path!r}, "
+            f"state={self.state!r})"
+        )

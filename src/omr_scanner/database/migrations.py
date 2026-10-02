@@ -65,6 +65,9 @@ from omr_scanner.database.models import (
     CandidateResult,
     CandidateRoster,
     GeneratedReport,
+    IntakeFile,
+    IntakeSource,
+    IntakeSourceAttachment,
     ProcessingManifest,
     ProjectSet,
     ProjectSetting,
@@ -691,6 +694,63 @@ def _migration_015_session_scope(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+INTAKE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    (
+        "batch_scan",
+        "intake_file_id",
+        "INTEGER NULL REFERENCES intake_file(intake_file_id) ON DELETE SET NULL",
+    ),
+    ("batch_scan", "registered_at", "DATETIME NULL"),
+    (
+        "scan_batch",
+        "source_id",
+        "VARCHAR(32) NULL REFERENCES intake_source(source_id) ON DELETE RESTRICT",
+    ),
+)
+
+INTAKE_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS ix_batch_scan_intake_file ON batch_scan (intake_file_id)",
+    "CREATE INDEX IF NOT EXISTS ix_scan_batch_source ON scan_batch (source_id)",
+)
+
+
+def _migration_016_intake(connection: Connection) -> None:
+    """Add intake sources and the intake ledger (0.1.1 revised phase 5, ADR-0008).
+
+    Structure only:
+
+    * ``intake_source`` - project-level sources (watched folders and the
+      built-in manual source), with reachability and their stabilisation
+      policy;
+    * ``intake_source_attachment`` - which session a source serves, as history;
+    * ``intake_file`` - the ledger, one row per observed version of a file;
+    * ``batch_scan.intake_file_id`` / ``registered_at`` and
+      ``scan_batch.source_id`` - provenance links, ``NULL`` for every existing
+      row ("registered before intake sources existed"), each guarded by
+      ``PRAGMA table_info``.
+
+    **No row is written.** The built-in manual source is created by the intake
+    service on first use, and no existing ``batch_scan`` is reinterpreted as
+    intake work.
+    """
+    Base.metadata.create_all(
+        connection,
+        tables=[
+            Base.metadata.tables[IntakeSource.__tablename__],
+            Base.metadata.tables[IntakeSourceAttachment.__tablename__],
+            Base.metadata.tables[IntakeFile.__tablename__],
+        ],
+    )
+    for table, name, ddl in INTAKE_COLUMNS:
+        existing = {
+            row[1] for row in connection.execute(text(f"PRAGMA table_info({table})")).all()
+        }
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+    for statement in INTAKE_INDEXES:
+        connection.execute(text(statement))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -793,6 +853,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "reports' session, final flag and close; lookup indexes"
         ),
         apply=_migration_015_session_scope,
+    ),
+    Migration(
+        version=16,
+        description=(
+            "Intake: intake_source, intake_source_attachment, intake_file ledger; "
+            "batch_scan intake link and registration time; scan_batch source"
+        ),
+        apply=_migration_016_intake,
     ),
 )
 
