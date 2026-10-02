@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.domain.reporting import ReadinessIssueKind
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
@@ -904,7 +905,7 @@ class ReportsPage(WorkflowPage):
         box.exec()
         return box.clickedButton() is export
 
-    def _ensure_closed_for_final(self) -> str | None:
+    def _ensure_closed_for_final(self, rows: list[SetRow] | None = None) -> str | None:
         """Final Export needs a CLOSED session: offer to close it in one step.
 
         Returns:
@@ -929,8 +930,28 @@ class ReportsPage(WorkflowPage):
             return None
         blockers = scan_sessions.closure_blockers(database, scope.scan_session_id)
         hard = [item.message for item in blockers if not item.acknowledgeable]
+        # The export itself must be able to run once the session is closed:
+        # otherwise the one step would close the session and export nothing.
+        # Each chosen set's own blocking readiness issues - other than the
+        # open session and the acknowledgeable rescans / deferrals - are
+        # blockers too.
+        for row in rows or []:
+            if row.blocker:
+                hard.append(f"Set {row.set_code}: {row.blocker}")
+                continue
+            report = self._readiness_for(row, for_final_export=True)
+            if report is None:
+                continue
+            hard.extend(
+                f"Set {row.set_code}: {issue.message}"
+                for issue in report.issues
+                if issue.blocking
+                and issue.kind is not ReadinessIssueKind.SESSION_OPEN
+                and not issue.kind.is_acknowledgeable
+            )
         if hard:
-            self.show_closure_blockers(scope.name, [item.message for item in blockers])
+            listed = [item.message for item in blockers if item.acknowledgeable]
+            self.show_closure_blockers(scope.name, hard + listed)
             return None
         soft = [item.message for item in blockers if item.acknowledgeable]
         if soft and not self.confirm_incomplete_close(scope.name, soft):
@@ -972,11 +993,14 @@ class ReportsPage(WorkflowPage):
 
     def show_closure_blockers(self, session_name: str, blockers: list[str]) -> None:
         """List why the session cannot be closed; nothing was changed."""
+        shown = blockers[:15]
+        more = f"\n• ...and {len(blockers) - len(shown)} more" if len(blockers) > len(shown) else ""
         QMessageBox.information(
             self,
             "Scan session cannot be closed yet",
             f"Scan session '{session_name}' was not closed and nothing was exported:\n\n"
-            + "\n".join(f"• {item}" for item in blockers),
+            + "\n".join(f"• {item}" for item in shown)
+            + more,
         )
 
     def confirm_incomplete_close(self, session_name: str, incomplete: list[str]) -> bool:
@@ -1000,8 +1024,21 @@ class ReportsPage(WorkflowPage):
         return box.clickedButton() is accept
 
     def _final_acknowledgement(self, rows: list[SetRow]) -> bool | None:
-        """Close the session if needed, then ask about incomplete results if needed."""
-        closed = self._ensure_closed_for_final()
+        """Close the session if needed, then ask about incomplete results if needed.
+
+        Generation's own preconditions are checked **first**: closing the
+        session for a final export that then could not run would leave it
+        closed with nothing exported.
+        """
+        if (
+            self.database is None
+            or self.state.batch_id is None
+            or self.state.template is None
+            or not rows
+            or (self.state.roster_id is None and any(not row.set_id for row in rows))
+        ):
+            return None
+        closed = self._ensure_closed_for_final(rows)
         if closed is None:
             return None
         if closed == "acknowledged":
