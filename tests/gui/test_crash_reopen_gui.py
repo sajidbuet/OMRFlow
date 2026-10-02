@@ -73,7 +73,17 @@ def sheets(tmp_path_factory: pytest.TempPathFactory, template: OmrTemplate) -> l
     paths = []
     for index, roll in enumerate(rolls):
         path = directory / f"scan_{index:02d}.png"
-        cv2.imwrite(str(path), render_marked_sheet(template, _marks(roll)))
+        # The two "500000" sheets are a duplicate Student ID on two different
+        # scans. Rendered alike they would be byte-identical, which since
+        # 0.1.1 phase 4 is an exact duplicate image linked and never read - so
+        # the second is written with other PNG compression: same pixels,
+        # different bytes, as two real scans of one ID would be.
+        compression = 1 if index == 7 else 3
+        cv2.imwrite(
+            str(path),
+            render_marked_sheet(template, _marks(roll)),
+            [cv2.IMWRITE_PNG_COMPRESSION, compression],
+        )
         paths.append(path)
     corrupt = directory / "scan_99.png"
     corrupt.write_bytes(b"not an image")
