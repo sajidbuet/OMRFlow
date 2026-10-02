@@ -72,7 +72,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from omr_scanner.database.models import AuditEvent, BatchScan, ReviewConflict, ScanRejection
 from omr_scanner.domain.review import (
@@ -111,7 +111,7 @@ from omr_scanner.services.recognition_models import ScanResult
 from omr_scanner.services.scan_export import SheetResolution
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Collection, Mapping, Sequence
 
     from sqlalchemy.orm import Session
 
@@ -176,11 +176,16 @@ def _refreshes_duplicates(touched: _Touched) -> Callable[[_F], _F]:
 def _refresh_duplicates_for(
     database: ProjectDatabase, touched: Iterable[int] | tuple[int, str]
 ) -> None:
-    """Re-run the session's duplicate pass if ``touched`` includes a Student ID."""
+    """Re-derive the duplicate groups of the touched sheets if ``touched`` includes a Student ID.
+
+    The bounded pass (:func:`sync_duplicate_identifiers_for`): only the
+    identifier groups those sheets are in, or are leaving, are re-derived -
+    never the whole session.
+    """
     if database.read_only:
         return
     with database.session() as session:
-        statement = select(ReviewConflict.batch_id).where(
+        statement = select(ReviewConflict.scan_id).where(
             ReviewConflict.field_kind == FieldKind.IDENTIFIER.value
         )
         if isinstance(touched, tuple) and len(touched) == 2 and isinstance(touched[1], str):
@@ -193,16 +198,9 @@ def _refresh_duplicates_for(
             if not ids:
                 return
             statement = statement.where(ReviewConflict.conflict_id.in_(ids))
-        batches = sorted({str(item) for item in session.scalars(statement).all()})
-    done: set[str] = set()
-    for batch_id in batches:
-        from omr_scanner.services import session_population
-
-        session_id = session_population.session_of_batch(database, batch_id)
-        if session_id in done:
-            continue
-        done.add(session_id)
-        sync_duplicate_identifiers(database, batch_id)
+        scans = sorted({int(item) for item in session.scalars(statement).all()})
+    if scans:
+        sync_duplicate_identifiers_for(database, scans)
 
 
 def _first_conflict(args: tuple[Any, ...], kwargs: dict[str, Any], _outcome: Any) -> list[int]:
@@ -1041,42 +1039,228 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
                 )
             ).all()
         }
-
-        for scan_id, found in detected.items():
-            row = existing.get(scan_id)
-            if row is None:
-                _insert_conflict(session, population.batch_of[scan_id], scan_id, found, moment)
-            else:
-                related = _dump_related(found.related_scan_ids)
-                if row.related_scan_ids != related:
-                    row.related_scan_ids = related
-                _refresh_conflict(
-                    session,
-                    row,
-                    found,
-                    moment,
-                    change=(
-                        "The Student ID this sheet shares with other sheets of the scan "
-                        "session changed from '{previous}' to '{value}'."
-                    ),
-                )
-                if row.state == ConflictState.WITHDRAWN.value:
-                    _redetect_conflict(session, row, moment)
-
-        for scan_id, row in existing.items():
-            if scan_id in detected or row.state == ConflictState.WITHDRAWN.value:
-                continue
-            if ConflictState(row.state).is_human_touched:
-                continue
-            if scan_id not in effective:
-                # A sheet that no longer counts keeps its record exactly as it
-                # was - hidden from the queue, not withdrawn - so that
-                # restoring it brings it back rather than losing it.
-                continue
-            _withdraw_conflict(session, row, moment)
-
+        _apply_duplicate_groups(
+            session, detected, existing, effective, population.batch_of, moment
+        )
         session.flush()
         return len(detected)
+
+
+_DUPLICATE_CHANGE = (
+    "The Student ID this sheet shares with other sheets of the scan "
+    "session changed from '{previous}' to '{value}'."
+)
+
+
+def _apply_duplicate_groups(
+    session: Session,
+    detected: Mapping[int, DetectedConflict],
+    existing: Mapping[int, ReviewConflict],
+    effective: Collection[int],
+    batch_of: Mapping[int, str],
+    moment: datetime,
+) -> None:
+    """Make the stored duplicate records agree with ``detected``, for ``existing``'s scope.
+
+    The one place both duplicate passes write: the full rebuild hands it every
+    record of the session, the bounded pass only the records of the identifier
+    groups it re-derived. A record outside ``existing`` is never written.
+    """
+    for scan_id, found in detected.items():
+        row = existing.get(scan_id)
+        if row is None:
+            _insert_conflict(session, batch_of[scan_id], scan_id, found, moment)
+        else:
+            related = _dump_related(found.related_scan_ids)
+            if row.related_scan_ids != related:
+                row.related_scan_ids = related
+            _refresh_conflict(session, row, found, moment, change=_DUPLICATE_CHANGE)
+            if row.state == ConflictState.WITHDRAWN.value:
+                _redetect_conflict(session, row, moment)
+
+    for scan_id, row in existing.items():
+        if scan_id in detected or row.state == ConflictState.WITHDRAWN.value:
+            continue
+        if ConflictState(row.state).is_human_touched:
+            continue
+        if scan_id not in effective:
+            # A sheet that no longer counts keeps its record exactly as it
+            # was - hidden from the queue, not withdrawn - so that restoring
+            # it brings it back rather than losing it.
+            continue
+        _withdraw_conflict(session, row, moment)
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateSyncScope:
+    """What one bounded duplicate pass looked at - for tests and the log.
+
+    Attributes:
+        sessions: Scan sessions re-derived.
+        values: Identifier values whose groups were re-derived.
+        candidates: Sheets whose identifiers were read to rebuild those groups.
+        records: Stored duplicate records within reach of the pass.
+        in_conflict: Sheets now in a duplicate group among those values.
+    """
+
+    sessions: int = 0
+    values: frozenset[str] = frozenset()
+    candidates: int = 0
+    records: int = 0
+    in_conflict: int = 0
+
+
+BOUNDED_DUPLICATE_LIMIT = 2_000
+"""Above this many touched sheets in one session the bounded duplicate pass
+hands over to the full rebuild. A pass touching thousands of sheets (a whole
+large batch finishing) costs about what a rebuild does, and the rebuild avoids
+SQL ``IN`` lists of that size."""
+
+
+def _reliable(value: str) -> bool:
+    return bool(value) and "?" not in value and "_" not in value
+
+
+def sync_duplicate_identifiers_for(
+    database: ProjectDatabase, scan_ids: Iterable[int]
+) -> DuplicateSyncScope:
+    """Re-derive only the duplicate-ID groups that ``scan_ids`` belong to - the bounded pass.
+
+    The ordinary path after a decision on a Student ID, a lifecycle change or
+    a finished batch (0.1.1 phase 4). The groups re-derived are the identifier
+    values the touched sheets hold **now** plus the values their existing
+    duplicate records name (the group a corrected sheet is leaving). For those
+    values only, the candidates are the session's sheets read as one of them
+    (``batch_scan.identifier_value``, indexed), the sheets a person has decided
+    an identifier on (the only way an effective value departs from the
+    reading), and the stored records of those groups. Every other group of the
+    session is neither read nor written.
+
+    The outcome is the one :func:`sync_duplicate_identifiers` - the full
+    rebuild, kept for recovery, verification and tests - would reach for those
+    groups. Run again on unchanged data it writes nothing.
+    """
+    from omr_scanner.services import session_population
+
+    touched = sorted({int(item) for item in scan_ids})
+    if not touched or database.read_only:
+        return DuplicateSyncScope()
+    by_session: dict[str, list[int]] = {}
+    for scan, owner in session_population.sessions_counting(database, touched).items():
+        by_session.setdefault(owner, []).append(scan)
+    values_seen: set[str] = set()
+    candidates_seen = records_seen = conflicted = 0
+    for owner, scans in sorted(by_session.items()):
+        if len(scans) > BOUNDED_DUPLICATE_LIMIT:
+            batches = session_population.session_batch_ids(database, owner)
+            if batches:
+                conflicted += sync_duplicate_identifiers(database, batches[0])
+            continue
+        scope = _sync_duplicates_in(database, owner, scans)
+        values_seen |= scope.values
+        candidates_seen += scope.candidates
+        records_seen += scope.records
+        conflicted += scope.in_conflict
+    return DuplicateSyncScope(
+        sessions=len(by_session),
+        values=frozenset(values_seen),
+        candidates=candidates_seen,
+        records=records_seen,
+        in_conflict=conflicted,
+    )
+
+
+def _sync_duplicates_in(
+    database: ProjectDatabase, scan_session_id: str, touched: Sequence[int]
+) -> DuplicateSyncScope:
+    from omr_scanner.services import session_population
+
+    batches = session_population.session_batch_ids(database, scan_session_id)
+    with database.session() as session:
+        values = {
+            item.value
+            for item in _identifiers_of(session, touched).values()
+            if _reliable(item.value)
+        }
+        values |= {
+            str(value)
+            for value in session.scalars(
+                select(ReviewConflict.machine_value)
+                .where(ReviewConflict.scan_id.in_(touched))
+                .where(
+                    ReviewConflict.conflict_type == ConflictType.IDENTIFIER_DUPLICATE.value
+                )
+            ).all()
+            if value and _reliable(str(value))
+        }
+    sheets = session_population.sheets_of_session(database, scan_session_id, ())
+    adopted_batches = sorted(
+        session_population.batches_of(database, sheets.adopted)
+    ) if sheets.adopted else []
+    reach = sorted(set(batches) | set(adopted_batches))
+    moment = _now()
+    with database.session() as session:
+        record_filter: Any = ReviewConflict.scan_id.in_(touched)
+        if values:
+            record_filter = or_(record_filter, ReviewConflict.machine_value.in_(sorted(values)))
+        existing = {
+            row.scan_id: row
+            for row in session.scalars(
+                select(ReviewConflict)
+                .where(
+                    ReviewConflict.conflict_type == ConflictType.IDENTIFIER_DUPLICATE.value
+                )
+                .where(ReviewConflict.batch_id.in_(reach))
+                .where(record_filter)
+            ).all()
+        }
+        candidates: set[int] = set(touched) | set(existing)
+        if values:
+            candidates |= {
+                int(item)
+                for item in session.scalars(
+                    select(BatchScan.scan_id)
+                    .where(BatchScan.batch_id.in_(reach))
+                    .where(BatchScan.identifier_value.in_(sorted(values)))
+                ).all()
+            }
+            # A person's decision is the only way an effective identifier can
+            # differ from the reading: those sheets are candidates whatever
+            # they were read as.
+            candidates |= {
+                int(item)
+                for item in session.scalars(
+                    select(ReviewConflict.scan_id)
+                    .where(ReviewConflict.batch_id.in_(reach))
+                    .where(ReviewConflict.field_kind == FieldKind.IDENTIFIER.value)
+                    .where(ReviewConflict.state == ConflictState.RESOLVED.value)
+                    .distinct()
+                ).all()
+            }
+        classified = session_population.sheets_of_session(
+            database, scan_session_id, candidates
+        )
+        effective = {
+            scan for scan, kind in classified.dispositions.items() if kind.counts
+        }
+        identifiers = _identifiers_of(session, sorted(effective))
+        reliable = sorted(
+            (scan, item.value)
+            for scan, item in identifiers.items()
+            if item.value in values and _reliable(item.value)
+        )
+        detected = detect_duplicate_identifiers(reliable)
+        _apply_duplicate_groups(
+            session, detected, existing, effective, classified.batch_of, moment
+        )
+        session.flush()
+    return DuplicateSyncScope(
+        sessions=1,
+        values=frozenset(values),
+        candidates=len(candidates),
+        records=len(existing),
+        in_conflict=len(detected),
+    )
 
 
 # ----------------------------------------------------------------------
@@ -3115,60 +3299,79 @@ def effective_identifiers(
     cohort must not open ten thousand transactions to be reconciled.
     """
     with database.session() as session:
-        scans = session.scalars(
-            select(BatchScan).where(BatchScan.batch_id == batch_id)
-        ).all()
-        found = {
-            row.scan_id: EffectiveIdentifier(
-                scan_id=row.scan_id,
-                machine_value=row.identifier_value or "",
-                value=row.identifier_value or "",
-            )
-            for row in scans
-        }
+        return _identifiers_from(
+            session, BatchScan.batch_id == batch_id, ReviewConflict.batch_id == batch_id
+        )
 
-        fields: dict[int, _FieldDecisions] = {}
-        conflicts = session.scalars(
-            select(ReviewConflict)
-            .where(ReviewConflict.batch_id == batch_id)
-            .order_by(ReviewConflict.conflict_id)
-        ).all()
-        for conflict in conflicts:
-            current = found.get(conflict.scan_id)
-            if current is None:
-                continue
-            kind = FieldKind(conflict.field_kind)
-            conflict_type = ConflictType(conflict.conflict_type)
-            state = ConflictState(conflict.state)
 
-            if state.needs_attention and (
-                conflict_type in _IDENTIFIER_IS_UNKNOWN
-                or conflict_type.is_processing_failure
-            ):
-                found[conflict.scan_id] = replace(current, unresolved=True)
-                continue
+def _identifiers_of(session: Session, scan_ids: Sequence[int]) -> dict[int, EffectiveIdentifier]:
+    """:func:`effective_identifiers` for named sheets only, in whatever batches they are.
 
-            if kind is not FieldKind.IDENTIFIER or state is not ConflictState.RESOLVED:
-                continue
-            decided = _project_provenance(session, conflict)
-            if not decided.is_human_decided:
-                continue
-            fields.setdefault(conflict.scan_id, _FieldDecisions()).add(
-                conflict, decided.value, whole=conflict.group_key == WHOLE_FIELD
-            )
-            found[conflict.scan_id] = replace(
-                current,
-                source=ValueSource.HUMAN,
-                reviewer=decided.reviewer,
-                reason=decided.reason,
-            )
-        by_scan = {row.scan_id: row for row in scans}
-        for scan_id, decisions in fields.items():
-            current = found[scan_id]
-            found[scan_id] = replace(
-                current,
-                value=decisions.assemble(by_scan.get(scan_id), current.machine_value),
-            )
+    Indexed reads by scan id - the bounded duplicate pass reads a handful of
+    sheets this way instead of every sheet of the session.
+    """
+    if not scan_ids:
+        return {}
+    wanted = sorted({int(item) for item in scan_ids})
+    return _identifiers_from(
+        session, BatchScan.scan_id.in_(wanted), ReviewConflict.scan_id.in_(wanted)
+    )
+
+
+def _identifiers_from(
+    session: Session, scan_filter: Any, conflict_filter: Any
+) -> dict[int, EffectiveIdentifier]:
+    """The effective-identifier rule over the sheets and conflicts the filters select."""
+    scans = session.scalars(select(BatchScan).where(scan_filter)).all()
+    found = {
+        row.scan_id: EffectiveIdentifier(
+            scan_id=row.scan_id,
+            machine_value=row.identifier_value or "",
+            value=row.identifier_value or "",
+        )
+        for row in scans
+    }
+
+    fields: dict[int, _FieldDecisions] = {}
+    conflicts = session.scalars(
+        select(ReviewConflict).where(conflict_filter).order_by(ReviewConflict.conflict_id)
+    ).all()
+    for conflict in conflicts:
+        current = found.get(conflict.scan_id)
+        if current is None:
+            continue
+        kind = FieldKind(conflict.field_kind)
+        conflict_type = ConflictType(conflict.conflict_type)
+        state = ConflictState(conflict.state)
+
+        if state.needs_attention and (
+            conflict_type in _IDENTIFIER_IS_UNKNOWN
+            or conflict_type.is_processing_failure
+        ):
+            found[conflict.scan_id] = replace(current, unresolved=True)
+            continue
+
+        if kind is not FieldKind.IDENTIFIER or state is not ConflictState.RESOLVED:
+            continue
+        decided = _project_provenance(session, conflict)
+        if not decided.is_human_decided:
+            continue
+        fields.setdefault(conflict.scan_id, _FieldDecisions()).add(
+            conflict, decided.value, whole=conflict.group_key == WHOLE_FIELD
+        )
+        found[conflict.scan_id] = replace(
+            current,
+            source=ValueSource.HUMAN,
+            reviewer=decided.reviewer,
+            reason=decided.reason,
+        )
+    by_scan = {row.scan_id: row for row in scans}
+    for scan_id, decisions in fields.items():
+        current = found[scan_id]
+        found[scan_id] = replace(
+            current,
+            value=decisions.assemble(by_scan.get(scan_id), current.machine_value),
+        )
     return found
 
 

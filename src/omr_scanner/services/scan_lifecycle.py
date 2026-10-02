@@ -733,7 +733,7 @@ def reject_scan(
         )
         case = _to_case(row, live_id=live_id, live_set=live_set)
     _LOGGER.info("Scan %d rejected by %s (%s); rescan required", scan_id, name, reason.value)
-    _after_change(database, batch_id)
+    _after_change(database, batch_id, scans=(scan_id,))
     return case
 
 
@@ -834,7 +834,7 @@ def undo_reject(
             ),
         )
     _LOGGER.info("Scan %d: rejection undone by %s", scan_id, name)
-    _after_change(database, batch_id)
+    _after_change(database, batch_id, scans=(scan_id,))
 
 
 # ----------------------------------------------------------------------
@@ -1029,7 +1029,7 @@ def exclude_scan(
             note=text, detail=_EXCLUDED_SENTENCE, moment=_now(), readings=readings,
         )
     _LOGGER.info("Scan %d excluded by %s (%s)", scan_id, name, reason.value)
-    _after_change(database, batch_id)
+    _after_change(database, batch_id, scans=(scan_id,))
     case = get_case(database, scan_id)
     assert case is not None  # just written
     return case
@@ -1066,7 +1066,7 @@ def defer_scan(
             readings=readings,
         )
     _LOGGER.info("Scan %d deferred by %s", scan_id, name)
-    _after_change(database, batch_id)
+    _after_change(database, batch_id, scans=(scan_id,))
     case = get_case(database, scan_id)
     assert case is not None  # just written
     return case
@@ -1127,7 +1127,7 @@ def restore_scan(
             ),
         )
     _LOGGER.info("Scan %d restored from %s by %s", scan_id, state.value, name)
-    _after_change(database, batch_id)
+    _after_change(database, batch_id, scans=(scan_id,))
 
 
 def keep_script(
@@ -1228,7 +1228,7 @@ def keep_script(
     _LOGGER.info(
         "Scan %d kept by %s; %d duplicate(s) excluded", keep_scan_id, name, len(others)
     )
-    _after_change(database, *sorted(batches))
+    _after_change(database, *sorted(batches), scans=(keep_scan_id, *others))
     return tuple(
         case for case in (get_case(database, item) for item in others) if case is not None
     )
@@ -1803,7 +1803,9 @@ def confirm_replacement(
         original_scan_id,
         name,
     )
-    _after_change(database, batch_id, replacement_batch)
+    _after_change(
+        database, batch_id, replacement_batch, scans=(original_scan_id, replacement_scan_id)
+    )
     return case
 
 
@@ -1864,7 +1866,12 @@ def remove_replacement(
     _LOGGER.info("Scan %d: replacement link removed by %s", original_scan_id, name)
     # The former replacement returns to counting in its own batch, so both
     # batches' duplicate state and reconciliation are re-derived.
-    _after_change(database, batch_id, former_batch)
+    _after_change(
+        database,
+        batch_id,
+        former_batch,
+        scans=(original_scan_id, *((former,) if former is not None else ())),
+    )
 
 
 # ----------------------------------------------------------------------
@@ -1908,6 +1915,7 @@ def sync_reimports(database: ProjectDatabase, batch_id: str) -> int:
         if not sources:
             return 0
         taken = _replacement_ids(session)
+        linked_scans: list[int] = []
         for scan in session.scalars(
             select(BatchScan)
             .where(BatchScan.batch_id == batch_id)
@@ -1932,6 +1940,7 @@ def sync_reimports(database: ProjectDatabase, batch_id: str) -> int:
             row.source_path = scan.source_path or ""
             row.content_sha256 = scan.content_sha256
             row.reimport_of_scan_id = original
+            linked_scans.append(scan.scan_id)
             row.rejected_by = ""
             row.rejected_at = moment
             row.file_state = FileState.PRESENT.value
@@ -1952,7 +1961,7 @@ def sync_reimports(database: ProjectDatabase, batch_id: str) -> int:
             linked += 1
     if linked:
         _LOGGER.info("Batch %s: %d re-import(s) of rejected content linked", batch_id, linked)
-        _after_change(database, batch_id)
+        _after_change(database, batch_id, scans=linked_scans)
     return linked
 
 
@@ -1977,18 +1986,22 @@ def _scan_hash(session: Session, scan_id: int) -> str:
 # ----------------------------------------------------------------------
 # Consequences of a transition
 # ----------------------------------------------------------------------
-def _after_change(database: ProjectDatabase, *batch_ids: str) -> None:
+def _after_change(
+    database: ProjectDatabase, *batch_ids: str, scans: Sequence[int] | None = None
+) -> None:
     """Re-derive everything a lifecycle change affects, in every batch it touches.
 
     Nothing here is decided afresh: each consequence is produced by the
     machinery that owns it, exactly as if the scans concerned had simply been
     in their new state when that machinery last ran.
 
-    * Duplicate-ID conflicts are recomputed by
-      :func:`~omr_scanner.services.review_store.sync_duplicate_identifiers` -
-      the canonical engine - for each batch. An ineligible scan takes no part,
-      and a duplicate that becomes real again (after *Undo Reject*, say) is
-      raised again by that same function.
+    * Duplicate-ID conflicts are re-derived for the identifier groups the
+      changed sheets (``scans``) are in or are leaving -
+      :func:`~omr_scanner.services.review_store.sync_duplicate_identifiers_for`,
+      the bounded pass (0.1.1 phase 4); without ``scans``, the full rebuild
+      :func:`~omr_scanner.services.review_store.sync_duplicate_identifiers`.
+      An ineligible scan takes no part, and a duplicate that becomes real
+      again (after *Undo Reject*, say) is raised again by the same rules.
     * Every reconciliation already run for each batch against an active roster
       is re-run, so no screen or count goes on showing a rejected script as
       valid, or missing a replacement that now stands in for one.
@@ -2006,9 +2019,15 @@ def _after_change(database: ProjectDatabase, *batch_ids: str) -> None:
     keys = dict.fromkeys(
         session_population.population_key(database, item) for item in batch_ids if item
     )
+    if scans:
+        try:
+            review_store.sync_duplicate_identifiers_for(database, scans)
+        except OMRScannerError:
+            _LOGGER.exception("Could not re-derive duplicates after a lifecycle change")
     for batch_id in keys:
         try:
-            review_store.sync_duplicate_identifiers(database, batch_id)
+            if not scans:
+                review_store.sync_duplicate_identifiers(database, batch_id)
             with database.session() as session:
                 rosters = [
                     int(item)

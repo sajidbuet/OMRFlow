@@ -367,6 +367,185 @@ def session_population(database: ProjectDatabase, scan_session_id: str) -> Sessi
     )
 
 
+@dataclass(frozen=True, slots=True)
+class SheetsOfSession:
+    """A few sheets of one session, classified without building the population.
+
+    Attributes:
+        session_id: The session they were classified against.
+        batch_ids: Every batch of the session, oldest first (a cheap query).
+        dispositions: ``scan id -> disposition`` for the sheets asked about
+            that belong to the session (read into one of its batches, or a
+            confirmed rescan whose lineage counts here).
+        batch_of: ``scan id -> the batch it was read into``, same keys.
+        adopted: Confirmed rescans read into *another* session whose lineage
+            counts in this one - few (one per such link).
+    """
+
+    session_id: str
+    batch_ids: tuple[str, ...]
+    dispositions: dict[int, SheetDisposition]
+    batch_of: dict[int, str]
+    adopted: frozenset[int]
+
+
+def sheets_of_session(
+    database: ProjectDatabase, scan_session_id: str, scan_ids: Iterable[int]
+) -> SheetsOfSession:
+    """Classify only ``scan_ids`` against one session - the bounded path.
+
+    The same rules, in the same order, as :func:`session_population`, applied
+    to the named sheets alone: indexed reads by scan id, the session's batch
+    list, live batch supersessions and the project's rescan links (one row per
+    confirmed rescan). Its cost follows the number of sheets asked about, not
+    the size of the session - which is what lets an ordinary Resolve decision
+    re-derive duplicates without reading every sheet (0.1.1 phase 4).
+    """
+    wanted = sorted({int(item) for item in scan_ids})
+    with database.session() as session:
+        batches = [item for item, _created in _session_batches(session, scan_session_id)]
+        superseded: set[str] = set()
+        if _has_sessions(database):
+            superseded = {
+                str(item)
+                for item in session.scalars(
+                    select(BatchSupersession.superseded_batch_id).where(
+                        BatchSupersession.reversed_at.is_(None)
+                    )
+                ).all()
+            }
+        links = session.execute(
+            select(ScanRejection.scan_id, ScanRejection.replacement_scan_id).where(
+                ScanRejection.replacement_scan_id.is_not(None)
+            )
+        ).all()
+        replacement_of = {int(new): int(old) for old, new in links if new is not None}
+        lineage = lineage_roots(replacement_of)
+        linked = set(lineage.root_of) | set(lineage.cycles)
+        link_batches = {
+            int(scan_id): str(batch)
+            for scan_id, batch in session.execute(
+                select(BatchScan.scan_id, BatchScan.batch_id).where(
+                    BatchScan.scan_id.in_(sorted(linked))
+                )
+            ).all()
+        } if linked else {}
+        batch_sessions = _batch_sessions(session, database, set(link_batches.values()))
+
+        def counting_session(scan_id: int) -> str | None:
+            root = lineage.root_of.get(scan_id)
+            if root is None:
+                return None
+            root_batch = link_batches.get(root)
+            return batch_sessions.get(root_batch) if root_batch is not None else None
+
+        members = set(batches)
+        adopted = frozenset(
+            scan
+            for scan in lineage.root_of
+            if link_batches.get(scan) not in members
+            and link_batches.get(scan) is not None
+            and counting_session(scan) == scan_session_id
+        )
+        rows = session.execute(
+            select(BatchScan.scan_id, BatchScan.batch_id, BatchScan.status).where(
+                BatchScan.scan_id.in_(wanted)
+            )
+        ).all() if wanted else []
+        lifecycle = {
+            int(scan_id): str(state)
+            for scan_id, state in session.execute(
+                select(ScanRejection.scan_id, ScanRejection.state).where(
+                    ScanRejection.scan_id.in_(wanted)
+                )
+            ).all()
+        } if wanted else {}
+        dispositions: dict[int, SheetDisposition] = {}
+        batch_of: dict[int, str] = {}
+        for scan_id, scan_batch, status in rows:
+            scan = int(scan_id)
+            if str(scan_batch) not in members and scan not in adopted:
+                continue
+            facts = SheetFacts(
+                scan_id=scan,
+                batch_id=str(scan_batch),
+                status=str(status),
+                lifecycle=lifecycle.get(scan, "active"),
+                batch_superseded=str(scan_batch) in superseded,
+                counting_session=(
+                    scan_session_id if scan in adopted else counting_session(scan)
+                ),
+            )
+            dispositions[scan] = classify(facts, scan_session_id)
+            batch_of[scan] = str(scan_batch)
+    return SheetsOfSession(
+        session_id=scan_session_id,
+        batch_ids=tuple(batches),
+        dispositions=dispositions,
+        batch_of=batch_of,
+        adopted=adopted,
+    )
+
+
+def session_batch_ids(database: ProjectDatabase, scan_session_id: str) -> tuple[str, ...]:
+    """A session's batches, oldest first - one indexed query."""
+    with database.session() as session:
+        return tuple(item for item, _created in _session_batches(session, scan_session_id))
+
+
+def batches_of(database: ProjectDatabase, scan_ids: Iterable[int]) -> set[str]:
+    """The batches the given sheets were read into."""
+    wanted = sorted({int(item) for item in scan_ids})
+    if not wanted:
+        return set()
+    with database.session() as session:
+        return {
+            str(item)
+            for item in session.scalars(
+                select(BatchScan.batch_id).where(BatchScan.scan_id.in_(wanted)).distinct()
+            ).all()
+        }
+
+
+def sessions_counting(database: ProjectDatabase, scan_ids: Iterable[int]) -> dict[int, str]:
+    """``scan id -> the session it counts in`` - its batch's, or its lineage root's."""
+    wanted = sorted({int(item) for item in scan_ids})
+    if not wanted:
+        return {}
+    with database.session() as session:
+        own = {
+            int(scan_id): str(batch)
+            for scan_id, batch in session.execute(
+                select(BatchScan.scan_id, BatchScan.batch_id).where(
+                    BatchScan.scan_id.in_(wanted)
+                )
+            ).all()
+        }
+        links = session.execute(
+            select(ScanRejection.scan_id, ScanRejection.replacement_scan_id).where(
+                ScanRejection.replacement_scan_id.is_not(None)
+            )
+        ).all()
+        lineage = lineage_roots({int(new): int(old) for old, new in links if new is not None})
+        roots = {scan: lineage.root_of[scan] for scan in own if scan in lineage.root_of}
+        root_batches = {
+            int(scan_id): str(batch)
+            for scan_id, batch in session.execute(
+                select(BatchScan.scan_id, BatchScan.batch_id).where(
+                    BatchScan.scan_id.in_(sorted(set(roots.values())))
+                )
+            ).all()
+        } if roots else {}
+        sessions = _batch_sessions(
+            session, database, set(own.values()) | set(root_batches.values())
+        )
+    found: dict[int, str] = {}
+    for scan, batch in own.items():
+        root_batch = root_batches.get(roots[scan]) if scan in roots else None
+        found[scan] = sessions.get(root_batch or batch, f"{LONE_BATCH_PREFIX}{batch}")
+    return found
+
+
 def _batch_sessions(
     session: Session, database: ProjectDatabase, batch_ids: set[str]
 ) -> dict[str, str]:
