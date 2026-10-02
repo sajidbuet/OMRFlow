@@ -45,11 +45,25 @@ from omr_scanner.errors import DatabaseError
 logger = logging.getLogger(__name__)
 
 
+BUSY_TIMEOUT_MS = 5_000
+"""How long a connection waits for another connection's write lock before
+SQLite reports ``database is locked`` (ADR-0009).
+
+A safety net, not the concurrency strategy: one coordinator per project owns
+the processing writes (the continuous engine or the Scan stage's recorder) and
+every write is a short transaction, so a second writer in the same process - a
+Resolve decision on the GUI thread - waits at most one such transaction. Five
+seconds is the value Python's ``sqlite3`` module has always applied implicitly
+(its ``timeout`` default); setting it here makes it explicit, testable and the
+same on every connection, read-only ones included."""
+
+
 def _enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
-    """Turn on foreign key enforcement for each new SQLite connection."""
+    """Configure each new SQLite connection: foreign keys on, explicit busy timeout."""
     cursor = dbapi_connection.cursor()
     try:
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     finally:
         cursor.close()
 
