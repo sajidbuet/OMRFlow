@@ -154,6 +154,7 @@ from omr_scanner.services import (
     reopen,
     scan_lifecycle,
     scan_source_path,
+    session_population,
     set_identity,
     split_field_value,
     split_marks,
@@ -1387,10 +1388,17 @@ class ResolvePage(WorkflowPage):
         self.state.sheet_provenance = {}
         self.state.redo = []
         self._loaded_scan_id = None
-        self.batch_label.setText(
-            f"<b>Batch {batch_id[:8]}</b><br>{summary.total} scan(s) from "
-            f"{summary.source_folder or '(files)'}"
-        )
+        population = session_population.population(database, batch_id)
+        if len(population.batch_ids) > 1:
+            # A session of several batches is reviewed as one population.
+            self.batch_label.setText(
+                f"<b>Scan session</b><br>{session_population.describe(population)}"
+            )
+        else:
+            self.batch_label.setText(
+                f"<b>Batch {batch_id[:8]}</b><br>{summary.total} scan(s) from "
+                f"{summary.source_folder or '(files)'}"
+            )
         self.refresh_queue()
         _LOGGER.info("Review page opened batch %s", batch_id)
         return True
@@ -1457,6 +1465,7 @@ class ResolvePage(WorkflowPage):
                 self.state.batch_id,
                 filters=self._current_filter(),
                 limit=QUEUE_PAGE_SIZE,
+                session_wide=True,
             )
         )
         self._rebuild_queue_table()
@@ -1604,8 +1613,10 @@ class ResolvePage(WorkflowPage):
             self.summary_breakdown.setText("")
             self._batch_unresolved = 0
             return
-        counts = count_conflicts(database, self.state.batch_id)
-        rescans = scan_lifecycle.count_cases(database, self.state.batch_id)
+        # The whole scan session (0.1.1 phase 4): the queue Resolve shows is
+        # the session's, whichever batch each sheet was read in.
+        counts = count_conflicts(database, self.state.batch_id, session_wide=True)
+        rescans = scan_lifecycle.count_cases(database, self.state.batch_id, session_wide=True)
         self._batch_unresolved = counts.unresolved
         # Outstanding rescans are physical work, not decisions, so they are
         # counted beside the conflicts rather than in them - and said in
@@ -1981,6 +1992,12 @@ class ResolvePage(WorkflowPage):
             return ()
         return group_bubbles(bundle.result, self.state.template, conflict)
 
+    def _sheet_batch(self, scan_id: int) -> str:
+        """The batch one sheet was read into; the stage's batch if unknown."""
+        database = self.database
+        found = scan_lifecycle.batch_of(database, scan_id) if database is not None else None
+        return found or self.state.batch_id or ""
+
     def _reload_sheet_conflicts(self, scan_id: int) -> None:
         """Re-read every conflict on one sheet, and where its value comes from.
 
@@ -1996,16 +2013,17 @@ class ResolvePage(WorkflowPage):
             self.state.sheet_conflicts = []
             self.state.sheet_provenance = {}
             return
+        # A sheet's records live in the batch it was read into, which in a
+        # session of several batches need not be the one the stage holds.
+        sheet_batch = self._sheet_batch(scan_id)
         self.state.sheet_conflicts = list(
             list_conflicts(
                 database,
-                self.state.batch_id,
+                sheet_batch,
                 filters=ConflictFilter(scan_id=scan_id, include_withdrawn=True),
             )
         )
-        self.state.sheet_provenance = provenance_for_scan(
-            database, self.state.batch_id, scan_id
-        )
+        self.state.sheet_provenance = provenance_for_scan(database, sheet_batch, scan_id)
 
     def _lanes_for(self, conflict: ConflictRecord) -> tuple[FieldLane, ...]:
         """Build the lane rectangles this sheet should show."""
@@ -2182,7 +2200,9 @@ class ResolvePage(WorkflowPage):
         if database is None or self.state.batch_id is None:
             self.sheet_progress_label.setText("")
             return
-        counts = count_conflicts_for_scan(database, self.state.batch_id, conflict.scan_id)
+        counts = count_conflicts_for_scan(
+            database, self._sheet_batch(conflict.scan_id), conflict.scan_id
+        )
         # Counted over **the sheet**, not over the filtered queue. A
         # denominator taken from the queue shrinks as the reviewer works -
         # "1 of 1" on the last conflict of eight - which reads as though the
@@ -2943,7 +2963,7 @@ class ResolvePage(WorkflowPage):
         try:
             edit = commit_field_edit(
                 database,
-                batch_id=self.state.batch_id,
+                batch_id=self._sheet_batch(scan_id),
                 scan_id=scan_id,
                 shape=shape,
                 # The field being edited - not the selected record, which may
@@ -3169,7 +3189,7 @@ class ResolvePage(WorkflowPage):
         database = self.database
         if database is None or self.state.batch_id is None:
             return False
-        target = last_decision(database, self.state.batch_id)
+        target = last_decision(database, self.state.batch_id, session_wide=True)
         if target is None:
             return False
         try:
@@ -3179,7 +3199,7 @@ class ResolvePage(WorkflowPage):
             if target.group:
                 reversed_commands = undo_field_edit(
                     database,
-                    batch_id=self.state.batch_id,
+                    batch_id=self._sheet_batch(target.scan_id),
                     group=target.group,
                     reviewer=self.state.reviewer,
                     reason_text=self.reason_text.toPlainText(),
@@ -3291,6 +3311,7 @@ class ResolvePage(WorkflowPage):
                 self.state.batch_id,
                 reviewer=self.state.reviewer,
                 reason_text=self.reason_text.toPlainText(),
+                session_wide=True,
             )
         except (ReviewError, OMRScannerError) as exc:
             report_error(self, exc, context="Conflict review (undo sheet)")
@@ -3522,7 +3543,7 @@ class ResolvePage(WorkflowPage):
         database = self.database
         batch = self.state.batch_id
         target = (
-            last_decision(database, batch)
+            last_decision(database, batch, session_wide=True)
             if database is not None and batch is not None
             else None
         )
@@ -3542,7 +3563,7 @@ class ResolvePage(WorkflowPage):
         )
 
         sheet = (
-            last_resolved_sheet(database, batch)
+            last_resolved_sheet(database, batch, session_wide=True)
             if database is not None and batch is not None
             else None
         )
@@ -3699,7 +3720,11 @@ class ResolvePage(WorkflowPage):
         self.state.conflicts = []
         self.state.sheet_rows = list(
             scan_lifecycle.processed_sheets(
-                database, batch_id, search=self.search_box.text(), limit=QUEUE_PAGE_SIZE
+                database,
+                batch_id,
+                search=self.search_box.text(),
+                limit=QUEUE_PAGE_SIZE,
+                session_wide=True,
             )
         )
         self._suppress_selection = True
@@ -3813,7 +3838,11 @@ class ResolvePage(WorkflowPage):
         selected = self.current_case()
         scrolled_to = self.queue_table.verticalScrollBar().value()
         self.state.conflicts = []
-        cases = list(scan_lifecycle.list_cases(database, batch_id, include_completed=True))
+        cases = list(
+            scan_lifecycle.list_cases(
+                database, batch_id, include_completed=True, session_wide=True
+            )
+        )
         search = self.search_box.text().strip().casefold()
         if search:
             cases = [

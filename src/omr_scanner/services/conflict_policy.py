@@ -763,7 +763,7 @@ def detect_duplicate_identifiers(
                 observation=MachineObservation(
                     value=value,
                     detail=(
-                        f"{len(ordered)} sheets in this batch were read as "
+                        f"{len(ordered)} sheets in this scan session read as "
                         f"'{value}'. Each may be a different candidate, a sheet "
                         "scanned twice, or a miscoded identifier."
                     ),

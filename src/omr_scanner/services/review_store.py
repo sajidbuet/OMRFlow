@@ -62,12 +62,14 @@ How undo works without rewriting anything:
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -119,6 +121,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 _LOGGER = logging.getLogger(__name__)
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
 
 class ReviewError(OMRScannerError):
     """A review action was refused: no reviewer, no reason, or a bad transition.
@@ -133,6 +137,90 @@ class ReviewError(OMRScannerError):
 def _now() -> datetime:
     """Current UTC time. One place, so every timestamp agrees."""
     return datetime.now(UTC)
+
+
+# ----------------------------------------------------------------------
+# A decision on a Student ID changes the session's duplicate state
+# ----------------------------------------------------------------------
+_Touched = Callable[[tuple[Any, ...], dict[str, Any], Any], "Iterable[int] | tuple[int, str]"]
+
+
+def _refreshes_duplicates(touched: _Touched) -> Callable[[_F], _F]:
+    """After the decorated decision commits, re-derive session-wide duplicates.
+
+    A Student ID is now matched across the whole scan session on its
+    *effective* value (0.1.1 phase 4), so correcting one - or undoing,
+    reopening or deferring a correction - can create or clear a duplicate with
+    a sheet of any batch of the session. ``touched`` names what the decision
+    touched: conflict ids, or ``(scan_id, zone_id)`` for a whole-field edit.
+    Only a decision on a Student ID triggers anything, and the refresh runs
+    after the decision's own transaction - a failure here is logged and never
+    unwinds the decision, which is already recorded.
+    """
+
+    def decorate(function: _F) -> _F:
+        @functools.wraps(function)
+        def wrapper(database: ProjectDatabase, *args: Any, **kwargs: Any) -> Any:
+            outcome = function(database, *args, **kwargs)
+            try:
+                _refresh_duplicates_for(database, touched(args, kwargs, outcome))
+            except OMRScannerError:
+                _LOGGER.exception("Duplicate Student IDs could not be re-derived")
+            return outcome
+
+        return cast("_F", wrapper)
+
+    return decorate
+
+
+def _refresh_duplicates_for(
+    database: ProjectDatabase, touched: Iterable[int] | tuple[int, str]
+) -> None:
+    """Re-run the session's duplicate pass if ``touched`` includes a Student ID."""
+    if database.read_only:
+        return
+    with database.session() as session:
+        statement = select(ReviewConflict.batch_id).where(
+            ReviewConflict.field_kind == FieldKind.IDENTIFIER.value
+        )
+        if isinstance(touched, tuple) and len(touched) == 2 and isinstance(touched[1], str):
+            scan_id, zone_id = touched
+            statement = statement.where(ReviewConflict.scan_id == scan_id).where(
+                ReviewConflict.zone_id == zone_id
+            )
+        else:
+            ids = [int(item) for item in touched]
+            if not ids:
+                return
+            statement = statement.where(ReviewConflict.conflict_id.in_(ids))
+        batches = sorted({str(item) for item in session.scalars(statement).all()})
+    done: set[str] = set()
+    for batch_id in batches:
+        from omr_scanner.services import session_population
+
+        session_id = session_population.session_of_batch(database, batch_id)
+        if session_id in done:
+            continue
+        done.add(session_id)
+        sync_duplicate_identifiers(database, batch_id)
+
+
+def _first_conflict(args: tuple[Any, ...], kwargs: dict[str, Any], _outcome: Any) -> list[int]:
+    return [int(args[0] if args else kwargs["conflict_id"])]
+
+
+def _field_edit_target(
+    _args: tuple[Any, ...], kwargs: dict[str, Any], _outcome: Any
+) -> tuple[int, str]:
+    return (int(kwargs["scan_id"]), str(kwargs["zone_id"]))
+
+
+def _undone_conflicts(_args: tuple[Any, ...], _kwargs: dict[str, Any], outcome: Any) -> list[int]:
+    if outcome is None:
+        return []
+    if isinstance(outcome, tuple):
+        return [int(item.conflict_id) for item in outcome]
+    return [int(item) for item in getattr(outcome, "conflict_ids", ())]
 
 
 # ----------------------------------------------------------------------
@@ -622,19 +710,31 @@ def _insert_conflict(
 
 
 def _refresh_conflict(
-    session: Session, row: ReviewConflict, found: DetectedConflict, moment: datetime
+    session: Session,
+    row: ReviewConflict,
+    found: DetectedConflict,
+    moment: datetime,
+    *,
+    change: str = "",
 ) -> None:
     """Update a conflict whose sheet has been read again.
 
     Writes nothing when the observation is identical, so an idempotent re-sync
     leaves no trace in the ledger - which is what lets a resumed batch call this
-    for every sheet without filling the history with noise.
+    for every sheet without filling the history with noise. ``change`` words the
+    history entry when the observation changed for another reason than a
+    re-read (``{previous}`` / ``{value}`` are filled in).
     """
-    _refresh_observation(session, row, found.observation, moment)
+    _refresh_observation(session, row, found.observation, moment, change=change)
 
 
 def _refresh_observation(
-    session: Session, row: ReviewConflict, observation: MachineObservation, moment: datetime
+    session: Session,
+    row: ReviewConflict,
+    observation: MachineObservation,
+    moment: datetime,
+    *,
+    change: str = "",
 ) -> None:
     """Bring a row's machine observation up to date, recording any change.
 
@@ -652,15 +752,18 @@ def _refresh_observation(
         return
 
     previous = row.machine_value
+    template = change or (
+        "The sheet was read again and the machine value changed from "
+        "'{previous}' to '{value}'."
+    )
     _append_event(
         session,
         conflict=row,
         action=ReviewAction.RE_RECOGNISED,
         previous_value=previous,
         new_value=observation.value,
-        detail=(
-            f"The sheet was read again and the machine value changed from "
-            f"'{previous or '(blank)'}' to '{observation.value or '(blank)'}'."
+        detail=template.format(
+            previous=previous or "(blank)", value=observation.value or "(blank)"
         ),
     )
     row.machine_value = observation.value
@@ -721,12 +824,16 @@ UNREAD_SET_CODE_MARKERS = frozenset({"?", "_"})
 """Characters recognition writes where a set-code position was not read."""
 
 
-def sync_undefined_set_codes(database: ProjectDatabase, batch_id: str) -> int:
+def sync_undefined_set_codes(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool = False
+) -> int:
     """Raise a conflict for every script whose set code is not a defined set.
 
     Args:
         database: The open project database.
         batch_id: The batch to examine.
+        session_wide: Examine every live batch of ``batch_id``'s scan session
+            (0.1.1 phase 4), as Attendance does before reconciling the session.
 
     Returns:
         How many scripts in the batch now carry such a conflict.
@@ -747,6 +854,13 @@ def sync_undefined_set_codes(database: ProjectDatabase, batch_id: str) -> int:
     read off a sheet is Set ``10`` when Set 10 is printed as ``A``. A reading
     two colliding legacy sets share names neither, and is raised here.
     """
+    if session_wide:
+        from omr_scanner.services import session_population
+
+        population = session_population.population(database, batch_id)
+        return sum(
+            sync_undefined_set_codes(database, member) for member in population.live_batch_ids
+        )
     identity = set_identity.load(database)
     effective = effective_set_codes(database, batch_id, identity=identity)
     moment = _now()
@@ -869,54 +983,59 @@ def _set_code_zone(scan: BatchScan | None) -> tuple[str, str]:
 
 
 def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
-    """Detect and store duplicate-identifier conflicts across a whole batch.
+    """Detect and store duplicate-identifier conflicts across a whole scan session.
 
     Args:
         database: The open project database.
-        batch_id: The batch to examine.
+        batch_id: Any batch of the scan session to examine.
 
     Returns:
-        How many duplicate conflicts the batch now has.
+        How many sheets of the session are now in a duplicate conflict.
 
-    Run **after** a batch finishes, in the coordinator. A duplicate is not a
+    **Session-wide since 0.1.1 phase 4.** The population is the session's
+    *effective sheet set* (:mod:`omr_scanner.services.session_population`):
+    two sheets that both count and share a Student ID are a duplicate whichever
+    batches they were read in, while a superseded original and its confirmed
+    rescan are not - the original no longer counts. Another session's sheets
+    never take part. Each conflict is stored against its sheet's own batch,
+    where the sheet's other review records are.
+
+    **On the effective Student ID**, after Resolve - so a correction can create
+    a duplicate and another correction can clear it - not on the machine's
+    reading alone. Only fully read IDs take part: two sheets both read as
+    ``"21?312"`` are evidence of a recognition problem, which they already have
+    their own conflicts for, not of a duplicate candidate.
+
+    A duplicate conflict somebody has already decided is kept, as always; an
+    untouched one whose sheets no longer clash is withdrawn; one whose sheet no
+    longer counts (rejected, excluded, superseded, ...) is left exactly as it
+    was - hidden from the queue, not withdrawn - so that restoring the sheet
+    brings it back. Run again on unchanged data it writes nothing.
+
+    Run **after** a batch finishes, in the coordinator, after a lifecycle
+    change, and after a Resolve decision on a Student ID. A duplicate is not a
     property of one sheet - both are perfectly legible - so it cannot be seen
-    while reading one, and making a worker process aware of its siblings would
-    mean shared mutable state across processes, which the Phase 5 architecture
-    exists to avoid.
-
-    Only identifiers the engine itself considered reliable take part: two sheets
-    both read as ``"21?312"`` are evidence of a recognition problem, which they
-    already have their own conflicts for, not of a duplicate candidate.
-
-    **Only result-eligible scans take part.** A rejected original shares its
-    Student ID with its rescan by definition; counting it would keep the
-    replacement in a duplicate conflict with a sheet that no longer counts.
-    Two *active* sheets with one ID are still detected exactly as before, and
-    a duplicate conflict somebody has already decided is kept, as always.
+    while reading one.
     """
+    from omr_scanner.services import session_population
+
+    population = session_population.population(database, batch_id)
+    effective = population.effective
+    identifiers = session_population.effective_identifiers(database, population, effective)
+    reliable = sorted(
+        (scan_id, item.value)
+        for scan_id, item in identifiers.items()
+        if item.value and "?" not in item.value and "_" not in item.value
+    )
+    detected = detect_duplicate_identifiers(reliable)
+    batches = sorted(set(population.batch_ids) | set(population.batch_of.values()))
     moment = _now()
     with database.session() as session:
-        scans = session.scalars(
-            select(BatchScan)
-            .where(BatchScan.batch_id == batch_id)
-            .where(BatchScan.scan_id.not_in(_ineligible_scans()))
-        ).all()
-        # `identifier_is_reliable` is a property of the result, and the durable
-        # row stores the value only - so reliability is inferred the same way
-        # the naming layer does: a value with no unresolved placeholder in it.
-        reliable = [
-            (row.scan_id, row.identifier_value)
-            for row in scans
-            if row.identifier_value and "?" not in row.identifier_value
-            and "_" not in row.identifier_value
-        ]
-        detected = detect_duplicate_identifiers(reliable)
-
         existing = {
             row.scan_id: row
             for row in session.scalars(
                 select(ReviewConflict)
-                .where(ReviewConflict.batch_id == batch_id)
+                .where(ReviewConflict.batch_id.in_(batches))
                 .where(
                     ReviewConflict.conflict_type == ConflictType.IDENTIFIER_DUPLICATE.value
                 )
@@ -926,23 +1045,33 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
         for scan_id, found in detected.items():
             row = existing.get(scan_id)
             if row is None:
-                _insert_conflict(session, batch_id, scan_id, found, moment)
+                _insert_conflict(session, population.batch_of[scan_id], scan_id, found, moment)
             else:
-                row.related_scan_ids = _dump_related(found.related_scan_ids)
-                _refresh_conflict(session, row, found, moment)
+                related = _dump_related(found.related_scan_ids)
+                if row.related_scan_ids != related:
+                    row.related_scan_ids = related
+                _refresh_conflict(
+                    session,
+                    row,
+                    found,
+                    moment,
+                    change=(
+                        "The Student ID this sheet shares with other sheets of the scan "
+                        "session changed from '{previous}' to '{value}'."
+                    ),
+                )
                 if row.state == ConflictState.WITHDRAWN.value:
                     _redetect_conflict(session, row, moment)
 
-        ineligible = set(session.scalars(_ineligible_scans_select()).all())
         for scan_id, row in existing.items():
             if scan_id in detected or row.state == ConflictState.WITHDRAWN.value:
                 continue
             if ConflictState(row.state).is_human_touched:
                 continue
-            if scan_id in ineligible:
-                # A rejected scan's own record is left exactly as it was -
-                # hidden from the queue, not withdrawn - so that undoing the
-                # rejection brings it back rather than losing it.
+            if scan_id not in effective:
+                # A sheet that no longer counts keeps its record exactly as it
+                # was - hidden from the queue, not withdrawn - so that
+                # restoring it brings it back rather than losing it.
                 continue
             _withdraw_conflict(session, row, moment)
 
@@ -993,6 +1122,7 @@ def validate_reason(reason: ReasonCode, reason_text: str) -> str:
     return cleaned
 
 
+@_refreshes_duplicates(_first_conflict)
 def accept_machine_value(
     database: ProjectDatabase,
     conflict_id: int,
@@ -1039,6 +1169,7 @@ def accept_machine_value(
         return _project_provenance(session, row)
 
 
+@_refreshes_duplicates(_first_conflict)
 def correct_value(
     database: ProjectDatabase,
     conflict_id: int,
@@ -1313,6 +1444,7 @@ class FieldEdit:
         return len(self.changed)
 
 
+@_refreshes_duplicates(_field_edit_target)
 def correct_field(
     database: ProjectDatabase,
     *,
@@ -1504,6 +1636,7 @@ def correct_field(
     )
 
 
+@_refreshes_duplicates(_undone_conflicts)
 def undo_field_edit(
     database: ProjectDatabase,
     *,
@@ -1566,6 +1699,7 @@ def undo_field_edit(
     return tuple(reversed(reversed_commands))
 
 
+@_refreshes_duplicates(_first_conflict)
 def defer(
     database: ProjectDatabase,
     conflict_id: int,
@@ -1609,6 +1743,7 @@ def defer(
         return _project_provenance(session, row)
 
 
+@_refreshes_duplicates(_first_conflict)
 def reopen(
     database: ProjectDatabase,
     conflict_id: int,
@@ -1752,17 +1887,32 @@ a bound, a reviewer who had worked five hundred single-conflict sheets would
 pay five hundred queries for a toolbar's tooltip."""
 
 
-def _human_events(session: Session, batch_id: str, *, limit: int) -> list[AuditEvent]:
-    """Return a batch's most recent human events, newest first."""
+def _human_events(
+    session: Session, batch_id: str | Sequence[str], *, limit: int
+) -> list[AuditEvent]:
+    """Return a batch's (or several batches') most recent human events, newest first."""
+    batches = [batch_id] if isinstance(batch_id, str) else list(batch_id)
     return list(
         session.scalars(
             select(AuditEvent)
-            .where(AuditEvent.batch_id == batch_id)
+            .where(AuditEvent.batch_id.in_(batches))
             .where(AuditEvent.action.in_(_HUMAN_ACTIONS))
             .order_by(AuditEvent.event_id.desc())
             .limit(limit)
         ).all()
     )
+
+
+def _undo_scope(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool
+) -> str | list[str]:
+    """The batch, or the live batches of its whole scan session (0.1.1 phase 4)."""
+    if not session_wide:
+        return batch_id
+    from omr_scanner.services import session_population
+
+    population = session_population.population(database, batch_id)
+    return sorted(set(population.live_batch_ids) | set(population.contributing_batch_ids))
 
 
 def _walk_back_to_standing(events: Sequence[AuditEvent]) -> list[AuditEvent]:
@@ -1787,12 +1937,16 @@ def _walk_back_to_standing(events: Sequence[AuditEvent]) -> list[AuditEvent]:
     return standing
 
 
-def last_decision(database: ProjectDatabase, batch_id: str) -> UndoTarget | None:
-    """Return the most recent human command in a batch that still stands.
+def last_decision(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool = False
+) -> UndoTarget | None:
+    """Return the most recent human command in a batch (or its session) that still stands.
 
     Args:
         database: The open project database.
         batch_id: The batch being reviewed.
+        session_wide: Search the whole scan session's live batches - what the
+            Resolve stage reviews since 0.1.1 phase 4.
 
     Returns:
         What an undo would take back, or ``None`` when nothing in the last
@@ -1804,9 +1958,10 @@ def last_decision(database: ProjectDatabase, batch_id: str) -> UndoTarget | None
     do nothing or - worse - take back a decision the reviewer was not thinking
     about.
     """
+    scope = _undo_scope(database, batch_id, session_wide=session_wide)
     with database.session() as session:
         standing = _walk_back_to_standing(
-            _human_events(session, batch_id, limit=UNDO_SEARCH_LIMIT)
+            _human_events(session, scope, limit=UNDO_SEARCH_LIMIT)
         )
         if not standing:
             return None
@@ -1860,6 +2015,7 @@ def _describe_command(
     return f"{what} on {where}" if where else what
 
 
+@_refreshes_duplicates(_first_conflict)
 def undo_decision(
     database: ProjectDatabase,
     conflict_id: int,
@@ -1948,12 +2104,15 @@ def _undo_one(
     )
 
 
-def last_resolved_sheet(database: ProjectDatabase, batch_id: str) -> SheetUndo | None:
+def last_resolved_sheet(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool = False
+) -> SheetUndo | None:
     """Return the sheet whose resolution session finished most recently.
 
     Args:
         database: The open project database.
         batch_id: The batch being reviewed.
+        session_wide: Look across the whole scan session (0.1.1 phase 4).
 
     Returns:
         What :func:`undo_resolved_sheet` would take back, or ``None``.
@@ -1969,16 +2128,17 @@ def last_resolved_sheet(database: ProjectDatabase, batch_id: str) -> SheetUndo |
     resolved and none left unresolved. A half-worked sheet has not been
     completed, so there is no completion to undo.
     """
+    scope = _undo_scope(database, batch_id, session_wide=session_wide)
     with database.session() as session:
-        return _find_resolved_sheet(session, batch_id)
+        return _find_resolved_sheet(session, scope)
 
 
-def _find_resolved_sheet(session: Session, batch_id: str) -> SheetUndo | None:
+def _find_resolved_sheet(session: Session, batch_id: str | Sequence[str]) -> SheetUndo | None:
     """Locate the most recent completed sheet-resolution run."""
     events = _human_events(session, batch_id, limit=UNDO_SEARCH_LIMIT)
     for run in _runs_by_scan(events)[:SHEET_UNDO_RUN_LIMIT]:
         scan_id = run[0].scan_id
-        if not _sheet_is_resolved(session, batch_id, scan_id):
+        if not _sheet_is_resolved(session, scan_id):
             continue
         standing = _walk_back_to_standing(run)
         if not standing:
@@ -2006,14 +2166,16 @@ def _runs_by_scan(events: Sequence[AuditEvent]) -> list[list[AuditEvent]]:
     return runs
 
 
-def _sheet_is_resolved(session: Session, batch_id: str, scan_id: int) -> bool:
-    """Whether every conflict on one sheet has been decided, and some were."""
+def _sheet_is_resolved(session: Session, scan_id: int) -> bool:
+    """Whether every conflict on one sheet has been decided, and some were.
+
+    By sheet alone: a sheet's conflicts all live in its own batch.
+    """
     by_state = {
         str(state): int(count)
         for state, count in session.execute(
             _resolution_only(
                 select(ReviewConflict.state, func.count())
-                .where(ReviewConflict.batch_id == batch_id)
                 .where(ReviewConflict.scan_id == scan_id)
                 .group_by(ReviewConflict.state)
             )
@@ -2025,12 +2187,14 @@ def _sheet_is_resolved(session: Session, batch_id: str, scan_id: int) -> bool:
     return unresolved == 0 and by_state.get(ConflictState.RESOLVED.value, 0) > 0
 
 
+@_refreshes_duplicates(_undone_conflicts)
 def undo_resolved_sheet(
     database: ProjectDatabase,
     batch_id: str,
     *,
     reviewer: str,
     reason_text: str = "",
+    session_wide: bool = False,
 ) -> SheetUndo | None:
     """Take back every decision of the most recently completed sheet.
 
@@ -2039,6 +2203,7 @@ def undo_resolved_sheet(
         batch_id: The batch being reviewed.
         reviewer: Who is undoing. Required.
         reason_text: Optional free text, recorded against every reversal.
+        session_wide: Look across the whole scan session (0.1.1 phase 4).
 
     Returns:
         What was undone, or ``None`` when no completed sheet was found.
@@ -2058,9 +2223,10 @@ def undo_resolved_sheet(
     "everything on this sheet", it does not.
     """
     name = validate_reviewer(reviewer)
+    scope = _undo_scope(database, batch_id, session_wide=session_wide)
 
     with database.session() as session:
-        found = _find_resolved_sheet(session, batch_id)
+        found = _find_resolved_sheet(session, scope)
         if found is None:
             return None
         moment = _now()
@@ -2068,7 +2234,7 @@ def undo_resolved_sheet(
         # Newest first: each reversal pops the top of its conflict's stack, so
         # a conflict decided twice in the session is stepped back twice, in the
         # order those decisions were made.
-        for conflict_id in _reversal_order(session, batch_id, found):
+        for conflict_id in _reversal_order(session, scope, found):
             row = _require_conflict(session, conflict_id)
             reversed_commands.append(
                 _undo_one(session, row, reviewer=name, reason_text=reason_text)
@@ -2083,7 +2249,7 @@ def undo_resolved_sheet(
 
 
 def _reversal_order(
-    session: Session, batch_id: str, found: SheetUndo
+    session: Session, batch_id: str | Sequence[str], found: SheetUndo
 ) -> tuple[int, ...]:
     """Return the conflict ids to reverse, newest decision first, with repeats.
 
@@ -2358,6 +2524,41 @@ class ConflictFilter:
     include_rejected: bool = False
 
 
+def _scope(database: ProjectDatabase, batch_id: str, column: Any, scan_column: Any) -> Any:
+    """A SQL predicate selecting the rows of a whole scan session's population.
+
+    The session's live batches (not those a *Reprocess All* replaced), minus
+    its sheets that count in another session, plus rescans read into another
+    session that count in this one (0.1.1 phase 4). Expressed over batch ids
+    and the - small - set of cross-session rescans, never as one huge list of
+    sheet ids, so it stays a cheap indexed predicate on a large session.
+    """
+    from omr_scanner.domain.session_population import SheetDisposition
+    from omr_scanner.services import session_population
+
+    population = session_population.population(database, batch_id)
+    live = set(population.live_batch_ids)
+    elsewhere = sorted(population.with_disposition(SheetDisposition.COUNTED_IN_OTHER_SESSION))
+    adopted = sorted(
+        scan for scan in population.effective if population.batch_of[scan] not in live
+    )
+    predicate = column.in_(sorted(live))
+    if elsewhere:
+        predicate = predicate & scan_column.not_in(elsewhere)
+    if adopted:
+        predicate = predicate | scan_column.in_(adopted)
+    return predicate
+
+
+def _batch_or_session(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool, column: Any, scan: Any
+) -> Any:
+    """``column == batch_id``, or the session predicate (:func:`_scope`)."""
+    if session_wide:
+        return _scope(database, batch_id, column, scan)
+    return column == batch_id
+
+
 def list_conflicts(
     database: ProjectDatabase,
     batch_id: str,
@@ -2365,6 +2566,7 @@ def list_conflicts(
     filters: ConflictFilter | None = None,
     limit: int | None = None,
     offset: int = 0,
+    session_wide: bool = False,
 ) -> tuple[ConflictRecord, ...]:
     """Return a batch's conflicts, most serious first.
 
@@ -2375,6 +2577,8 @@ def list_conflicts(
         limit: Page size. ``None`` returns everything, which is fine for a
             test and for a few hundred conflicts; the queue passes a page.
         offset: Where the page starts.
+        session_wide: Read the whole scan session ``batch_id`` belongs to -
+            the Resolve stage's queue (0.1.1 phase 4) - instead of one batch.
 
     Returns:
         Detached value objects, **sheet by sheet**: the sheets in most trouble
@@ -2392,7 +2596,15 @@ def list_conflicts(
         statement = (
             select(ReviewConflict, BatchScan, _reversed_before_column())
             .join(BatchScan, BatchScan.scan_id == ReviewConflict.scan_id, isouter=True)
-            .where(ReviewConflict.batch_id == batch_id)
+            .where(
+                _batch_or_session(
+                    database,
+                    batch_id,
+                    session_wide=session_wide,
+                    column=ReviewConflict.batch_id,
+                    scan=ReviewConflict.scan_id,
+                )
+            )
         )
         statement = _apply_filters(statement, rules)
         # **Sheet-major, worst sheet first.** Ordering by severity across the
@@ -2474,8 +2686,14 @@ def _apply_filters(statement: Any, rules: ConflictFilter) -> Any:
     return statement
 
 
-def count_conflicts(database: ProjectDatabase, batch_id: str) -> ReviewCounts:
-    """Return how many conflicts a batch has in each state, and by type.
+def count_conflicts(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool = False
+) -> ReviewCounts:
+    """Return how many conflicts a batch - or its whole scan session - has, by state and type.
+
+    ``session_wide`` counts the scan session ``batch_id`` belongs to (the
+    Resolve stage's summary, 0.1.1 phase 4); the default counts one batch (the
+    Scan stage's own line about the batch it just read).
 
     Counted in SQL, grouped, in two queries - never by loading the rows. A
     summary panel that walked ten thousand objects on every repaint is exactly
@@ -2491,6 +2709,13 @@ def count_conflicts(database: ProjectDatabase, batch_id: str) -> ReviewCounts:
     decision, and is counted by
     :func:`~omr_scanner.services.scan_lifecycle.count_cases` instead.
     """
+    scope = _batch_or_session(
+        database,
+        batch_id,
+        session_wide=session_wide,
+        column=ReviewConflict.batch_id,
+        scan=ReviewConflict.scan_id,
+    )
     with database.session() as session:
         by_state = {
             str(state): int(count)
@@ -2498,7 +2723,7 @@ def count_conflicts(database: ProjectDatabase, batch_id: str) -> ReviewCounts:
                 _active_scans_only(
                     _resolution_only(
                         select(ReviewConflict.state, func.count())
-                        .where(ReviewConflict.batch_id == batch_id)
+                        .where(scope)
                         .group_by(ReviewConflict.state)
                     )
                 )
@@ -2510,7 +2735,7 @@ def count_conflicts(database: ProjectDatabase, batch_id: str) -> ReviewCounts:
                 _active_scans_only(
                     _resolution_only(
                         select(ReviewConflict.conflict_type, func.count())
-                        .where(ReviewConflict.batch_id == batch_id)
+                        .where(scope)
                         .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
                         .group_by(ReviewConflict.conflict_type)
                     )

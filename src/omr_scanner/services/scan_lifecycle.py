@@ -100,6 +100,7 @@ from omr_scanner.domain.scan_lifecycle import (
     RescanCase,
     RescanCounts,
 )
+from omr_scanner.domain.session_population import SheetDisposition
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.services import review_store, set_identity
 from omr_scanner.services.scan_provenance import hash_file, is_virtual_source
@@ -111,6 +112,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
     from omr_scanner.database.engine import ProjectDatabase
     from omr_scanner.services.review_store import EffectiveIdentifier
+    from omr_scanner.services.session_population import SessionPopulation
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -299,6 +301,39 @@ def cases_by_scan(
         }
 
 
+def session_cases(
+    database: ProjectDatabase, population: SessionPopulation, *, live: bool = True
+) -> dict[int, RescanCase]:
+    """Every lifecycle record of a scan session's population, keyed by scan id.
+
+    The session-wide counterpart of :func:`cases_by_scan` (0.1.1 phase 4):
+    merged over the batches holding the population's sheets, and limited to
+    sheets whose disposition *is* their lifecycle state - a sheet in a batch
+    read again as a whole, or a rescan that counts in another session, is
+    not this session's case.
+    """
+    wanted = population.with_disposition(
+        SheetDisposition.SUPERSEDED_BY_REPLACEMENT,
+        SheetDisposition.REJECTED_PENDING_RESCAN,
+        SheetDisposition.REIMPORT_OF_REJECTED,
+        SheetDisposition.EXCLUDED,
+        SheetDisposition.DEFERRED,
+    )
+    found: dict[int, RescanCase] = {}
+    for batch_id in population.batches_holding(wanted):
+        for scan_id, case in cases_by_scan(database, batch_id, live=live).items():
+            if scan_id in wanted:
+                found[scan_id] = case
+    return found
+
+
+def _session_cases_of(database: ProjectDatabase, batch_id: str) -> dict[int, RescanCase]:
+    """:func:`session_cases` for the session ``batch_id`` belongs to (live values)."""
+    from omr_scanner.services import session_population
+
+    return session_cases(database, session_population.population(database, batch_id))
+
+
 def _batches(session: Session, scan_ids: Iterable[int | None]) -> dict[int, str]:
     wanted = [item for item in scan_ids if item is not None]
     if not wanted:
@@ -333,6 +368,7 @@ def list_cases(
     *,
     include_completed: bool = True,
     include_reimports: bool = False,
+    session_wide: bool = False,
 ) -> tuple[RescanCase, ...]:
     """The batch's rescan cases, for the *Rejected / Rescan* queue.
 
@@ -343,11 +379,19 @@ def list_cases(
         include_reimports: Include exact re-imports of rejected content. They
             are not rescan cases - nothing is awaited - so they are listed
             only when asked for.
+        session_wide: Every case of the scan session ``batch_id`` belongs to
+            (the Resolve stage, 0.1.1 phase 4).
 
     Returns:
         Outstanding cases first, then completed ones, each oldest first.
     """
-    cases = list(cases_by_scan(database, batch_id).values())
+    cases = list(
+        (
+            _session_cases_of(database, batch_id)
+            if session_wide
+            else cases_by_scan(database, batch_id)
+        ).values()
+    )
     kept = [
         item
         for item in cases
@@ -372,8 +416,26 @@ def get_case(database: ProjectDatabase, scan_id: int) -> RescanCase | None:
     return cases_by_scan(database, batch_id).get(scan_id)
 
 
-def count_cases(database: ProjectDatabase, batch_id: str) -> RescanCounts:
-    """How many rejected scans the batch has, by state. Counted in SQL."""
+def count_cases(
+    database: ProjectDatabase, batch_id: str, *, session_wide: bool = False
+) -> RescanCounts:
+    """How many rejected scans the batch (or its whole session) has, by state.
+
+    ``session_wide`` counts the scan session's population (0.1.1 phase 4):
+    a case in a batch read again as a whole, or a rescan counting in another
+    session, is not this session's case.
+    """
+    if session_wide:
+        from omr_scanner.services import session_population
+
+        counts = session_population.population(database, batch_id).counts()
+        return RescanCounts(
+            excluded=counts.get(SheetDisposition.EXCLUDED, 0),
+            deferred=counts.get(SheetDisposition.DEFERRED, 0),
+            outstanding=counts.get(SheetDisposition.REJECTED_PENDING_RESCAN, 0),
+            superseded=counts.get(SheetDisposition.SUPERSEDED_BY_REPLACEMENT, 0),
+            reimports=counts.get(SheetDisposition.REIMPORT_OF_REJECTED, 0),
+        )
     states = lifecycle_states(database, batch_id)
     return RescanCounts(
         excluded=sum(1 for item in states.values() if item is LifecycleState.EXCLUDED),
@@ -400,11 +462,14 @@ def outstanding_for_set(
     names no defined set: such a sheet could be anybody's, and a report that
     ignored it would look complete when it might not be. Set codes are
     compared through :mod:`omr_scanner.services.set_identity`.
+
+    **Session-wide** (0.1.1 phase 4): ``batch_id`` names the scan session;
+    every outstanding case of the session's population is considered.
     """
     identity = set_identity.load(database)
     return tuple(
         case
-        for case in cases_by_scan(database, batch_id).values()
+        for case in _session_cases_of(database, batch_id).values()
         if case.is_outstanding and _may_belong(identity, case.set_code, set_code)
     )
 
@@ -1175,9 +1240,14 @@ def list_dispositions(
     *,
     states: Iterable[LifecycleState] = (LifecycleState.EXCLUDED, LifecycleState.DEFERRED),
 ) -> tuple[RescanCase, ...]:
-    """The batch's excluded and/or deferred sheets, deferred first, oldest first."""
+    """The session's excluded and/or deferred sheets, deferred first, oldest first.
+
+    Session-wide since 0.1.1 phase 4: ``batch_id`` names the scan session.
+    """
     wanted = set(states)
-    cases = [case for case in cases_by_scan(database, batch_id).values() if case.state in wanted]
+    cases = [
+        case for case in _session_cases_of(database, batch_id).values() if case.state in wanted
+    ]
     cases.sort(
         key=lambda item: (
             item.state is not LifecycleState.DEFERRED,
@@ -1200,7 +1270,7 @@ def deferred_for_set(
     identity = set_identity.load(database)
     return tuple(
         case
-        for case in cases_by_scan(database, batch_id).values()
+        for case in _session_cases_of(database, batch_id).values()
         if case.state is LifecycleState.DEFERRED
         and _may_belong(identity, case.set_code, set_code)
     )
@@ -1658,6 +1728,21 @@ def confirm_replacement(
                     "the Scan stage first."
                 ),
             )
+        mine = _session_of(session, row.batch_id)
+        theirs = _session_of(session, replacement.batch_id)
+        if mine and theirs and mine != theirs:
+            # 0.1.1 phase 4: an examination's population is its scan
+            # session's. A rescan read into another session would make one
+            # session's result depend on another's sheet.
+            raise LifecycleError(
+                f"Scan {replacement_scan_id} is in another scan session",
+                user_message=(
+                    "That scan belongs to a different scan session. A rescan must be "
+                    "read into the original's scan session - combine the two "
+                    "sessions first (Scan stage, Session menu) if they are one "
+                    "examination."
+                ),
+            )
         original_hash = row.content_sha256
         if original_hash and replacement.content_sha256 == original_hash:
             raise LifecycleError(
@@ -1871,6 +1956,19 @@ def sync_reimports(database: ProjectDatabase, batch_id: str) -> int:
     return linked
 
 
+def _session_of(session: Session, batch_id: str) -> str | None:
+    """A batch's scan session, or ``None`` (no session, or a pre-session schema).
+
+    Two batches that both have no session are not known to be one session,
+    but neither are they known to be two; :func:`confirm_replacement` refuses
+    only a link between two batches with *different known* sessions.
+    """
+    # Writes only happen on a migrated (schema >= 14) database, which has the
+    # column; a read-only older one never reaches confirm_replacement.
+    found = session.scalar(select(ScanBatch.scan_session_id).where(ScanBatch.batch_id == batch_id))
+    return str(found) if found else None
+
+
 def _scan_hash(session: Session, scan_id: int) -> str:
     scan = session.get(BatchScan, scan_id)
     return scan.content_sha256 if scan is not None else ""
@@ -1900,9 +1998,15 @@ def _after_change(database: ProjectDatabase, *batch_ids: str) -> None:
     (:func:`~omr_scanner.services.scoring_store.stale_reasons_for`). A cross-
     batch replacement touches two batches, which is why this takes several.
     """
-    from omr_scanner.services import reconciliation_store
+    from omr_scanner.services import reconciliation_store, session_population
 
-    for batch_id in dict.fromkeys(item for item in batch_ids if item):
+    # Once per scan session touched (0.1.1 phase 4): duplicates and
+    # reconciliation are session-wide, so two batches of one session are one
+    # refresh, and a link between two sessions refreshes both.
+    keys = dict.fromkeys(
+        session_population.population_key(database, item) for item in batch_ids if item
+    )
+    for batch_id in keys:
         try:
             review_store.sync_duplicate_identifiers(database, batch_id)
             with database.session() as session:
@@ -1921,7 +2025,9 @@ def _after_change(database: ProjectDatabase, *batch_ids: str) -> None:
             for roster_id in rosters:
                 reconciliation_store.reconcile_batch(database, roster_id, batch_id)
         except OMRScannerError:
-            _LOGGER.exception("Could not refresh batch %s after a lifecycle change", batch_id)
+            _LOGGER.exception(
+                "Could not refresh the session of batch %s after a lifecycle change", batch_id
+            )
 
 
 # ----------------------------------------------------------------------
@@ -2009,8 +2115,12 @@ def processed_sheets(
     search: str = "",
     limit: int | None = 500,
     offset: int = 0,
+    session_wide: bool = False,
 ) -> tuple[ProcessedSheet, ...]:
     """Every read sheet of a batch, conflict or not, filtered and paged in SQL.
+
+    ``session_wide`` lists the live batches of the whole scan session
+    ``batch_id`` belongs to (the Resolve stage, 0.1.1 phase 4).
 
     What makes a **cleanly read** sheet reachable for Reject & Rescan: a scan
     that raised no conflict appears in no conflict queue, yet an operator
@@ -2018,6 +2128,11 @@ def processed_sheets(
     lists sheets, not problems, and counts nothing as unresolved.
     """
     text = search.strip()
+    batches = [batch_id]
+    if session_wide:
+        from omr_scanner.services import session_population
+
+        batches = list(session_population.population(database, batch_id).live_batch_ids)
     with database.session() as session:
         open_count = (
             select(func.count())
@@ -2034,7 +2149,7 @@ def processed_sheets(
         statement = (
             select(BatchScan, ScanRejection.state, open_count)
             .join(ScanRejection, ScanRejection.scan_id == BatchScan.scan_id, isouter=True)
-            .where(BatchScan.batch_id == batch_id)
+            .where(BatchScan.batch_id.in_(batches))
             .where(BatchScan.status.in_(sorted(PROCESSED_STATUSES)))
         )
         if text:
@@ -2042,7 +2157,7 @@ def processed_sheets(
             statement = statement.where(
                 BatchScan.filename.ilike(pattern) | BatchScan.identifier_value.ilike(pattern)
             )
-        statement = statement.order_by(BatchScan.batch_index)
+        statement = statement.order_by(BatchScan.batch_id, BatchScan.batch_index)
         if limit is not None:
             statement = statement.limit(limit).offset(offset)
         found: list[ProcessedSheet] = []
