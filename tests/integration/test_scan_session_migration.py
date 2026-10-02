@@ -87,7 +87,9 @@ class TestCaseAOneBatch:
         before = _history(root)
         with open_project(root) as session:
             database = session.database
-            assert database.schema_version == SCHEMA_VERSION == 14
+            # Through migration 14 (this test's subject) and on to the current
+            # schema - 15 since 0.1.1 phase 4's session scope.
+            assert database.schema_version == SCHEMA_VERSION >= 14
             sessions = scan_sessions.list_scan_sessions(database)
             assert len(sessions) == 1 and sessions[0].origin == "backfill"
             (batch,) = scan_sessions.batches_of(database, sessions[0].scan_session_id)
