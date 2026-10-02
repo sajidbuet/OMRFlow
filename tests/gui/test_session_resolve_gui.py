@@ -57,11 +57,15 @@ def template():
 
 @pytest.fixture
 def write(tmp_path: Path, template):
-    def make(folder: str, name: str, roll: str) -> Path:
+    def make(folder: str, name: str, roll: str, *, compression: int = 3) -> Path:
         directory = tmp_path / folder
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / name
-        cv2.imwrite(str(path), render_marked_sheet(template, _marks(roll)))
+        cv2.imwrite(
+            str(path),
+            render_marked_sheet(template, _marks(roll)),
+            [cv2.IMWRITE_PNG_COMPRESSION, compression],
+        )
         return path
 
     return make
@@ -103,7 +107,9 @@ def two_batches(qtbot, project_session: ProjectSession, template, write, monkeyp
     assert scan.state.batch_id is None
     assert scan.load_template_from(template_file) is True
     scan.clear_scans()
-    scan.add_scan_paths([write("two", "c.png", "170504")])
+    # A second, genuinely different scan of the same Student ID: other bytes
+    # (an identical file is an exact duplicate and is never read, 0.1.1 phase 4).
+    scan.add_scan_paths([write("two", "c.png", "170504", compression=1)])
     with qtbot.waitSignal(scan.batch_finished, timeout=TIMEOUT_MS):
         assert scan.process_all() is True, scan.progress_label.text()
     second = scan.state.batch_id

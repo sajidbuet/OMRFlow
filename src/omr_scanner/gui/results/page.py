@@ -75,6 +75,7 @@ from omr_scanner.services import (
     scoring,
     scoring_store,
     session_population,
+    session_scope,
 )
 from omr_scanner.services.answer_key import AnswerKeyError, QuestionPlan, plan_for
 
@@ -137,6 +138,11 @@ class ResultsPageState:
     imported on the Attendance stage during this session is scored without
     closing and reopening the project."""
     batch_id: str | None = None
+    """The selected session's downstream **store** - derived from
+    :attr:`scan_session_id`, never chosen on its own (0.1.1 phase 4)."""
+    scan_session_id: str | None = None
+    """The scan session being marked: the authoritative selection (default:
+    the active session)."""
     reviewer: str = ""
     unreconciled: tuple[UnreconciledRoster, ...] = ()
     """Active lists never reconciled against :attr:`batch_id`, as of the last
@@ -378,11 +384,12 @@ class ResultsPage(WorkflowPage):
         self.state.results = []
         self.state.roster_ids = ()
         self.state.batch_id = None
+        self.state.scan_session_id = None
         if session is not None:
             self.state.roster_ids = scoring_store.scoring_rosters(session.database)
-            # The active scan session's batch - never "the most recently
-            # updated one" (0.1.1 phase 2; one batch until session results).
-            self.state.batch_id = scan_sessions.downstream_batch_id(session.database)
+            # The active scan session - never "the most recently updated
+            # batch" (0.1.1 phase 4: the session is the selection).
+            self._select_session(scan_sessions.downstream_session_id(session.database))
             # The project's own template, so Results can mark a reopened
             # project without the Scan stage having been visited. A template
             # the Scan stage loads later still arrives through set_template.
@@ -410,11 +417,28 @@ class ResultsPage(WorkflowPage):
         self.refresh_table()
         self._update_enabled()
 
-    def set_batch(self, batch_id: str) -> None:
-        """Score a particular batch rather than the most recent one."""
-        self.state.batch_id = batch_id
+    def set_session(self, scan_session_id: str | None) -> None:
+        """Mark one scan session (the authoritative selection)."""
+        self._select_session(scan_session_id)
         self.refresh_table()
         self._update_enabled()
+
+    def set_batch(self, batch_id: str) -> None:
+        """Compatibility: mark the scan session ``batch_id`` belongs to."""
+        database = self.database
+        self.set_session(
+            session_scope.session_of(database, batch_id) if database is not None else None
+        )
+
+    def _select_session(self, scan_session_id: str | None) -> None:
+        database = self.database
+        self.state.scan_session_id = scan_session_id
+        self.state.batch_id = None
+        if database is not None and scan_session_id is not None:
+            try:
+                self.state.batch_id = session_scope.store(database, scan_session_id)
+            except session_scope.SessionScopeError:
+                self.state.scan_session_id = None
 
     # ------------------------------------------------------------------
     # Policy
@@ -745,12 +769,16 @@ class ResultsPage(WorkflowPage):
             )
             _, statuses, attention = _FILTERS[max(0, self.filter_combo.currentIndex())]
             text = self.search_box.text().strip().casefold()
-            batch_id = self.state.batch_id
+            scan_session_id = self.state.scan_session_id or session_scope.session_of(
+                database, self.state.batch_id
+            )
+            # The session's rows, once - the Dashboard analyses exactly these
+            # (`state.every_result`), never a second read.
             everything = [
                 item
                 for roster_id in self.state.roster_ids
-                for item in scoring_store.list_results(
-                    database, roster_id, batch_id, self.state.template
+                for item in session_scope.results(
+                    database, roster_id, scan_session_id, self.state.template
                 )
             ]
             # The summary describes the whole batch, not the filtered view, so

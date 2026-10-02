@@ -54,6 +54,7 @@ from omr_scanner.services import (
     reconciliation_store,
     report_store,
     scan_sessions,
+    session_scope,
     set_attendance,
 )
 
@@ -181,6 +182,11 @@ class ReportsPageState:
     ``set_id`` (§19). ``None`` in a project whose attendance is entirely
     per-set, which is the ordinary Part 2 state."""
     batch_id: str | None = None
+    """The selected session's downstream **store** - derived from
+    :attr:`scan_session_id` (0.1.1 phase 4)."""
+    scan_session_id: str | None = None
+    """The scan session reported on: the authoritative selection (default:
+    the active session)."""
     reviewer: str = ""
     project_name: str = ""
     exam_name: str = ""
@@ -356,6 +362,7 @@ class ReportsPage(WorkflowPage):
         self.state.sets = []
         self.state.roster_id = None
         self.state.batch_id = None
+        self.state.scan_session_id = None
         self.state.project_name = session.name if session is not None else ""
         self.state.exam_name = session.exam_name if session is not None else ""
         if session is not None:
@@ -365,9 +372,9 @@ class ReportsPage(WorkflowPage):
             # one rather than "whichever roster is active".
             roster = reconciliation_store.active_roster(session.database, None)
             self.state.roster_id = roster.roster_id if roster else None
-            # The active scan session's batch - never "the most recently
-            # updated one" (0.1.1 phase 2; one batch until session results).
-            self.state.batch_id = scan_sessions.downstream_batch_id(session.database)
+            # The active scan session - never "the most recently updated
+            # batch" (0.1.1 phase 4: the session is the selection).
+            self._select_session(scan_sessions.downstream_session_id(session.database))
         self.refresh_table()
         self._update_enabled()
 
@@ -386,11 +393,37 @@ class ReportsPage(WorkflowPage):
         self.refresh_table()
         self._update_enabled()
 
-    def set_batch(self, batch_id: str) -> None:
-        """Report on a particular batch rather than the most recent one."""
-        self.state.batch_id = batch_id
+    def set_session(self, scan_session_id: str | None) -> None:
+        """Report on one scan session (the authoritative selection)."""
+        self._select_session(scan_session_id)
         self.refresh_table()
         self._update_enabled()
+
+    def set_batch(self, batch_id: str) -> None:
+        """Compatibility: report on the scan session ``batch_id`` belongs to."""
+        database = self.database
+        self.set_session(
+            session_scope.session_of(database, batch_id) if database is not None else None
+        )
+
+    def _select_session(self, scan_session_id: str | None) -> None:
+        database = self.database
+        self.state.scan_session_id = scan_session_id
+        self.state.batch_id = None
+        if database is not None and scan_session_id is not None:
+            try:
+                self.state.batch_id = session_scope.store(database, scan_session_id)
+            except session_scope.SessionScopeError:
+                self.state.scan_session_id = None
+
+    def _scope_id(self) -> str | None:
+        """The selected session id (derived from the store for a direct caller)."""
+        database = self.database
+        if self.state.scan_session_id is not None:
+            return self.state.scan_session_id
+        if database is not None and self.state.batch_id is not None:
+            return session_scope.session_of(database, self.state.batch_id)
+        return None
 
     # ------------------------------------------------------------------
     # The set table
@@ -422,12 +455,11 @@ class ReportsPage(WorkflowPage):
     def _build_rows(self, database: ProjectDatabase) -> list[SetRow]:
         """Assemble one row per defined set, then per uncovered legacy code."""
         overviews: dict[str, SetOverview] = {}
-        if self.state.roster_id is not None and self.state.batch_id is not None:
+        scope_id = self._scope_id()
+        if self.state.roster_id is not None and scope_id is not None:
             overviews = {
                 item.set_code: item
-                for item in report_store.set_overview(
-                    database, self.state.roster_id, self.state.batch_id
-                )
+                for item in session_scope.overview(database, self.state.roster_id, scope_id)
             }
 
         rows: list[SetRow] = []
@@ -467,11 +499,10 @@ class ReportsPage(WorkflowPage):
         again per set is the only way those counts can be about the right
         candidates (§19).
         """
-        if status.roster is None or self.state.batch_id is None:
+        scope_id = self._scope_id()
+        if status.roster is None or scope_id is None:
             return None
-        for item in report_store.set_overview(
-            database, status.roster.roster_id, self.state.batch_id
-        ):
+        for item in session_scope.overview(database, status.roster.roster_id, scope_id):
             if item.set_code == status.exam_set.code:
                 return item
         return None
@@ -749,8 +780,10 @@ class ReportsPage(WorkflowPage):
                 return None
         if roster_id is None:
             return None
-        return report_store.check_readiness(
-            database, roster_id, self.state.batch_id, self.state.template,
+        scope_id = self._scope_id()
+        assert scope_id is not None  # batch_id was checked above
+        return session_scope.readiness(
+            database, roster_id, scope_id, self.state.template,
             row.set_code, for_final_export=for_final_export,
         )
 

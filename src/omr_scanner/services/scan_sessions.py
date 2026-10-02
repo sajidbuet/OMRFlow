@@ -1341,6 +1341,24 @@ def downstream_batch_id(database: ProjectDatabase) -> str | None:
     return None
 
 
+def downstream_session_id(database: ProjectDatabase) -> str | None:
+    """The scan session Attendance, Results and Reports select by default.
+
+    The **active** session, once it has a batch that has been (or is being)
+    read - the session-level counterpart of :func:`downstream_batch_id`,
+    which names that session's downstream store. ``batch:<id>`` for a batch
+    that belongs to no session yet (before the upgrade backfill). ``None``
+    when there is nothing to show. Pages hold this id and resolve the store
+    from it (:mod:`omr_scanner.services.session_scope`).
+    """
+    from omr_scanner.services import session_population
+
+    key = downstream_batch_id(database)
+    if key is None:
+        return None
+    return session_population.session_of_batch(database, key)
+
+
 def describe_downstream(database: ProjectDatabase, batch_id: str | None) -> str:
     """One sentence for a stage header naming the session and what it holds.
 

@@ -281,6 +281,10 @@ class ScanPage(WorkflowPage):
     template_changed = Signal(object)
     benchmark_finished = Signal(object)
     review_requested = Signal(str)
+    active_session_changed = Signal()
+    """The active scan session - the one Attendance, Results and Reports
+    select by default - was switched, created, combined, closed or reopened
+    (0.1.1 phase 4)."""
 
     processing_changed = Signal(bool)
     """Emitted when a batch starts or stops running.
@@ -476,6 +480,9 @@ class ScanPage(WorkflowPage):
         self.reopen_session_action.triggered.connect(self._prompt_reopen_scan_session)
         self.combine_session_action = self.session_menu.addAction("Combine Into This Session...")
         self.combine_session_action.triggered.connect(self._prompt_combine_scan_sessions)
+        self.switch_session_action = self.session_menu.addAction("Switch Scan Session...")
+        self.switch_session_action.setObjectName("switchScanSessionAction")
+        self.switch_session_action.triggered.connect(self._prompt_switch_scan_session)
         self.session_menu_button.setMenu(self.session_menu)
         session_row.addWidget(self.session_menu_button)
         process_layout.addLayout(session_row)
@@ -980,7 +987,62 @@ class ScanPage(WorkflowPage):
         self.state.batch_id = None
         self._refresh_batch_state_label()
         self._refresh_session_label()
+        self.active_session_changed.emit()
         return True
+
+    def switch_scan_session(self, scan_session_id: str) -> bool:
+        """Make another scan session the active one - the downstream selection. No dialog.
+
+        Attendance, Results and Reports follow (``active_session_changed``).
+        The page lets go of a batch that is not in the selected session.
+        """
+        database = self.database
+        if database is None or (self._worker is not None and self._worker.isRunning()):
+            return False
+        try:
+            scan_sessions.set_active_scan_session(
+                database, scan_session_id, activated_by=self._operator
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Switch scan session")
+            return False
+        if self.state.batch_id is not None and (
+            scan_sessions.session_of_batch(database, self.state.batch_id) != scan_session_id
+        ):
+            self.state.batch_id = None
+        self._refresh_batch_state_label()
+        self._refresh_session_label()
+        self._refresh_controls()
+        self.active_session_changed.emit()
+        return True
+
+    def _prompt_switch_scan_session(self) -> None:
+        database = self.database
+        if database is None:
+            return
+        sessions = [
+            item for item in scan_sessions.list_scan_sessions(database)
+            if not item.merged_into_session_id
+        ]
+        if not sessions:
+            return
+        labels = [f"{item.label} - {item.batch_count} batch(es)" for item in sessions]
+        current = self.active_scan_session()
+        index = next(
+            (
+                position
+                for position, item in enumerate(sessions)
+                if current is not None and item.scan_session_id == current.scan_session_id
+            ),
+            0,
+        )
+        choice, accepted = QInputDialog.getItem(
+            self, "Switch scan session",
+            "Attendance, Results and Reports will show this scan session:",
+            labels, index, False,
+        )
+        if accepted and choice in labels:
+            self.switch_scan_session(sessions[labels.index(choice)].scan_session_id)
 
     def rename_active_scan_session(self, name: str) -> bool:
         """Rename the active scan session. No dialog."""
@@ -1022,6 +1084,7 @@ class ScanPage(WorkflowPage):
         self._refresh_batch_state_label()
         self._refresh_session_label()
         self._refresh_controls()
+        self.active_session_changed.emit()
         return True
 
     def reopen_active_scan_session(self) -> bool:
@@ -1045,22 +1108,62 @@ class ScanPage(WorkflowPage):
             self._refresh_batch_state_label()
         self._refresh_session_label()
         self._refresh_controls()
+        self.active_session_changed.emit()
         return True
 
-    def combine_into_active_session(self, source_ids: Sequence[str]) -> bool:
-        """Combine other scan sessions into the active one. No dialog."""
+    def combine_into_active_session(
+        self, source_ids: Sequence[str], *, keep_downstream_of: str | None = None
+    ) -> bool:
+        """Combine other scan sessions into the active one.
+
+        When more than one of the sessions already holds Attendance / Results
+        decisions (0.1.1 phase 4), the operator is asked whose the combined
+        session keeps (:meth:`choose_kept_decisions`) unless
+        ``keep_downstream_of`` says; cancelling combines nothing.
+        """
         database, current = self.database, self.active_scan_session()
         if database is None or current is None:
             return False
+        if keep_downstream_of is None:
+            holders = scan_sessions.downstream_holders(
+                database, [current.scan_session_id, *source_ids]
+            )
+            if len(holders) > 1:
+                keep_downstream_of = self.choose_kept_decisions(list(holders))
+                if keep_downstream_of is None:
+                    return False
         try:
             scan_sessions.combine_scan_sessions(
-                database, source_ids, current.scan_session_id, combined_by=self._operator
+                database, source_ids, current.scan_session_id, combined_by=self._operator,
+                keep_downstream_of=keep_downstream_of,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Combine scan sessions")
             return False
         self._refresh_session_label()
+        self.active_session_changed.emit()
         return True
+
+    def choose_kept_decisions(self, scan_session_ids: list[str]) -> str | None:
+        """Ask whose Attendance / Results decisions a combined session keeps."""
+        database = self.database
+        if database is None:
+            return None
+        names = []
+        for scan_session_id in scan_session_ids:
+            info = scan_sessions.get_scan_session(database, scan_session_id)
+            names.append(info.name if info is not None else scan_session_id[:8])
+        choice, accepted = QInputDialog.getItem(
+            self,
+            "Keep whose decisions?",
+            "More than one of these scan sessions already has Attendance or Results "
+            "decisions. The combined session keeps one session's; the others stay "
+            "in the project as history and the choice is recorded.\n\nKeep:",
+            names, 0, False,
+        )
+        if not accepted or choice not in names:
+            return None
+        return scan_session_ids[names.index(choice)]
 
     def _prompt_new_scan_session(self) -> None:
         name, ok = QInputDialog.getText(
