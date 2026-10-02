@@ -320,6 +320,94 @@ class TestCopyIntegrity:
         assert not (real.project.root / "scans_original" / "intake").exists()
 
 
+class TestRealReopen:
+    """The project really closed and reopened (``open_project``), real files."""
+
+    def make(self, tmp_path, template):
+        from omr_scanner.services import create_project
+
+        project = create_project(tmp_path, "reopen")
+        folder = tmp_path / "scanner"
+        folder.mkdir()
+        session_id = scan_sessions.create_scan_session(project.database, name="E").scan_session_id
+        source = intake_service.create_source(
+            project.database, label="A", root_path=str(folder), policy=POLICY
+        )
+        intake_service.attach_source(project.database, source.source_id, session_id)
+        return project, folder, session_id, source.source_id
+
+    def service(self, project, clock):
+        return IntakeService(project.database, project.root, fs=OsFileSystem(), clock=clock)
+
+    def test_restart_mid_stabilisation(self, tmp_path, answer_sheet_template):
+        from omr_scanner.services import open_project
+
+        project, folder, session_id, source = self.make(tmp_path, answer_sheet_template)
+        clock = FakeClock()
+        service = self.service(project, clock)
+        write(folder / "1.jpg", jpeg(1))
+        service.reconcile(source)
+        clock.advance(4)
+        service.reconcile(source)  # two observations, quiet period not yet over
+        root = project.root
+        project.close()
+        with open_project(root) as reopened:
+            clock.advance(60)
+            service = self.service(reopened, clock)
+            (row,) = intake_service.ledger(reopened.database)
+            assert row.observations == 0 and row.stable_since is None
+            service.reconcile(source)
+            assert intake_service.ledger(reopened.database)[0].state is IntakeState.STABILIZING
+            clock.advance(5.1)
+            service.reconcile(source)
+            items = service.ready_items(scan_session_id=session_id)
+            outcome = service.register(
+                scan_session_id=session_id, source_id=source,
+                intake_file_ids=[item.intake_file_id for item in items],
+                identity=batch_store.BatchIdentity.of(answer_sheet_template),
+            )
+            assert len(outcome.registered) == 1
+            with reopened.database.session() as session:
+                assert len(session.scalars(select(BatchScan)).all()) == 1
+
+    def test_ready_but_unregistered_survives_a_reopen_exactly_once(
+        self, tmp_path, answer_sheet_template
+    ):
+        from omr_scanner.services import open_project
+
+        project, folder, session_id, source = self.make(tmp_path, answer_sheet_template)
+        clock = FakeClock()
+        service = self.service(project, clock)
+        write(folder / "1.jpg", jpeg(1))
+        write(folder / "2.jpg", jpeg(2))
+        service.reconcile(source)
+        clock.advance(6)
+        service.reconcile(source)
+        order = [item.intake_file_id for item in service.ready_items(scan_session_id=session_id)]
+        assert len(order) == 2
+        root = project.root
+        project.close()
+        for _ in range(2):  # reopen twice: still exactly once
+            with open_project(root) as reopened:
+                service = self.service(reopened, clock)
+                assert service.ready_items(scan_session_id=session_id) == ()
+                service.reconcile(source)  # re-verified
+                items = service.ready_items(scan_session_id=session_id)
+                if items:
+                    assert [item.intake_file_id for item in items] == order
+                    outcome = service.register(
+                        scan_session_id=session_id, source_id=source,
+                        intake_file_ids=[item.intake_file_id for item in items],
+                        identity=batch_store.BatchIdentity.of(answer_sheet_template),
+                    )
+                    assert len(outcome.registered) == 2
+        with open_project(root, read_only=True) as final:
+            with final.database.session() as session:
+                assert len(session.scalars(select(BatchScan)).all()) == 2
+            rows = intake_service.ledger(final.database)
+            assert [row.state for row in rows] == [IntakeState.REGISTERED] * 2
+
+
 class TestRealWriters:
     def test_partial_jpeg_and_partial_png_are_never_ready(self, real):
         source, folder = real.source("A")
