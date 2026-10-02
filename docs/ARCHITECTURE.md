@@ -653,6 +653,44 @@ See [ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
   retry, and the Scan CSV export. Resolve's batch filter is diagnostic. The
   session-level renamed copies are `services/renamed_export.py`.
 
+## Intake sources and the intake ledger (0.1.1 revised phase 5)
+
+See [intake.md](intake.md) and
+[ADR-0008](decisions/ADR-0008-intake-copy-or-reference.md). Headless; no Qt.
+
+- **Layers.** `domain/intake.py` is pure (states, `TRANSITIONS`,
+  `require_transition`, reasons, `StabilityPolicy`, name rules).
+  `services/intake_fs.py` is the only code that touches a source's files (the
+  `IntakeFileSystem` protocol; `OsFileSystem`; the `IngestStore` copy store).
+  `services/image_integrity.py` judges one read's bytes, decoding through
+  `alignment_service.decode_scan_bytes` - the call recognition makes.
+  `services/intake.py` owns the ledger.
+- **Reconciliation is the source of truth.** `os.scandir` listing; no
+  `QFileSystemWatcher` and no notification dependency. One pass: list (no
+  transaction) → apply observations (one transaction) → read and verify due
+  files (no transaction) → apply verdicts with compare-and-set (one
+  transaction). No transaction spans listing, reading, hashing, decoding or
+  copying.
+- **Single writer.** The intake service is used from one thread of the
+  coordinating process, like every other writer; no writer queue is introduced
+  (phase 6 decides the continuous-concurrency strategy).
+- **One content identity.** Every hash is `scan_provenance.hash_bytes` /
+  `hash_file` (an architecture test forbids `hashlib` in the intake modules);
+  every exact-duplicate decision is phase 4's
+  `scan_lifecycle.link_exact_duplicates`, for watched and manual intake alike,
+  mirrored into the ledger by `intake.mirror_duplicates`.
+- **Registration boundary.** `IntakeService.register` creates one finite,
+  sealed batch through `scan_sessions.start_batch_in` (the same rules and audit
+  events as `start_batch`, inside the caller's transaction) and links the
+  ledger rows in that transaction. It recognises nothing; the batch is ordinary
+  input to the unchanged `process_batch`.
+- **Manual intake.** The Scan worker's registration step is
+  `intake.record_manual_batch` (it calls `compute_hashes_for_batch`, then
+  records the built-in manual source) followed by the phase 4 duplicate link;
+  the Scan page is unchanged.
+- **Health.** `project_health._intake_issues` reports ledger inconsistencies;
+  transient states are never findings.
+
 ## The Calibration workflow (Phase 4)
 
 `omr_scanner.gui.calibration` verifies a template against representative
