@@ -525,11 +525,28 @@ each sheet finishes, its row is updated with the outcome, the recognised roll
 and set code, the output name, the failure reason and category if it failed,
 and the full recognition result.
 
-Results are committed in **groups** rather than one transaction per sheet -
-every 25 sheets or every 2 seconds, whichever comes first. One `fsync` per
-sheet would dominate a run on a spinning disk or a synchronised folder; this
-bounds what an abrupt power loss can cost to a second or two of finished work
-rather than the whole batch. That bound is a deliberate trade and is tested.
+**A sheet is saved as one unit** (0.1.1 phase 3,
+[ADR-0006](decisions/ADR-0006-crash-safe-scan-work-units.md)): its result
+*and* the review conflicts that result raises for that sheet - a blank or
+ambiguous Student ID, an unreadable page, and so on - are committed in the
+same transaction. A sheet is therefore never stored as read while Resolve is
+missing what it found on it. What depends on the whole batch (duplicate
+Student IDs, set codes not defined in the project, a rejected scan imported
+again) is completed when the run ends, before the batch is marked finished.
+
+Each sheet is committed on its own **whenever the database keeps up**; only
+when sheets arrive faster than a commit takes do the waiting ones share the
+next commit (never more than 25, never older than 2 seconds). Measured on the
+development machine's local SSD, one sheet costs about 12-13 ms to commit -
+well under the time recognition takes per sheet there, so in practice sheets
+are saved one by one or a few at a time, within tens of milliseconds of being
+read.
+
+**Progress shows saved sheets only.** "637 / 1,000 processed" counts sheets
+whose unit has committed. A sheet a worker has read but that is not yet saved
+is shown as *saving*; its row is not marked done until it is saved. If the
+database cannot be written at all, the sheets read are still listed (and can be
+exported) and the completion line says how many were **not saved**.
 
 ### The states a scan can be in
 
@@ -558,27 +575,57 @@ OMRFlow asks:
 > A batch is currently being processed. Stop processing and exit? Scans already
 > read are saved and the batch can be resumed next time this project is opened.
 
-On **Yes** the run is stopped and *waited for* - the pool is torn down and the
-last results flushed - and only then is the database released. That order is
-why the batch is still resumable afterwards.
+On **Yes** the run is stopped and *waited for* - the pool is torn down, the
+last results saved and the batch's duplicate-ID and set-code checks completed
+- and only then is the database released. That order is why the batch is still
+resumable afterwards.
 
 ### After a crash
 
-If OMRFlow (or the machine) dies mid-run, rows are left saying `queued` or
-`processing`. A row can only be in those states while some process owns it, so
-on the next time the project is opened none does, and they are stale by
-definition. Opening the project returns them to `pending` and marks the batch
-`interrupted`.
+If OMRFlow (or the machine) dies mid-run, rows are left saying `queued` (a
+sheet handed to a worker; OMRFlow does not record a separate `processing` step)
+and the batch `running`. A row can only be in those states while some process
+owns it, so on the next time the project is opened none does, and they are
+stale by definition. Opening the project, **before any stage shows it**:
+
+1. returns those rows to `pending`;
+2. re-checks the review conflicts of every sheet already saved, from the
+   stored result - no image is read again, and nothing is written for a sheet
+   whose conflicts are already complete (a project last written by a build
+   before 0.1.1 phase 3, which saved conflicts only when a run ended, gets the
+   missing ones, once);
+3. completes the batch's duplicate-ID and set-code checks;
+4. only then marks the batch `interrupted` (or finished, if nothing is left).
 
 They are **never** recovered as `failed`: "we do not know what happened to this
 sheet" is not the same as "this sheet is bad", and marking it failed would
 quietly exclude it from the resume - skipping exactly the sheets that were in
-flight when the crash happened.
+flight when the crash happened. Recovery never creates a scan session or a
+batch, never seals, closes or reopens one, and never supersedes one: the batch
+that was interrupted is the batch that resumes, sealed or not.
+
+The Scan stage then opens on the interrupted batch - every scan listed, the
+saved results shown, and the counts read from the database, e.g.
+
+> 637 / 1,000 recognised · 4 failed (retryable) · 359 pending
+> Batch interrupted - press Resume to read the 359 remaining scan(s).
+
+Nothing is processed until **Resume** is pressed. The Resolve stage opens on
+the same batch with every saved decision applied (see
+[conflict_review.md](conflict_review.md)).
+
+What a crash can cost is only sheets that were never shown as saved: those in
+a worker, and at most the few waiting for the commit in progress. A sheet that
+was saved is never read again. This was tested by killing a real OMRFlow
+process (`tests/crash/`); a real loss of power was **not** tested, and is
+covered only as far as SQLite's own guarantees and the storage go (ADR-0006).
 
 ### Resume
 
 **Resume Batch** processes only what is left. Sheets already read are not read
-again. The button is disabled when there is nothing to resume.
+again. The button is disabled when there is nothing to resume. On a batch
+restored after a crash, **Process All** also reads only the scans not yet
+saved; **Reprocess All** is the way to read everything again.
 
 If the template or the recognition thresholds have changed since the batch
 started, OMRFlow says exactly what changed and asks before continuing:

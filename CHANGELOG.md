@@ -28,6 +28,38 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
 
 ### Fixed (`0.1.1` line)
 
+- **Crash-safe Scan and Resolve persistence (`0.1.1` revised phase 3; no
+  migration).** Closes the four required pre-Alpha defects (ADR-0006):
+  - *S1* - a sheet's own conflicts were written only when a whole run ended,
+    so a crash left every committed sheet without them, for good. A sheet's
+    result and its conflicts now commit in one transaction; the batch-wide
+    duplicate-ID / set-code / re-import checks complete before a batch leaves
+    `running`, and reopening completes them for a batch a crash interrupted.
+    Results an earlier build saved without conflicts get them on the next
+    writable open, once, from the stored results - no sheet is read again.
+  - *S2* - reopening a project now brings the Scan stage back on the
+    interrupted batch (same session, same batch, sealed or open), with
+    *recognised / failed / pending* counted from the database, before Resume.
+  - *S3* - a sheet is counted and marked done only once it is saved; one read
+    but not yet saved shows as *saving*, and a store that fails says how many
+    were *not saved*.
+  - *R1* - Resolve opens on its own after a reopen, with every committed
+    decision and exactly the unresolved queue.
+  Each sheet is committed alone whenever the database keeps up (measured
+  ≈ 12-13 ms per sheet on a local SSD); only a burst may share a commit,
+  ≤ 25 sheets / 2 s. Process All on a restored batch reads only what
+  is not saved. Recovery never creates a session, batch or supersession. New
+  Project Health findings for the states this rules out. Tested with a
+  real-process kill matrix (ACCEPTANCE_CRITERIA §5.4 cases 1-15 at 40 sheets,
+  the 1/25/50/75/99 % series also at 1,000); **power loss not tested**; not
+  used by an operator.
+- **Re-syncing a sheet whose conflict had been withdrawn appended a duplicate
+  `WITHDRAWN` audit event** each time (an identity comparison on a string).
+- **Stop-and-exit mid-run skipped the batch-wide review checks** and marked
+  the batch cancelled without them.
+- **Closing the window could abort the process at exit** when the Scan stage's
+  preview worker was still reading a sheet (no batch running): the window now
+  waits for it, as it already did for a running batch.
 - **`processing_manifest` is now written** - at every batch seal and at the
   end of every processing run (`0.1.0-alpha.2` defect 6).
 - **A lower-case set code could not find its answer key** (latent
@@ -57,7 +89,8 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   only through an unambiguous confirmed cross-batch rescan, and reports
   ambiguous cases. Project Health checks lifecycle integrity. Implemented;
   automated tests passing; not used with a real scanner or by an operator.
-  **Session-level aggregation and crash-safe recovery are not part of it.**
+  **Session-level aggregation and crash-safe recovery are not part of it**
+  (crash-safe recovery: revised phase 3, under *Fixed*).
 
 - **Canonical set identity and printed set marks (`0.1.1` phase A; schema
   13).** Set codes are compared without regard to case, compatibility width

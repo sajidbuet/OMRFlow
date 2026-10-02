@@ -213,6 +213,15 @@ same hashes `OmrTemplate` computes for Phase 4's calibration staleness check,
 so a template edited between two halves of a batch is detected by the same
 mechanism in both places.
 
+`status = running` found at rest means a run was interrupted **and** that the
+batch's batch-scope review state (duplicate IDs, undefined set codes,
+re-imports) may be incomplete: since 0.1.1 phase 3 a batch leaves `running`
+only after that state is complete (ADR-0006). `settings_json` may carry
+`"review_state_with_results": true`, written by the Scan stage when it
+registers a batch: every result in that batch commits in the same transaction
+as its sheet's conflicts, so recovery need not re-derive them. *No schema
+change* - schema stays 14.
+
 **Lifecycle columns (migration 14, 0.1.1 phase 2; mapped `deferred` so a
 schema-13 database opened read-only still reads):**
 

@@ -65,12 +65,15 @@ from omr_scanner.services import (
     recognise_scan,
     scan_provenance,
 )
+from omr_scanner.services.batch_processor import BatchStage
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from collections.abc import Sequence
     from pathlib import Path
 
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services import BatchRecorder, ProgressSnapshot
+    from omr_scanner.services.run_hooks import RunHooks
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -115,6 +118,18 @@ class BatchWorker(QThread):
             open, and what the benchmark and most tests do. The recorder is
             driven from *this* thread, one result at a time, which is what
             keeps SQLite's single-writer assumption true without a lock.
+        hooks: Observation points at the run's durable boundaries
+            (:class:`~omr_scanner.services.run_hooks.RunHooks`); ``None`` in
+            the application, set by the real-process crash harness.
+
+    What counts as done (0.1.1 phase 3, S3):
+        With a recorder, a sheet is counted, and ``scan_done`` is emitted for
+        it, only once its durable work unit has **committed** - the recorder's
+        ``on_commit``. A sheet a worker has read but the store has not yet
+        committed is *in flight* (:attr:`ProgressSnapshot.in_flight`), never
+        processed. Should the store fail, the sheets it could not save are
+        emitted when the run ends so they can still be exported, and are
+        still not counted.
     """
 
     progress = Signal(object)
@@ -133,6 +148,7 @@ class BatchWorker(QThread):
         workers: int = 1,
         tracker: BatchProgressTracker | None = None,
         recorder: BatchRecorder | None = None,
+        hooks: RunHooks | None = None,
     ) -> None:
         super().__init__(parent)
         self._paths = list(paths)
@@ -144,6 +160,9 @@ class BatchWorker(QThread):
         self._tracker = tracker if tracker is not None else BatchProgressTracker()
         self._tracker.start(len(self._paths), workers=self._workers)
         self._recorder = recorder
+        self._hooks = hooks
+        if recorder is not None:
+            recorder.on_commit = self._on_committed
 
     def cancel(self) -> None:
         """Ask the run to stop after the sheets currently being read."""
@@ -187,6 +206,8 @@ class BatchWorker(QThread):
     def run(self) -> None:
         """Process the batch. Runs on the worker thread; touches no widget."""
         self._hash_sources_for_provenance()
+        if self._hooks is not None:
+            self._hooks.submitted(self._batch_id, tuple(self._paths))
         try:
             report = process_batch(
                 self._paths,
@@ -210,6 +231,10 @@ class BatchWorker(QThread):
         self._tracker.finish(cancelled=report.cancelled)
         self.finished_report.emit(report)
 
+    @property
+    def _batch_id(self) -> str | None:
+        return self._recorder.batch_id if self._recorder is not None else None
+
     def _hash_sources_for_provenance(self) -> None:
         """Fingerprint this batch's source files, off the GUI thread (Phase 10, §9/§10).
 
@@ -228,34 +253,60 @@ class BatchWorker(QThread):
             _LOGGER.exception("Content-hash provenance pass failed; processing continues")
 
     def _flush_recorder(self) -> None:
-        """Commit whatever the recorder still holds, if there is one."""
-        if self._recorder is not None:
-            self._recorder.flush()
+        """Commit whatever the recorder still holds, if there is one.
+
+        A store that still cannot commit leaves sheets that were read and not
+        saved. They are handed to the page now - so the list can show them
+        and the CSV can carry them - but they were never counted, because
+        they are not done.
+        """
+        if self._recorder is None:
+            return
+        if not self._recorder.flush():
+            for processed in self._recorder.unsaved_results():
+                self.scan_done.emit(processed)
 
     def _emit_progress(self, update: BatchProgress) -> None:
         """Count the completion, then pass the event on.
 
         Counting happens here, in the parent process, on one thread, under the
         tracker's lock - never in a worker. That is what keeps the totals right
-        when eight sheets finish at the same instant.
+        when eight sheets finish at the same instant. With a store, a read
+        sheet is only *in flight* here; it is counted when it commits.
         """
         status = TERMINAL_OUTCOMES.get(update.outcome)
         if status is not None:
-            self._tracker.record(status)
+            if self._recorder is not None:
+                self._tracker.note_read()
+            else:
+                self._tracker.record(status)
+        elif self._hooks is not None and update.stage is BatchStage.STARTED:
+            self._hooks.started(update.path)
         self.progress.emit(update)
 
     def _emit_result(self, processed: ProcessedScan) -> None:
-        """Record one finished sheet durably, then hand it to the page.
+        """Offer one finished sheet to the store; without one, hand it on now.
 
-        Recording happens *before* the signal so that a result the page shows
-        as done has already been offered to the store. A storage failure does
-        not stop the batch - the remaining sheets are still worth reading, and
-        the results stay in memory where the page can still export them - but
-        it is remembered on the recorder and reported when the run ends.
+        With a store, the page hears about the sheet from :meth:`_on_committed`
+        - after its work unit is durable - so a row is never shown done, nor
+        counted, before it is saved (S3). A storage failure does not stop the
+        batch: the remaining sheets are still worth reading, the failure is
+        remembered on the recorder and reported when the run ends.
         """
         if self._recorder is not None:
             self._recorder.record(processed)
+            return
         self.scan_done.emit(processed)
+
+    def _on_committed(self, outcomes: Sequence[ProcessedScan]) -> None:
+        """Count, and hand to the page, the sheets one commit made durable."""
+        for processed in outcomes:
+            status = TERMINAL_OUTCOMES.get(processed.outcome.value)
+            if status is not None:
+                self._tracker.record_committed(status)
+            self.scan_done.emit(processed)
+        if self._hooks is not None:
+            self._hooks.committed(self._batch_id, outcomes)
 
 
 class PreviewWorker(QThread):

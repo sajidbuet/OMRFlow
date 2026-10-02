@@ -67,13 +67,14 @@ from omr_scanner.services.recognition_models import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from sqlalchemy.orm import Session
 
     from omr_scanner.database.engine import ProjectDatabase
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.services.batch_processor import ProcessedScan
+    from omr_scanner.services.conflict_policy import ConflictPolicy
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -523,7 +524,12 @@ def mark_queued(database: ProjectDatabase, batch_id: str, paths: Sequence[Path])
 
 
 def record_results(
-    database: ProjectDatabase, batch_id: str, outcomes: Sequence[ProcessedScan]
+    database: ProjectDatabase,
+    batch_id: str,
+    outcomes: Sequence[ProcessedScan],
+    *,
+    template: OmrTemplate | None = None,
+    policy: ConflictPolicy | None = None,
 ) -> None:
     """Persist a group of finished scans in one transaction.
 
@@ -531,6 +537,14 @@ def record_results(
         database: The open project database.
         batch_id: The batch the results belong to.
         outcomes: Finished sheets, in any order.
+        template: The template the sheets were read with. When given, each
+            sheet's **own** conflicts are synchronised in the same transaction
+            as its result (0.1.1 phase 3, ADR-0006): the durable work unit is
+            "recognition result + the review state it implies", so a sheet can
+            never be committed as read while its conflicts are missing. Omitted
+            only by recognition-only callers with no Resolve stage (the
+            headless stress tool, the benchmark).
+        policy: Conflict policy; defaults apply when omitted.
 
     Raises:
         omr_scanner.errors.DatabaseError: The transaction failed. The caller
@@ -552,6 +566,22 @@ def record_results(
             outcome = by_path.get(row.source_path)
             if outcome is not None:
                 _apply_outcome(row, outcome, moment)
+        if template is not None:
+            from omr_scanner.services import review_store
+
+            session.flush()
+            for row in rows:
+                outcome = by_path.get(row.source_path)
+                if outcome is None:
+                    continue
+                review_store.sync_conflicts_in_session(
+                    session,
+                    batch_id=batch_id,
+                    scan_id=row.scan_id,
+                    result=outcome.result,
+                    template=template,
+                    policy=policy,
+                )
         session.execute(
             update(ScanBatch)
             .where(ScanBatch.batch_id == batch_id)
@@ -1214,8 +1244,25 @@ class BatchRecorder:
     flush_interval: float = FLUSH_INTERVAL_SECONDS
     persisted: int = 0
     failure: str = ""
+    template: OmrTemplate | None = None
+    """When set, each sheet's conflicts are committed with its result - the
+    durable Scan work unit (ADR-0006). The Scan stage always sets it."""
+    policy: ConflictPolicy | None = None
+    commit_when_idle: bool = False
+    """Commit each sheet on its own whenever the writer is keeping up
+    (ADR-0006). A sheet is committed as soon as it arrives unless less time
+    has passed since the previous commit finished than that commit took - only
+    then does it wait to share the next one. Results arriving slower than a
+    commit takes are therefore committed one by one; a backlog coalesces, and
+    :attr:`flush_every` / :attr:`flush_interval` still bound any group. The
+    Scan stage turns this on; recognition-only callers keep plain grouping."""
+    on_commit: Callable[[Sequence[ProcessedScan]], None] | None = None
+    """Called, on the recording thread, with the sheets of each successful
+    commit - and only then. What the Scan stage counts as *processed* (S3:
+    a sheet is never shown done before its work unit is durable)."""
     _buffer: list[ProcessedScan] = field(default_factory=list, repr=False)
     _last_flush: float = field(default_factory=time.monotonic, repr=False)
+    _last_commit_seconds: float = field(default=0.0, repr=False)
 
     @property
     def healthy(self) -> bool:
@@ -1230,9 +1277,11 @@ class BatchRecorder:
     def record(self, outcome: ProcessedScan) -> None:
         """Buffer one finished sheet, flushing when the buffer is due."""
         self._buffer.append(outcome)
+        since = time.monotonic() - self._last_flush
         due = (
             len(self._buffer) >= self.flush_every
-            or (time.monotonic() - self._last_flush) >= self.flush_interval
+            or since >= self.flush_interval
+            or (self.commit_when_idle and since >= self._last_commit_seconds)
         )
         if due:
             self.flush()
@@ -1248,8 +1297,15 @@ class BatchRecorder:
         if not self._buffer:
             self._last_flush = time.monotonic()
             return True
+        started = time.monotonic()
         try:
-            record_results(self.database, self.batch_id, self._buffer)
+            record_results(
+                self.database,
+                self.batch_id,
+                self._buffer,
+                template=self.template,
+                policy=self.policy,
+            )
         except Exception as exc:
             # Deliberately broad: any storage failure - a full disk, a revoked
             # network share, a locked file - must become a reported condition
@@ -1259,10 +1315,23 @@ class BatchRecorder:
             if not self.failure:
                 self.failure = str(exc)
             return False
-        self.persisted += len(self._buffer)
+        committed = tuple(self._buffer)
+        self.persisted += len(committed)
         self._buffer.clear()
         self._last_flush = time.monotonic()
+        self._last_commit_seconds = self._last_flush - started
+        if self.on_commit is not None:
+            self.on_commit(committed)
         return True
+
+    def unsaved_results(self) -> tuple[ProcessedScan, ...]:
+        """The finished sheets still buffered because a commit failed.
+
+        Read once a run has ended with :attr:`failure` set, so the page can
+        still show (and export) what was read - marked as *not saved*, never
+        as processed.
+        """
+        return tuple(self._buffer)
 
 
 __all__ = [

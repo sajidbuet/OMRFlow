@@ -196,6 +196,19 @@ An undo changes the stored record, not just the screen: the counters, the
 queue and the preview update at once, the results downstream follow, and
 closing and reopening the project shows the undone state.
 
+## After a crash or a restart
+
+Every decision is saved the moment you confirm it, so a crash, a forced close
+or a restart keeps every decision you confirmed. Reopening the project opens
+the **Resolve** stage on its batch by itself - you do not need to go through
+Scan - with every decision applied (machine reading, your value, the effective
+value and the history all as they were) and **exactly** the undecided conflicts
+in the queue, e.g. *120 total · 73 unresolved · 47 resolved*. Which row was
+selected is not kept, and neither is **Redo** after a restart.
+
+This was tested by killing a real OMRFlow process after several corrections
+(0.1.1 phase 3); it has not yet been used by an examination office.
+
 ## The audit trail
 
 Every decision is appended, never overwritten: what the machine read, what

@@ -173,6 +173,10 @@ class ProgressSnapshot:
             Wall clock rather than monotonic because this one is meant to be
             read as a time of day.
         workers: How many sheets the run reads at once.
+        in_flight: Sheets a worker has finished reading whose durable work
+            unit has **not yet committed** (0.1.1 phase 3, S3). Never part of
+            :attr:`completed`: a sheet is not done until it is saved. Always
+            ``0`` for a run with no project, where nothing is saved.
     """
 
     state: BatchState = BatchState.IDLE
@@ -187,6 +191,7 @@ class ProgressSnapshot:
     eta_seconds: float | None = None
     finish_wall_clock: float | None = None
     workers: int = 1
+    in_flight: int = 0
 
     @property
     def completed(self) -> int:
@@ -284,6 +289,8 @@ class BatchProgressTracker:
         self._total = 0
         self._workers = 1
         self._counts: dict[JobStatus, int] = dict.fromkeys(JobStatus, 0)
+        self._read = 0
+        self._committed = 0
 
         self._started_at: float | None = None
         self._finished_at: float | None = None
@@ -339,6 +346,28 @@ class BatchProgressTracker:
             self._counts[status] += count
             self._window_jobs += count
             self._maybe_sample(self._clock())
+
+    def note_read(self, count: int = 1) -> None:
+        """Note ``count`` sheets a worker has finished reading.
+
+        Not progress: a read sheet is *in flight* until
+        :meth:`record_committed` says its durable work unit has committed. The
+        two may arrive in either order (one run commits before it reports the
+        read, another after), so in flight is ``read - committed``, never
+        negative.
+        """
+        if count <= 0:
+            return
+        with self._lock:
+            self._read += count
+
+    def record_committed(self, status: JobStatus, count: int = 1) -> None:
+        """Record ``count`` sheets whose durable work unit has just committed."""
+        if count <= 0:
+            return
+        with self._lock:
+            self._committed += count
+        self.record(status, count)
 
     def request_cancel(self) -> None:
         """Note that the user has asked to stop.
@@ -397,6 +426,7 @@ class BatchProgressTracker:
                 eta_seconds=eta,
                 finish_wall_clock=(self._wall_clock() + eta) if eta is not None else None,
                 workers=self._workers,
+                in_flight=max(self._read - self._committed, 0),
             )
 
     # ------------------------------------------------------------------
@@ -407,6 +437,8 @@ class BatchProgressTracker:
         self._total = 0
         self._workers = 1
         self._counts = dict.fromkeys(JobStatus, 0)
+        self._read = 0
+        self._committed = 0
         self._started_at = None
         self._finished_at = None
         self._window_started_at = 0.0

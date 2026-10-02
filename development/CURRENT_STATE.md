@@ -40,7 +40,47 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Scan sessions and finite batches (`0.1.1` revised phase 2, 2026-10-01 — implemented; automated tests passing; branch `feat/0.1.1-phase2-scan-session-lifecycle`, not merged)
+### Crash-safe Scan / Resolve persistence (`0.1.1` revised phase 3, 2026-10-01 — implemented; automated tests passing, including a real-process kill matrix; branch `feat/0.1.1-phase3-crash-safe-persistence`, not merged; no migration, schema 14)
+
+- **Durable work unit** (ADR-0006): a sheet's result and the conflicts it
+  implies for that sheet commit in one transaction
+  (`batch_store.record_results(..., template=...)`,
+  `review_store.sync_conflicts_in_session`). Batch-scope review state
+  (re-imports, duplicate IDs, undefined set codes) is completed by
+  `scan_recovery.complete_batch_review_state` before a batch leaves `running`
+  - at run end, on stop-and-exit, and in recovery. Closes S1.
+- **Commit granularity measured**: ≈ 12-13 ms per work unit on the local SSD
+  (writer ceiling ≈ 78 sheets/s vs recognition ≈ 20 sheets/s), so per-sheet
+  commits are practical; the Scan stage commits each sheet alone whenever the
+  writer keeps up and lets only a burst share a commit
+  (`BatchRecorder.commit_when_idle`, ≤ 25 sheets / 2 s). End-to-end throughput
+  was too noisy across repetitions to separate the policies.
+- **Committed state only on screen** (S3): `BatchWorker` counts a sheet and
+  draws its row from `BatchRecorder.on_commit`; read-but-unsaved sheets are
+  *saving* (`ProgressSnapshot.in_flight`); a failing store's sheets are listed
+  but never counted ("N not saved").
+- **Open sequence** (S2, R1): `open_project` (migrate, backfill) → template →
+  `scan_recovery.recover_on_open` (queued → pending; per-sheet review state
+  re-derived from `result_json` for batches not written by this Scan stage;
+  batch-scope passes; then the status) → pages → Scan adopts the active
+  session's newest unfinished batch and shows *recognised / failed / pending*
+  from committed rows before Resume; Resolve loads the downstream batch with
+  its decisions and exact unresolved queue. Nothing is recognised on open and
+  no run starts. Process All on a restored batch skips committed members.
+- Recovery never creates, seals, closes or reopens a session or batch, never
+  records a supersession and writes no manifest.
+- Project Health: `BATCH_LEFT_RUNNING`, `SCAN_COMPLETED_WITHOUT_RESULT`,
+  `SCAN_REVIEW_STATE_MISSING`, `REVIEW_STATE_WITHOUT_RECOGNITION`,
+  `CONFLICT_DETECTED_TWICE`.
+- Fixed: re-syncing a sheet whose conflict had been withdrawn appended a
+  duplicate `WITHDRAWN` event (`is` on a string); the stop-and-exit path
+  skipped the batch-scope passes.
+- Real-process kill matrix (`tests/crash/`): ACCEPTANCE §5.4 cases 1-15 at 40
+  sheets; the 1/25/50/75/99 % series also at 1,000 sheets (`-m stress`).
+  Power loss not tested. Details:
+  `development/releases/0.1.1-alpha.0/PHASE_C_HANDOFF.md`.
+
+### Scan sessions and finite batches (`0.1.1` revised phase 2, 2026-10-01 — implemented; automated tests passing; merged into `main` at `1798e84`)
 
 - `Project → ScanSession → finite ScanBatch` (ADR-0005). `domain/scan_sessions.py`
   (rules) and `services/scan_sessions.py` (lifecycle, every transition audited
@@ -62,7 +102,7 @@ Update this file at the end of every phase.
   two batches grouped only by an unambiguous confirmed cross-batch rescan;
   ambiguous cases reported. Read-only schema-13 projects show virtual sessions.
 - `processing_manifest` written at every seal and every run end (defect 6).
-- Not done: crash-safe Scan/Resolve recovery (S1, S2, S3, R1) - revised phase 3.
+- Crash-safe Scan/Resolve recovery (S1, S2, S3, R1) is revised phase 3, above.
   Details: `development/releases/0.1.1-alpha.0/PHASE_B_HANDOFF.md`.
 
 ### Set identity (`0.1.1-alpha.0` phase A, 2026-10-01 — implemented; automated tests passing; merged into `main` at `ce3f082`)
@@ -435,7 +475,8 @@ unusable.
   first - because one `fsync` per sheet dominates a run on a spinning disk or a
   synchronised folder. That bounds what an abrupt termination costs to a second
   or two of finished work, and the bound is asserted by a test rather than
-  merely intended.
+  merely intended. *(Since 0.1.1 phase 3 the Scan stage commits each sheet with
+  its conflicts as one unit, alone whenever the writer keeps up; see above.)*
 - **Only the coordinating process writes.** Workers return recognition results
   and nothing else - the same rule that already stopped them naming files. SQLite
   is single-writer and the architecture keeps it that way by construction.
@@ -443,7 +484,8 @@ unusable.
   batch order, so duplicate-identifier suffixes stay stable across an
   interruption. **Retry Failed** targets failures and only those, incrementing
   each scan's attempt count.
-- Opening a project runs `recover_interrupted`: rows left `queued` or
+- Opening a project runs `recover_interrupted` (since 0.1.1 phase 3,
+  `scan_recovery.recover_on_open`, which applies the same rule): rows left `queued` or
   `processing` can only be in those states while some process owns them, and a
   project being *opened* proves none does. They return to `pending` - never to
   `failed`, because "we do not know what happened to this sheet" is not "this

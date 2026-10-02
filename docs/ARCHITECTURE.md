@@ -511,21 +511,56 @@ Four decisions worth carrying forward:
   open there is no recorder, `process_batch` runs exactly the code path it
   always did, and the page says the run will not be saved. That is what keeps
   the benchmark, the command line tools and most tests free of a database.
-- **Results are committed in groups**, not one transaction per sheet. One
-  `fsync` per sheet dominates a run on a spinning disk or a synchronised
-  folder; buffering to whichever of 25 sheets or 2 seconds comes first bounds
-  what an abrupt termination costs to a second or two of finished work. The
-  bound is a documented trade and is asserted by a test.
+- **A sheet commits as one work unit** (0.1.1 phase 3, ADR-0006): its result
+  and the conflicts it implies for that sheet, in one transaction
+  (`record_results(..., template=...)`). The Scan stage commits each sheet on
+  its own whenever the writer keeps up (`BatchRecorder.commit_when_idle`) and
+  lets only a burst share a commit, bounded by 25 sheets / 2 seconds (one unit
+  measured at ≈ 12-13 ms on a local SSD, well under a sheet's recognition time;
+  slower storage not measured). What the
+  page counts as processed is what `on_commit` reported, never a buffered or
+  worker-returned sheet.
 - **A storage failure is not a recognition failure.** `BatchRecorder` records
   the first one, keeps the buffer so a later flush can retry, lets the batch
   continue, and the page reports it in a dialog at the end. A run whose results
   could not be written is never presented as a clean success.
 
-The one piece of state that needs repairing rather than reading is a row left
-`QUEUED` or `PROCESSING`: those states are only valid while some process owns
-the row, so a project being *opened* proves nobody does.
-`batch_store.recover_interrupted` is called once, from `MainWindow._adopt_session`,
-before any page sees the session.
+The state that needs repairing rather than reading is what an interrupted run
+leaves: rows `QUEUED` (a project being *opened* proves nobody owns them) and a
+batch still `running`, whose batch-scope review state (duplicate IDs,
+undefined set codes, re-imports) may be incomplete.
+`scan_recovery.recover_on_open` is called once, from `MainWindow._adopt_session`,
+before any page sees the session, and repairs them from stored rows only - see
+the next section.
+
+## Crash-safe Scan / Resolve persistence (0.1.1 phase 3)
+
+Decision record: [ADR-0006](decisions/ADR-0006-crash-safe-scan-work-units.md).
+
+- **Work unit.** A sheet is completed when its result and its own conflicts
+  have committed together. Batch-scope review state is completed by
+  `scan_recovery.complete_batch_review_state` before the batch leaves
+  `running` - at the end of a run, on stop-and-exit (`ScanPage.shutdown_batch`)
+  and in recovery. `running` at rest is the only marker needed; no schema
+  change.
+- **Open sequence** (`MainWindow._adopt_session`): migrate + backfill
+  (`open_project`) → settle the template → `recover_on_open` (stale rows to
+  `pending`; per-sheet review state re-derived from `result_json`; batch-scope
+  passes; then the status) → pages adopt the project →
+  `_restore_persisted_work` (Scan adopts the active session's newest batch if
+  it has unfinished members; Resolve loads `downstream_batch_id`). Nothing is
+  recognised and no run starts.
+- **Never a lifecycle event.** Recovery creates no session, batch or
+  supersession, changes no OPEN/SEALED or OPEN/CLOSED state, and writes no
+  processing manifest.
+- **Committed state only on screen.** `BatchRecorder.on_commit` →
+  `BatchWorker` counts and emits `scan_done`; `ProgressSnapshot.in_flight` is
+  read-but-unsaved. Reopened counts come from grouped queries
+  (`scan_recovery.scan_progress`, `review_store.count_conflicts`).
+- **Observation points.** `services.run_hooks.RunHooks`, injected into
+  `ScanPage.run_hooks` (``None`` in the application), let the real-process
+  crash harness (`tests/crash/`) log submissions and pause at an exact
+  boundary before killing the process from outside.
 
 ## Scan sessions and finite batches (0.1.1 phase 2)
 
@@ -558,8 +593,8 @@ Project → ScanSession → one or more finite ScanBatch objects → sheets
   mapped `deferred`).
 - Processing manifests are written at every seal and at the end of every run
   (`services/processing_manifest.py`).
-- Not here: session aggregation (revised phase 4) and crash-safe Scan/Resolve
-  recovery (revised phase 3).
+- Not here: session aggregation (revised phase 4). Crash-safe Scan/Resolve
+  recovery is revised phase 3 (above).
 
 ## The Calibration workflow (Phase 4)
 

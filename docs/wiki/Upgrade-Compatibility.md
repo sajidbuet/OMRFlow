@@ -38,6 +38,23 @@ of the data.
 It fails with a message and leaves the project as it was, rather than
 half-applying.
 
+## Crash-safe persistence (`0.1.1` line, phase 3) — still schema 14
+
+No migration. Two things happen to an existing project the first time this
+build opens it **for editing**:
+
+- a batch an earlier build left *running* (the application was killed or
+  crashed mid-run) is recovered: sheets in flight return to *pending*, and the
+  review conflicts of every sheet it had already saved are re-derived from the
+  stored results - an earlier build wrote them only when a whole run ended, so
+  a crash left them missing. They are created once; no image is read again;
+- in any batch that already has review conflicts, an unreadable sheet left
+  without its conflict gets it.
+
+Nothing else is rewritten. Batches registered by this build carry a
+`review_state_with_results` entry in their stored settings; an earlier build
+of this schema would ignore it.
+
 ## Schema 14 — scan sessions (`0.1.1` line, phase 2)
 
 Opening an older project in a build of this line applies migration 14 (two new

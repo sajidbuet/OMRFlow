@@ -501,50 +501,79 @@ def sync_conflicts(
       not erase a person's decision, so a resolved or deferred conflict keeps
       its state and its history whatever a later read says.
     """
+    with database.session() as session:
+        return sync_conflicts_in_session(
+            session,
+            batch_id=batch_id,
+            scan_id=scan_id,
+            result=result,
+            template=template,
+            policy=policy,
+        )
+
+
+def sync_conflicts_in_session(
+    session: Session,
+    *,
+    batch_id: str,
+    scan_id: int,
+    result: ScanResult,
+    template: OmrTemplate,
+    policy: ConflictPolicy | None = None,
+) -> int:
+    """:func:`sync_conflicts` inside a transaction the caller owns.
+
+    The 0.1.1 phase 3 durable work unit: :func:`omr_scanner.services.batch_store.record_results`
+    writes a sheet's recognition result and calls this in the **same**
+    transaction, so a sheet is never committed as read while the conflicts
+    it implies are missing (ADR-0006). Same rules, same return value.
+    """
     detected = detect_conflicts(result, template, policy=policy)
     by_key = {item.key: item for item in detected}
     moment = _now()
 
-    with database.session() as session:
-        existing = session.scalars(
-            select(ReviewConflict)
-            .where(ReviewConflict.batch_id == batch_id)
-            .where(ReviewConflict.scan_id == scan_id)
-            # A batch-scope duplicate conflict belongs to the batch pass, not to
-            # this sheet's own re-read, and must not be withdrawn by it.
-            .where(ReviewConflict.conflict_type != ConflictType.IDENTIFIER_DUPLICATE.value)
-        ).all()
-        existing_by_key = {
-            (row.conflict_type, row.zone_id, row.group_key): row for row in existing
-        }
+    existing = session.scalars(
+        select(ReviewConflict)
+        .where(ReviewConflict.batch_id == batch_id)
+        .where(ReviewConflict.scan_id == scan_id)
+        # A batch-scope duplicate conflict belongs to the batch pass, not to
+        # this sheet's own re-read, and must not be withdrawn by it.
+        .where(ReviewConflict.conflict_type != ConflictType.IDENTIFIER_DUPLICATE.value)
+    ).all()
+    existing_by_key = {
+        (row.conflict_type, row.zone_id, row.group_key): row for row in existing
+    }
 
-        for key, found in by_key.items():
-            row = existing_by_key.get(key)
-            if row is None:
-                _insert_conflict(session, batch_id, scan_id, found, moment)
-            else:
-                _refresh_conflict(session, row, found, moment)
+    for key, found in by_key.items():
+        row = existing_by_key.get(key)
+        if row is None:
+            _insert_conflict(session, batch_id, scan_id, found, moment)
+        else:
+            _refresh_conflict(session, row, found, moment)
 
-        for key, row in existing_by_key.items():
-            if key in by_key or row.state is ConflictState.WITHDRAWN.value:
-                continue
-            if ConflictState(row.state).is_human_touched:
-                continue
-            _withdraw_conflict(session, row, moment)
+    for key, row in existing_by_key.items():
+        # `==`, not `is`: a state read back from SQLite is a fresh string, so
+        # an identity test never matched and every re-sync withdrew an
+        # already-withdrawn conflict again, appending a duplicate event.
+        if key in by_key or row.state == ConflictState.WITHDRAWN.value:
+            continue
+        if ConflictState(row.state).is_human_touched:
+            continue
+        _withdraw_conflict(session, row, moment)
 
-        session.flush()
-        return int(
-            session.scalar(
-                _resolution_only(
-                    select(func.count())
-                    .select_from(ReviewConflict)
-                    .where(ReviewConflict.batch_id == batch_id)
-                    .where(ReviewConflict.scan_id == scan_id)
-                    .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
-                )
+    session.flush()
+    return int(
+        session.scalar(
+            _resolution_only(
+                select(func.count())
+                .select_from(ReviewConflict)
+                .where(ReviewConflict.batch_id == batch_id)
+                .where(ReviewConflict.scan_id == scan_id)
+                .where(ReviewConflict.state != ConflictState.WITHDRAWN.value)
             )
-            or 0
         )
+        or 0
+    )
 
 
 def _insert_conflict(
