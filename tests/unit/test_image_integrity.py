@@ -73,6 +73,24 @@ def test_multipage_tiff_is_refused_even_though_page_one_decodes(pages):
     assert "multi-page TIFF is not supported" in check.detail
 
 
+@pytest.mark.parametrize("make", [jpeg, png, tiff])
+def test_truncation_is_caught_even_by_a_lenient_decoder(make, monkeypatch):
+    """OpenCV >= 4.9 is allowed; its libjpeg pads a truncated JPEG with grey.
+
+    With a decoder that "succeeds" on anything, the structural checks alone
+    must still refuse a truncated file - completeness never depends on the
+    installed OpenCV being strict.
+    """
+    from omr_scanner.services import image_integrity
+
+    monkeypatch.setattr(
+        image_integrity, "decode_scan_bytes", lambda raw, **_: np.zeros((10, 10), np.uint8)
+    )
+    for keep in (0.5, 0.9):
+        assert not check_image_bytes(header_only(make(), keep)).ok
+    assert check_image_bytes(make()).ok
+
+
 def test_sniff():
     assert sniff_format(jpeg()) == "jpeg"
     assert sniff_format(png()) == "png"
