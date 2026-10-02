@@ -135,6 +135,7 @@ from omr_scanner.services import (
     resolve_active_template,
     scan_lifecycle,
     scan_sessions,
+    session_population,
     set_attendance,
 )
 from omr_scanner.services.candidate_import import (
@@ -1194,11 +1195,15 @@ class AttendancePage(WorkflowPage):
             if database is not None and batch_id
             else ""
         )
-        multi = "only this one is read" in scope
+        # A session of several batches is reconciled as one population (0.1.1
+        # phase 4): name the session, not the batch its state is stored under.
+        multi = (
+            database is not None
+            and batch_id is not None
+            and len(session_population.population(database, batch_id).batch_ids) > 1
+        )
         self.batch_label.setText(
-            (f"Batch: <b>{batch_id[:8]}</b>" + (" · <i>one batch of several</i>" if multi else ""))
-            if batch_id
-            else ""
+            ("Scan session" if multi else f"Batch: <b>{batch_id[:8]}</b>") if batch_id else ""
         )
         self.batch_label.setToolTip(scope)
 

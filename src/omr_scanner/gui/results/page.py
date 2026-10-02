@@ -73,6 +73,7 @@ from omr_scanner.services import (
     scan_sessions,
     scoring,
     scoring_store,
+    session_population,
 )
 from omr_scanner.services.answer_key import AnswerKeyError, QuestionPlan, plan_for
 
@@ -894,12 +895,17 @@ class ResultsPage(WorkflowPage):
             self.batch_label.setToolTip("")
             return
         scope = scan_sessions.describe_downstream(database, batch_id)
-        multi = "only this one is read" in scope
-        self.batch_label.setText(
-            f"Marking <b>batch {batch_id[:8]}</b> · {summary.total} scan(s) from "
-            f"{html.escape(summary.source_folder or '(files)')}"
-            + (" · <i>one batch of several in this scan session</i>" if multi else "")
-        )
+        population = session_population.population(database, batch_id)
+        if len(population.batch_ids) > 1:
+            # 0.1.1 phase 4: the session is marked as one population.
+            self.batch_label.setText(
+                f"Marking the <b>scan session</b> · {session_population.describe(population)}"
+            )
+        else:
+            self.batch_label.setText(
+                f"Marking <b>batch {batch_id[:8]}</b> · {summary.total} scan(s) from "
+                f"{html.escape(summary.source_folder or '(files)')}"
+            )
         self.batch_label.setToolTip(scope)
 
     def _refresh_summary(self) -> None:
