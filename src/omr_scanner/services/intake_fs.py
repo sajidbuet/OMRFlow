@@ -27,7 +27,6 @@ What does NOT belong here:
 from __future__ import annotations
 
 import errno
-import hashlib
 import os
 import secrets
 import stat as stat_module
@@ -44,6 +43,7 @@ from omr_scanner.domain.intake import (
     SourceListing,
     is_hidden_folder,
 )
+from omr_scanner.services import scan_provenance
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable
@@ -350,11 +350,8 @@ class IngestResult:
 
 
 def _sha256_of_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """The one hashing routine (:func:`~omr_scanner.services.scan_provenance.hash_file`)."""
+    return scan_provenance.hash_file(path)
 
 
 class IngestStore:
@@ -405,7 +402,7 @@ class IngestStore:
         referenced and is removed by :meth:`clean_temporaries`; a crash after
         it leaves a correct copy that step 2 reuses.
         """
-        if hashlib.sha256(data).hexdigest() != sha256:
+        if scan_provenance.hash_bytes(data) != sha256:
             raise IngestError(
                 IntakeReason.SOURCE_CHANGED,
                 "The file's bytes no longer match the hash it was verified with.",

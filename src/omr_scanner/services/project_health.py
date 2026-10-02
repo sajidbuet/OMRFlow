@@ -42,6 +42,7 @@ Why quick and full are different functions, not one function with a flag:
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from enum import StrEnum
@@ -911,6 +912,113 @@ def _session_population_issues(database: ProjectDatabase) -> list[HealthIssue]:
     return issues
 
 
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _intake_issues(database: ProjectDatabase) -> list[HealthIssue]:
+    """Integrity of the intake ledger (0.1.1 revised phase 5, migration 16).
+
+    Reports genuine inconsistencies only - never a valid transient state such
+    as *stabilizing*, *locked* or *held*. Nothing is repaired here.
+
+    * a registered row with no registered scan, or a scan that is gone;
+    * a row linked to a scan while still in a pre-registration state;
+    * a scan of a registered row that names another ledger row;
+    * a registered row whose hash differs from its scan's;
+    * a duplicate-content row whose original is missing;
+    * a malformed stored hash;
+    * a registered row filed under another session than its batch;
+    * a verified project copy that is missing on disk;
+    * more than one built-in manual source.
+    """
+    from omr_scanner.database.models import IntakeFile, IntakeSource
+    from omr_scanner.domain.intake import IntakeState
+
+    if database.schema_version < 16:
+        return []
+    issues: list[HealthIssue] = []
+    consumed = {IntakeState.REGISTERED.value, IntakeState.DUPLICATE_CONTENT.value}
+    root = database.path.parent
+    with database.session() as session:
+        rows = session.execute(
+            select(
+                IntakeFile.intake_file_id, IntakeFile.state, IntakeFile.batch_scan_id,
+                IntakeFile.duplicate_of_scan_id, IntakeFile.content_sha256,
+                IntakeFile.scan_session_id, IntakeFile.ingest_path,
+            )
+        ).all()
+        scans = {
+            int(scan_id): (owner, str(digest), batch_session)
+            for scan_id, owner, digest, batch_session in session.execute(
+                select(
+                    BatchScan.scan_id, BatchScan.intake_file_id, BatchScan.content_sha256,
+                    ScanBatch.scan_session_id,
+                )
+                .join(ScanBatch, ScanBatch.batch_id == BatchScan.batch_id)
+                .where(
+                    BatchScan.scan_id.in_(
+                        select(IntakeFile.batch_scan_id).where(IntakeFile.batch_scan_id.is_not(None))
+                    )
+                    | BatchScan.scan_id.in_(
+                        select(IntakeFile.duplicate_of_scan_id).where(
+                            IntakeFile.duplicate_of_scan_id.is_not(None)
+                        )
+                    )
+                )
+            ).all()
+        }
+        builtins = session.scalar(
+            select(func.count()).select_from(IntakeSource).where(IntakeSource.is_builtin.is_(True))
+        )
+    def add(level: HealthLevel, code: str, message: str) -> None:
+        issues.append(HealthIssue(level, code, message))
+
+    for intake_id, state, scan_id, original, digest, owner, ingest in rows:
+        if digest is not None and not _SHA256.match(str(digest)):
+            add(HealthLevel.ERROR, "INTAKE_MALFORMED_HASH",
+                f"Intake record {intake_id} stores a malformed content hash.")
+        if scan_id is not None and state not in consumed:
+            add(HealthLevel.ERROR, "INTAKE_LINK_BEFORE_REGISTRATION",
+                f"Intake record {intake_id} is '{state}' but names registered scan {scan_id}.")
+            continue
+        if state == IntakeState.REGISTERED.value:
+            scan = scans.get(int(scan_id)) if scan_id is not None else None
+            if scan is None:
+                add(HealthLevel.ERROR, "INTAKE_REGISTERED_WITHOUT_SCAN",
+                    f"Intake record {intake_id} is registered, but its scan "
+                    + (
+                        "is not recorded."
+                        if scan_id is None
+                        else f"{scan_id} is not in the project."
+                    ))
+                continue
+            scan_owner, scan_digest, batch_session = scan
+            if scan_owner != intake_id:
+                add(HealthLevel.ERROR, "INTAKE_LINK_MISMATCH",
+                    f"Intake record {intake_id} names scan {scan_id}, which names intake "
+                    f"record {scan_owner}.")
+            if digest and scan_digest and scan_digest != digest:
+                add(HealthLevel.ERROR, "INTAKE_HASH_MISMATCH",
+                    f"Intake record {intake_id} and its scan {scan_id} record different bytes.")
+            if owner is not None and batch_session is not None and owner != batch_session:
+                add(HealthLevel.ERROR, "INTAKE_SESSION_MISMATCH",
+                    f"Intake record {intake_id} is filed under scan session {str(owner)[:8]}, "
+                    f"but its scan was registered into {str(batch_session)[:8]}.")
+        if state == IntakeState.DUPLICATE_CONTENT.value and (
+            original is None or int(original) not in scans
+        ):
+            add(HealthLevel.ERROR, "INTAKE_DUPLICATE_WITHOUT_ORIGINAL",
+                f"Intake record {intake_id} is a duplicate, but the sheet it repeats "
+                + ("is not recorded." if original is None else "is not in the project."))
+        if ingest and state in consumed and not (root / str(ingest)).is_file():
+            add(HealthLevel.ERROR, "INTAKE_COPY_MISSING",
+                f"Intake record {intake_id}'s verified project copy is missing ({ingest}).")
+    if int(builtins or 0) > 1:
+        add(HealthLevel.ERROR, "INTAKE_MANUAL_SOURCE_DUPLICATED",
+            f"{builtins} built-in manual intake sources exist; there must be one.")
+    return issues
+
+
 def _backup_issue(project_root: Path) -> list[HealthIssue]:
     backups_dir = project_root / project_backup.BACKUP_DIR_NAME
     entries = project_backup.list_backups(backups_dir)
@@ -995,6 +1103,7 @@ def full_check(database: ProjectDatabase, project_root: Path) -> HealthReport:
             _set_identity_issues,
             _scan_session_issues,
             _session_population_issues,
+            _intake_issues,
         ):
             try:
                 issues += check(database)
