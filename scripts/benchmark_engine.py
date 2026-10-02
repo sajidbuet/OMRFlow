@@ -213,13 +213,24 @@ def engine_intake(workspace: Path, sheets: list[bytes], workers: int, unit: int)
             unit_policy=UnitPolicy(max_unit_size=unit, trickle_seconds=1.0),
         )
         engine.start()
+        settled = {"registered", "duplicate_content", "ignored", "unreadable", "unsupported"}
+
+        def every_file_settled() -> bool:
+            # Count ledger rows, not scans: an exact duplicate inside one unit
+            # is a `duplicate_content` row with no scan of its own.
+            rows = intake.ledger(database, source_id=source.source_id)
+            return len(rows) >= len(sheets) and all(row.state.value in settled for row in rows)
+
         while True:
             engine.poll_intake()
             engine.form_units()
             report = engine.step(wait=0.05)
-            status = engine.status()
-            if report.idle and not engine.in_flight and status.caught_up and \
-                    status.completed + status.failed + status.duplicates >= len(sheets):
+            if (
+                report.idle
+                and not engine.in_flight
+                and engine.status().caught_up
+                and every_file_settled()
+            ):
                 break
             if report.idle:
                 time.sleep(0.05)
