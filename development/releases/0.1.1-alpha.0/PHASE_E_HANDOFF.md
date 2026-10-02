@@ -395,6 +395,50 @@ New `_intake_issues` (all ERROR; none for transient states; nothing repaired;
 a missing session cannot occur (foreign key, `RESTRICT`) and is left to the
 existing foreign-key check.
 
+## 19. Tests
+
+New tests (304, plus 1 `stress`):
+
+| File | Tests | Covers |
+|---|---:|---|
+| `tests/unit/test_intake_rules.py` | 147 | every allowed transition; every one of the other state pairs refused; initial states; name and exclusion rules; policy; quiet-period edges |
+| `tests/unit/test_image_integrity.py` | 35 | complete JPEG/PNG/TIFF/BMP; header + truncated body at 10-99 %; last bytes missing; zero bytes; random bytes; multi-page TIFF; truncation refused even with a lenient decoder |
+| `tests/integration/test_intake_ledger.py` | 61 | fake filesystem + clock: main path, diversions, growing files, writer patterns, collisions, recursion, reachability, restart, registration API |
+| `tests/integration/test_intake_filesystem.py` | 18 | real directories: spaces / Unicode / nesting / long paths, a real exclusive handle, three sources, copy integrity and crash points, a real close/reopen mid-stabilisation and ready-but-unregistered |
+| `tests/integration/test_intake_sessions.py` | 7 | session ownership |
+| `tests/integration/test_intake_manual.py` | 14 | manual convergence, D9, one duplicate rule / one hash routine (architecture) |
+| `tests/integration/test_intake_migration.py` | 8 | migration 16 from schema-15 fixtures |
+| `tests/integration/test_intake_health.py` | 9 | Health findings |
+| `tests/integration/test_intake_acceptance.py` | 1 | the three-source scenario |
+| `tests/integration/test_intake_processes.py` | 2 | a real writer killed mid-file; the real engine killed while three real writers continue, then restarted |
+| `tests/integration/test_hot_journal_reopen.py` | 1 | reopen after a real kill mid-commit (fails without the fix) |
+| `tests/gui/test_manual_intake_gui.py` | 1 | the real Scan stage records into the manual source |
+| `tests/integration/test_intake_soak.py` (`stress`) | 1 | 2,400 seeded arrivals, random restarts |
+
+Changed tests (each with an in-test explanation):
+`test_session_scope_migration` - two assertions pinned the *current* schema to
+15; they now accept the current schema (migration 16 runs after 15).
+
+| Run | Result |
+|---|---|
+| Baseline, clean worktree of `main` `fd063f8` (`C:\Research\OMRflow-base`), `QT_QPA_PLATFORM=offscreen` forced | **6,398 passed, 45 skipped, 5 failed**, 5 deselected (62 min). Failures: the 4 `test_session_scope_migration` upgrade tests (their fixture databases were never committed - fixed on this branch) and `test_resolve_page::...test_nothing_is_clipped_at_a_supported_size[1366-768]`, which fails only with offscreen forced (passes on the native platform the suite uses on Windows; checked on the baseline both ways) |
+| Branch, first full run (`52fcbab`'s parent), offscreen forced | **6,704 passed, 45 skipped, 3 failed**, 6 deselected (56 min): the same offscreen-only layout test, and two regressions this branch introduced - a hard-coded version string in `image_integrity` (`test_version`) and migration 16's description tripping `test_no_schema_change_was_needed`'s heuristic. Both fixed (`52fcbab`); the affected files re-run: 169 passed |
+| **Branch, final full run** (`6dfceb3`, the suite's normal native Qt platform on Windows) | **6,723 passed, 29 skipped, 0 failed**, 6 `stress` deselected (1 h 07 min). 6,419 (phase 4's final count) + 304 new non-stress tests = 6,723; the 29 skips are the count phase 4 recorded |
+| Targeted phase 3/4 suites (`tests/crash`, exact duplicates, session population / acceptance / scan sessions, crash-safe persistence, provenance, Scan / session / crash-reopen GUI, both session migrations, architecture) | **281 passed** (11 min) |
+| `tests/crash -m stress` (1,000-sheet kill series) | **1 passed** (2 min 40 s) |
+| `-m stress tests/integration/test_intake_soak.py` | **1 passed** (2 min 29 s) |
+| `tests/local` (real sheets) from the main checkout against the branch's `src` | **13 passed, 10 skipped** (fixture-dependent; the same as phase 4 recorded) |
+| `ruff check src tests tools scripts` / `mypy src/omr_scanner` | clean / no issues (216 files) |
+| Mutation check | removing the post-read metadata comparison makes `test_file_changing_during_the_read_returns_to_stabilization` fail (restored) |
+
+Skips: with offscreen forced, 45 - of which 18 are tests that skip under
+offscreen by design (Windows-style template-designer tests, the window-manager
+title) and 23 are `tests/local` real-sheet tests whose untracked fixtures exist
+only in the main checkout; on the native platform, 29.
+
+New tests: 304 non-stress (the counts above include the lenient-decoder test
+added last) + 1 `stress`.
+
 ## 20. Roadmap / code discrepancies
 
 * **Defect (pre-existing, fixed):** after a process was killed mid-commit, a
