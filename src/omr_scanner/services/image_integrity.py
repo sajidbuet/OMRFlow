@@ -223,8 +223,8 @@ def check_image_bytes(data: bytes) -> ImageCheck:
             ok=False,
             reason=IntakeReason.MULTIPAGE_TIFF,
             detail=(
-                f"a {pages}-page TIFF; multi-page TIFF is not supported in "
-                "0.1.1-alpha.0 - scan one page per file"
+                f"a {pages}-page TIFF; multi-page TIFF is not supported in this "
+                "release - scan one page per file"
             ),
             image_format=image_format,
             page_count=pages,

@@ -857,8 +857,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=16,
         description=(
-            "Intake: intake_source, intake_source_attachment, intake_file ledger; "
-            "batch_scan intake link and registration time; scan_batch source"
+            "Intake: intake sources, their session attachments and the intake ledger; "
+            "intake link and registration time per sheet; source per batch"
         ),
         apply=_migration_016_intake,
     ),
