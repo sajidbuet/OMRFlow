@@ -84,7 +84,7 @@ def test_truncation_is_caught_even_by_a_lenient_decoder(make, monkeypatch):
     from omr_scanner.services import image_integrity
 
     monkeypatch.setattr(
-        image_integrity, "decode_scan_bytes", lambda raw, **_: np.zeros((10, 10), np.uint8)
+        image_integrity, "decode_scan_bytes", lambda _raw, **_: np.zeros((10, 10), np.uint8)
     )
     for keep in (0.5, 0.9):
         assert not check_image_bytes(header_only(make(), keep)).ok
