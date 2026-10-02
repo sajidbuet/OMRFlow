@@ -31,8 +31,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 
-from omr_scanner.database import ProjectDatabase, open_project_database
+from omr_scanner.database import (
+    ProjectDatabase,
+    open_project_database,
+    recover_interrupted_transaction,
+)
 from omr_scanner.database.models import ProjectSetting, SettingKey
 from omr_scanner.domain.exam_sets import validate_exam_name
 from omr_scanner.domain.project import (
@@ -362,16 +367,29 @@ def _backup_before_migration_if_needed(layout: ProjectLayout) -> None:
     from omr_scanner.database.migrations import SCHEMA_VERSION
     from omr_scanner.services import project_backup
 
-    try:
+    def probe_version() -> int:
         probe = open_project_database(layout.database_file, read_only=True)
         try:
-            current_version = probe.schema_version
+            return probe.schema_version
         finally:
             probe.close()
-    except OMRScannerError:
-        # Can't even read it read-only; the normal (write) open path below
-        # will raise its own, more specific error - nothing to back up here.
-        return
+
+    try:
+        current_version = probe_version()
+    except (OMRScannerError, SQLAlchemyError):
+        # A process killed mid-commit leaves a hot journal, which a read-only
+        # connection cannot roll back ("attempt to write a readonly
+        # database"). Before 0.1.1 revised phase 5 that error escaped here and
+        # made the project unopenable after such a kill. Let SQLite recover the
+        # last committed state, then look again.
+        if not recover_interrupted_transaction(layout.database_file):
+            # Can't even read it; the normal (write) open path below will raise
+            # its own, more specific error - nothing to back up here.
+            return
+        try:
+            current_version = probe_version()
+        except (OMRScannerError, SQLAlchemyError):
+            return
 
     if not (0 < current_version < SCHEMA_VERSION):
         return
