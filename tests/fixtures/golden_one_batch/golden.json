@@ -1,0 +1,1258 @@
+{
+ "entries": {
+  "1": [
+   {
+    "attendance": "",
+    "candidate": "100001",
+    "script_count": 1,
+    "scripts": [
+     "g1_00.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "100002",
+    "script_count": 1,
+    "scripts": [
+     "g1_01.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "100003",
+    "script_count": 1,
+    "scripts": [
+     "g1_02.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "100004",
+    "script_count": 0,
+    "scripts": [],
+    "status": "absent_confirmed"
+   },
+   {
+    "attendance": "",
+    "candidate": "100005",
+    "script_count": 1,
+    "scripts": [
+     "g1_04.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "100006",
+    "script_count": 1,
+    "scripts": [
+     "g1_05.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "100007",
+    "script_count": 1,
+    "scripts": [
+     "g1_06.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "100008",
+    "script_count": 1,
+    "scripts": [
+     "g1_07.png"
+    ],
+    "status": "matched"
+   }
+  ],
+  "2": [
+   {
+    "attendance": "",
+    "candidate": "200001",
+    "script_count": 1,
+    "scripts": [
+     "g2_00.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200002",
+    "script_count": 1,
+    "scripts": [
+     "g2_01.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200003",
+    "script_count": 1,
+    "scripts": [
+     "g2_02.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200004",
+    "script_count": 1,
+    "scripts": [
+     "g2_03.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200005",
+    "script_count": 1,
+    "scripts": [
+     "g2_04.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200006",
+    "script_count": 1,
+    "scripts": [
+     "g2_05.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200007",
+    "script_count": 1,
+    "scripts": [
+     "g2_06.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "200008",
+    "script_count": 0,
+    "scripts": [],
+    "status": "present_without_script"
+   }
+  ],
+  "3": [
+   {
+    "attendance": "",
+    "candidate": "300001",
+    "script_count": 1,
+    "scripts": [
+     "g3_00.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "300002",
+    "script_count": 0,
+    "scripts": [],
+    "status": "absent_confirmed"
+   },
+   {
+    "attendance": "",
+    "candidate": "300003",
+    "script_count": 1,
+    "scripts": [
+     "g3_02.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "300004",
+    "script_count": 1,
+    "scripts": [
+     "g3_03.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "300005",
+    "script_count": 1,
+    "scripts": [
+     "g3_04.png"
+    ],
+    "status": "matched"
+   },
+   {
+    "attendance": "",
+    "candidate": "300006",
+    "script_count": 1,
+    "scripts": [
+     "g3_05.png"
+    ],
+    "status": "matched"
+   }
+  ]
+ },
+ "results": {
+  "1": [
+   {
+    "blank": 0,
+    "candidate": "100001",
+    "correct": 5,
+    "final": "5",
+    "incorrect": 15,
+    "raw": "5",
+    "scan": "g1_00.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "100002",
+    "correct": 8,
+    "final": "8",
+    "incorrect": 12,
+    "raw": "8",
+    "scan": "g1_01.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "100003",
+    "correct": 11,
+    "final": "11",
+    "incorrect": 9,
+    "raw": "11",
+    "scan": "g1_02.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "100004",
+    "correct": 0,
+    "final": "None",
+    "incorrect": 0,
+    "raw": "None",
+    "scan": null,
+    "status": "absent"
+   },
+   {
+    "blank": 0,
+    "candidate": "100005",
+    "correct": 17,
+    "final": "17",
+    "incorrect": 3,
+    "raw": "17",
+    "scan": "g1_04.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "100006",
+    "correct": 20,
+    "final": "20",
+    "incorrect": 0,
+    "raw": "20",
+    "scan": "g1_05.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "100007",
+    "correct": 6,
+    "final": "6",
+    "incorrect": 14,
+    "raw": "6",
+    "scan": "g1_06.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "100008",
+    "correct": 9,
+    "final": "9",
+    "incorrect": 11,
+    "raw": "9",
+    "scan": "g1_07.png",
+    "status": "scored"
+   }
+  ],
+  "2": [
+   {
+    "blank": 0,
+    "candidate": "200001",
+    "correct": 6,
+    "final": "6",
+    "incorrect": 14,
+    "raw": "6",
+    "scan": "g2_00.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200002",
+    "correct": 9,
+    "final": "9",
+    "incorrect": 11,
+    "raw": "9",
+    "scan": "g2_01.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200003",
+    "correct": 12,
+    "final": "12",
+    "incorrect": 8,
+    "raw": "12",
+    "scan": "g2_02.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200004",
+    "correct": 15,
+    "final": "15",
+    "incorrect": 5,
+    "raw": "15",
+    "scan": "g2_03.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200005",
+    "correct": 18,
+    "final": "18",
+    "incorrect": 2,
+    "raw": "18",
+    "scan": "g2_04.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200006",
+    "correct": 4,
+    "final": "4",
+    "incorrect": 16,
+    "raw": "4",
+    "scan": "g2_05.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200007",
+    "correct": 7,
+    "final": "7",
+    "incorrect": 13,
+    "raw": "7",
+    "scan": "g2_06.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "200008",
+    "correct": 0,
+    "final": "None",
+    "incorrect": 0,
+    "raw": "None",
+    "scan": null,
+    "status": "blocked"
+   }
+  ],
+  "3": [
+   {
+    "blank": 0,
+    "candidate": "300001",
+    "correct": 7,
+    "final": "7",
+    "incorrect": 13,
+    "raw": "7",
+    "scan": "g3_00.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "300002",
+    "correct": 0,
+    "final": "None",
+    "incorrect": 0,
+    "raw": "None",
+    "scan": null,
+    "status": "absent"
+   },
+   {
+    "blank": 0,
+    "candidate": "300003",
+    "correct": 13,
+    "final": "13",
+    "incorrect": 7,
+    "raw": "13",
+    "scan": "g3_02.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "300004",
+    "correct": 16,
+    "final": "16",
+    "incorrect": 4,
+    "raw": "16",
+    "scan": "g3_03.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "300005",
+    "correct": 19,
+    "final": "19",
+    "incorrect": 1,
+    "raw": "19",
+    "scan": "g3_04.png",
+    "status": "scored"
+   },
+   {
+    "blank": 0,
+    "candidate": "300006",
+    "correct": 5,
+    "final": "5",
+    "incorrect": 15,
+    "raw": "5",
+    "scan": "g3_05.png",
+    "status": "scored"
+   }
+  ]
+ },
+ "workbooks": {
+  "1": {
+   "Answer Key": [
+    [
+     "Set 1 - Answer Key",
+     null,
+     null
+    ],
+    [
+     "Revision 1 (id 1)",
+     null,
+     null
+    ],
+    [
+     "Canonical string: AAAAAAAAAAAAAAAAAAAA",
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null
+    ],
+    [
+     "Q No.",
+     "Correct Answer",
+     "Wrong Question"
+    ],
+    [
+     "1",
+     "A",
+     null
+    ],
+    [
+     "2",
+     "A",
+     null
+    ],
+    [
+     "3",
+     "A",
+     null
+    ],
+    [
+     "4",
+     "A",
+     null
+    ],
+    [
+     "5",
+     "A",
+     null
+    ],
+    [
+     "6",
+     "A",
+     null
+    ],
+    [
+     "7",
+     "A",
+     null
+    ],
+    [
+     "8",
+     "A",
+     null
+    ],
+    [
+     "9",
+     "A",
+     null
+    ],
+    [
+     "10",
+     "A",
+     null
+    ],
+    [
+     "11",
+     "A",
+     null
+    ],
+    [
+     "12",
+     "A",
+     null
+    ],
+    [
+     "13",
+     "A",
+     null
+    ],
+    [
+     "14",
+     "A",
+     null
+    ],
+    [
+     "15",
+     "A",
+     null
+    ],
+    [
+     "16",
+     "A",
+     null
+    ],
+    [
+     "17",
+     "A",
+     null
+    ],
+    [
+     "18",
+     "A",
+     null
+    ],
+    [
+     "19",
+     "A",
+     null
+    ],
+    [
+     "20",
+     "A",
+     null
+    ]
+   ],
+   "Set 1": [
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     "Sl.No.",
+     "Roll No.",
+     "Name",
+     "Total (20)",
+     "Merit"
+    ],
+    [
+     "1",
+     "100001",
+     "CANDIDATE 100001",
+     "5",
+     "=IF(OR(UPPER(TRIM(D4))=\"ABSENT\",UPPER(TRIM(D4))=\"ABS\"),\"---\",IF(ISNUMBER(D4),RANK.EQ(D4,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "2",
+     "100002",
+     "CANDIDATE 100002",
+     "8",
+     "=IF(OR(UPPER(TRIM(D5))=\"ABSENT\",UPPER(TRIM(D5))=\"ABS\"),\"---\",IF(ISNUMBER(D5),RANK.EQ(D5,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "3",
+     "100003",
+     "CANDIDATE 100003",
+     "11",
+     "=IF(OR(UPPER(TRIM(D6))=\"ABSENT\",UPPER(TRIM(D6))=\"ABS\"),\"---\",IF(ISNUMBER(D6),RANK.EQ(D6,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "4",
+     "100004",
+     "CANDIDATE 100004",
+     "ABSENT",
+     "---"
+    ],
+    [
+     "5",
+     "100005",
+     "CANDIDATE 100005",
+     "17",
+     "=IF(OR(UPPER(TRIM(D8))=\"ABSENT\",UPPER(TRIM(D8))=\"ABS\"),\"---\",IF(ISNUMBER(D8),RANK.EQ(D8,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "6",
+     "100006",
+     "CANDIDATE 100006",
+     "20",
+     "=IF(OR(UPPER(TRIM(D9))=\"ABSENT\",UPPER(TRIM(D9))=\"ABS\"),\"---\",IF(ISNUMBER(D9),RANK.EQ(D9,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "7",
+     "100007",
+     "CANDIDATE 100007",
+     "6",
+     "=IF(OR(UPPER(TRIM(D10))=\"ABSENT\",UPPER(TRIM(D10))=\"ABS\"),\"---\",IF(ISNUMBER(D10),RANK.EQ(D10,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "8",
+     "100008",
+     "CANDIDATE 100008",
+     "9",
+     "=IF(OR(UPPER(TRIM(D11))=\"ABSENT\",UPPER(TRIM(D11))=\"ABS\"),\"---\",IF(ISNUMBER(D11),RANK.EQ(D11,$D$4:$D$11,0),\"\"))"
+    ]
+   ],
+   "meritwise": [
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     "Sl.No.",
+     "Roll No.",
+     "Name",
+     "Total (20)",
+     "Merit"
+    ],
+    [
+     "1",
+     "100006",
+     "CANDIDATE 100006",
+     "20",
+     "=IF(OR(UPPER(TRIM(D4))=\"ABSENT\",UPPER(TRIM(D4))=\"ABS\"),\"---\",IF(ISNUMBER(D4),RANK.EQ(D4,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "2",
+     "100005",
+     "CANDIDATE 100005",
+     "17",
+     "=IF(OR(UPPER(TRIM(D5))=\"ABSENT\",UPPER(TRIM(D5))=\"ABS\"),\"---\",IF(ISNUMBER(D5),RANK.EQ(D5,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "3",
+     "100003",
+     "CANDIDATE 100003",
+     "11",
+     "=IF(OR(UPPER(TRIM(D6))=\"ABSENT\",UPPER(TRIM(D6))=\"ABS\"),\"---\",IF(ISNUMBER(D6),RANK.EQ(D6,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "4",
+     "100008",
+     "CANDIDATE 100008",
+     "9",
+     "=IF(OR(UPPER(TRIM(D7))=\"ABSENT\",UPPER(TRIM(D7))=\"ABS\"),\"---\",IF(ISNUMBER(D7),RANK.EQ(D7,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "5",
+     "100002",
+     "CANDIDATE 100002",
+     "8",
+     "=IF(OR(UPPER(TRIM(D8))=\"ABSENT\",UPPER(TRIM(D8))=\"ABS\"),\"---\",IF(ISNUMBER(D8),RANK.EQ(D8,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "6",
+     "100007",
+     "CANDIDATE 100007",
+     "6",
+     "=IF(OR(UPPER(TRIM(D9))=\"ABSENT\",UPPER(TRIM(D9))=\"ABS\"),\"---\",IF(ISNUMBER(D9),RANK.EQ(D9,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "7",
+     "100001",
+     "CANDIDATE 100001",
+     "5",
+     "=IF(OR(UPPER(TRIM(D10))=\"ABSENT\",UPPER(TRIM(D10))=\"ABS\"),\"---\",IF(ISNUMBER(D10),RANK.EQ(D10,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   ]
+  },
+  "2": {
+   "Answer Key": [
+    [
+     "Set 2 - Answer Key",
+     null,
+     null
+    ],
+    [
+     "Revision 1 (id 2)",
+     null,
+     null
+    ],
+    [
+     "Canonical string: AAAAAAAAAAAAAAAAAAAA",
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null
+    ],
+    [
+     "Q No.",
+     "Correct Answer",
+     "Wrong Question"
+    ],
+    [
+     "1",
+     "A",
+     null
+    ],
+    [
+     "2",
+     "A",
+     null
+    ],
+    [
+     "3",
+     "A",
+     null
+    ],
+    [
+     "4",
+     "A",
+     null
+    ],
+    [
+     "5",
+     "A",
+     null
+    ],
+    [
+     "6",
+     "A",
+     null
+    ],
+    [
+     "7",
+     "A",
+     null
+    ],
+    [
+     "8",
+     "A",
+     null
+    ],
+    [
+     "9",
+     "A",
+     null
+    ],
+    [
+     "10",
+     "A",
+     null
+    ],
+    [
+     "11",
+     "A",
+     null
+    ],
+    [
+     "12",
+     "A",
+     null
+    ],
+    [
+     "13",
+     "A",
+     null
+    ],
+    [
+     "14",
+     "A",
+     null
+    ],
+    [
+     "15",
+     "A",
+     null
+    ],
+    [
+     "16",
+     "A",
+     null
+    ],
+    [
+     "17",
+     "A",
+     null
+    ],
+    [
+     "18",
+     "A",
+     null
+    ],
+    [
+     "19",
+     "A",
+     null
+    ],
+    [
+     "20",
+     "A",
+     null
+    ]
+   ],
+   "Set 2": [
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     "Sl.No.",
+     "Roll No.",
+     "Name",
+     "Total (20)",
+     "Merit"
+    ],
+    [
+     "1",
+     "200001",
+     "CANDIDATE 200001",
+     "6",
+     "=IF(OR(UPPER(TRIM(D4))=\"ABSENT\",UPPER(TRIM(D4))=\"ABS\"),\"---\",IF(ISNUMBER(D4),RANK.EQ(D4,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "2",
+     "200002",
+     "CANDIDATE 200002",
+     "9",
+     "=IF(OR(UPPER(TRIM(D5))=\"ABSENT\",UPPER(TRIM(D5))=\"ABS\"),\"---\",IF(ISNUMBER(D5),RANK.EQ(D5,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "3",
+     "200003",
+     "CANDIDATE 200003",
+     "12",
+     "=IF(OR(UPPER(TRIM(D6))=\"ABSENT\",UPPER(TRIM(D6))=\"ABS\"),\"---\",IF(ISNUMBER(D6),RANK.EQ(D6,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "4",
+     "200004",
+     "CANDIDATE 200004",
+     "15",
+     "=IF(OR(UPPER(TRIM(D7))=\"ABSENT\",UPPER(TRIM(D7))=\"ABS\"),\"---\",IF(ISNUMBER(D7),RANK.EQ(D7,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "5",
+     "200005",
+     "CANDIDATE 200005",
+     "18",
+     "=IF(OR(UPPER(TRIM(D8))=\"ABSENT\",UPPER(TRIM(D8))=\"ABS\"),\"---\",IF(ISNUMBER(D8),RANK.EQ(D8,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "6",
+     "200006",
+     "CANDIDATE 200006",
+     "4",
+     "=IF(OR(UPPER(TRIM(D9))=\"ABSENT\",UPPER(TRIM(D9))=\"ABS\"),\"---\",IF(ISNUMBER(D9),RANK.EQ(D9,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "7",
+     "200007",
+     "CANDIDATE 200007",
+     "7",
+     "=IF(OR(UPPER(TRIM(D10))=\"ABSENT\",UPPER(TRIM(D10))=\"ABS\"),\"---\",IF(ISNUMBER(D10),RANK.EQ(D10,$D$4:$D$11,0),\"\"))"
+    ],
+    [
+     "8",
+     "200008",
+     "CANDIDATE 200008",
+     null,
+     null
+    ]
+   ],
+   "meritwise": [
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     "Sl.No.",
+     "Roll No.",
+     "Name",
+     "Total (20)",
+     "Merit"
+    ],
+    [
+     "1",
+     "200005",
+     "CANDIDATE 200005",
+     "18",
+     "=IF(OR(UPPER(TRIM(D4))=\"ABSENT\",UPPER(TRIM(D4))=\"ABS\"),\"---\",IF(ISNUMBER(D4),RANK.EQ(D4,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "2",
+     "200004",
+     "CANDIDATE 200004",
+     "15",
+     "=IF(OR(UPPER(TRIM(D5))=\"ABSENT\",UPPER(TRIM(D5))=\"ABS\"),\"---\",IF(ISNUMBER(D5),RANK.EQ(D5,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "3",
+     "200003",
+     "CANDIDATE 200003",
+     "12",
+     "=IF(OR(UPPER(TRIM(D6))=\"ABSENT\",UPPER(TRIM(D6))=\"ABS\"),\"---\",IF(ISNUMBER(D6),RANK.EQ(D6,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "4",
+     "200002",
+     "CANDIDATE 200002",
+     "9",
+     "=IF(OR(UPPER(TRIM(D7))=\"ABSENT\",UPPER(TRIM(D7))=\"ABS\"),\"---\",IF(ISNUMBER(D7),RANK.EQ(D7,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "5",
+     "200007",
+     "CANDIDATE 200007",
+     "7",
+     "=IF(OR(UPPER(TRIM(D8))=\"ABSENT\",UPPER(TRIM(D8))=\"ABS\"),\"---\",IF(ISNUMBER(D8),RANK.EQ(D8,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "6",
+     "200001",
+     "CANDIDATE 200001",
+     "6",
+     "=IF(OR(UPPER(TRIM(D9))=\"ABSENT\",UPPER(TRIM(D9))=\"ABS\"),\"---\",IF(ISNUMBER(D9),RANK.EQ(D9,$D$4:$D$10,0),\"\"))"
+    ],
+    [
+     "7",
+     "200006",
+     "CANDIDATE 200006",
+     "4",
+     "=IF(OR(UPPER(TRIM(D10))=\"ABSENT\",UPPER(TRIM(D10))=\"ABS\"),\"---\",IF(ISNUMBER(D10),RANK.EQ(D10,$D$4:$D$10,0),\"\"))"
+    ]
+   ]
+  },
+  "3": {
+   "Answer Key": [
+    [
+     "Set 3 - Answer Key",
+     null,
+     null
+    ],
+    [
+     "Revision 1 (id 3)",
+     null,
+     null
+    ],
+    [
+     "Canonical string: AAAAAAAAAAAAAAAAAAAA",
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null
+    ],
+    [
+     "Q No.",
+     "Correct Answer",
+     "Wrong Question"
+    ],
+    [
+     "1",
+     "A",
+     null
+    ],
+    [
+     "2",
+     "A",
+     null
+    ],
+    [
+     "3",
+     "A",
+     null
+    ],
+    [
+     "4",
+     "A",
+     null
+    ],
+    [
+     "5",
+     "A",
+     null
+    ],
+    [
+     "6",
+     "A",
+     null
+    ],
+    [
+     "7",
+     "A",
+     null
+    ],
+    [
+     "8",
+     "A",
+     null
+    ],
+    [
+     "9",
+     "A",
+     null
+    ],
+    [
+     "10",
+     "A",
+     null
+    ],
+    [
+     "11",
+     "A",
+     null
+    ],
+    [
+     "12",
+     "A",
+     null
+    ],
+    [
+     "13",
+     "A",
+     null
+    ],
+    [
+     "14",
+     "A",
+     null
+    ],
+    [
+     "15",
+     "A",
+     null
+    ],
+    [
+     "16",
+     "A",
+     null
+    ],
+    [
+     "17",
+     "A",
+     null
+    ],
+    [
+     "18",
+     "A",
+     null
+    ],
+    [
+     "19",
+     "A",
+     null
+    ],
+    [
+     "20",
+     "A",
+     null
+    ]
+   ],
+   "Set 3": [
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     "Sl.No.",
+     "Roll No.",
+     "Name",
+     "Total (20)",
+     "Merit"
+    ],
+    [
+     "1",
+     "300001",
+     "CANDIDATE 300001",
+     "7",
+     "=IF(OR(UPPER(TRIM(D4))=\"ABSENT\",UPPER(TRIM(D4))=\"ABS\"),\"---\",IF(ISNUMBER(D4),RANK.EQ(D4,$D$4:$D$9,0),\"\"))"
+    ],
+    [
+     "2",
+     "300002",
+     "CANDIDATE 300002",
+     "ABSENT",
+     "---"
+    ],
+    [
+     "3",
+     "300003",
+     "CANDIDATE 300003",
+     "13",
+     "=IF(OR(UPPER(TRIM(D6))=\"ABSENT\",UPPER(TRIM(D6))=\"ABS\"),\"---\",IF(ISNUMBER(D6),RANK.EQ(D6,$D$4:$D$9,0),\"\"))"
+    ],
+    [
+     "4",
+     "300004",
+     "CANDIDATE 300004",
+     "16",
+     "=IF(OR(UPPER(TRIM(D7))=\"ABSENT\",UPPER(TRIM(D7))=\"ABS\"),\"---\",IF(ISNUMBER(D7),RANK.EQ(D7,$D$4:$D$9,0),\"\"))"
+    ],
+    [
+     "5",
+     "300005",
+     "CANDIDATE 300005",
+     "19",
+     "=IF(OR(UPPER(TRIM(D8))=\"ABSENT\",UPPER(TRIM(D8))=\"ABS\"),\"---\",IF(ISNUMBER(D8),RANK.EQ(D8,$D$4:$D$9,0),\"\"))"
+    ],
+    [
+     "6",
+     "300006",
+     "CANDIDATE 300006",
+     "5",
+     "=IF(OR(UPPER(TRIM(D9))=\"ABSENT\",UPPER(TRIM(D9))=\"ABS\"),\"---\",IF(ISNUMBER(D9),RANK.EQ(D9,$D$4:$D$9,0),\"\"))"
+    ]
+   ],
+   "meritwise": [
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ],
+    [
+     "Sl.No.",
+     "Roll No.",
+     "Name",
+     "Total (20)",
+     "Merit"
+    ],
+    [
+     "1",
+     "300005",
+     "CANDIDATE 300005",
+     "19",
+     "=IF(OR(UPPER(TRIM(D4))=\"ABSENT\",UPPER(TRIM(D4))=\"ABS\"),\"---\",IF(ISNUMBER(D4),RANK.EQ(D4,$D$4:$D$8,0),\"\"))"
+    ],
+    [
+     "2",
+     "300004",
+     "CANDIDATE 300004",
+     "16",
+     "=IF(OR(UPPER(TRIM(D5))=\"ABSENT\",UPPER(TRIM(D5))=\"ABS\"),\"---\",IF(ISNUMBER(D5),RANK.EQ(D5,$D$4:$D$8,0),\"\"))"
+    ],
+    [
+     "3",
+     "300003",
+     "CANDIDATE 300003",
+     "13",
+     "=IF(OR(UPPER(TRIM(D6))=\"ABSENT\",UPPER(TRIM(D6))=\"ABS\"),\"---\",IF(ISNUMBER(D6),RANK.EQ(D6,$D$4:$D$8,0),\"\"))"
+    ],
+    [
+     "4",
+     "300001",
+     "CANDIDATE 300001",
+     "7",
+     "=IF(OR(UPPER(TRIM(D7))=\"ABSENT\",UPPER(TRIM(D7))=\"ABS\"),\"---\",IF(ISNUMBER(D7),RANK.EQ(D7,$D$4:$D$8,0),\"\"))"
+    ],
+    [
+     "5",
+     "300006",
+     "CANDIDATE 300006",
+     "5",
+     "=IF(OR(UPPER(TRIM(D8))=\"ABSENT\",UPPER(TRIM(D8))=\"ABS\"),\"---\",IF(ISNUMBER(D8),RANK.EQ(D8,$D$4:$D$8,0),\"\"))"
+    ],
+    [
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   ]
+  }
+ }
+}
