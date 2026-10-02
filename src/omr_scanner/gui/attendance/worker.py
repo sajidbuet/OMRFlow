@@ -154,7 +154,9 @@ class ReconcileWorker(QThread):
             # Which scripts have a set code that names no set depends on the
             # project's current set list, which may have changed since the
             # batch was read - so it is re-checked before every reconciliation.
-            review_store.sync_undefined_set_codes(self._database, self._batch_id)
+            review_store.sync_undefined_set_codes(
+                self._database, self._batch_id, session_wide=True
+            )
             counts = reconciliation_store.reconcile_batch(
                 self._database, self._roster_id, self._batch_id
             )

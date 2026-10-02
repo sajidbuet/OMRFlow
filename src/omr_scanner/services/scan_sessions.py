@@ -1142,25 +1142,26 @@ _NOT_YET_READABLE = (BatchStatus.NEW.value, BatchStatus.RUNNING.value)
 
 
 def downstream_batch_id(database: ProjectDatabase) -> str | None:
-    """The one batch Attendance, Results and Reports read until session aggregation.
+    """The population key Attendance, Results and Reports read for the active session.
 
-    **The active scan session's most recent eligible batch**: newest by
-    *creation* (then id) - never by ``updated_at``, which a retry or
-    ``recover_interrupted`` bumps (defect 2's cause) - among batches that are
+    **Since 0.1.1 phase 4 this names a whole scan session, not one batch.**
+    It returns the active session's *population key*
+    (:func:`omr_scanner.services.session_population.population_key`) - the
+    one ``batch_id`` value the session's downstream state is stored under -
+    and every downstream service expands it to the session's effective sheet
+    set, from all of its batches. ``None`` while the active session has no
+    batch that has been (or is being) read: only ``new`` or ``running``
+    batches, or none at all.
 
-    * a primary role (``scan``, ``legacy`` or ``reprocess``; a ``rescan``
-      batch's replacements count in the original's batch);
-    * not superseded;
-    * not still ``new`` or ``running``.
+    With **no** active session, the newest batch that belongs to no session
+    yet and is readable - a batch written before the upgrade backfill ran (or
+    directly, by a tool) - is its own one-batch population. On a pre-session
+    project opened read-only: the newest batch by creation.
 
-    ``None`` when the active session has no such batch. With **no** active
-    session, the newest such batch that belongs to no session yet - a batch
-    written before the upgrade backfill ran (or directly, by a tool), read
-    exactly as before sessions existed. On a pre-session project opened
-    read-only: the newest batch by creation.
-
-    This is a **temporary single-batch rule**. A session of several batches is
-    not aggregated; that is session-level results' work.
+    Never chosen by ``updated_at`` (defect 2's cause): a retry or
+    ``recover_interrupted`` cannot move it, and nor can a later batch, a
+    rescan batch or a reprocess batch - those change the population, not its
+    key.
     """
     if not has_lifecycle_schema(database):
         with database.session() as session:
@@ -1185,30 +1186,40 @@ def downstream_batch_id(database: ProjectDatabase) -> str | None:
             .where(owner)
             .order_by(ScanBatch.created_at.desc(), ScanBatch.batch_id.desc())
         ).all()
+    from omr_scanner.services import session_population
+
+    if pointer:
+        if not any(str(status) not in _NOT_YET_READABLE for _b, _r, status in rows):
+            return None
+        return session_population.session_key(database, pointer)
     for batch_id, role, status in rows:
         if (
             BatchRole(role).is_primary
             and str(batch_id) not in live
             and str(status) not in _NOT_YET_READABLE
         ):
-            return str(batch_id)
+            return session_population.population_key(database, str(batch_id))
     return None
 
 
 def describe_downstream(database: ProjectDatabase, batch_id: str | None) -> str:
-    """One sentence for a stage header naming the session and the single batch read."""
+    """One sentence for a stage header naming the session and what it holds.
+
+    Since 0.1.1 phase 4 the stages read the whole session's effective sheet
+    set, so this says how many scripts count and from how many batches.
+    """
     if batch_id is None:
         return ""
-    scan_session = active_scan_session(database)
-    name = scan_session.name if scan_session is not None else "no scan session"
-    count = scan_session.batch_count if scan_session is not None else 1
-    note = (
-        f" - this session has {count} batches; only this one is read here until "
-        "session-level results arrive"
-        if count > 1
-        else ""
+    from omr_scanner.services import session_population
+
+    population = session_population.population(database, batch_id)
+    found = (
+        None
+        if population.session_id.startswith(session_population.LONE_BATCH_PREFIX)
+        else get_scan_session(database, population.session_id)
     )
-    return f"Scan session '{name}', batch {batch_id[:8]}{note}."
+    name = found.name if found is not None else f"batch {batch_id[:8]}"
+    return f"Scan session '{name}': {session_population.describe(population)}."
 
 
 # ----------------------------------------------------------------------

@@ -53,7 +53,13 @@ from omr_scanner.domain.reporting import (
 from omr_scanner.domain.scoring import ResultStatus
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.reporting import excel as rx
-from omr_scanner.services import reconciliation_store, scan_lifecycle, scoring_store, set_identity
+from omr_scanner.services import (
+    reconciliation_store,
+    scan_lifecycle,
+    scoring_store,
+    session_population,
+    set_identity,
+)
 from omr_scanner.services.answer_key import plan_for
 from omr_scanner.services.report_readiness import (
     acknowledge_incomplete_results,
@@ -108,6 +114,7 @@ def known_sets(database: ProjectDatabase, roster_id: int, batch_id: str) -> tupl
     a set worth listing (an operator preparing report templates ahead of
     scoring).
     """
+    batch_id = session_population.population_key(database, batch_id)
     from_keys = set(scoring_store.known_set_codes(database))
     from_results = {
         item.set_code
@@ -170,6 +177,7 @@ def set_overview(
     one query per set, so the page costs the same whether the project has
     two sets or twenty.
     """
+    batch_id = session_population.population_key(database, batch_id)
     results = scoring_store.list_results(database, roster_id, batch_id)
     keys = scoring_store.verified_keys(database)
     policy = scoring_store.active_policy(database)
@@ -694,6 +702,7 @@ def gather_set_inputs(
     state - every later step in generation works from what this function
     returned, never from a second, possibly inconsistent read.
     """
+    batch_id = session_population.population_key(database, batch_id)
     entries = reconciliation_store.list_entries(database, roster_id, batch_id)
     results = scoring_store.list_results(database, roster_id, batch_id, template)
     results_by_candidate = {item.candidate_id: item for item in results}
@@ -829,6 +838,7 @@ def check_readiness(
             what a preview may show and what a final export must never
             present as finished.
     """
+    batch_id = session_population.population_key(database, batch_id)
     try:
         roster = load_roster_for_set(database, set_code)
     except (ReportStoreError, ReportTemplateError) as exc:
@@ -1027,6 +1037,7 @@ def generate_xlsx(
         because X" is itself part of the permanent record (§33: one set's
         failure must be diagnosable without corrupting anything else's).
     """
+    batch_id = session_population.population_key(database, batch_id)
     moment = _now()
     if should_cancel is not None and should_cancel():
         return GenerationOutcome(
@@ -1248,6 +1259,7 @@ def generate_for_set(
     template = one independently generated result workbook" an invariant of
     the code rather than a rule somebody has to remember.
     """
+    batch_id = session_population.population_key(database, batch_id)
     from omr_scanner.services import project_sets
 
     try:
@@ -1501,6 +1513,7 @@ def generate_pdf(
     to agree, and a multi-sheet workbook never leaks Meritwise data into a
     Rollwise PDF or vice versa.
     """
+    batch_id = session_population.population_key(database, batch_id)
     import tempfile
     from pathlib import Path as _Path
 
