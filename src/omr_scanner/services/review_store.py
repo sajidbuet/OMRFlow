@@ -2698,6 +2698,10 @@ class ConflictFilter:
         include_rejected: Show conflicts on rejected, superseded or re-imported
             scans. Off by default - such a scan is out of the working queue
             until its rejection is undone - and on only for inspecting one.
+        batch_ids: A **diagnostic** view: keep only conflicts of sheets read
+            into these batches (0.1.1 phase 4). Narrows what is listed and
+            nothing else - the queue's scope stays the session, and a
+            duplicate-ID group still spans every batch it spans.
     """
 
     states: tuple[ConflictState, ...] = ()
@@ -2706,6 +2710,7 @@ class ConflictFilter:
     search: str = ""
     include_withdrawn: bool = False
     include_rejected: bool = False
+    batch_ids: tuple[str, ...] = ()
 
 
 def _scope(database: ProjectDatabase, batch_id: str, column: Any, scan_column: Any) -> Any:
@@ -2861,6 +2866,8 @@ def _apply_filters(statement: Any, rules: ConflictFilter) -> Any:
         )
     if rules.scan_id is not None:
         statement = statement.where(ReviewConflict.scan_id == rules.scan_id)
+    if rules.batch_ids:
+        statement = statement.where(ReviewConflict.batch_id.in_(list(rules.batch_ids)))
     if rules.search:
         pattern = f"%{rules.search.strip().lower()}%"
         statement = statement.where(

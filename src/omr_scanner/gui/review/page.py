@@ -290,6 +290,7 @@ _STATE_FILTERS: dict[str, tuple[ConflictState, ...]] = {
 so a state added later cannot be quietly left out of the unfiltered view."""
 
 ALL_TYPES = "All types"
+ALL_BATCHES = "All batches of the session"
 
 _STATE_COLORS: dict[ConflictState, QColor] = {
     ConflictState.OPEN: QColor(255, 244, 214),
@@ -543,6 +544,22 @@ class ResolvePage(WorkflowPage):
         self.type_filter.currentIndexChanged.connect(self.refresh_queue)
         filter_layout.addWidget(self.type_filter, stretch=1)
         layout.addWidget(filters)
+
+        # A diagnostic view (0.1.1 phase 4): which batch a sheet was read in.
+        # It narrows what is listed only - the queue is the session's, and a
+        # duplicate-ID group spans every batch it spans whatever is selected.
+        batch_row = QHBoxLayout()
+        batch_row.setContentsMargins(0, 0, 0, 0)
+        batch_row.addWidget(QLabel("Batch"))
+        self.batch_filter = QComboBox()
+        self.batch_filter.setObjectName("conflictBatchFilter")
+        self.batch_filter.addItem(ALL_BATCHES, userData="")
+        self.batch_filter.setToolTip(
+            "Diagnostic view: show only sheets read in one batch of the scan session"
+        )
+        self.batch_filter.currentIndexChanged.connect(self.refresh_queue)
+        batch_row.addWidget(self.batch_filter, stretch=1)
+        layout.addLayout(batch_row)
 
         self.search_box = QLineEdit()
         self.search_box.setObjectName("conflictSearchBox")
@@ -1382,6 +1399,7 @@ class ResolvePage(WorkflowPage):
             return False
 
         self.state.batch_id = batch_id
+        self._fill_batch_filter()
         self.state.template = template
         self.state.bundle = None
         self.state.sheet_conflicts = []
@@ -1411,12 +1429,30 @@ class ResolvePage(WorkflowPage):
         states = _STATE_FILTERS.get(self.state_filter.currentText(), ())
         type_value = self.type_filter.currentData()
         types = (ConflictType(type_value),) if type_value else ()
+        batch_value = self.batch_filter.currentData()
         return ConflictFilter(
             states=states,
             conflict_types=types,
             search=self.search_box.text().strip(),
             include_withdrawn=self.state_filter.currentText() == FILTER_WITHDRAWN,
+            batch_ids=(str(batch_value),) if batch_value else (),
         )
+
+    def _fill_batch_filter(self) -> None:
+        """List the session's batches in the diagnostic batch filter."""
+        database = self.database
+        self.batch_filter.blockSignals(True)
+        self.batch_filter.clear()
+        self.batch_filter.addItem(ALL_BATCHES, userData="")
+        if database is not None and self.state.batch_id is not None:
+            population = session_population.population(database, self.state.batch_id)
+            for position, batch_id in enumerate(population.batch_ids, start=1):
+                state = "" if batch_id in population.live_batch_ids else " · superseded"
+                self.batch_filter.addItem(
+                    f"Batch {position} · {batch_id[:8]}{state}", userData=batch_id
+                )
+        self.batch_filter.setEnabled(self.batch_filter.count() > 2)
+        self.batch_filter.blockSignals(False)
 
     @property
     def rescan_mode(self) -> bool:

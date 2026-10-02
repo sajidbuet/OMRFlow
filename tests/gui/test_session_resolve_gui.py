@@ -194,3 +194,34 @@ class TestSessionResolve:
             assert sorted(item.conflict_id for item in again.state.conflicts) == before
             again.on_project_changed(None)
             again.close()
+
+
+class TestBatchFilter:
+    def test_a_batch_filter_narrows_the_view_and_nothing_else(
+        self, qtbot, project_session, template, two_batches
+    ):
+        first, second, ids = two_batches
+        page = _resolve(qtbot, project_session, template)
+        assert page.load_batch(first, template) is True
+        items = [page.batch_filter.itemData(index) for index in range(page.batch_filter.count())]
+        assert items == ["", first, second]
+        everything = {item.scan_id for item in page.state.conflicts}
+        counts_before = review_store.count_conflicts(
+            project_session.database, first, session_wide=True
+        )
+        page.batch_filter.setCurrentIndex(2)
+        narrowed = {item.scan_id for item in page.state.conflicts}
+        assert narrowed == {ids["c.png"]} and narrowed < everything
+        # The duplicate group still spans both batches; the session's counts
+        # are the same whatever is viewed.
+        duplicate = next(
+            item for item in page.state.conflicts
+            if item.conflict_type is ConflictType.IDENTIFIER_DUPLICATE
+        )
+        assert ids["a.png"] in duplicate.related_scan_ids
+        assert review_store.count_conflicts(
+            project_session.database, first, session_wide=True
+        ) == counts_before
+        page.batch_filter.setCurrentIndex(0)
+        assert {item.scan_id for item in page.state.conflicts} == everything
+        page.close()
