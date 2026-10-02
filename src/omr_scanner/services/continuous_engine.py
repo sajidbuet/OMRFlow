@@ -418,6 +418,7 @@ class ContinuousEngine:
         self._skipped: dict[str, str] = {}
         self._compatible: set[str] = set()
         self._prepared: set[str] = set()
+        self._runnable_cache: tuple[float, tuple[str, ...]] | None = None
         self._worker_lost: dict[int, int] = defaultdict(int)
         self._last_poll: dict[str, datetime] = {}
         self._last_error = ""
@@ -659,6 +660,7 @@ class ContinuousEngine:
                 )
             if registration.batch_id is not None:
                 created.append(registration.batch_id)
+                self._runnable_cache = None
                 self._counters.units_registered += 1
                 self._hooks.registered(
                     registration.batch_id, [scan for _intake, scan in registration.registered]
@@ -768,8 +770,21 @@ class ContinuousEngine:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+    RUNNABLE_REFRESH_SECONDS = 1.0
+    """How long the list of runnable batches is reused between steps. Units
+    this engine registers or finishes invalidate it at once; a batch another
+    part of the application adds (a *Reprocess All*) is seen within this."""
+
     def _runnable_batches(self) -> list[str]:
-        """This session's batches the engine may claim from, oldest first."""
+        """This session's batches the engine may claim from, oldest first (briefly cached)."""
+        cached = self._runnable_cache
+        if cached is not None and time.monotonic() - cached[0] < self.RUNNABLE_REFRESH_SECONDS:
+            return list(cached[1])
+        runnable = self._find_runnable_batches()
+        self._runnable_cache = (time.monotonic(), tuple(runnable))
+        return runnable
+
+    def _find_runnable_batches(self) -> list[str]:
         runnable: list[str] = []
         for info in scan_sessions.batches_of(self._database, self._session_id):
             batch_id = info.batch_id
@@ -983,6 +998,7 @@ class ContinuousEngine:
                 _LOGGER.exception("Finishing unit %s failed", batch_id)
                 continue
             self._owned.discard(batch_id)
+            self._runnable_cache = None
             self._hooks.finalised(batch_id, status)
             finalised.append(batch_id)
             _LOGGER.info("Unit %s finished: %s", batch_id[:8], status)
