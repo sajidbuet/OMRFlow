@@ -1,0 +1,16 @@
+{
+  "written_by_version": "0.1.1-alpha.0",
+  "schema_version": 15,
+  "written_at": "2026-10-02T11:11:38+00:00",
+  "projects": [
+    "duplicates",
+    "finite"
+  ],
+  "finite_batch": "33458e1408a741e9b1cfde904b31e2ce",
+  "finite_session": "489979e82f11430eb3c382e5b2e5a695",
+  "duplicates_first_batch": "c8a18681c3eb452c8a6aacdf0fdd3c7d",
+  "duplicates_second_batch": "b57efabd7f74483fa3ca7a20609b4bec",
+  "duplicates_open_session": "46d2213c55be41c29f4f259aebf380b2",
+  "duplicates_other_batch": "3bda0abe7f834cb88905e402d09751ac",
+  "duplicates_closed_session": "f9b8dbdec1c4479e98afcb9c96b295d7"
+}
