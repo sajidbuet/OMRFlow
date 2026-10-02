@@ -211,3 +211,30 @@ such decision. Making it incremental is not done.
   the queue because its sheet no longer counts.
 * Not operator-validated, not real-scan validated, not production-qualified.
   No power-loss testing.
+
+## Test results (2026-10-02)
+
+| Run | Result |
+|---|---|
+| Baseline, `main` at `0e94d67`, main checkout | 6,294 passed, 16 skipped, 0 failed, 5 deselected (1 h 28 min, run alongside other work) |
+| First full run of the branch | 6,349 passed, 29 skipped, **6 failed**: crash cases 05 / 08, one Resolve GUI test, one reject/rescan reopen test, two `TestDownstreamBatch` tests. All six encoded batch-only behaviour; each was updated with an in-test explanation (section above). |
+| Final full run, branch at `048334f`, worktree | **6,356 passed, 29 skipped, 0 failed**, 5 `stress` deselected (53 min 12 s) |
+| `tests/local` (13 real-sheet tests) from the main checkout, against the branch's `src` | 13 passed, 10 skipped (fixture-dependent, the same skips as on `main`) |
+| `tests/crash` (non-stress) after the crash-test update | 16 passed |
+| `tests/crash -m stress` (the 1,000-sheet 1/25/50/75/99 % kill series) | 1 passed (2 min 20 s) |
+| `ruff check src tests tools scripts` / `mypy` | clean / no issues (210 files) |
+
+New tests:
+- `tests/unit/test_session_population_rules.py`: 25 tests.
+- `tests/integration/test_session_population.py`: 31 tests:
+  - the 12-case duplicate matrix;
+  - dispositions, chains, isolation, Resolve, downstream and Health;
+  - the readiness test.
+- `tests/integration/test_session_acceptance.py`: 16 tests, the acceptance
+  scenario.
+- `tests/gui/test_session_resolve_gui.py`: 3 tests.
+
+Mid-run I counted the letters F and E in the progress output and took them for
+failures. They were OpenCV log lines (`[ERROR:0@…] … PngDecoder`) from a
+deliberate corrupt-image test. The run's own summary is the authority, and it
+reports 0 failed.
