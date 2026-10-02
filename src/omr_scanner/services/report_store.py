@@ -51,6 +51,7 @@ from omr_scanner.domain.reporting import (
     total_header_for,
 )
 from omr_scanner.domain.scoring import ResultStatus
+from omr_scanner.domain.session_population import SheetDisposition
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.reporting import excel as rx
 from omr_scanner.services import (
@@ -864,6 +865,30 @@ def check_readiness(
         unattached_rescans=inputs.unattached_rescans,
         unattached_deferred=inputs.unattached_deferred,
     )
+    # 0.1.1 phase 4: the population is the whole scan session, so a batch of it
+    # still being read - or interrupted with sheets left - means results that
+    # could still change. Not knowable from one set's rows, so checked here.
+    unread = len(
+        session_population.population(database, batch_id).with_disposition(
+            SheetDisposition.NOT_READ
+        )
+    )
+    if unread:
+        from dataclasses import replace as _replace
+
+        from omr_scanner.domain.reporting import ReadinessIssue
+
+        report = _replace(
+            report,
+            issues=(
+                *report.issues,
+                ReadinessIssue(
+                    ReadinessIssueKind.SCORING_INCOMPLETE,
+                    f"{unread} sheet(s) of this scan session have not been read yet. "
+                    "Finish or resume the batch on the Scan stage first.",
+                ),
+            ),
+        )
     return block_stale_results_for_final_export(report) if for_final_export else report
 
 

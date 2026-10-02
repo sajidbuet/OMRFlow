@@ -125,6 +125,11 @@ session.
   session's stable key (the original batch), not the reprocess batch. The
   population is drawn from the live (reprocess) batch. One Phase 2 test was
   updated with this explanation.
+- **Final Export waits for the whole session.** While any sheet of the session
+  is unread (`pending` / `queued` / `processing`, e.g. a later batch still
+  running or interrupted), `report_store.check_readiness` adds a blocking
+  `SCORING_INCOMPLETE` issue. Previews still work. Phase 2 got the same effect by
+  returning no downstream batch while the only live batch ran.
 - **Limitation.** Combining two sessions that both hold downstream state leaves
   two holding batches. The oldest is read and `SESSION_DOWNSTREAM_SPLIT` warns.
   The decisions under the other key are not merged automatically.

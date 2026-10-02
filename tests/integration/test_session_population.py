@@ -337,7 +337,7 @@ class TestDispositions:
         )
 
     def test_the_population_is_rebuilt_from_the_database_alone(self, sw):
-        a, b, c = chain(sw)
+        chain(sw)
         before = sw.population()
         # E9: no image is read to rebuild it - every file can be gone.
         for path in sw.world.scans_dir.rglob("*"):
@@ -433,7 +433,7 @@ class TestDuplicateMatrix:
         sw.add_batch([("d1.tif", "100121", "1", 10)])
         sw.add_batch([("d2.tif", "100555", "1", 10), ("d3.tif", "100555", "1", 11)])
 
-        def snapshot(database):
+        def snapshot(database) -> tuple[list[tuple], int]:
             with database.session() as session:
                 return sorted(
                     (row.conflict_id, row.scan_id, row.batch_id, row.state, row.related_scan_ids)
@@ -490,7 +490,7 @@ class TestResolve:
         assert wide_counts.open_count == sum(item.open_count for item in per_batch)
 
     def test_a_superseded_sheets_conflicts_leave_the_queue(self, sw):
-        a, b, c = chain(sw)
+        a, b, _c = chain(sw)
         queue = {
             item.scan_id
             for item in review_store.list_conflicts(sw.database, sw.batches[0], session_wide=True)
@@ -538,6 +538,30 @@ class TestDownstream:
         }
         assert scored <= population.effective
         assert c in scored and not {a, b} & scored
+
+
+class TestReadiness:
+    def test_a_final_export_waits_for_every_batch_of_the_session(self, sw):
+        from omr_scanner.domain.reporting import ReadinessIssueKind
+        from omr_scanner.services import report_store
+
+        def unread_issues(batch: str) -> list[str]:
+            report = report_store.check_readiness(
+                sw.database, sw.world.rosters["1"], batch, TEMPLATE, "1",
+                for_final_export=True,
+            )
+            return [
+                item.message
+                for item in report.issues
+                if item.kind is ReadinessIssueKind.SCORING_INCOMPLETE
+                and "not been read yet" in item.message
+            ]
+
+        sw.scored("1")
+        assert unread_issues(sw.batches[0]) == []
+        later = sw.add_batch([("p1.tif", "100777", "1", 10)], status="pending")
+        assert unread_issues(sw.batches[0]) == unread_issues(later)
+        assert len(unread_issues(later)) == 1 and "1 sheet(s)" in unread_issues(later)[0]
 
 
 # ----------------------------------------------------------------------
@@ -599,7 +623,7 @@ class TestHealth:
             ) == a
 
     def test_a_dangling_and_a_contradictory_link(self, sw):
-        a, b, c = chain(sw)
+        a, b, _c = chain(sw)
         with sw.database.session() as session:
             session.execute(
                 update(ScanRejection)

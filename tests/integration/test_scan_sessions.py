@@ -351,18 +351,33 @@ class TestSupersessionAndReprocess:
 
 
 class TestDownstreamBatch:
+    """``downstream_batch_id`` names the active session's population key.
+
+    Phase 2 returned the session's *newest* primary batch. 0.1.1 phase 4
+    replaced that on purpose: downstream reads the whole session, stored under
+    a key that never moves (the oldest batch holding state, else the oldest),
+    so neither a later batch nor ``updated_at`` can change what is read - the
+    later batch changes the *population*, not the key. Each test below states
+    the phase 4 expectation where it differs from phase 2's.
+    """
+
     def test_reads_the_newest_primary_batch_by_creation(self, project, identity, tmp_path) -> None:
+        from omr_scanner.services import session_population
+
         database = project.database
         first = scan_sessions.start_batch(database, _files(tmp_path / "a", 1), identity=identity)
         _finish(database, first)
         second = scan_sessions.start_batch(database, _files(tmp_path / "b", 1), identity=identity)
         _finish(database, second)
-        assert scan_sessions.downstream_batch_id(database) == second
-        # Retrying the older batch bumps its updated_at; it must not win (defect 2).
+        # Phase 2: == second. Phase 4: the session's stable key, whose
+        # population includes the second batch.
+        assert scan_sessions.downstream_batch_id(database) == first
+        assert second in session_population.population(database, first).batch_ids
+        # Retrying the older batch bumps its updated_at; it must not move the key (defect 2).
         batch_store.reprocess_failed_scans(database, first, reason="retry")
         batch_store.set_batch_status(database, first, BatchStatus.COMPLETED)
         batch_store.recover_interrupted(database)
-        assert scan_sessions.downstream_batch_id(database) == second
+        assert scan_sessions.downstream_batch_id(database) == first
 
     def test_skips_rescan_superseded_and_running_batches(self, project, identity, tmp_path) -> None:
         database = project.database
@@ -377,9 +392,23 @@ class TestDownstreamBatch:
         assert scan_sessions.downstream_batch_id(database) == original
         reprocess = scan_sessions.start_reprocess_batch(database, original, identity=identity)
         batch_store.set_batch_status(database, reprocess, BatchStatus.RUNNING)
-        assert scan_sessions.downstream_batch_id(database) is None
+        # Phase 2: None while the reprocess runs. Phase 4: the session still has
+        # read history, so its key stands; the population is drawn from the live
+        # (reprocess) batch only, whose unread sheets count for nothing, and a
+        # Final Export is refused while any are unread (report_store readiness).
+        from omr_scanner.domain.session_population import SheetDisposition
+        from omr_scanner.services import session_population
+
+        assert scan_sessions.downstream_batch_id(database) == original
+        population = session_population.population(database, original)
+        assert set(population.live_batch_ids) == {rescan, reprocess}
+        assert all(
+            population.dispositions[item] is SheetDisposition.BATCH_SUPERSEDED
+            for item, batch in population.batch_of.items()
+            if batch == original
+        )
         _finish(database, reprocess)
-        assert scan_sessions.downstream_batch_id(database) == reprocess
+        assert scan_sessions.downstream_batch_id(database) == original
 
 
 class TestCombine:

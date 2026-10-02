@@ -557,7 +557,13 @@ class TestWorkspace:
             template=template,
         )
         review_page.load_batch(batch_id, template)
-        review_page.queue_table.selectRow(0)
+        # 0.1.1 phase 4: create_batch attaches to the active scan session, whose
+        # queue Resolve now shows whole - the `prepared` batch's conflicts too -
+        # so the corrupt sheet's conflict is selected by id, not by "row 0".
+        target = next(
+            item for item in review_page.state.conflicts if item.scan_id == ids[corrupt]
+        )
+        assert review_page.select_conflict_by_id(target.conflict_id) is True
 
         assert review_page._choice_buttons == []
         review_page.close()
