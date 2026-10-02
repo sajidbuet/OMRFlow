@@ -478,6 +478,29 @@ def unresolved_queue(project: Path) -> list[int]:
         session.close()
 
 
+def withdrawn_by_decisions(project: Path) -> set[int]:
+    """Conflicts the system withdrew, with an audit event, after a human decision.
+
+    0.1.1 phase 4 detects duplicate Student IDs on the *effective* value, so a
+    correction that makes one of a duplicate pair unique withdraws its
+    partner's undecided duplicate record - audited, never silent. Before
+    phase 4 the queue lost only what was decided; now it also loses exactly
+    these, and the crash assertions account for them explicitly.
+    """
+    shot = h.snapshot(project)
+    first_human = min(
+        (row[0] for row in shot["audit"] if row[1] in ("accepted", "corrected")),
+        default=None,
+    )
+    if first_human is None:
+        return set()
+    return {
+        int(row[2])
+        for row in shot["audit"]
+        if row[1] == "withdrawn" and row[0] > first_human and row[2] is not None
+    }
+
+
 def human_events(project: Path) -> list[tuple]:
     shot = h.snapshot(project)
     return [row for row in shot["audit"] if row[1] in ("accepted", "corrected")]
@@ -495,7 +518,10 @@ def test_case_05_clean_close_halfway_through_resolve(tmp_path, scanned):
     decided = [item["conflict_id"] for item in events if item["event"] == "decision_committed"]
     assert len(decided) == decisions
     assert len(human_events(project)) == decisions
-    assert unresolved_queue(project) == [cid for cid in before if cid not in decided]
+    withdrawn = withdrawn_by_decisions(project)
+    assert unresolved_queue(project) == [
+        cid for cid in before if cid not in decided and cid not in withdrawn
+    ]
     found = assert_consistent(project)
     evidence(
         "case_05", kill_point=f"clean close after {decisions} Resolve decisions",
@@ -591,7 +617,10 @@ def test_case_07_reopen_retains_machine_override_effective_and_history(killed_du
 def test_case_08_unresolved_items_remain_unresolved(killed_during_resolve):
     scenario = killed_during_resolve
     decided = {cid for cid, _action in scenario["decided"]}
-    expected = [cid for cid in scenario["before"] if cid not in decided]
+    withdrawn = withdrawn_by_decisions(scenario["project"])
+    expected = [
+        cid for cid in scenario["before"] if cid not in decided and cid not in withdrawn
+    ]
     assert unresolved_queue(scenario["project"]) == expected
     for events in scenario["inspected"]:
         assert opened(events)["resolve_queue"] == expected
