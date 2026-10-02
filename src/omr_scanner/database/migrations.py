@@ -789,8 +789,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=15,
         description=(
-            "Session scope: scan_session.downstream_batch_id; generated_report "
-            "session, final flag and close; bounded-lookup indexes"
+            "Session scope: the session's recorded downstream store; generated "
+            "reports' session, final flag and close; lookup indexes"
         ),
         apply=_migration_015_session_scope,
     ),

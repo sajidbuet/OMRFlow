@@ -21,6 +21,7 @@ Three rules the page is arranged around, matching Phase 8's Results page:
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -504,8 +505,19 @@ class ReportsPage(WorkflowPage):
             if defined
             else " · no sets defined - see File &gt; Project Configuration..."
         )
+        scope_text = ""
+        database = self.database
+        if database is not None and self.state.batch_id is not None:
+            scope = report_store.session_scope(database, self.state.batch_id)
+            if scope.provisional:
+                scope_text = (
+                    f"<br><span style='color:#8a5a00'><b>Provisional</b> - scan session "
+                    f"'{html.escape(scope.name)}' is open; Final Export closes it first.</span>"
+                )
+            elif scope.scan_session_id is not None:
+                scope_text = f"<br>Scan session '{html.escape(scope.name)}' · closed"
         self.exam_name_label.setText(
-            f"<b>Exam:</b> {self.state.exam_name}{suffix}"
+            f"<b>Exam:</b> {self.state.exam_name}{suffix}{scope_text}"
         )
 
     def _rebuild_table(self) -> None:
@@ -528,7 +540,7 @@ class ReportsPage(WorkflowPage):
                 str(item.script_count),
                 str(item.scored_count),
                 key_status,
-                item.report_readiness_label,
+                item.report_readiness_label + self._final_export_suffix(item),
             )
             for column, text in enumerate(values):
                 cell = QTableWidgetItem(text)
@@ -541,6 +553,19 @@ class ReportsPage(WorkflowPage):
                     cell.setToolTip(item.blocker)
                 self.set_table.setItem(row, column, cell)
         self.set_table.blockSignals(False)
+
+    def final_export_status(self, row: SetRow) -> report_store.FinalExportStatus | None:
+        """The state of ``row``'s latest Final Export from this session."""
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return None
+        return report_store.final_export_status(database, self.state.batch_id, row.set_code)
+
+    def _final_export_suffix(self, row: SetRow) -> str:
+        status = self.final_export_status(row)
+        if status is None or status.state == "none":
+            return ""
+        return f" · {status.label}"
 
     def _restore_selection(self, set_code: str | None) -> None:
         """Reselect a set by code, which is unique across every row.
@@ -740,7 +765,10 @@ class ReportsPage(WorkflowPage):
             self._update_enabled()
             return
 
-        heading = f"<b>Set {overview.set_code}</b> · {overview.report_readiness_label}"
+        heading = (
+            f"<b>Set {overview.set_code}</b> · {overview.report_readiness_label}"
+            f"{self._final_export_suffix(overview)}"
+        )
         if overview.description:
             heading += f"<br>{overview.description}"
         if overview.attendance_file:
@@ -842,6 +870,110 @@ class ReportsPage(WorkflowPage):
         box.setDefaultButton(cancel)
         box.exec()
         return box.clickedButton() is export
+
+    def _ensure_closed_for_final(self) -> str | None:
+        """Final Export needs a CLOSED session: offer to close it in one step.
+
+        Returns:
+            ``"closed"`` when the session is (now) closed, ``"acknowledged"``
+            when it was just closed with incomplete results the operator
+            accepted, or ``None`` when nothing may be exported - the operator
+            declined, or a closure blocker remains (listed, nothing changed).
+
+        ARCHITECTURE_NOTES §8.2 / §14.3 (decided, §16 Q4): on an open session
+        Final Export offers *Close session and generate final export*, which
+        runs the closure checks and either lists the blockers and closes
+        nothing, or closes the session (sealing its batches, audited) and then
+        generates from the now-authoritative state.
+        """
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return None
+        scope = report_store.session_scope(database, self.state.batch_id)
+        if not scope.provisional or scope.scan_session_id is None:
+            return "closed"
+        if not self.confirm_close_and_export(scope.name):
+            return None
+        blockers = scan_sessions.closure_blockers(database, scope.scan_session_id)
+        hard = [item.message for item in blockers if not item.acknowledgeable]
+        if hard:
+            self.show_closure_blockers(scope.name, [item.message for item in blockers])
+            return None
+        soft = [item.message for item in blockers if item.acknowledgeable]
+        if soft and not self.confirm_incomplete_close(scope.name, soft):
+            return None
+        try:
+            scan_sessions.close_scan_session(
+                database,
+                scope.scan_session_id,
+                closed_by=self.state.reviewer,
+                reason="Close session and generate final export",
+                acknowledge_incomplete=bool(soft),
+            )
+        except OMRScannerError as exc:
+            QMessageBox.warning(self, "Scan session not closed", exc.user_message or str(exc))
+            return None
+        _LOGGER.info("Scan session %s closed for Final Export", scope.scan_session_id)
+        self.refresh_table()
+        return "acknowledged" if soft else "closed"
+
+    def confirm_close_and_export(self, session_name: str) -> bool:
+        """Ask whether to close the open session and generate the final export."""
+        box = QMessageBox(self)
+        box.setObjectName("closeAndExportConfirmation")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Scan session is open")
+        box.setText(
+            f"Scan session '{session_name}' is still open, so its results are "
+            "provisional. A final export is made from a closed session.\n\n"
+            "Close the session now - its batches are sealed and it accepts no new "
+            "scans until it is reopened - and generate the final export?"
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        close = box.addButton(
+            "Close session and generate final export", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is close
+
+    def show_closure_blockers(self, session_name: str, blockers: list[str]) -> None:
+        """List why the session cannot be closed; nothing was changed."""
+        QMessageBox.information(
+            self,
+            "Scan session cannot be closed yet",
+            f"Scan session '{session_name}' was not closed and nothing was exported:\n\n"
+            + "\n".join(f"• {item}" for item in blockers),
+        )
+
+    def confirm_incomplete_close(self, session_name: str, incomplete: list[str]) -> bool:
+        """Ask before closing with outstanding rescans or deferred sheets. Cancel by default."""
+        box = QMessageBox(self)
+        box.setObjectName("incompleteCloseConfirmation")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Results are incomplete")
+        box.setText(
+            f"Scan session '{session_name}' can only be closed with incomplete results:"
+            "\n\n" + "\n".join(f"• {item}" for item in incomplete) + "\n\nClosing now "
+            "and exporting produces final reports marked as INCOMPLETE, and the "
+            "decision is recorded against your name."
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        accept = box.addButton(
+            "Close and export incomplete results", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is accept
+
+    def _final_acknowledgement(self, rows: list[SetRow]) -> bool | None:
+        """Close the session if needed, then ask about incomplete results if needed."""
+        closed = self._ensure_closed_for_final()
+        if closed is None:
+            return None
+        if closed == "acknowledged":
+            return True
+        return self._acknowledge_if_needed(rows)
 
     def _run_jobs(
         self, jobs: list[ReportJob], *, final: bool, acknowledge_incomplete: bool = False
@@ -954,7 +1086,7 @@ class ReportsPage(WorkflowPage):
         row = self.selected_overview()
         if row is None:
             return False
-        acknowledged = self._acknowledge_if_needed([row])
+        acknowledged = self._final_acknowledgement([row])
         if acknowledged is None:
             return False
         return self._run_jobs(
@@ -966,7 +1098,7 @@ class ReportsPage(WorkflowPage):
         row = self.selected_overview()
         if row is None:
             return False
-        acknowledged = self._acknowledge_if_needed([row])
+        acknowledged = self._final_acknowledgement([row])
         if acknowledged is None:
             return False
         return self._run_jobs(
@@ -985,7 +1117,7 @@ class ReportsPage(WorkflowPage):
         jobs = [
             job for row in self.state.sets for job in self._jobs_for(row, ("xlsx",))
         ]
-        acknowledged = self._acknowledge_if_needed(list(self.state.sets))
+        acknowledged = self._final_acknowledgement(list(self.state.sets))
         if acknowledged is None:
             return False
         return self._run_jobs(jobs, final=True, acknowledge_incomplete=acknowledged)

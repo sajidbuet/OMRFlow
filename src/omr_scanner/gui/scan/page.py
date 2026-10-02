@@ -997,8 +997,13 @@ class ScanPage(WorkflowPage):
         self._refresh_session_label()
         return True
 
-    def close_active_scan_session(self) -> bool:
-        """Close the active scan session, sealing its batches. No dialog."""
+    def close_active_scan_session(self, *, acknowledge_incomplete: bool = False) -> bool:
+        """Close the active scan session, sealing its batches. No dialog.
+
+        The closure checks run in the service (0.1.1 phase 4): unread sheets
+        or unresolved conflicts refuse; outstanding rescans and deferred sheets
+        refuse unless ``acknowledge_incomplete``.
+        """
         database, current = self.database, self.active_scan_session()
         if database is None or current is None:
             return False
@@ -1006,7 +1011,10 @@ class ScanPage(WorkflowPage):
             return False
         try:
             scan_sessions.close_scan_session(
-                database, current.scan_session_id, closed_by=self._operator
+                database,
+                current.scan_session_id,
+                closed_by=self._operator,
+                acknowledge_incomplete=acknowledge_incomplete,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Close scan session")
@@ -1073,16 +1081,41 @@ class ScanPage(WorkflowPage):
         current = self.active_scan_session()
         if current is None:
             return
+        database = self.database
+        blockers = (
+            scan_sessions.closure_blockers(database, current.scan_session_id)
+            if database is not None
+            else ()
+        )
+        hard = [item.message for item in blockers if not item.acknowledgeable]
+        if hard:
+            QMessageBox.information(
+                self,
+                "Scan session cannot be closed yet",
+                f"'{current.name}' was not closed:\n\n"
+                + "\n".join(f"• {item.message}" for item in blockers),
+            )
+            return
+        soft = [item.message for item in blockers if item.acknowledgeable]
+        text = (
+            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
+            "batches until it is reopened."
+        )
+        if soft:
+            text += (
+                "\n\nIts results are incomplete:\n"
+                + "\n".join(f"• {item}" for item in soft)
+                + "\n\nClosing accepts that, recorded against your name."
+            )
         answer = QMessageBox.question(
             self,
             "Close scan session",
-            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
-            "batches until it is reopened.",
+            text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self.close_active_scan_session()
+            self.close_active_scan_session(acknowledge_incomplete=bool(soft))
 
     def _prompt_reopen_scan_session(self) -> None:
         current = self.active_scan_session()

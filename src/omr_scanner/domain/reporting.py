@@ -330,6 +330,12 @@ class ReadinessIssueKind(StrEnum):
     such are a legitimate interim product. The acknowledgement is audited and
     written into the workbook."""
 
+    SESSION_OPEN = "session_open"
+    """The scan session is still OPEN, so its results are provisional (0.1.1
+    phase 4). Blocks **Final Export** and cannot be acknowledged away: Final
+    Export closes the session first ("Close session and generate final
+    export"), and a preview of an open session is labelled provisional."""
+
     SHEET_DEFERRED = "sheet_deferred"
     """A sheet's decision was deferred on the Attendance stage, so it is not
     scored and not in the results. Acknowledgeable exactly like
@@ -353,6 +359,9 @@ class ReadinessIssueKind(StrEnum):
                 "The template's columns could not be identified automatically"
             ),
             ReadinessIssueKind.NO_VERIFIED_KEY: "No verified answer key for this set",
+            ReadinessIssueKind.SESSION_OPEN: (
+                "The scan session is open - results are provisional"
+            ),
             ReadinessIssueKind.SCORING_INCOMPLETE: "Scoring has not been run for this set",
             ReadinessIssueKind.RECONCILIATION_INCOMPLETE: "Reconciliation is not complete",
             ReadinessIssueKind.CANDIDATE_NOT_IN_PROJECT: (

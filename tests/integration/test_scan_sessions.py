@@ -230,6 +230,11 @@ class TestFiniteBatches:
         database = project.database
         batch = scan_sessions.start_batch(database, _files(tmp_path / "a", 1), identity=identity)
         active = scan_sessions.active_scan_session(database)
+        # 0.1.1 phase 4: a session with unread sheets cannot be closed (closure
+        # checks, ARCHITECTURE_NOTES §14.3), so the batch's sheet is read first.
+        with refused("not been read yet"):
+            scan_sessions.close_scan_session(database, active.scan_session_id, closed_by=OPERATOR)
+        _finish(database, batch)
         scan_sessions.close_scan_session(database, active.scan_session_id, closed_by=OPERATOR)
         assert scan_sessions.batch_info(database, batch).membership is BatchMembership.SEALED
         with refused("closed"):
@@ -444,6 +449,9 @@ class TestCombine:
         with refused("name"):
             scan_sessions.combine_scan_sessions(database, [other.scan_session_id], target,
                                                 combined_by="")
+        # 0.1.1 phase 4: closing needs every sheet read (closure checks).
+        for info in scan_sessions.batches_of(database, target):
+            _finish(database, info.batch_id)
         scan_sessions.close_scan_session(database, target)
         problems = scan_sessions.combine_problems(database, [other.scan_session_id], target)
         assert any("closed" in item for item in problems)

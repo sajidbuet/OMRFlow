@@ -522,13 +522,111 @@ def set_active_scan_session(
         return _info(session, row)
 
 
+@dataclass(frozen=True, slots=True)
+class ClosureBlocker:
+    """One reason a scan session cannot be closed yet (ARCHITECTURE_NOTES §14.3).
+
+    Attributes:
+        kind: ``running``, ``unread``, ``conflicts``, ``rescans`` or ``deferred``.
+        message: The operator-facing sentence.
+        acknowledgeable: Whether an operator may close past it by explicitly
+            accepting incomplete results - only outstanding rescans and
+            deferred sheets, matching the existing *Export incomplete
+            results* decision. Unread sheets and unresolved conflicts never.
+    """
+
+    kind: str
+    message: str
+    acknowledgeable: bool = False
+
+
+def closure_blockers(database: ProjectDatabase, scan_session_id: str) -> tuple[ClosureBlocker, ...]:
+    """Everything that stops a session closing, from persisted state (0.1.1 phase 4).
+
+    A batch still running; sheets not read yet (``pending`` / ``queued`` /
+    ``processing`` / ``cancelled``); unresolved required conflicts on the
+    session's sheets (open or deferred, session-wide, as Resolve counts them);
+    rejected sheets whose rescan is outstanding; deferred sheets. Empty means
+    the session may be closed.
+    """
+    from omr_scanner.domain.session_population import SheetDisposition
+    from omr_scanner.services import review_store, session_population
+
+    found: list[ClosureBlocker] = []
+    with database.session() as session:
+        running = session.scalar(
+            select(func.count())
+            .select_from(ScanBatch)
+            .where(ScanBatch.scan_session_id == scan_session_id)
+            .where(ScanBatch.status == BatchStatus.RUNNING.value)
+        )
+    if running:
+        found.append(
+            ClosureBlocker(
+                "running", f"{running} batch(es) of this scan session are still being read."
+            )
+        )
+    population = session_population.session_population(database, scan_session_id)
+    if not population.batch_ids:
+        return tuple(found)
+    counts = population.counts()
+    unread = counts.get(SheetDisposition.NOT_READ, 0)
+    if unread:
+        found.append(
+            ClosureBlocker(
+                "unread",
+                f"{unread} sheet(s) have not been read yet - resume the batch on the "
+                "Scan stage.",
+            )
+        )
+    conflicts = review_store.count_conflicts(
+        database, population.batch_ids[0], session_wide=True
+    )
+    unresolved = conflicts.open_count + conflicts.deferred
+    if unresolved:
+        found.append(
+            ClosureBlocker(
+                "conflicts",
+                f"{unresolved} conflict(s) are unresolved on the Resolve stage.",
+            )
+        )
+    rescans = counts.get(SheetDisposition.REJECTED_PENDING_RESCAN, 0)
+    if rescans:
+        found.append(
+            ClosureBlocker(
+                "rescans",
+                f"{rescans} rejected sheet(s) are awaiting a rescan.",
+                acknowledgeable=True,
+            )
+        )
+    deferred = counts.get(SheetDisposition.DEFERRED, 0)
+    if deferred:
+        found.append(
+            ClosureBlocker(
+                "deferred",
+                f"{deferred} sheet(s) are deferred on the Attendance stage.",
+                acknowledgeable=True,
+            )
+        )
+    return tuple(found)
+
+
 def close_scan_session(
-    database: ProjectDatabase, scan_session_id: str, *, closed_by: str = "", reason: str = ""
+    database: ProjectDatabase,
+    scan_session_id: str,
+    *,
+    closed_by: str = "",
+    reason: str = "",
+    acknowledge_incomplete: bool = False,
 ) -> ScanSessionInfo:
-    """Close a session: seal every open batch, then refuse new batches.
+    """Close a session: run the closure checks, seal every open batch, refuse new batches.
 
     Refused while one of its batches is being processed (``running``) - a
-    session cannot be declared finished under a run that is still reading.
+    session cannot be declared finished under a run that is still reading -
+    and, since 0.1.1 phase 4, while any :func:`closure_blockers` remain:
+    unread sheets and unresolved conflicts always; outstanding rescans and
+    deferred sheets unless ``acknowledge_incomplete`` (an operator's explicit
+    acceptance of incomplete results, recorded in the close's audit event).
     """
     moment = _now()
     with database.session() as session:
@@ -536,6 +634,36 @@ def close_scan_session(
         problem = close_problem(ScanSessionState(row.state))
         if problem:
             raise ScanSessionError(f"Cannot close {scan_session_id}", user_message=problem)
+    found = closure_blockers(database, scan_session_id)
+    if any(item.kind == "running" for item in found):
+        # Checked first, as before: a session cannot be declared finished
+        # under a run that is still reading.
+        raise ScanSessionError(
+            "Batch running",
+            user_message=(
+                "A batch of this scan session is still being processed. Wait for "
+                "it to finish (or cancel it), then close the session."
+            ),
+        )
+    blockers = list(found)
+    accepted = [item for item in blockers if item.acknowledgeable and acknowledge_incomplete]
+    refused = [item for item in blockers if item not in accepted]
+    if refused:
+        raise ScanSessionError(
+            f"Cannot close {scan_session_id}: closure blockers",
+            user_message="The scan session cannot be closed yet: "
+            + " ".join(item.message for item in refused),
+        )
+    if accepted and not closed_by.strip():
+        raise ScanSessionError(
+            "Closing with incomplete results needs an operator",
+            user_message=(
+                "Closing with incomplete results must be accepted by a named operator. "
+                "Set your name in File > Settings first."
+            ),
+        )
+    with database.session() as session:
+        row = _require(session, scan_session_id)
         running = session.scalars(
             select(ScanBatch.batch_id)
             .where(ScanBatch.scan_session_id == scan_session_id)
@@ -569,7 +697,13 @@ def close_scan_session(
             previous_value=ScanSessionState.OPEN.value,
             new_value=ScanSessionState.CLOSED.value,
             reason=reason,
-            detail=f"sealed {len(open_batches)} open batch(es)",
+            detail=f"sealed {len(open_batches)} open batch(es)"
+            + (
+                "; incomplete results accepted: "
+                + " ".join(item.message for item in accepted)
+                if accepted
+                else ""
+            ),
         )
         return _info(session, row)
 

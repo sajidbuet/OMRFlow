@@ -68,6 +68,7 @@ from omr_scanner.gui.theme import Spacing
 from omr_scanner.services import (
     batch_store,
     project_sets,
+    report_store,
     result_analytics,
     scan_lifecycle,
     scan_sessions,
@@ -898,14 +899,21 @@ class ResultsPage(WorkflowPage):
         population = session_population.population(database, batch_id)
         if len(population.batch_ids) > 1:
             # 0.1.1 phase 4: the session is marked as one population.
-            self.batch_label.setText(
-                f"Marking the <b>scan session</b> · {session_population.describe(population)}"
-            )
+            text = f"Marking the <b>scan session</b> · {session_population.describe(population)}"
         else:
-            self.batch_label.setText(
+            text = (
                 f"Marking <b>batch {batch_id[:8]}</b> · {summary.total} scan(s) from "
                 f"{html.escape(summary.source_folder or '(files)')}"
             )
+        session_scope = report_store.session_scope(database, batch_id)
+        if session_scope.provisional:
+            # While the session is open its results are provisional (§8.2).
+            text = (
+                "<span style='color:#8a5a00'><b>PROVISIONAL</b> - scan session "
+                f"'{html.escape(session_scope.name)}' is open; results may change.</span><br>"
+                + text
+            )
+        self.batch_label.setText(text)
         self.batch_label.setToolTip(scope)
 
     def _refresh_summary(self) -> None:
