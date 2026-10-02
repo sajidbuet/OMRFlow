@@ -80,9 +80,9 @@ def test_declining_the_one_step_changes_nothing(qtbot, sw):
 
 def test_blockers_are_listed_and_nothing_is_closed(qtbot, sw):
     page = make_page(qtbot, sw)
-    page.confirm_close_and_export = lambda name: True
+    page.confirm_close_and_export = lambda _name: True
     shown: list[list[str]] = []
-    page.show_closure_blockers = lambda name, items: shown.append(items)
+    page.show_closure_blockers = lambda _name, items: shown.append(items)
     select(page, "2")
     assert page.generate_selected_xlsx() is False
     assert state(sw) is ScanSessionState.OPEN
@@ -92,7 +92,7 @@ def test_blockers_are_listed_and_nothing_is_closed(qtbot, sw):
 
 def test_without_a_template_the_session_is_not_closed(qtbot, sw):
     page = make_page(qtbot, sw, template=None)
-    page.confirm_close_and_export = lambda name: True
+    page.confirm_close_and_export = lambda _name: True
     select(page, "1")
     assert page.generate_selected_xlsx() is False
     assert state(sw) is ScanSessionState.OPEN
@@ -105,8 +105,8 @@ def test_closing_then_exporting_in_one_step_and_stale_on_reopen(qtbot, sw):
         )
     sw.world.score("1")
     page = make_page(qtbot, sw)
-    page.confirm_close_and_export = lambda name: True
-    page.show_closure_blockers = lambda name, items: pytest.fail(f"blocked: {items}")
+    page.confirm_close_and_export = lambda _name: True
+    page.show_closure_blockers = lambda _name, items: pytest.fail(f"blocked: {items}")
     select(page, "1")
     with qtbot.waitSignal(page.reports_generated, timeout=TIMEOUT_MS):
         assert page.generate_selected_xlsx() is True
