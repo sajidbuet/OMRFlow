@@ -530,7 +530,8 @@ def record_results(
     *,
     template: OmrTemplate | None = None,
     policy: ConflictPolicy | None = None,
-) -> None:
+    claimed_only: bool = False,
+) -> int:
     """Persist a group of finished scans in one transaction.
 
     Args:
@@ -545,6 +546,15 @@ def record_results(
             only by recognition-only callers with no Resolve stage (the
             headless stress tool, the benchmark).
         policy: Conflict policy; defaults apply when omitted.
+        claimed_only: Compare-and-set (0.1.1 revised phase 6): only rows the
+            continuous engine has durably **claimed** (``processing``) are
+            written; any other row - already completed, released, or never
+            claimed - is left exactly as it is. A result can therefore never
+            overwrite a committed sheet or count a second attempt. Off for
+            the finite Scan stage, whose rows are ``queued`` (unchanged).
+
+    Returns:
+        How many rows were written.
 
     Raises:
         omr_scanner.errors.DatabaseError: The transaction failed. The caller
@@ -553,15 +563,18 @@ def record_results(
             operator rather than letting a run report success it cannot back up.
     """
     if not outcomes:
-        return
+        return 0
     moment = _now()
     by_path = {str(item.source_path): item for item in outcomes}
     with database.session() as session:
-        rows = session.scalars(
+        statement = (
             select(BatchScan)
             .where(BatchScan.batch_id == batch_id)
             .where(BatchScan.source_path.in_(list(by_path)))
-        ).all()
+        )
+        if claimed_only:
+            statement = statement.where(BatchScan.status == ScanJobStatus.PROCESSING.value)
+        rows = session.scalars(statement).all()
         for row in rows:
             outcome = by_path.get(row.source_path)
             if outcome is not None:
@@ -587,6 +600,7 @@ def record_results(
             .where(ScanBatch.batch_id == batch_id)
             .values(updated_at=moment)
         )
+    return len(rows)
 
 
 def _apply_outcome(row: BatchScan, outcome: ProcessedScan, moment: datetime) -> None:
