@@ -533,6 +533,17 @@ The recommendation to evaluate first is **(c)** — since every batch belongs to
 a session after backfill, a stored batch-level result has no remaining
 authoritative use — but the decision is Phase C's, on evidence.
 
+> **Settled (Phase C, ADR-0007, 2026-10-02).** The session is the only
+> authoritative scope, recorded on the session row as its *bound downstream
+> store* (`scan_session.downstream_batch_id`, migration 15), with batch views
+> as filters - (c)'s semantics without (a)'s table rebuild. The downstream
+> rows' `batch_id` column is kept as an opaque storage key resolved only
+> through the session. A first, unrecorded "derive the key from batch
+> history" design was tried and rejected: it could switch stores under
+> *Combine*, lose a session's decisions silently, record no report scope and
+> misread upgraded split state. `generated_report` records its session,
+> finality and close.
+
 ---
 
 ## 9. Duplicates, rescans and supersession
@@ -939,7 +950,7 @@ flight, every enabled source reconciled within its interval and reachable);
 | Processing running / paused | Paused: no new unit; in-flight sheets finish **and are recorded** |
 | Finish current and stop | Replaces today's destructive *Cancel* as the default stop |
 | Cancel queued work | Explicit, confirmed; in-flight still recorded |
-| **Finish scan session** | Final reconciliation of every source, then closes only if: nothing stabilising, ready, queued or processing; no unresolved required conflict; no outstanding rescan; no unmatched replacement; no held file undecided; every enabled source reachable. Otherwise lists each blocker. On success seals every open batch and moves the session to CLOSED (§6.1). Audited. A temporary absence of files never closes a session. Also reachable as the one-step "Close session and generate final export" (§8.2) |
+| **Finish scan session** | Final reconciliation of every source, then closes only if: nothing stabilising, ready, queued or processing; no unresolved required conflict; no outstanding rescan; no unmatched replacement; no held file undecided; every enabled source reachable. Otherwise lists each blocker. On success seals every open batch and moves the session to CLOSED (§6.1). Audited. A temporary absence of files never closes a session. Also reachable as the one-step "Close session and generate final export" (§8.2). *Phase C implementation (ADR-0007 §8):* the sources/held-file checks wait for Phase D; an outstanding rescan or a deferred sheet blocks unless a named operator accepts incomplete results (audited), reconciling this row with the earlier *Export incomplete results* decision |
 | Reopen session | Explicit and audited; session editable/open again; results provisional; prior final outputs marked stale (§6.1) |
 | Re-close session | Same checks as Finish; audited; final outputs must be regenerated |
 

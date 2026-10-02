@@ -1,5 +1,10 @@
 # Revised phase 4 handoff — session-wide effective sheet set
 
+> **Read the "Phase C completion audit" section at the end first.** It
+> supersedes the sections before it where they differ: schema (now 15), the
+> "population key" (now a recorded store), combining sessions, duplicate-sync
+> cost and the Final Export lifecycle.
+
 Branch `feat/0.1.1-phase4-session-effective-set`, from `main` at `0e94d67`
 (the Phase 3 merge; Phase 3 tip `3937ef5`). **Not merged, not tagged, nothing
 released.**
@@ -238,3 +243,256 @@ Mid-run I counted the letters F and E in the progress output and took them for
 failures. They were OpenCV log lines (`[ERROR:0@…] … PngDecoder`) from a
 deliberate corrupt-image test. The run's own summary is the authority, and it
 reports 0 failed.
+
+---
+
+## Phase C completion audit (2026-10-02)
+
+Audited against ROADMAP §0.1.1-C, ARCHITECTURE_NOTES §§6, 8, 9, 14 and
+ACCEPTANCE C1–C10, not against the sections above. Each gap below was found
+in code and closed in code, with tests.
+
+### Gaps found and closed
+
+| # | Gap | Was it real? | Closed by |
+|---|---|---|---|
+| A | Duplicate-ID sync re-derived the whole session after every ID-changing decision | Real | `sync_duplicate_identifiers_for`: bounded to the touched groups |
+| B | Byte-identical images under another name, folder or batch were read and became second scripts (defect 4) | Real: hashes were computed at run start but never consulted | `link_exact_duplicates` at registration, before recognition |
+| C | No closed-session requirement, no provisional labels, no one-step close-and-export, no closure checks, no report scope or staleness | Real | Closure checks; `SESSION_OPEN`; provisional labelling; Reports one-step flow; migration 15 report columns; `final_export_status` |
+| C′ | The earlier unread-sheet guard did not gate `generate_xlsx` itself | Real | `with_session_issues` in both readiness and generation |
+| D | The derived "population key" could switch stores under Combine, silently orphan a session's decisions, recorded no report scope, and misread upgraded split state | Real | Migration 15: a recorded store per session; combine refuses or records an explicit choice; legacy-aware upgrade binding |
+| E | Services were addressed by an arbitrary batch id | Real | `services/session_scope.py`; pages hold `scan_session_id`; *Switch Scan Session* |
+| F | No Resolve batch filter | Real | Diagnostic batch filter (a *source* filter needs Phase D) |
+| G | Dashboard reading its own population | **Not real**: it already used `state.every_result` | A test that fails if it ever reads independently |
+| H | No golden one-batch regression of workbook cells | Real | Fixture captured by `main`; values compared |
+| C4 | (set, identifier) duplicate grouping option | Real | `DuplicateGrouping`, Project Configuration checkbox |
+| scope | Renamed-copy export over the session's effective set | Real | `services/renamed_export.py`, Session menu |
+| C10 | Generator-ground-truth multi-batch test | Real | `test_generated_session_ground_truth` |
+
+Found while verifying, and fixed:
+- **Upgraded split state read the older decisions.** A schema-14 session
+  reconciled again after a later batch arrived showed its newer state under
+  schema 14; the derived rule picked the older.
+- **Combine did not re-derive the combined session.** A combined session's
+  duplicate IDs and reconciliation were not re-derived.
+- **"Close session and generate final export" could close and export
+  nothing.** This happened when no template was loaded, or when a set's own
+  readiness blocked it. The scripted GUI run found it.
+
+### Effective-population rules (state → effective? → downstream treatment)
+
+| State / condition | Effective? | Downstream treatment |
+|---|---|---|
+| Read, active | yes | Reconciled, scored, reported, duplicate-checked |
+| Read but failed (unreadable) | yes (`EFFECTIVE_UNREADABLE`) | Counted as a script with no identity; an Attendance exception |
+| Not read yet (pending / queued / processing / cancelled) | no (`NOT_READ`) | Blocks closing and Final Export |
+| Batch superseded by *Reprocess All* | no (`BATCH_SUPERSEDED`) | History only; the reprocess batch counts |
+| Rejected, rescan awaited | no, **listed** | *Rescan required* against the candidate; blocks close unless incomplete results are accepted |
+| Superseded original (rescan confirmed), chains A→B→C | no | History; only the chain's newest sheet counts |
+| Re-import of a rejected image | no | Linked to the original; not read (phase 4: before recognition) |
+| **Exact-content duplicate** (same session, live original) | no (`EXACT_DUPLICATE`) | Linked to the earliest copy; status `duplicate`; never read |
+| Excluded | no | Out of every count; restorable |
+| Deferred | no, **listed** | Open item; blocks close unless accepted |
+| Confirmed rescan read in another session | counts in the **original's** session | `COUNTED_IN_OTHER_SESSION` here; Health warns; new cross-session links refused |
+| Another session's sheets (same ID or same bytes) | not in this population | Never a duplicate here; never merged |
+
+### Incremental duplicate synchronisation
+
+- **Before:** every Resolve decision that could change a Student ID re-ran the
+  full session rebuild: every effective identifier read and regrouped.
+- **Now:** `review_store.sync_duplicate_identifiers_for(scan_ids)` re-derives
+  only these values:
+  - the touched sheets' current values;
+  - the values their duplicate records name (the group a corrected sheet is
+    leaving).
+
+  Candidates are:
+  - sheets read as those values, via `ix_batch_scan_identifier`;
+  - sheets with a human identifier decision (the only way an effective value
+    departs from the reading);
+  - those groups' records, via `ix_review_conflict_type_value`.
+
+  Candidates are classified with `session_population.sheets_of_session`
+  (indexed reads by scan id), not the whole population.
+- **Cost** therefore follows the touched groups plus the number of
+  person-decided identifiers, not the session size.
+- **Callers:** Resolve decisions and undo, lifecycle changes, and a batch
+  finishing. The full rebuild runs only for recovery, combine, a grouping
+  change, tests, and above 2,000 touched sheets at once.
+- **Evidence:**
+  - the 12 required cases, each also checked against a full rebuild
+    (`assert_rebuild_changes_nothing`);
+  - an instrumented 6,000-sheet session in which one correction fed at most 5
+    identifiers to the grouping and wrote only the 3 sheets of the affected
+    group;
+  - the Resolve GUI and crash suites.
+
+### Measurements
+
+Synthetic rows only: one session of 5 sealed batches, 1 ID in 500 read twice,
+local SSD, development machine, **one run each**
+(`scratchpad/p4_bench2.py`, not committed; the 100,000 run overlapped a
+fixture-generation script).
+
+| Sheets | Population build | Full rebuild (first / again) | Bounded pass, one ID change | One Resolve correction, end to end |
+|---:|---:|---:|---:|---:|
+| 10,000 | 0.071 s | 0.607 / 0.569 s | 0.025 s | 0.088 s |
+| 50,000 | 0.374 s | 3.119 / 2.698 s | 0.019 s | 0.041 s |
+| 100,000 | 0.695 s | 5.525 / 5.186 s | 0.021 s | 0.041 s |
+
+The changed sheet's ID was unique (candidate set of 1), and no other sheet had
+a human identifier decision. **Not measured:**
+- sessions with many human identifier decisions (which enlarge the candidate
+  set);
+- real recognition, or network storage.
+
+No production throughput claim is made.
+
+### Exact-content duplicates
+
+1. **When is SHA-256 computed?** In the run's registration step, on the worker
+   thread, after the files' rows exist and **before any sheet is read**
+   (`BatchWorker._hash_sources_for_provenance`). It is not computed at *Add
+   Files* on the GUI thread, where hashing thousands of files would freeze the
+   window.
+2. **Known before recognition?** Yes. `link_exact_duplicates` runs next, and
+   the linked files are removed from the run's work list.
+3. **Scope:** session-wide, over the live batches of the same session.
+4. **The cases:**
+   - another file name or folder, or another batch of the session: linked;
+   - after reopening: the same, since hashes persist;
+   - first copy rejected or superseded: an existing re-import, now before
+     recognition;
+   - first copy excluded or deferred: `duplicate_content` (the copy cannot
+     bring it back);
+   - another session: not a duplicate.
+5. **Recorded and linkable:** `scan_rejection` (`duplicate_content`,
+   `reimport_of_scan_id`) plus a `duplicate_content_linked` audit event. The
+   Scan list shows *Duplicate of <file> (not read)*, also after reopening.
+   `scan_lifecycle.list_cases(include_reimports=True)` lists it with
+   re-imports. Resolve's Rejected/Rescan view, which shows rescan cases only,
+   does not, as it does not list re-imports.
+6. **Recognition avoided:** yes.
+   - The real Scan stage reads one of two identical files, and none of a later
+     same-session copy (`test_exact_duplicates_gui`).
+   - The crash matrix asserts the dataset's identical image has attempt count 0.
+7. **The effective set excludes it deterministically:** `EXACT_DUPLICATE`.
+
+### Final Export lifecycle
+
+- **Open:**
+  - Results header and Reports heading read PROVISIONAL;
+  - previews are named `…_Result_Provisional`, with a PROVISIONAL line in the
+    Processing Log;
+  - `SESSION_OPEN` blocks Final Export and cannot be acknowledged.
+- **Close-and-export:**
+  1. It checks the closure blockers, generation's preconditions and each
+     chosen set's blocking readiness issues.
+  2. Any blocker: listed, nothing closed, nothing exported.
+  3. Otherwise: closes (sealing batches, audited) and generates.
+- **Blockers:**
+  - hard: a running batch, unread sheets, unresolved conflicts;
+  - acknowledgeable (audited acceptance by a named operator): outstanding
+    rescans, deferred sheets.
+- **Closed:** each output records `scan_session_id`, `is_final` and
+  `session_closed_at`; `final_export_status` reports *current*.
+- **Reopen:** *stale*. Re-closing does not revive the old output; only
+  regenerating does. Pre-migration outputs read as *no final export*.
+
+### ADR-0007 and persistence
+
+Retained and revised. The first, unrecorded design failed four of the required
+properties (ADR-0007 §3). **Migration 15 is used** (additive):
+- `scan_session.downstream_batch_id`, the recorded store;
+- `generated_report.scan_session_id`, `is_final`, `session_closed_at`;
+- four indexes.
+
+**Combine:** refused when more than one session holds decisions, unless the
+operator names whose to keep. That is audited; the others stay as history, and
+the combined session is re-derived.
+
+**Upgrade:** tested from schema-14 projects written by the schema-14 build
+(`tests/fixtures/schema14`, `test_session_scope_migration`). Read-only reads
+what that build showed. A writable open backs up, migrates, binds the stores
+(legacy split state binds to the newer state, audited) and changes no result.
+
+### Explicit session selection
+
+- **Authoritative:** `services/session_scope.py` (by `scan_session_id`).
+- **Pages:** `state.scan_session_id`, default
+  `scan_sessions.downstream_session_id`; *Switch Scan Session*; the main
+  window sets sessions.
+- **Compatibility wrappers:** the batch-keyed functions of
+  `reconciliation_store`, `scoring_store` and `report_store` (per-entry
+  operations, existing callers), and `set_batch` on the pages.
+- No `list_batches(limit=1)` caller remains, and nothing picks by `updated_at`.
+
+### Golden one-batch regression
+
+`tests/golden_one_batch.py` was run against `main` at `0e94d67`, verified to
+import that build (schema 14, no `session_scope`). The same script on this
+branch produced a **byte-identical JSON capture**:
+- 22 reconciliation rows;
+- 22 results;
+- every cell of the Rollwise, Meritwise and Answer Key sheets of three sets.
+
+`test_golden_one_batch` compares the values; Summary and Processing Log carry
+timestamps and are left out.
+
+### GUI, scripted
+
+The real window was driven offscreen, 1366×768 at `QT_SCALE_FACTOR=1.75`;
+screenshots are in `test-output/gui/phase4b/` (git-ignored). Verified:
+- the Resolve session queue and its batch filter;
+- the Attendance session heading;
+- Results PROVISIONAL;
+- the Dashboard count equal to the Results count (102/102);
+- Final Export from an open session, offering close-and-export;
+- the blocker dialog, listing closure and set-level blockers;
+- a successful close with incomplete results accepted and the export: Set 3
+  *Final export current*;
+- after reopening: *STALE - session reopened; regenerate*.
+
+This is scripted driving, **not** operator validation.
+
+### Remaining limitations
+
+**Phase 4:**
+- A combine that keeps one session's decisions does not merge the other's.
+  They are history.
+- An output generated before migration 15 has no recorded session.
+- Exact-duplicate suppression covers the Scan stage's runs. The headless
+  stress runner reads every sheet, as before.
+- An exact duplicate is listed on the Scan stage and in the audit ledger, not
+  in a Resolve view.
+- Bounded-pass cost grows with the number of person-decided identifiers in a
+  session; that was not measured.
+- Not operator-validated, not real-scan validated, not production-qualified.
+  No power-loss testing.
+
+**Later phases:**
+- the Resolve source filter, hashing at discovery for watched sources, and
+  held files at close (D);
+- continuous processing and pause/finish (E);
+- the operational GUI (F);
+- the 100,000-sheet qualification campaign and SMB (G).
+
+### Completion criteria P4-A … P4-O
+
+| | Criterion | Status / evidence |
+|---|---|---|
+| A | One canonical effective-set service | `session_population` |
+| B | Duplicates on effective identifiers | duplicate matrix tests |
+| C | Bounded incremental duplicate reconciliation | `sync_duplicate_identifiers_for`; instrumented test; measurements |
+| D | Exact-content duplicates session-wide at manual registration | `link_exact_duplicates`; integration and GUI tests |
+| E | Resolve session-authoritative, survives reopen without Scan | Resolve GUI tests; crash case 15 |
+| F | Same population for Attendance, scoring, Results, reports | identity-set acceptance; C10 test |
+| G | Dashboard consumes the Results rows | `test_results_dashboard_population` |
+| H | Provisional while open | Results/Reports labels; preview naming; tests |
+| I | Final Export requires CLOSED; one-step close-and-export | lifecycle and GUI tests |
+| J | Reopen invalidates final status; regeneration required | `test_final_export_lifecycle` |
+| K | Persistent downstream scope; combine cannot silently discard | migration 15; binding and combine tests |
+| L | One-batch golden regression | `test_golden_one_batch` |
+| M | Phase 3 crash/reopen invariants | crash matrix 16/16; 1,000-sheet series |
+| N | No image reread to reconstruct | population tests delete every image first |
+| O | No later-phase scope pulled in | no intake, sources, scheduler or watched folders added |

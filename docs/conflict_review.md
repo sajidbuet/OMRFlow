@@ -188,6 +188,20 @@ a duplicate with a sheet in another batch. Reopening the project rebuilds the
 same queue from the database; Scan need not be visited. See
 [ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
 
+The **Batch** filter above the queue is a diagnostic view: it lists only the
+sheets read in one batch, and changes nothing else - the queue's counts and a
+duplicate-ID group still span the whole session. (A filter by *source* arrives
+with intake sources, roadmap phase D.)
+
+Only the duplicate-ID groups a decision touches are re-derived - the group a
+corrected Student ID joins and the one it leaves - so a correction does not
+grow with the size of the session (measured on synthetic data: about 0.02 s
+for the duplicate re-derivation at 10,000, 50,000 and 100,000 sheets; it does
+grow with the number of sheets whose Student ID a person has decided). Whether the
+same Student ID on two different **sets' papers** is a duplicate is an
+examination-office decision: *File > Project Configuration > Sets* offers
+"Check duplicate Student IDs within each set only" (off by default).
+
 ## 4. The reviewer's workflow
 
 1. Process a batch on the **Scan** stage. Conflicts are detected automatically

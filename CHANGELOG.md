@@ -32,6 +32,25 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   generations. Another session is never mixed in. After *Reprocess All*,
   `downstream_batch_id` returns the session's stable population key rather
   than the reprocess batch.
+- **Migration 15 (schema 15): session scope.** A scan session records its
+  downstream store (`scan_session.downstream_batch_id`), so combining or
+  adding batches can never move or silently orphan its Attendance / Results
+  decisions; combining two sessions that both hold decisions is refused unless
+  the operator names whose to keep. `generated_report` records its session,
+  finality and close. Upgraded sessions keep the state the previous version
+  showed.
+- **Final Export requires a closed scan session.** Results of an open session
+  are labelled provisional (Results, Reports, preview file names and logs);
+  closing runs closure checks; the Reports stage offers *Close session and
+  generate final export*; a final export becomes stale when the session is
+  reopened and only regeneration makes it current.
+- **Duplicate Student IDs are re-derived incrementally** after a decision -
+  only the touched groups - and may be grouped by (set, identifier), an
+  office option off by default.
+- **Identical images are never read twice** (session-wide, any name or
+  folder): linked to the first and listed as duplicates.
+- **Downstream stages select a scan session** (*Switch Scan Session*); Resolve
+  gains a diagnostic batch filter; *Export Renamed Copies of Session*.
 - **A rescan link between two scan sessions is refused**
   (`scan_lifecycle.confirm_replacement`); combine the sessions first.
 - **Project Health** reports malformed rescan lineage and split downstream

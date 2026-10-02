@@ -59,7 +59,7 @@ Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
 | 1 — Set identity (migration 13) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
 | 2 — ScanSession + finite ScanBatch lifecycle (migration 14) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
 | 3 — Crash-safe Scan/Resolve persistence (no migration) | ✅ merged | ✅ passing, incl. a real-process kill matrix (40 sheets; 1,000-sheet percentage series) | n/a | ❌ not performed | ❌ not performed | ❌ not performed |
-| 4 — Session-level effective results (no migration) | ✅ on branch `feat/0.1.1-phase4-session-effective-set`, not merged | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
+| 4 — Session-level effective results (migration 15) | ✅ on branch `feat/0.1.1-phase4-session-effective-set`, not merged | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
 | 5–10 — Intake, continuous processing, quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
 
 Since revised phase 4, a scan session with several batches is added up: every

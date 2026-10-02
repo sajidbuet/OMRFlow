@@ -614,21 +614,44 @@ See [ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
   - Attendance (`reconciliation_store`);
   - scoring (`scoring_store.gather_inputs`);
   - Results and Reports / final export (`report_store`).
-- **Population key.** Downstream rows stay keyed `(roster_id, batch_id)`. Every
-  downstream entry point normalises any batch of the session to
-  `session_population.population_key`: the oldest session batch already holding
-  reconciliation or results, else the oldest batch. Per-sheet records
+- **The session is the selection.** `services/session_scope.py` is the
+  authoritative boundary: reconcile, entries, score, results, overview,
+  readiness, generation and final-export status take a `scan_session_id`.
+  Attendance, Results and Reports hold `state.scan_session_id` (default:
+  `scan_sessions.downstream_session_id`, the active session); the Scan stage's
+  Session menu switches it and the stages follow (`active_session_changed`).
+- **Recorded store (migration 15).** Downstream rows stay keyed
+  `(roster_id, batch_id)`; the value is the session's bound store,
+  `scan_session.downstream_batch_id`, recorded by the first reconcile / score
+  or the upgrade step and never re-derived. The batch-keyed store functions
+  are compatibility wrappers normalising any batch to it. Per-sheet records
   (`review_conflict`, `scan_rejection`) stay in the sheet's own batch, and the
   Resolve page edits a sheet in that batch (`ResolvePage._sheet_batch`).
+- **Bounded duplicate IDs.** Decisions, lifecycle changes and a finished batch
+  call `review_store.sync_duplicate_identifiers_for(scan_ids)`: only the
+  touched identifier groups are re-derived (candidates found through
+  `ix_batch_scan_identifier`), classified with
+  `session_population.sheets_of_session`. The full rebuild is for recovery,
+  combine and policy changes. Grouping by (set, identifier) is a project
+  setting (`DuplicateGrouping`), default unchanged.
+- **Exact duplicates at registration.** The Scan worker, after hashing and
+  before recognition, calls `scan_lifecycle.link_exact_duplicates`: a copy of
+  a live sheet of the session is `duplicate_content`, status `duplicate`,
+  never read.
+- **Final Export lifecycle.** `scan_sessions.closure_blockers` /
+  `close_scan_session`; `report_store.session_scope`, `with_session_issues`
+  (`SESSION_OPEN`), provisional labelling, `final_export_status`; the Reports
+  page's one-step *Close session and generate final export*.
 - **Lineage.** Rescans are explicit `scan_rejection.replacement_scan_id` links,
   walked to their root by `lineage_roots`. A replacement counts in its root's
   session. A new cross-session link is refused.
 - **Health.** `project_health._session_population_issues` reports cycles,
   dangling or contradictory links, records filed under the wrong batch,
-  cross-session links and sessions whose downstream state is split across
-  batches. Nothing is repaired.
+  cross-session links, unbound sessions whose downstream state is split across
+  batches, and a bound store outside its session. Nothing is repaired.
 - **Still per batch (operational):** the Scan list and progress, resume and
-  retry, and the Scan CSV export.
+  retry, and the Scan CSV export. Resolve's batch filter is diagnostic. The
+  session-level renamed copies are `services/renamed_export.py`.
 
 ## The Calibration workflow (Phase 4)
 

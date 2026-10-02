@@ -40,7 +40,7 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase4-session-effective-set`, not merged; no migration, schema 14)
+### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase4-session-effective-set`, not merged; migration 15, schema 15)
 
 - **One resolver** (ADR-0007): `services/session_population.py` gives every
   sheet of a scan session one disposition (`domain/session_population.py`).
@@ -53,14 +53,28 @@ Update this file at the end of every phase.
   live batch supersessions stop a sheet counting. Matching IDs never do, and
   nothing follows "latest batch wins". Chains A→B→C count only their newest
   sheet. A new cross-session link is refused.
-- **Population key**, no migration: downstream rows are stored under the
-  session's oldest batch holding them (else its oldest batch), and every entry
-  point normalises to it. After *Reprocess All*, `downstream_batch_id` is that
-  stable key, not the reprocess batch.
+- **Recorded session scope (migration 15):** `scan_session.downstream_batch_id`
+  binds a session to its downstream store - recorded by the first reconcile /
+  score or the upgrade step, never re-derived; an upgraded session keeps the
+  state the schema-14 build showed. `services/session_scope.py` takes a
+  `scan_session_id`; Attendance, Results and Reports hold one (default: the
+  active session; *Switch Scan Session* on the Scan stage). Combining sessions
+  that both hold decisions is refused unless the operator names whose to keep.
+- **Bounded duplicate IDs:** only the groups a decision touches are
+  re-derived (≈0.02 s at 10k-100k synthetic sheets); (set, identifier)
+  grouping is an office option, default unchanged.
+- **Exact duplicate images** are linked at registration and never read
+  (defect 4, manual adds).
+- **Final Export requires a CLOSED session:** provisional labelling while open;
+  closure checks; one-step *Close session and generate final export* that
+  closes nothing unless the export can run; outputs record session, finality
+  and close; stale after reopen until regenerated.
+- **Golden regression:** a one-batch session reproduces `main`'s
+  reconciliation rows, results and workbook cells exactly.
 - **Project Health:** `RESCAN_LINEAGE_CYCLE`, `DANGLING_REPLACEMENT`,
   `CONTRADICTORY_REPLACEMENT_LINK`, `LIFECYCLE_BATCH_MISMATCH`,
-  `CROSS_SESSION_REPLACEMENT`, `SESSION_DOWNSTREAM_SPLIT`. Reported, never
-  repaired.
+  `CROSS_SESSION_REPLACEMENT`, `SESSION_DOWNSTREAM_SPLIT`,
+  `SESSION_STORE_NOT_IN_SESSION`. Reported, never repaired.
 - Not operator-validated. Details:
   `development/releases/0.1.1-alpha.0/PHASE_D_HANDOFF.md`.
 

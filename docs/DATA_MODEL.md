@@ -220,7 +220,7 @@ only after that state is complete (ADR-0006). `settings_json` may carry
 `"review_state_with_results": true`, written by the Scan stage when it
 registers a batch: every result in that batch commits in the same transaction
 as its sheet's conflicts, so recovery need not re-derive them. *No schema
-change* - schema stays 14.
+change in phase 3* (schema 14).
 
 **Lifecycle columns (migration 14, 0.1.1 phase 2; mapped `deferred` so a
 schema-13 database opened read-only still reads):**
@@ -263,11 +263,35 @@ Table `batch_supersession`: `supersession_id`, `superseded_batch_id`,
 `reversed_at IS NULL`. Rules: never self, same session, superseded batch
 sealed, at most one live superseding batch, no cycle (chains allowed).
 
+### Session scope - *implemented (0.1.1 phase 4, migration 15)*
+
+Additive, nullable or defaulted, and **deferred** in the ORM (a schema-14
+project opened read-only still reads). Nothing was rebuilt or copied.
+
+| Column | Meaning |
+|---|---|
+| `scan_session.downstream_batch_id` | The session's **bound downstream store**: the `batch_id` value its `reconciliation_*` and `candidate_result` rows are keyed by. Bound by the first reconcile / score, or by the upgrade step on the first writable open; never re-derived afterwards. FK `scan_batch` (`SET NULL`) |
+| `generated_report.scan_session_id` | The session an output was generated from (`NULL`: written before migration 15, or a batch with no session) |
+| `generated_report.is_final` | A Final Export (from a CLOSED session), not a preview |
+| `generated_report.session_closed_at` | The `closed_at` of the close a final output came from; it is current only while the session is closed by that same close |
+
+Indexes: `ix_batch_scan_identifier (identifier_value)`,
+`ix_batch_scan_content (content_sha256)`,
+`ix_review_conflict_type_value (conflict_type, machine_value)`,
+`ix_generated_report_session (scan_session_id, generated_at)`.
+
+Other new values, no column change:
+- `batch_scan.status = 'duplicate'` - left unread because its bytes repeat an
+  earlier sheet of the session (terminal, not resumable);
+- `scan_rejection.state = 'duplicate_content'` - its record, with
+  `reimport_of_scan_id` naming the sheet it repeats;
+- `project_setting['duplicate_id_grouping']` - `identifier` (default) or
+  `set_and_identifier`.
+
 ### The session's effective sheet set - *implemented (0.1.1 phase 4), not a table*
 
 A **projection**, computed on demand by `services/session_population.py`
-(ADR-0007). Nothing is stored for it, and no migration was needed (schema stays
-14). It is built from:
+(ADR-0007). Nothing is stored for it. It is built from:
 - `batch_scan.status` (read or not);
 - `scan_rejection.state` and `replacement_scan_id` (lifecycle, and explicit
   rescan links walked to their root);
@@ -279,10 +303,9 @@ Each sheet gets one disposition. `effective` and `effective_unreadable` count.
 `reimport_of_rejected`, `excluded`, `not_read`, `batch_superseded` and
 `counted_in_other_session` do not count.
 
-**Population key.** Downstream rows keyed `(roster_id, batch_id)`
+**Store.** Downstream rows keyed `(roster_id, batch_id)`
 (`reconciliation_run/entry/script/decision`, `candidate_result`) are stored
-under one batch per session: the oldest session batch already holding them,
-else its oldest batch. Once state exists the key does not move. Per-sheet rows
+under the session's bound store (above). Per-sheet rows
 (`review_conflict`, `scan_rejection`) stay under the sheet's own batch;
 duplicate-ID records list related scans across the session's batches.
 
@@ -721,6 +744,27 @@ when the standing command is a machine `withdrawn` - and is not undoable. Phase 
 | `answer_key_revision.created_by` / template identity / `source_sha256` / `source_metadata_json` | Answer-key provenance. | Answer Key rework (migration 12) |
 | `project_set.canonical_code` / `physical_mark` | Canonical set identity (unique where not NULL) and the optional printed mark. | Set identity, 0.1.1-A (migration 13) |
 | `scan_session`, `batch_supersession`; `scan_batch.scan_session_id` / `sealed_at` / `sealed_by` / `role` | Scan sessions, finite-batch membership, batch roles and first-class batch supersession. | Scan sessions, 0.1.1 phase 2 (migration 14) |
+
+### Schema version 15 (session scope, 0.1.1 phase 4)
+
+`_migration_015_session_scope` adds `scan_session.downstream_batch_id` and
+`generated_report.scan_session_id` / `is_final` / `session_closed_at`, each
+guarded by `PRAGMA table_info`, and the four indexes above. **Structure only.**
+
+The data step - recording each session's store - is
+`session_population.bind_downstream_stores`, run by `open_project` on the
+first writable open after the migration (after the scan-session backfill),
+idempotent: a session holding downstream state in one batch is bound to it;
+one holding it in several (reconciled again after a later batch arrived,
+under schema 14) is bound to the newest batch not superseded - the state the
+schema-14 build showed - with an audit event (`downstream_store_bound`) naming
+the batches kept as history. Nothing else is changed; nothing is deleted.
+
+A schema-14 project opened read-only is not migrated and reads as the
+schema-14 build showed it. Outputs generated before migration 15 have no
+recorded session and are not treated as current final exports. Upgrade tests
+run from schema-14 projects written by the schema-14 build
+(`tests/fixtures/schema14`).
 
 ### Schema version 14 (scan sessions, 0.1.1 phase 2)
 

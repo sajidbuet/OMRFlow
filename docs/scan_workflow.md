@@ -703,6 +703,22 @@ Decision record: `docs/decisions/ADR-0005-scan-sessions-and-finite-batches.md`.
   session is never mixed in. The Scan list, its progress, resume and the Scan
   CSV export stay per batch: they describe one run. See
   [ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
+- **Identical images are read once (phase 4).** When a run starts, every new
+  file's content is fingerprinted (SHA-256) before anything is read. A file
+  whose bytes repeat a sheet the scan session already has - under another
+  name, from another folder, in another batch - is **not read**: the list
+  shows *Duplicate of <file> (not read)*, it is linked to that sheet and
+  recorded, and it never becomes a second script. A copy of a rejected sheet
+  is a re-import, as before. An identical image in another session is not
+  affected.
+- **Session menu (phase 4):** *Switch Scan Session...* chooses the session
+  Attendance, Results and Reports show (default: the active one). *Export
+  Renamed Copies of Session...* copies every sheet that counts in the session
+  - after review, across all its batches - into a folder named by Student ID
+  (`_a`, `_b` for repeats; `UNRESOLVED_###` when the ID is not trusted).
+  *Close Session* now lists what stops it (unread sheets, unresolved
+  conflicts; outstanding rescans and deferred sheets unless you accept
+  incomplete results).
 - A **processing manifest** (what the batch was run with) is stored at the end
   of every run and whenever a batch is sealed.
 
