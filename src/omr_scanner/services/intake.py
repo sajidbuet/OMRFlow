@@ -51,7 +51,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select, true, update
 
 from omr_scanner.database.models import (
     AuditEvent,
@@ -113,8 +113,19 @@ INTAKE_SCHEMA_VERSION = 16
 Clock = Callable[[], datetime]
 """Returns the current time, timezone-aware UTC. Injected by tests."""
 
-_CHUNK = 500
-"""Bound on the ids one ``IN (...)`` names."""
+def _seen_settled(row: IntakeFile, moment: datetime) -> None:
+    """A settled row seen again: write only if it was absent.
+
+    ``last_seen_at`` of a settled (terminal) row records when its presence was
+    last *confirmed by a change* - first seen, or seen again after being
+    absent. A present, unchanged settled row is not rewritten on every pass:
+    rewriting ten thousand rows every poll would cost a journal write per row
+    for no information, since the source's ``last_reconciled_at`` already says
+    when it was last seen. Unsettled and ready rows are stamped every pass.
+    """
+    if not row.present:
+        row.present = True
+        row.last_seen_at = moment
 
 
 class IntakeError(OMRScannerError):
@@ -872,7 +883,7 @@ def ledger(
         if source_id is not None:
             query = query.where(IntakeFile.source_id == source_id)
         if current_only:
-            query = query.where(IntakeFile.is_current.is_(True))
+            query = query.where(IntakeFile.is_current == true())
         return tuple(_ledger_row(row) for row in session.scalars(query).all())
 
 
@@ -1229,7 +1240,6 @@ class IntakeService:
     ) -> list[_Due]:
         """Transaction 2 of a pass; returns the rows due for verification."""
         policy = source.policy
-        observed_ids: list[int] = []
         newest: ObservedFile | None = None
         with self._database.session() as session:
             attached = _live_attachment(session, source.source_id)
@@ -1240,7 +1250,7 @@ class IntakeService:
                 for row in session.scalars(
                     select(IntakeFile)
                     .where(IntakeFile.source_id == source.source_id)
-                    .where(IntakeFile.is_current.is_(True))
+                    .where(IntakeFile.is_current == true())
                 ).all()
             }
             listed: set[str] = set()
@@ -1277,8 +1287,7 @@ class IntakeService:
                     # Still ignored by name: refresh the observation only.
                     if changed:
                         row.file_size, row.mtime_ns = observed.signature
-                    row.present = True
-                    observed_ids.append(row.intake_file_id)
+                    _seen_settled(row, moment)
                     continue
                 if state.is_unsettled:
                     if reason:
@@ -1304,7 +1313,7 @@ class IntakeService:
                             row.state_reason = IntakeReason.EMPTY_FILE.value
                             row.detail = "The file is empty (a placeholder, or not written yet)."
                     row.present = True
-                    observed_ids.append(row.intake_file_id)
+                    row.last_seen_at = moment
                     continue
                 if state is IntakeState.READY:
                     if changed:
@@ -1325,7 +1334,7 @@ class IntakeService:
                         )
                         report.held += 1
                     row.present = True
-                    observed_ids.append(row.intake_file_id)
+                    row.last_seen_at = moment
                     continue
                 if state is IntakeState.VANISHED:
                     _move(row, IntakeState.DISCOVERED, moment, IntakeReason.NONE, "Reappeared.")
@@ -1337,17 +1346,16 @@ class IntakeService:
                     row.attempts = 0
                     row.retry_after = None
                     row.present = True
+                    row.last_seen_at = moment
                     if row.scan_session_id is None:
                         row.scan_session_id = intended
                     report.reappeared += 1
-                    observed_ids.append(row.intake_file_id)
                     continue
                 # Terminal: registered, duplicate, unreadable, unsupported or
                 # held. Unchanged: nothing to do. (A name-ignored row reaching
                 # here has become admissible - its exclusion was removed.)
                 if not changed and not name_ignored:
-                    row.present = True
-                    observed_ids.append(row.intake_file_id)
+                    _seen_settled(row, moment)
                     continue
                 # Different metadata at a settled path (or a name newly
                 # admissible): a new observation, a new row. The old row is
@@ -1383,17 +1391,11 @@ class IntakeService:
                     row.stable_since = None
                     row.reverify_required = False
                     report.vanished += 1
-            for start in range(0, len(observed_ids), _CHUNK):
-                session.execute(
-                    update(IntakeFile)
-                    .where(IntakeFile.intake_file_id.in_(observed_ids[start : start + _CHUNK]))
-                    .values(last_seen_at=moment)
-                )
             session.flush()
             due_rows = session.scalars(
                 select(IntakeFile)
                 .where(IntakeFile.source_id == source.source_id)
-                .where(IntakeFile.is_current.is_(True))
+                .where(IntakeFile.is_current == true())
                 .where(IntakeFile.present.is_(True))
                 .where(
                     or_(
@@ -1587,7 +1589,7 @@ class IntakeService:
             select(IntakeFile)
             .where(IntakeFile.source_id == row.source_id)
             .where(IntakeFile.relative_path == row.relative_path)
-            .where(IntakeFile.is_current.is_(True))
+            .where(IntakeFile.is_current == true())
         ).all()
         for other in others:
             other.is_current = False
@@ -1623,7 +1625,7 @@ class IntakeService:
                 .where(IntakeFile.state == IntakeState.READY.value)
                 .where(IntakeFile.reverify_required.is_(False))
                 .where(IntakeFile.present.is_(True))
-                .where(IntakeFile.is_current.is_(True))
+                .where(IntakeFile.is_current == true())
                 .where(IntakeFile.scan_session_id == scan_session_id)
                 .order_by(IntakeFile.ready_at, IntakeFile.intake_file_id)
             )
@@ -2033,7 +2035,7 @@ def record_manual_batch(
                     select(IntakeFile)
                     .where(IntakeFile.source_id == source.source_id)
                     .where(IntakeFile.relative_path == path)
-                    .where(IntakeFile.is_current.is_(True))
+                    .where(IntakeFile.is_current == true())
                 ).first()
                 if previous is not None:
                     previous.is_current = False
