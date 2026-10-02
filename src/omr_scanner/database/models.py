@@ -117,6 +117,9 @@ class SettingKey:
     CREATED_WITH = "created_with"
     ACTIVE_SCAN_SESSION = "active_scan_session"
     """The ``scan_session.scan_session_id`` the operator is working in (0.1.1 phase 2)."""
+    DUPLICATE_ID_GROUPING = "duplicate_id_grouping"
+    """How duplicate Student IDs are grouped: ``identifier`` (default) or
+    ``set_and_identifier`` - an examination-office decision (0.1.1 phase 4)."""
     SCAN_SESSION_BACKFILL = "scan_session_backfill"
     """JSON upgrade report written by the scan-session backfill: when it ran,
     the sessions it created and every ambiguous relationship it left alone."""

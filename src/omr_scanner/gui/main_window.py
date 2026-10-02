@@ -928,7 +928,7 @@ class MainWindow(QMainWindow):
         """
         if self._session is None:
             return
-        ProjectConfigDialog(self._session, self).exec()
+        ProjectConfigDialog(self._session, self, operator=self._config.reviewer_name).exec()
         self._broadcast_project_change()
 
     def create_diagnostic_bundle_at(self, output_path: Path) -> bool:

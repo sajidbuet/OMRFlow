@@ -102,6 +102,7 @@ from omr_scanner.recognition.models import UNRESOLVED_CHARACTER
 from omr_scanner.services import set_identity
 from omr_scanner.services.conflict_policy import (
     DetectedConflict,
+    DuplicateGrouping,
     detect_conflicts,
     detect_duplicate_identifiers,
     join_field_value,
@@ -184,9 +185,13 @@ def _refresh_duplicates_for(
     """
     if database.read_only:
         return
+    kinds = [FieldKind.IDENTIFIER.value]
+    if duplicate_grouping(database) is DuplicateGrouping.SET_AND_IDENTIFIER:
+        # Grouped by set too: a set-code decision can move a sheet between groups.
+        kinds.append(FieldKind.SET_CODE.value)
     with database.session() as session:
         statement = select(ReviewConflict.scan_id).where(
-            ReviewConflict.field_kind == FieldKind.IDENTIFIER.value
+            ReviewConflict.field_kind.in_(kinds)
         )
         if isinstance(touched, tuple) and len(touched) == 2 and isinstance(touched[1], str):
             scan_id, zone_id = touched
@@ -1025,7 +1030,15 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
         for scan_id, item in identifiers.items()
         if item.value and "?" not in item.value and "_" not in item.value
     )
-    detected = detect_duplicate_identifiers(reliable)
+    set_codes = None
+    if duplicate_grouping(database) is DuplicateGrouping.SET_AND_IDENTIFIER:
+        set_codes = {
+            scan_id: item.value
+            for scan_id, item in session_population.effective_set_codes(
+                database, population, effective
+            ).items()
+        }
+    detected = detect_duplicate_identifiers(reliable, set_codes=set_codes)
     batches = sorted(set(population.batch_ids) | set(population.batch_of.values()))
     moment = _now()
     with database.session() as session:
@@ -1044,6 +1057,68 @@ def sync_duplicate_identifiers(database: ProjectDatabase, batch_id: str) -> int:
         )
         session.flush()
         return len(detected)
+
+
+def duplicate_grouping(database: ProjectDatabase) -> DuplicateGrouping:
+    """The project's duplicate-ID grouping (default: the identifier alone).
+
+    An examination-office decision (ARCHITECTURE_NOTES §9.2): see
+    :class:`~omr_scanner.services.conflict_policy.DuplicateGrouping`.
+    """
+    from omr_scanner.database.models import ProjectSetting, SettingKey
+
+    with database.session() as session:
+        row = session.get(ProjectSetting, SettingKey.DUPLICATE_ID_GROUPING)
+        value = row.value if row is not None else ""
+    try:
+        return DuplicateGrouping(value) if value else DuplicateGrouping.IDENTIFIER
+    except ValueError:
+        return DuplicateGrouping.IDENTIFIER
+
+
+def set_duplicate_grouping(
+    database: ProjectDatabase, grouping: DuplicateGrouping, *, set_by: str
+) -> int:
+    """Change the project's duplicate-ID grouping, audited, and re-derive every session.
+
+    Returns how many sheets are in a duplicate group afterwards. A full
+    rebuild per session - a policy change, made rarely and on purpose.
+    """
+    from omr_scanner.database.models import ProjectSetting, ScanBatch, SettingKey
+
+    name = validate_reviewer(set_by)
+    previous = duplicate_grouping(database)
+    with database.session() as session:
+        row = session.get(ProjectSetting, SettingKey.DUPLICATE_ID_GROUPING)
+        moment = _now()
+        if row is None:
+            session.add(
+                ProjectSetting(
+                    key=SettingKey.DUPLICATE_ID_GROUPING, value=grouping.value, updated_at=moment
+                )
+            )
+        else:
+            row.value = grouping.value
+            row.updated_at = moment
+        session.add(
+            AuditEvent(
+                occurred_at=_now(), batch_id="", scan_id=0, conflict_id=0,
+                entity_type="conflict_policy", entity_id="duplicate_id_grouping",
+                action="policy_changed", reviewer=name, previous_value=previous.value,
+                new_value=grouping.value,
+                detail="Duplicate Student IDs are grouped by "
+                + ("set and identifier." if grouping is DuplicateGrouping.SET_AND_IDENTIFIER
+                   else "identifier alone."),
+            )
+        )
+        firsts = [
+            str(item)
+            for item in session.scalars(
+                select(func.min(ScanBatch.batch_id)).group_by(ScanBatch.scan_session_id)
+            ).all()
+            if item
+        ]
+    return sum(sync_duplicate_identifiers(database, batch) for batch in firsts)
 
 
 _DUPLICATE_CHANGE = (
@@ -1249,7 +1324,12 @@ def _sync_duplicates_in(
             for scan, item in identifiers.items()
             if item.value in values and _reliable(item.value)
         )
-        detected = detect_duplicate_identifiers(reliable)
+        set_codes = (
+            _logical_set_codes_of(session, database, [scan for scan, _value in reliable])
+            if duplicate_grouping(database) is DuplicateGrouping.SET_AND_IDENTIFIER
+            else None
+        )
+        detected = detect_duplicate_identifiers(reliable, set_codes=set_codes)
         _apply_duplicate_groups(
             session, detected, existing, effective, classified.batch_of, moment
         )
@@ -3445,60 +3525,81 @@ def effective_set_codes(
 def _paper_set_codes(database: ProjectDatabase, batch_id: str) -> dict[int, EffectiveIdentifier]:
     """Every sheet's set code as the paper reads it after review, untranslated."""
     with database.session() as session:
-        scans = session.scalars(
-            select(BatchScan).where(BatchScan.batch_id == batch_id)
-        ).all()
-        found = {
-            row.scan_id: EffectiveIdentifier(
-                scan_id=row.scan_id,
-                machine_value=row.set_code_value or "",
-                value=row.set_code_value or "",
-            )
-            for row in scans
-        }
+        return _set_codes_from(
+            session, BatchScan.batch_id == batch_id, ReviewConflict.batch_id == batch_id
+        )
 
-        fields: dict[int, _FieldDecisions] = {}
-        conflicts = session.scalars(
-            select(ReviewConflict)
-            .where(ReviewConflict.batch_id == batch_id)
-            .order_by(ReviewConflict.conflict_id)
-        ).all()
-        for conflict in conflicts:
-            current = found.get(conflict.scan_id)
-            if current is None:
-                continue
-            kind = FieldKind(conflict.field_kind)
-            conflict_type = ConflictType(conflict.conflict_type)
-            state = ConflictState(conflict.state)
 
-            if state.needs_attention and (
-                conflict_type in _SET_CODE_IS_UNKNOWN
-                or conflict_type.is_processing_failure
-            ):
-                found[conflict.scan_id] = replace(current, unresolved=True)
-                continue
+def _logical_set_codes_of(
+    session: Session, database: ProjectDatabase, scan_ids: Sequence[int]
+) -> dict[int, str]:
+    """Named sheets' effective (logical) set codes - the bounded duplicate pass's read."""
+    if not scan_ids:
+        return {}
+    wanted = sorted({int(item) for item in scan_ids})
+    sets = set_identity.load(database)
+    return {
+        scan_id: sets.logical_for_physical(item.value)
+        for scan_id, item in _set_codes_from(
+            session, BatchScan.scan_id.in_(wanted), ReviewConflict.scan_id.in_(wanted)
+        ).items()
+    }
 
-            if kind is not FieldKind.SET_CODE or state is not ConflictState.RESOLVED:
-                continue
-            decided = _project_provenance(session, conflict)
-            if not decided.is_human_decided:
-                continue
-            fields.setdefault(conflict.scan_id, _FieldDecisions()).add(
-                conflict, decided.value, whole=conflict.group_key == WHOLE_FIELD
-            )
-            found[conflict.scan_id] = replace(
-                current,
-                source=ValueSource.HUMAN,
-                reviewer=decided.reviewer,
-                reason=decided.reason,
-            )
-        by_scan = {row.scan_id: row for row in scans}
-        for scan_id, decisions in fields.items():
-            current = found[scan_id]
-            found[scan_id] = replace(
-                current,
-                value=decisions.assemble(by_scan.get(scan_id), current.machine_value),
-            )
+
+def _set_codes_from(
+    session: Session, scan_filter: Any, conflict_filter: Any
+) -> dict[int, EffectiveIdentifier]:
+    """The paper set-code rule over the sheets and conflicts the filters select."""
+    scans = session.scalars(select(BatchScan).where(scan_filter)).all()
+    found = {
+        row.scan_id: EffectiveIdentifier(
+            scan_id=row.scan_id,
+            machine_value=row.set_code_value or "",
+            value=row.set_code_value or "",
+        )
+        for row in scans
+    }
+
+    fields: dict[int, _FieldDecisions] = {}
+    conflicts = session.scalars(
+        select(ReviewConflict).where(conflict_filter).order_by(ReviewConflict.conflict_id)
+    ).all()
+    for conflict in conflicts:
+        current = found.get(conflict.scan_id)
+        if current is None:
+            continue
+        kind = FieldKind(conflict.field_kind)
+        conflict_type = ConflictType(conflict.conflict_type)
+        state = ConflictState(conflict.state)
+
+        if state.needs_attention and (
+            conflict_type in _SET_CODE_IS_UNKNOWN
+            or conflict_type.is_processing_failure
+        ):
+            found[conflict.scan_id] = replace(current, unresolved=True)
+            continue
+
+        if kind is not FieldKind.SET_CODE or state is not ConflictState.RESOLVED:
+            continue
+        decided = _project_provenance(session, conflict)
+        if not decided.is_human_decided:
+            continue
+        fields.setdefault(conflict.scan_id, _FieldDecisions()).add(
+            conflict, decided.value, whole=conflict.group_key == WHOLE_FIELD
+        )
+        found[conflict.scan_id] = replace(
+            current,
+            source=ValueSource.HUMAN,
+            reviewer=decided.reviewer,
+            reason=decided.reason,
+        )
+    by_scan = {row.scan_id: row for row in scans}
+    for scan_id, decisions in fields.items():
+        current = found[scan_id]
+        found[scan_id] = replace(
+            current,
+            value=decisions.assemble(by_scan.get(scan_id), current.machine_value),
+        )
     return found
 
 

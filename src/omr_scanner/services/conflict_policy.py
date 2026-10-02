@@ -58,6 +58,7 @@ import dataclasses
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from omr_scanner.domain.review import (
@@ -85,7 +86,7 @@ from omr_scanner.recognition.models import (
 from omr_scanner.services.recognition_models import RegistrationStatus, StatusCode
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from omr_scanner.domain.template import OmrTemplate, Zone
     from omr_scanner.services.recognition_models import (
@@ -95,6 +96,24 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class DuplicateGrouping(StrEnum):
+    """Which sheets count as sharing a Student ID (ARCHITECTURE_NOTES §9.2).
+
+    An examination-office policy question, not a technical one: rosters are
+    per set, so an office whose sets are separate examinations may treat the
+    same ID on two sets' papers as two candidates. **The default is unchanged**
+    - the identifier alone, across every set of the session.
+    """
+
+    IDENTIFIER = "identifier"
+    """Two sheets of the session with the same Student ID are a duplicate,
+    whatever set either was read as."""
+
+    SET_AND_IDENTIFIER = "set_and_identifier"
+    """Only sheets of the **same set** with the same Student ID are a
+    duplicate."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +149,9 @@ class ConflictPolicy:
     flag_alignment_warnings: bool = False
     flag_assumed_orientation: bool = True
     flag_scan_quality: bool = True
+    duplicate_grouping: DuplicateGrouping = DuplicateGrouping.IDENTIFIER
+    """How duplicate Student IDs are grouped - see :class:`DuplicateGrouping`.
+    Stored per project (``project_setting["duplicate_id_grouping"]``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -723,6 +745,8 @@ def _is_low(character: CharacterView) -> bool:
 
 def detect_duplicate_identifiers(
     identifiers: Sequence[tuple[int, str]],
+    *,
+    set_codes: Mapping[int, str] | None = None,
 ) -> dict[int, DetectedConflict]:
     """Find scans that resolved to the same candidate identifier.
 
@@ -732,6 +756,9 @@ def detect_duplicate_identifiers(
             must not be passed here - two sheets both read as ``"21?312"`` are
             not evidence of anything, and raising a duplicate conflict for them
             would bury the real duplicates.
+        set_codes: ``scan id -> effective set`` to group by (set, identifier)
+            - :attr:`DuplicateGrouping.SET_AND_IDENTIFIER` - or ``None`` (the
+            default) to group by the identifier alone.
 
     Returns:
         One conflict per scan involved, keyed by scan id. Each carries the
@@ -745,15 +772,19 @@ def detect_duplicate_identifiers(
         processes, which is exactly what the Phase 5 architecture avoids. This
         runs in the coordinator once the batch's identifiers are known.
     """
-    grouped: dict[str, list[int]] = defaultdict(list)
+    grouped: dict[tuple[str, str], list[int]] = defaultdict(list)
     for scan_id, value in identifiers:
         if value:
-            grouped[value].append(scan_id)
+            group = set_codes.get(scan_id, "") if set_codes is not None else ""
+            grouped[(group, value)].append(scan_id)
 
     conflicts: dict[int, DetectedConflict] = {}
-    for value, scan_ids in grouped.items():
+    for (group, value), scan_ids in grouped.items():
         if len(scan_ids) < 2:
             continue
+        where = f"set {group} of this scan session" if set_codes is not None else (
+            "this scan session"
+        )
         ordered = sorted(scan_ids)
         for scan_id in ordered:
             others = tuple(item for item in ordered if item != scan_id)
@@ -763,7 +794,7 @@ def detect_duplicate_identifiers(
                 observation=MachineObservation(
                     value=value,
                     detail=(
-                        f"{len(ordered)} sheets in this scan session read as "
+                        f"{len(ordered)} sheets in {where} read as "
                         f"'{value}'. Each may be a different candidate, a sheet "
                         "scanned twice, or a miscoded identifier."
                     ),

@@ -303,9 +303,9 @@ def test_one_correction_in_a_large_session_touches_only_its_groups(sw, monkeypat
     seen: list[int] = []
     real = review_store.detect_duplicate_identifiers
 
-    def spy(identifiers: list[tuple[int, str]]) -> object:
+    def spy(identifiers: list[tuple[int, str]], **kwargs: object) -> object:
         seen.append(len(identifiers))
-        return real(identifiers)
+        return real(identifiers, **kwargs)
 
     monkeypatch.setattr(review_store, "detect_duplicate_identifiers", spy)
     events = audit_count(sw.database)
@@ -332,3 +332,41 @@ def test_one_correction_in_a_large_session_touches_only_its_groups(sw, monkeypat
             if item is not None
         }
     assert written <= changed
+
+
+# ----------------------------------------------------------------------
+# The (set, identifier) grouping policy option (ACCEPTANCE C4)
+# ----------------------------------------------------------------------
+class TestGroupingPolicy:
+    def test_the_default_groups_by_identifier_alone(self, sw):
+        assert review_store.duplicate_grouping(sw.database).value == "identifier"
+        sw.add_batch([("other_set.tif", "100121", "2", 10)])
+        assert {sw.ids["s1a.png"], sw.ids["other_set.tif"]} <= set(live(sw.database))
+
+    def test_grouping_by_set_and_identifier_is_an_audited_office_choice(self, sw):
+        from omr_scanner.services.conflict_policy import DuplicateGrouping
+
+        sw.add_batch([("other_set.tif", "100121", "2", 10)])
+        review_store.set_duplicate_grouping(
+            sw.database, DuplicateGrouping.SET_AND_IDENTIFIER, set_by=OPERATOR
+        )
+        # Different sets: two candidates, not a duplicate.
+        assert not {sw.ids["s1a.png"], sw.ids["other_set.tif"]} & set(live(sw.database))
+        # The same set still is - through the bounded pass after a correction.
+        sw.add_batch([("same_set.tif", "100777", "1", 11)])
+        correct(sw, "same_set.tif", "100121")
+        found = live(sw.database)
+        assert found[sw.ids["same_set.tif"]] == {sw.ids["s1a.png"]}
+        assert sw.ids["other_set.tif"] not in found
+        assert_rebuild_changes_nothing(sw)
+        with sw.database.session() as session:
+            events = session.scalars(
+                select(AuditEvent.new_value).where(AuditEvent.action == "policy_changed")
+            ).all()
+        assert events == ["set_and_identifier"]
+        review_store.set_duplicate_grouping(
+            sw.database, DuplicateGrouping.IDENTIFIER, set_by=OPERATOR
+        )
+        assert {sw.ids["s1a.png"], sw.ids["other_set.tif"], sw.ids["same_set.tif"]} <= set(
+            live(sw.database)
+        )
