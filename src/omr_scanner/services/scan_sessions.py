@@ -1614,6 +1614,13 @@ def combine_scan_sessions(
                 target.template_id, target.template_name, target.geometry_fingerprint,
                 target.recognition_fingerprint, target.engine_version,
             ) = first
+    if moved:
+        # The combined session is a new population (0.1.1 phase 4): its
+        # duplicate IDs and existing reconciliations are re-derived over it.
+        # A combine is rare and explicit, so this is the full rebuild.
+        from omr_scanner.services import scan_lifecycle
+
+        scan_lifecycle.refresh_session_after_combine(database, moved[0])
     return CombineOutcome(
         target_id=target_id, moved_batches=tuple(moved), emptied_sessions=tuple(sources)
     )

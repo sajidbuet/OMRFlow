@@ -2262,6 +2262,16 @@ def _after_change(
             )
 
 
+def refresh_session_after_combine(database: ProjectDatabase, batch_id: str) -> None:
+    """Re-derive duplicates and reconciliation for the session ``batch_id`` now belongs to.
+
+    Run by :func:`omr_scanner.services.scan_sessions.combine_scan_sessions` once
+    batches have moved: the full rebuild, since every sheet may now meet sheets
+    it never shared a session with.
+    """
+    _after_change(database, batch_id)
+
+
 # ----------------------------------------------------------------------
 # Where a cross-batch replacement counts
 # ----------------------------------------------------------------------
