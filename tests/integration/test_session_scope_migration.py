@@ -98,7 +98,7 @@ def test_upgrading_binds_the_store_and_changes_no_result(name, tmp_path):
             assert bound == [PROVENANCE["second_batch_of_split_state"]]
             with database.session() as db:
                 detail = db.scalars(
-                    select(AuditEvent.detail).where(AuditEvent.action == "downstream_store_bound")
+                    select(AuditEvent.detail).where(AuditEvent.action == "store_bound")
                 ).one()
             assert PROVENANCE["first_batch_of_split_state"][:8] in detail
         else:

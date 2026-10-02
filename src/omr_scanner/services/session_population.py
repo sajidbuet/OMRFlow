@@ -320,7 +320,7 @@ def bind_downstream_stores(database: ProjectDatabase) -> int:
                     AuditEvent(
                         occurred_at=datetime.now(UTC), batch_id=store, scan_id=0,
                         conflict_id=0, entity_type="scan_session",
-                        entity_id=str(scan_session_id), action="downstream_store_bound",
+                        entity_id=str(scan_session_id), action="store_bound",
                         new_value=store,
                         detail=(
                             f"Upgrade: the session's downstream store is batch {store[:8]}, "

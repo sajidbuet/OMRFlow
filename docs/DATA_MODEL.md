@@ -757,7 +757,7 @@ first writable open after the migration (after the scan-session backfill),
 idempotent: a session holding downstream state in one batch is bound to it;
 one holding it in several (reconciled again after a later batch arrived,
 under schema 14) is bound to the newest batch not superseded - the state the
-schema-14 build showed - with an audit event (`downstream_store_bound`) naming
+schema-14 build showed - with an audit event (`store_bound`) naming
 the batches kept as history. Nothing else is changed; nothing is deleted.
 
 A schema-14 project opened read-only is not migrated and reads as the

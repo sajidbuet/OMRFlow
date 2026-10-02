@@ -293,7 +293,7 @@ class LifecycleAction(StrEnum):
     REIMPORT_LINKED = "reimport_linked"
     """A scan with a rejected scan's exact bytes was linked back to it."""
 
-    DUPLICATE_CONTENT_LINKED = "duplicate_content_linked"
+    DUPLICATE_CONTENT_LINKED = "duplicate_linked"
     """A newly registered scan with an earlier sheet's exact bytes was linked
     to it and left unread (0.1.1 phase 4)."""
 

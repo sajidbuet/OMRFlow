@@ -367,7 +367,7 @@ No production throughput claim is made.
      bring it back);
    - another session: not a duplicate.
 5. **Recorded and linkable:** `scan_rejection` (`duplicate_content`,
-   `reimport_of_scan_id`) plus a `duplicate_content_linked` audit event. The
+   `reimport_of_scan_id`) plus a `duplicate_linked` audit event. The
    Scan list shows *Duplicate of <file> (not read)*, also after reopening.
    `scan_lifecycle.list_cases(include_reimports=True)` lists it with
    re-imports. Resolve's Rejected/Rescan view, which shows rescan cases only,

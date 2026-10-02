@@ -218,7 +218,7 @@ class TestExactDuplicates:
         register(sw, [("copy_of_s1a.tif", ORIGINAL)])
         copy = sw.ids["manual/copy_of_s1a.tif"]
         history = scan_lifecycle.lifecycle_history(sw.database, copy)
-        assert [item.action for item in history] == ["duplicate_content_linked"]
+        assert [item.action for item in history] == ["duplicate_linked"]
         assert str(sw.ids["s1a.png"]) in history[0].detail
         cases = scan_lifecycle.list_cases(
             sw.database, sw.batches[0], include_reimports=True, session_wide=True
