@@ -61,6 +61,7 @@ from omr_scanner.services import (
     ProcessedScan,
     RecognitionOutcome,
     ScanResult,
+    intake,
     process_batch,
     recognise_scan,
     scan_lifecycle,
@@ -243,6 +244,12 @@ class BatchWorker(QThread):
     def _hash_sources_for_provenance(self) -> None:
         """Fingerprint this batch's source files, off the GUI thread (Phase 10, §9/§10).
 
+        Since 0.1.1 revised phase 5 the files are also recorded in the project's
+        built-in **manual intake source**
+        (:func:`~omr_scanner.services.intake.record_manual_batch`), through the
+        same hashing routine - so *Add Folder -> Process All* and a watched
+        source share one content identity and one ledger.
+
         A no-op with no project open (no recorder, nothing to persist a hash
         into) - which is exactly the benchmark and headless-tool situation.
         Never allowed to fail the run: provenance is a safety net, not a
@@ -251,11 +258,15 @@ class BatchWorker(QThread):
         if self._recorder is None:
             return
         try:
-            scan_provenance.compute_hashes_for_batch(
-                self._recorder.database, self._recorder.batch_id
-            )
+            intake.record_manual_batch(self._recorder.database, self._recorder.batch_id)
         except Exception:
-            _LOGGER.exception("Content-hash provenance pass failed; processing continues")
+            _LOGGER.exception("Manual intake recording failed; hashing without the ledger")
+            try:
+                scan_provenance.compute_hashes_for_batch(
+                    self._recorder.database, self._recorder.batch_id
+                )
+            except Exception:
+                _LOGGER.exception("Content-hash provenance pass failed; processing continues")
 
     def _leave_exact_duplicates_unread(self) -> None:
         """Take the run's exact-duplicate images out of the work list, unread.
@@ -275,6 +286,10 @@ class BatchWorker(QThread):
         except Exception:
             _LOGGER.exception("Exact-duplicate check failed; every file will be read")
             return
+        try:
+            intake.mirror_duplicates(self._recorder.database, self._recorder.batch_id)
+        except Exception:
+            _LOGGER.exception("Could not mirror duplicate links into the intake ledger")
         if not linked:
             return
         skipped = {str(item.path) for item in linked}

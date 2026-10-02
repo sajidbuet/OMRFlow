@@ -59,12 +59,17 @@ Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
 | 1 — Set identity (migration 13) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
 | 2 — ScanSession + finite ScanBatch lifecycle (migration 14) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
 | 3 — Crash-safe Scan/Resolve persistence (no migration) | ✅ merged | ✅ passing, incl. a real-process kill matrix (40 sheets; 1,000-sheet percentage series) | n/a | ❌ not performed | ❌ not performed | ❌ not performed |
-| 4 — Session-level effective results (migration 15) | ✅ on branch `feat/0.1.1-phase4-session-effective-set`, not merged | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
-| 5–10 — Intake, continuous processing, quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
+| 4 — Session-level effective results (migration 15) | ✅ merged into `main` (`fd063f8`) | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
+| 5 — Intake sources + ledger (migration 16; headless) | ✅ on branch `feat/0.1.1-phase5-intake-ledger`, not merged | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer / engine process kills and a 2,400-arrival soak | 🟠 local temp-directory soak only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
+| 6–10 — Continuous processing, quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
 
 Since revised phase 4, a scan session with several batches is added up: every
 downstream stage reads the session's one effective sheet set
-([ADR-0007](../decisions/ADR-0007-session-effective-sheet-set.md)).
+([ADR-0007](../decisions/ADR-0007-session-effective-sheet-set.md)). Revised
+phase 5 adds the **headless** intake layer - sources, the intake ledger,
+stabilisation, verified copy ingest and a registration API
+([intake](../intake.md), [ADR-0008](../decisions/ADR-0008-intake-copy-or-reference.md));
+watched folders are not yet scanned for an operator (phases 6–8).
 
 **Architecture:** `Project → ScanSession → one or more finite ScanBatch
 objects → sheets`. A *scan batch* stays a finite, auditable processing and

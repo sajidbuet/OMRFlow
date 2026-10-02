@@ -146,13 +146,27 @@ def load_scan_image(path: Path, *, color: bool = False) -> NDArray[np.uint8]:
             user_message=f"The file '{path.name}' is empty.",
         )
 
-    flag = cv2.IMREAD_COLOR if color else cv2.IMREAD_GRAYSCALE
-    decoded = cv2.imdecode(raw, flag)
+    decoded = decode_scan_bytes(raw, color=color)
     if decoded is None:
         raise ImageValidationError(
             f"Image file '{path}' could not be decoded; it may not be an image",
             user_message=f"The file '{path.name}' is not an image OMRFlow can read.",
         )
+    return decoded
+
+
+def decode_scan_bytes(raw: NDArray[np.uint8], *, color: bool = False) -> NDArray[np.uint8] | None:
+    """Decode an image already read into memory, or ``None`` if it does not decode.
+
+    The one decode call recognition makes (:func:`load_scan_image`) and intake's
+    completeness check makes
+    (:func:`omr_scanner.services.image_integrity.check_image_bytes`), so "the
+    file decodes" means the same thing at both.
+    """
+    flag = cv2.IMREAD_COLOR if color else cv2.IMREAD_GRAYSCALE
+    decoded = cv2.imdecode(raw, flag)
+    if decoded is None:
+        return None
     return np.asarray(decoded, dtype=np.uint8)
 
 

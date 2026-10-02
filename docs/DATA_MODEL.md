@@ -42,6 +42,9 @@ entities, it finds the intended shape and relationships already agreed.
 | ProcessingManifest (reproducibility snapshot) | Implemented (Phase 10) | `processing_manifest` table |
 | Content-hash provenance (per scan) | Implemented (Phase 10) | `batch_scan.content_sha256`/`content_hash_algorithm` columns |
 | Project backup manifest | Implemented (Phase 10) | Filesystem sidecar JSON, deliberately **not** a database table - see below |
+| IntakeSource (watched folders, the built-in manual source) | Implemented (0.1.1 revised phase 5) | `intake_source` table |
+| IntakeSourceAttachment (which session a source serves) | Implemented (0.1.1 revised phase 5) | `intake_source_attachment` table |
+| IntakeFile (the intake ledger) | Implemented (0.1.1 revised phase 5) | `intake_file` table; `batch_scan.intake_file_id` / `registered_at`; `scan_batch.source_id` |
 
 ## Entity relationships
 
@@ -233,6 +236,78 @@ schema-13 database opened read-only still reads):**
 
 Index `ix_scan_batch_session (scan_session_id, created_at)`.
 
+**Intake column (migration 16, 0.1.1 revised phase 5; deferred):**
+`source_id` (str(32), nullable, FK `intake_source`, `RESTRICT`) - the intake
+source the batch's files came from: the watched source for a batch made by
+`IntakeService.register`, the built-in manual source for an *Add Folder* batch
+once its worker recorded it. Provenance only. NULL for batches made before
+migration 16. Index `ix_scan_batch_source`.
+
+### IntakeSource - *implemented (0.1.1 revised phase 5)*
+
+Table `intake_source`; [intake.md](intake.md); ADR-0008. Project-level: a source
+outlives sessions and is attached to one at a time.
+
+| Field | Purpose |
+|---|---|
+| `source_id` | UUID hex; stable identity of the *source* (never of a script) |
+| `project_id` | From `project_setting` |
+| `label` | Human name; not unique, not identity |
+| `kind` | `watched` or `manual` (`domain.intake.SourceKind`) |
+| `root_path` | Folder, local or UNC, exactly as configured; empty for the manual source. Cannot change |
+| `recursive` | Include sub-folders |
+| `exclusions_json` | `{"files": [...], "folders": [...]}` `fnmatch` patterns |
+| `policy_json` | The source's `StabilityPolicy`; empty = default for its path (network for UNC) |
+| `ingest_mode` | `copy` (watched default) or `reference` (manual) - ADR-0008 |
+| `enabled` | Disabled sources are not listed; their rows are unchanged |
+| `is_builtin` | The manual source (one per project, created on first use) |
+| `reachability` / `reachability_detail` / `reachability_changed_at` | `unknown`, `online`, `unreachable`, `permission_denied`, `disabled`; detail; when it last changed. Source state only - never implies a file state |
+| `last_attempt_at` / `last_reconciled_at` | Last listing attempt; last **successful** reconciliation (also: when every settled, present row was last seen) |
+| `last_file_seen_at` / `last_file_seen_path` | The newest admissible file a pass discovered |
+| `created_at` / `created_by` / `updated_at` | Bookkeeping; configuration changes are also `audit_event` rows (`entity_type = intake_source`) |
+
+### IntakeSourceAttachment - *implemented (0.1.1 revised phase 5)*
+
+Table `intake_source_attachment`: `attachment_id`, `source_id`,
+`scan_session_id` (FK, `RESTRICT`), `attached_at` / `attached_by`,
+`detached_at` / `detached_by`. History, never deleted; at most one live row per
+source (`uq_intake_attachment_live`, partial unique where `detached_at IS
+NULL`). A file is intended for the session its source served when it was first
+observed.
+
+### IntakeFile - *implemented (0.1.1 revised phase 5)*
+
+Table `intake_file`, the intake ledger: one row per **observed version** of one
+file in one source. Filesystem intake state only; once registered, processing
+state is the linked `batch_scan.status`.
+
+| Field | Purpose |
+|---|---|
+| `intake_file_id` | Row identity |
+| `source_id` | The source (FK, `RESTRICT`) |
+| `scan_session_id` | The session the observation is intended for (FK, `RESTRICT`); NULL while its source served none |
+| `relative_path` | `/`-separated, relative to the source root (manual: the path as chosen). Location and provenance, **not identity** |
+| `absolute_path` | The path as observed, platform form, never normalised |
+| `file_name` | Last path component |
+| `file_size` / `mtime_ns` | The latest observation of this content - the cache that spares re-reading an unchanged file |
+| `content_sha256` | SHA-256 of the bytes that were hashed **and fully decoded from one read**; NULL until verified (for `unreadable` / `unsupported`, the hash of the bytes judged) |
+| `state` / `state_reason` / `detail` | `domain.intake.IntakeState` / `IntakeReason` / plain words |
+| `state_changed_at` | When `state` last changed |
+| `first_seen_at` | First observation of this row |
+| `last_seen_at` | Unsettled and ready rows: the last pass that saw them. Settled rows: when presence was last confirmed by a change (the source's `last_reconciled_at` bounds the rest) |
+| `stable_since` / `observations` | Quiet-period start and consecutive observations of the current `(size, mtime_ns)`; reset after a restart |
+| `attempts` / `retry_after` | Failed decodes of this version; back-off before the next read |
+| `ready_at` | When it became ready - with the id, the registration order; kept across restart |
+| `verified_at` / `reverify_required` | Last successful verification; set after a restart until re-read |
+| `present` | Seen by the last listing that could have seen it |
+| `is_current` | The latest row for its `(source, relative path)` |
+| `path_reused` / `previous_intake_file_id` | New bytes at a path whose earlier content was registered; the earlier row (or, for `unchanged_content`, the row holding these bytes) |
+| `image_format` / `image_width` / `image_height` / `page_count` | Decode evidence |
+| `batch_scan_id` | The scan registration created (unique; FK `SET NULL`) |
+| `duplicate_of_scan_id` | For `duplicate_content`: the effective sheet the bytes repeat |
+| `ingest_path` | The verified project copy, project-relative; empty when read in place |
+| `registered_at` | When it was registered |
+
 ### ScanSession - *implemented (0.1.1 phase 2)*
 
 Table `scan_session`. The examination-level aggregation unit
@@ -318,10 +393,15 @@ Fields: `scan_id`, `batch_id`, `batch_index`, `source_path`, `filename`,
 `file_size`, `modified_at`, `status`, `attempt_count`, `outcome`,
 `registration`, `identifier_value`, `set_code_value`, `output_name`,
 `output_path`, `copied`, `error_code`, `error_category`, `error_message`,
-`result_json`, `started_at`, `finished_at`, `duration_seconds`.
+`result_json`, `started_at`, `finished_at`, `duration_seconds`; since migration
+16 (deferred) `intake_file_id` (FK `intake_file`, `SET NULL`; several scans may
+name one ledger row - a *Reprocess All* re-reads the same file - while the row
+names the one registration that consumed it) and `registered_at`. For a
+watched source ingested by copy (ADR-0008), `source_path` is the verified
+project copy; the original location is the ledger row's `absolute_path`.
 
 `status` is one of `pending`, `queued`, `processing`, `completed`, `warning`,
-`failed`, `cancelled`. Every state is either *terminal* (work a resume must
+`failed`, `cancelled`, `duplicate`. Every state is either *terminal* (work a resume must
 keep) or *resumable*; a test asserts that no state is somehow neither, because
 a scan in such a state would be invisible to both the resume query and the
 completed count.
@@ -744,6 +824,35 @@ when the standing command is a machine `withdrawn` - and is not undoable. Phase 
 | `answer_key_revision.created_by` / template identity / `source_sha256` / `source_metadata_json` | Answer-key provenance. | Answer Key rework (migration 12) |
 | `project_set.canonical_code` / `physical_mark` | Canonical set identity (unique where not NULL) and the optional printed mark. | Set identity, 0.1.1-A (migration 13) |
 | `scan_session`, `batch_supersession`; `scan_batch.scan_session_id` / `sealed_at` / `sealed_by` / `role` | Scan sessions, finite-batch membership, batch roles and first-class batch supersession. | Scan sessions, 0.1.1 phase 2 (migration 14) |
+| `scan_session.downstream_batch_id`; `generated_report.scan_session_id` / `is_final` / `session_closed_at` | A session's recorded downstream store; final outputs' scope. | Session scope, 0.1.1 phase 4 (migration 15) |
+| `intake_source`, `intake_source_attachment`, `intake_file`; `batch_scan.intake_file_id` / `registered_at`; `scan_batch.source_id` | Intake sources, their session attachments and the intake ledger; provenance links from scans and batches. | Intake, 0.1.1 revised phase 5 (migration 16) |
+
+### Schema version 16 (intake sources and ledger, 0.1.1 revised phase 5)
+
+`_migration_016_intake` creates `intake_source`, `intake_source_attachment` and
+`intake_file` and adds `batch_scan.intake_file_id` (FK, `ON DELETE SET NULL`),
+`batch_scan.registered_at` and `scan_batch.source_id` (FK, `ON DELETE
+RESTRICT`), each guarded by `PRAGMA table_info`, plus `ix_batch_scan_intake_file`
+and `ix_scan_batch_source`. **Structure only, and no row is written**: the
+built-in manual source is created by the intake service on first use, and no
+existing `batch_scan` is reinterpreted as intake work - every new link is NULL
+("registered before intake sources existed"). The pre-migration backup runs
+first (`backup_*_before-migration-15-to-16.sqlite3`). The new model columns on
+`batch_scan` and `scan_batch` are **deferred**, so a schema-15 project opened
+read-only (never migrated) still reads every scan. Upgrade tests run from
+schema-15 projects written by the schema-15 build (`tests/fixtures/schema15`).
+
+Indexes on `intake_file`:
+
+| Index | Columns | Why |
+|---|---|---|
+| `uq_intake_file_current_path` | `(source_id, relative_path)` unique **where** `is_current = 1` | One current row per path |
+| `uq_intake_file_content` | `(source_id, relative_path, content_sha256)` unique | One logical item per path and content; NULL (unverified) rows are distinct |
+| `ix_intake_file_hash` | `content_sha256` | Content lookups |
+| `ix_intake_file_state_ready` | `(state, ready_at, intake_file_id)` | The registration order |
+| `ix_intake_file_source_state` | `(source_id, state)` | One source's rows per pass |
+| `ix_intake_file_session` | `(scan_session_id, state)` | A session's intake |
+| `uq_intake_file_batch_scan` | `batch_scan_id` unique where not NULL | One registration per scan |
 
 ### Schema version 15 (session scope, 0.1.1 phase 4)
 

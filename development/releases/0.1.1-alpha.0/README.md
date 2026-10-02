@@ -1,8 +1,11 @@
 # `0.1.1-alpha.0` — release planning area
 
-> **Planned target. Not released, not implemented.** The running application
-> is `0.1.0-alpha.2` (`src/omr_scanner/_version.py`) and remains so until
-> implementation of this line begins — see [ROADMAP.md](ROADMAP.md) §9.
+> **In implementation, not released.** Source builds report `0.1.1-alpha.0`
+> (`src/omr_scanner/_version.py`) since implementation began on 2026-10-01;
+> the last release is `0.1.0-alpha.2`. Revised phases 1-4 are merged; phase 5
+> (intake sources and ledger) is on a branch. Status per phase:
+> [ROADMAP.md](ROADMAP.md) §5.1 and §7; handoffs `PHASE_A`…`PHASE_E_HANDOFF.md`
+> (lettered in revised-phase order).
 
 This directory holds **the single authoritative plan** for `0.1.1-alpha.0`:
 scan sessions over finite batches, multi-source intake, session-level results,

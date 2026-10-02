@@ -29,6 +29,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -137,6 +138,41 @@ class ProjectDatabase:
     def __exit__(self, *_exc_info: object) -> None:
         """Close the database when leaving the context."""
         self.close()
+
+
+def recover_interrupted_transaction(database_path: Path) -> bool:
+    """Let SQLite roll back a *hot journal* a killed writer left behind.
+
+    A process killed in the middle of a commit leaves ``<db>-journal`` holding
+    the pages needed to undo its partial write. SQLite rolls such a journal
+    back automatically - but only on a connection that may write, so a
+    read-only connection (:func:`open_project_database` with ``read_only``,
+    used to peek at the schema version before a migration) fails with
+    "attempt to write a readonly database" until it is.
+
+    This opens one ordinary connection and reads, which is exactly SQLite's
+    own crash recovery: the database returns to its last committed state and
+    nothing else is written. SQLite only treats a journal as hot when no live
+    process holds the database's write lock, so a running writer is never
+    disturbed. Found by the 0.1.1 revised phase 5 real-kill intake test.
+
+    Returns:
+        Whether a journal was present and a recovery connection succeeded.
+    """
+    journal = database_path.with_name(database_path.name + "-journal")
+    if not database_path.is_file() or not journal.exists():
+        return False
+    try:
+        connection = sqlite3.connect(str(database_path), timeout=10)
+        try:
+            connection.execute("PRAGMA schema_version").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error:
+        logger.exception("Could not recover the interrupted transaction in %s", database_path)
+        return False
+    logger.warning("Rolled back an interrupted transaction in %s", database_path.name)
+    return True
 
 
 def open_project_database(

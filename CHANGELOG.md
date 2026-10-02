@@ -55,8 +55,42 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   (`scan_lifecycle.confirm_replacement`); combine the sessions first.
 - **Project Health** reports malformed rescan lineage and split downstream
   state.
+- **Intake sources and the intake ledger** (revised phase 5, roadmap D;
+  headless - no operator-facing watched intake yet). Named sources (local or
+  UNC folders, optionally recursive, with exclusions; a built-in manual source
+  created on first use) are reconciled by listing; a file becomes *ready* only
+  when stable over the quiet period, openable (a file another program holds is
+  *locked*, not broken), read once and both hashed and fully decoded from that
+  read (a truncated image with a valid header fails), and unchanged after the
+  read. Multi-page TIFF is refused per file. Path is never identity: new bytes
+  at a known path are a new, flagged record. An unreachable source changes no
+  file's state. Restart re-observes unstable files and re-verifies ready ones.
+  A registration API turns explicit ready files into one finite batch (phase 6
+  will call it); identical bytes are linked by phase 4's duplicate rule.
+  Watched files are copied into the project and the copy verified before it
+  counts; sources are never modified (ADR-0008). *Add Folder -> Process All*
+  records into the manual source through the same hash and duplicate path, with
+  no new operator step. Stabilisation thresholds are per-source configuration
+  (starting values, not validated). See `docs/intake.md`.
+- **Migration 16 (schema 16): intake.** `intake_source`,
+  `intake_source_attachment`, `intake_file`; `batch_scan.intake_file_id` /
+  `registered_at`; `scan_batch.source_id`. Additive; writes no row; existing
+  scans are not reinterpreted. A schema-16 project is refused by older builds
+  with the existing "created with a newer version" message.
+- **Project Health** reports intake-ledger inconsistencies (a registration
+  without its scan, mismatched links or hashes, a missing verified copy, a
+  duplicate without its original, a malformed hash).
 
 ### Fixed (`0.1.1` line)
+
+- **A project could not be reopened after a writer was killed mid-commit.**
+  The rollback journal left behind is "hot"; the read-only probe that decides
+  on a pre-migration backup could not roll it back and its error escaped, so
+  `open_project` failed. SQLite's own recovery now runs first (found by revised
+  phase 5's real-kill test; present on `main` before).
+- **The schema-14 upgrade fixtures' databases were never committed**
+  (`.gitignore`), so the migration-15 upgrade tests could not pass on a clean
+  checkout.
 
 - **Crash-safe Scan and Resolve persistence (`0.1.1` revised phase 3; no
   migration).** Closes the four required pre-Alpha defects (ADR-0006):

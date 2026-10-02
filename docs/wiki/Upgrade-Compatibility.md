@@ -7,11 +7,12 @@ What OMRFlow promises about opening a project written by a different version.
 | | Current source (`0.1.1` development line, unreleased) |
 |---|---|
 | **Project format version** — the shape of `project.json` | **3** |
-| **Database schema version** — the shape of `database.sqlite` | **14** |
+| **Database schema version** — the shape of `database.sqlite` | **16** (on branch `feat/0.1.1-phase5-intake-ledger`; `main` is at 15) |
 
 (This table previously read format 2 / schema 9, which no longer matched the
 code; corrected 2026-10-01 from `project_format_version` in a project written
-by current code and `SCHEMA_VERSION` in `database/migrations.py`.)
+by current code and `SCHEMA_VERSION` in `database/migrations.py`. It then read
+14 after phase 4 had moved `main` to 15; corrected 2026-10-02.)
 
 Both appear in the diagnostic bundle (**Application menu → Tools → Create
 Diagnostic Bundle…**). The schema a build *expects* is recorded as
@@ -37,6 +38,24 @@ of the data.
 **A migration that cannot complete stops.**
 It fails with a message and leaves the project as it was, rather than
 half-applying.
+
+## Schema 16 — intake sources and ledger (`0.1.1` line, revised phase 5)
+
+Migration 16 adds three tables (`intake_source`, `intake_source_attachment`,
+`intake_file`) and three empty provenance columns. It **writes no row** and
+changes nothing an operator sees: existing scans stay exactly as they were, and
+the built-in *manual import* source is created the first time *Process All*
+runs afterwards. A backup of the database is taken first, as for every
+migration. A schema-16 project is refused by any earlier build with the usual
+"created with a newer version" message. Tested from schema-15 projects written
+by the schema-15 build.
+
+## Schema 15 — session scope (`0.1.1` line, revised phase 4)
+
+Migration 15 records each scan session's downstream store and the session,
+finality and close of each generated report; the first editable open binds
+existing sessions to the state the previous build showed. Details:
+[ADR-0007](../decisions/ADR-0007-session-effective-sheet-set.md).
 
 ## Crash-safe persistence (`0.1.1` line, phase 3) — still schema 14
 

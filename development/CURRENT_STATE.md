@@ -40,7 +40,51 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase4-session-effective-set`, not merged; migration 15, schema 15)
+### Intake sources and ledger (`0.1.1` revised phase 5 / roadmap D, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase5-intake-ledger`, not merged; migration 16, schema 16; headless)
+
+- **What exists:** `domain/intake.py` (states, transition table, reasons,
+  stabilisation policy, name rules), `services/intake.py` (sources, attachment,
+  reconciliation, verification, restart recovery, registration API, manual
+  recording), `services/intake_fs.py` (`os.scandir` listing, one-read
+  snapshots, sharing-violation detection, verified copy store),
+  `services/image_integrity.py` (structural completeness + the recognition
+  decoder). Reference: `docs/intake.md`; ADR-0008; `PHASE_E_HANDOFF.md`.
+- **Sources** are project-level (`intake_source`), attached to one session at a
+  time (`intake_source_attachment`, history kept). The built-in manual source
+  is created on first use, not by the migration. Configuration changes and
+  attachments are audited; polls are not.
+- **Ledger** (`intake_file`): one row per observed version; unique on
+  `(source, relative path, content)`; path never identity. States `discovered
+  -> stabilizing -> ready -> registered`, diversions `duplicate_content`,
+  `ignored`, `vanished`, `unreadable`, `unsupported` (multi-page TIFF), `held`
+  (closed session; no exit in phase 5).
+- **Ready** only after stable `(size, mtime_ns)` over *K* observations and *T*
+  seconds, an openable file, one read hashed and fully decoded, and an unchanged
+  re-stat. Thresholds are per-source configuration (starting values, measured
+  locally only).
+- **Reachability** (`online`, `unreachable`, `permission_denied`, `disabled`)
+  is source state; a failed listing changes no file row and never stops other
+  sources.
+- **Restart**: unstable rows are re-observed from scratch; ready rows are
+  re-verified before registration, keeping their order; interrupted duplicate
+  links completed; interrupted copies removed.
+- **Registration API** (`IntakeService.ready_items` / `register`): explicit
+  ready files of one source -> one finite, sealed batch of the session, `pending`
+  scans carrying the verified hash; phase 4's `link_exact_duplicates` then
+  decides duplicate content; closed sessions divert to `held`. Watched files
+  are copied into `scans_original/intake/` and the copy verified (ADR-0008).
+- **Manual convergence**: *Add Folder -> Process All* is unchanged; the Scan
+  worker records the batch into the manual source with the same hash routine
+  and the same duplicate rule.
+- **Fixed in passing:** a project whose writer was killed mid-commit (hot
+  journal) could not be reopened - the pre-migration read-only probe failed.
+- **Also fixed:** the schema-14 upgrade fixtures' databases had never been
+  committed.
+- **Not yet:** any operator-facing watched intake (no source panel, no engine,
+  no continuous recognition - phases 6-8); SMB / network-share validation;
+  real scanners; production use.
+
+### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; merged to `main` as `fd063f8`; migration 15, schema 15)
 
 - **One resolver** (ADR-0007): `services/session_population.py` gives every
   sheet of a scan session one disposition (`domain/session_population.py`).

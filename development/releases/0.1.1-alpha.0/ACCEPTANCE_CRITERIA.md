@@ -177,6 +177,24 @@ Rules that apply to every section:
 - D9. *Add Folder* and a watched source produce identical ledger records for
   identical files.
 
+> **Evidence on branch `feat/0.1.1-phase5-intake-ledger` (2026-10-02, automated
+> tests on local disks; not network-share or real-scanner validated).** D1
+> `test_intake_acceptance`, `test_intake_processes::test_engine_killed_while_writers_continue_then_restarted`
+> (36 files from three writer processes, engine killed and restarted: each
+> registered once with its final bytes); D2 `test_intake_ledger::TestGrowingFiles`,
+> `TestWriterPatterns`, `test_image_integrity`, `test_intake_filesystem` (a real
+> exclusive handle), `test_intake_processes::test_a_writer_killed_mid_file_never_reaches_ready`;
+> D3 `TestCollisions`, `test_intake_filesystem::TestRealWriters::test_path_reuse_on_disk`;
+> D4 `TestCollisions`, `test_intake_manual::test_manual_and_watched_duplicates_use_one_rule`;
+> D5 `TestReachability`; D6 `TestRestart`, `test_intake_processes`; D7 no
+> notification code exists (reconciliation only; `TestOneDefinition`); D8
+> `StabilityPolicy` per source, measurements in `PHASE_E_HANDOFF.md`; D9
+> `test_intake_manual::test_add_folder_and_a_watched_source_record_the_same_identity`
+> (identity fields: name, size, `mtime_ns`, hash, state; decode-evidence fields
+> are filled for watched readiness only - see the handoff). X6 (sources never
+> modified): `test_intake_filesystem::TestThreeSources`, `test_intake_processes`,
+> `test_manual_intake_gui`.
+
 ### E — Continuous processing, quality decisions and session controls
 
 - E1. Ready files are processed in sealed, per-source units satisfying every

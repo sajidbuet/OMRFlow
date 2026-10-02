@@ -61,7 +61,9 @@ def results(database) -> list[tuple[str, str, str]]:
 
 def test_the_fixtures_really_are_schema_14_from_the_previous_build():
     assert PROVENANCE["schema_version"] == 14
-    assert SCHEMA_VERSION == 15
+    # Migration 15 is the one under test. Was `== 15` until revised phase 5
+    # added migration 16 (intake); an upgrade now runs 15 and then 16.
+    assert SCHEMA_VERSION >= 15
 
 
 @pytest.mark.parametrize("name", ["one_session", "split_state"])
@@ -85,7 +87,8 @@ def test_upgrading_binds_the_store_and_changes_no_result(name, tmp_path):
         before = results(session.database)
     with open_project(root) as session:
         database = session.database
-        assert database.schema_version == 15
+        # Through migration 15 to the current schema (16 since revised phase 5).
+        assert database.schema_version == SCHEMA_VERSION
         assert (root / "backups").is_dir() and any((root / "backups").iterdir())
         assert results(database) == before
         with database.session() as db:

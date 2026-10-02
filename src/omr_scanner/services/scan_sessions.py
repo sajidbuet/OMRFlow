@@ -840,6 +840,13 @@ def seal_batch(
         return _seal(session, batch_id, actor=sealed_by, reason=reason)
 
 
+def seal_batch_in(
+    session: Session, batch_id: str, *, sealed_by: str = "", reason: str = ""
+) -> bool:
+    """:func:`seal_batch` inside a transaction the caller owns (intake registration)."""
+    return _seal(session, batch_id, actor=sealed_by, reason=reason)
+
+
 def _open_session_for_new_batch(
     session: Session,
     scan_session_id: str | None,
@@ -907,56 +914,91 @@ def start_batch(
         TemplatePinError: The template differs from the session's pin and the
             change was not acknowledged.
     """
-    from omr_scanner.services import batch_store
-
     with database.session() as session:
-        row = _open_session_for_new_batch(session, scan_session_id, created_by=started_by)
-        differences = pin_differences(row, identity)
-        if differences and not acknowledge_template_change:
-            raise TemplatePinError(
-                f"Template differs from scan session {row.scan_session_id}",
-                user_message=" ".join(differences),
-                differences=differences,
-            )
-        if seal_previous:
-            for previous in session.scalars(
-                select(ScanBatch.batch_id)
-                .where(ScanBatch.scan_session_id == row.scan_session_id)
-                .where(ScanBatch.sealed_at.is_(None))
-            ).all():
-                _seal(session, str(previous), actor=started_by, reason="another batch started")
-        identifier = batch_store.insert_batch(
+        return start_batch_in(
             session,
             paths,
             identity=identity,
             source_folder=source_folder,
             settings=settings,
+            role=role,
+            scan_session_id=scan_session_id,
+            started_by=started_by,
+            seal_previous=seal_previous,
+            acknowledge_template_change=acknowledge_template_change,
             batch_id=batch_id,
-            scan_session_id=row.scan_session_id,
-            role=role.value,
         )
-        if not row.template_id and not row.geometry_fingerprint:
-            _pin(row, identity)
-        elif differences:
-            _audit(
-                session,
-                action=SessionAction.TEMPLATE_ACKNOWLEDGED,
-                entity_type=SESSION_ENTITY,
-                entity_id=row.scan_session_id,
-                batch_id=identifier,
-                actor=started_by,
-                detail=" ".join(differences),
-            )
+
+
+def start_batch_in(
+    session: Session,
+    paths: Sequence[Path],
+    *,
+    identity: BatchIdentity,
+    source_folder: Path | None = None,
+    settings: dict[str, Any] | None = None,
+    role: BatchRole = BatchRole.SCAN,
+    scan_session_id: str | None = None,
+    started_by: str = "",
+    seal_previous: bool = True,
+    acknowledge_template_change: bool = False,
+    batch_id: str | None = None,
+) -> str:
+    """:func:`start_batch` inside a transaction the caller owns.
+
+    For a caller that must commit the new batch together with records of its
+    own - intake registration links its ledger rows to the batch's scans in the
+    same transaction (0.1.1 revised phase 5). Same rules, same audit events.
+    """
+    from omr_scanner.services import batch_store
+
+    row = _open_session_for_new_batch(session, scan_session_id, created_by=started_by)
+    differences = pin_differences(row, identity)
+    if differences and not acknowledge_template_change:
+        raise TemplatePinError(
+            f"Template differs from scan session {row.scan_session_id}",
+            user_message=" ".join(differences),
+            differences=differences,
+        )
+    if seal_previous:
+        for previous in session.scalars(
+            select(ScanBatch.batch_id)
+            .where(ScanBatch.scan_session_id == row.scan_session_id)
+            .where(ScanBatch.sealed_at.is_(None))
+        ).all():
+            _seal(session, str(previous), actor=started_by, reason="another batch started")
+    identifier = batch_store.insert_batch(
+        session,
+        paths,
+        identity=identity,
+        source_folder=source_folder,
+        settings=settings,
+        batch_id=batch_id,
+        scan_session_id=row.scan_session_id,
+        role=role.value,
+    )
+    if not row.template_id and not row.geometry_fingerprint:
+        _pin(row, identity)
+    elif differences:
         _audit(
             session,
-            action=SessionAction.BATCH_ATTACHED,
-            entity_type=BATCH_ENTITY,
-            entity_id=identifier,
+            action=SessionAction.TEMPLATE_ACKNOWLEDGED,
+            entity_type=SESSION_ENTITY,
+            entity_id=row.scan_session_id,
             batch_id=identifier,
             actor=started_by,
-            new_value=row.scan_session_id,
-            detail=f"role={role.value} scans={len(paths)}",
+            detail=" ".join(differences),
         )
+    _audit(
+        session,
+        action=SessionAction.BATCH_ATTACHED,
+        entity_type=BATCH_ENTITY,
+        entity_id=identifier,
+        batch_id=identifier,
+        actor=started_by,
+        new_value=row.scan_session_id,
+        detail=f"role={role.value} scans={len(paths)}",
+    )
     return identifier
 
 

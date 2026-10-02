@@ -1,14 +1,14 @@
 # `0.1.1-alpha.0` roadmap — scan sessions, multi-source intake and set identity
 
 > **The single authoritative plan for `0.1.1-alpha.0`.** Status: **in
-> implementation.** Reconciled 2026-09-30. Revised phase 1 (set identity,
-> roadmap A) is implemented, tested and merged into `main` (`ce3f082`; see
-> [PHASE_A_HANDOFF.md](PHASE_A_HANDOFF.md)). Revised phase 2 (scan sessions and
-> finite batches - the lifecycle part of roadmap B) is implemented and tested
-> on branch `feat/0.1.1-phase2-scan-session-lifecycle`, not merged (see
-> [PHASE_B_HANDOFF.md](PHASE_B_HANDOFF.md)). The rest is not implemented;
-> nothing is released. The implementation sequence is the revised ten-phase
-> split in §5.1.
+> implementation.** Reconciled 2026-09-30. Revised phases 1-4 (set identity;
+> scan sessions and finite batches; crash-safe persistence; session-level
+> effective results) are implemented, tested and merged into `main` (latest
+> `fd063f8`; handoffs A-D). Revised phase 5 (intake sources and ledger, roadmap
+> D) is implemented and tested on branch `feat/0.1.1-phase5-intake-ledger`,
+> not merged ([PHASE_E_HANDOFF.md](PHASE_E_HANDOFF.md)). Phases 6-10 are not
+> implemented; nothing is released. The implementation sequence is the revised
+> ten-phase split in §5.1.
 >
 > Written against `main` at `128512d` (code as of `c30e809`, **schema 12**).
 > It reconciles and replaces two earlier plans (§11). Canonical project status
@@ -173,8 +173,8 @@ processing, the operator GUI, and qualification.
 |---|---|---|---|---|---|
 | **0.1.1-A** | Set identity (and the version bump) | — | 13 (taken) | [01](prompts/01-set-identity.md) | Implemented; tested — [handoff](PHASE_A_HANDOFF.md) |
 | **0.1.1-B** | Scan sessions and finite batches | A | 14 (taken) | [02](prompts/02-scan-sessions.md) | Lifecycle part implemented; tested; merged (revised phase 2, [handoff](PHASE_B_HANDOFF.md)). Crash-safety part (S1–S3, R1) implemented; tested, incl. a real-process kill matrix; branch, not merged (revised phase 3, no migration, [handoff](PHASE_C_HANDOFF.md)) |
-| **0.1.1-C** | Session-level review, reconciliation, scoring and reporting | B | 15 | [03](prompts/03-session-results.md) | Pending |
-| **0.1.1-D** | Intake sources and ledger | B | 16 | [04](prompts/04-intake-ledger.md) | Pending |
+| **0.1.1-C** | Session-level review, reconciliation, scoring and reporting | B | 15 (taken) | [03](prompts/03-session-results.md) | Implemented; tested; merged (revised phase 4, [handoff](PHASE_D_HANDOFF.md)) |
+| **0.1.1-D** | Intake sources and ledger | B | 16 (used, unmerged) | [04](prompts/04-intake-ledger.md) | Implemented; tested; branch, not merged (revised phase 5, [handoff](PHASE_E_HANDOFF.md)) |
 | **0.1.1-E** | Continuous processing, quality decisions and session controls | C, D | as needed | [05](prompts/05-continuous-processing.md) | Pending |
 | **0.1.1-F** | Operational GUI | E | — | [06](prompts/06-operational-gui.md) | Pending |
 | **0.1.1-G** | Qualification and Alpha release | A–F | — | [07](prompts/07-qualification-release.md) | Pending |
@@ -194,8 +194,8 @@ and crash safety gets its own phase:
 | **1** Set Identity Foundation | Canonical set identity, physical marks, migration 13 | A | Implemented; tested; merged |
 | **2** ScanSession + finite ScanBatch lifecycle | Sessions, sealing, roles, supersession, backfill, pinning, manifests, minimal menu, migration 14 | B (lifecycle) | Implemented; tested; merged |
 | **3** Crash-safe Scan/Resolve persistence | S1, S2, S3, R1; durable-completion invariant; real-kill matrix (ACCEPTANCE §5.4) | **B (crash safety, moved here)** | Implemented; tested (cases 1–15 with real process kills at 40 sheets; 1/25/50/75/99 % also at 1,000); merged (`0e94d67`); no migration (ADR-0006, [handoff](PHASE_C_HANDOFF.md)) |
-| **4** Session-level effective results | Effective scan set, session Resolve queue, reconciliation, scoring, Results, Reports, final export | C | Implemented; tested (unit, integration, GUI; 3-batch / 100+-script acceptance scenario; generated-cohort ground truth; golden one-batch regression against `main`; scripted GUI). Migration 15 (session scope, report scope, lookup indexes). Branch `feat/0.1.1-phase4-session-effective-set`, not merged. Not operator-validated (ADR-0007, [handoff](PHASE_D_HANDOFF.md)) |
-| **5** Intake sources + ledger | | D | Pending |
+| **4** Session-level effective results | Effective scan set, session Resolve queue, reconciliation, scoring, Results, Reports, final export | C | Implemented; tested (unit, integration, GUI; 3-batch / 100+-script acceptance scenario; generated-cohort ground truth; golden one-batch regression against `main`; scripted GUI). Migration 15 (session scope, report scope, lookup indexes). Merged (`fd063f8`). Not operator-validated (ADR-0007, [handoff](PHASE_D_HANDOFF.md)) |
+| **5** Intake sources + ledger | Persistent sources and session attachment, authoritative reconciliation, stabilisation with one-read hash + full decode, collision rules, reachability, restart recovery, verified copy ingest, registration API, manual convergence, migration 16 | D | Implemented; tested (fake-filesystem state machine, real temporary directories, real writer and engine process kills, three-source acceptance, 2,400-arrival soak, schema-15 upgrade). Branch `feat/0.1.1-phase5-intake-ledger`, not merged. Headless. Not network-share or real-scanner validated (ADR-0008, [handoff](PHASE_E_HANDOFF.md)) |
 | **6** Continuous-processing engine | Unit scheduler, writer strategy, restart sequence | E (first part) | Pending |
 | **7** Quality / rescan / session controls | Quality decision layer, rescan suggestions, pause/finish semantics, session snapshot | E (second part) | Pending |
 | **8** Operational GUI | | F | Pending |
@@ -551,8 +551,8 @@ qualified*, *released*. Each phase is tracked on separate tracks:
 | A (revised 1) | **Done** (merged `ce3f082`) | **Passing** | n/a | n/a | Pending | Pending |
 | B lifecycle (revised 2) | **Done** (merged `1798e84`) | **Passing** | n/a | n/a | Pending | Pending |
 | B crash safety (revised 3) | **Done** (merged `0e94d67`) | **Passing** | n/a | n/a | Pending | Pending |
-| C (revised 4) | **Done** (branch, unmerged) | **Passing** | Pending (the intake campaign is Phase G's) | n/a | Pending | Pending |
-| D | Pending | Pending | Pending | Pending | Pending | Pending |
+| C (revised 4) | **Done** (merged `fd063f8`) | **Passing** | Pending (the intake campaign is Phase G's) | n/a | Pending | Pending |
+| D (revised 5) | **Done** (branch, unmerged) | **Passing** | Pending (local temp-directory soak only; the campaign is Phase G's) | **Not performed** | Pending | Pending |
 | E | Pending | Pending | Pending | Pending | Pending | Pending |
 | F | Pending | Pending | Pending | Pending | Pending | Pending |
 | G | Pending | Pending | Pending | Pending | Not required for `alpha.0` | Not required for `alpha.0` |
