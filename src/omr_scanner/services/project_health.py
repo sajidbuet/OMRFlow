@@ -760,6 +760,130 @@ def _scan_session_issues(database: ProjectDatabase) -> list[HealthIssue]:
     return issues
 
 
+def _session_population_issues(database: ProjectDatabase) -> list[HealthIssue]:
+    """Integrity of the rescan links the effective sheet set is built from (0.1.1 phase 4).
+
+    :mod:`omr_scanner.services.session_population` resolves every sheet's
+    disposition from ``scan_rejection``; it never repairs what it reads, so a
+    malformed lineage is reported here instead: a cycle of replacements, a
+    superseded sheet whose replacement is missing, a link on a row that is not
+    superseded, a lifecycle row filed under another batch than its scan, a
+    replacement in another scan session (honoured through its lineage root,
+    but no longer creatable), and a session whose downstream state is split
+    across batches. Linear in the number of lifecycle rows.
+    """
+    from omr_scanner.database.models import ReconciliationRun, ScanRejection
+    from omr_scanner.domain.scan_lifecycle import LifecycleState
+    from omr_scanner.domain.session_population import lineage_roots
+
+    if not scan_sessions.has_lifecycle_schema(database):
+        return []
+    issues: list[HealthIssue] = []
+    superseded = LifecycleState.SUPERSEDED_BY_REPLACEMENT.value
+    with database.session() as session:
+        rows = session.execute(
+            select(
+                ScanRejection.scan_id,
+                ScanRejection.batch_id,
+                ScanRejection.state,
+                ScanRejection.replacement_scan_id,
+                BatchScan.batch_id,
+            ).outerjoin(BatchScan, BatchScan.scan_id == ScanRejection.scan_id)
+        ).all()
+        batch_session: dict[str, str | None] = {
+            str(batch_id): owner
+            for batch_id, owner in session.execute(
+                select(ScanBatch.batch_id, ScanBatch.scan_session_id)
+            ).all()
+        }
+        replacement_batch: dict[int, str] = {
+            int(scan_id): str(batch_id)
+            for scan_id, batch_id in session.execute(
+                select(BatchScan.scan_id, BatchScan.batch_id).where(
+                    BatchScan.scan_id.in_(
+                        select(ScanRejection.replacement_scan_id).where(
+                            ScanRejection.replacement_scan_id.is_not(None)
+                        )
+                    )
+                )
+            ).all()
+        }
+        holders = session.execute(
+            select(ReconciliationRun.batch_id).distinct()
+        ).scalars().all()
+    replacement_of: dict[int, int] = {}
+    for scan_id, filed_batch, state, replacement, scan_batch in rows:
+        if scan_batch is not None and filed_batch != scan_batch:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.ERROR,
+                    "LIFECYCLE_BATCH_MISMATCH",
+                    f"Scan {scan_id}'s lifecycle record is filed under batch "
+                    f"{str(filed_batch)[:8]}, but the scan was read into {str(scan_batch)[:8]}.",
+                )
+            )
+        if state == superseded and (replacement is None or replacement not in replacement_batch):
+            issues.append(
+                HealthIssue(
+                    HealthLevel.ERROR,
+                    "DANGLING_REPLACEMENT",
+                    f"Scan {scan_id} is marked replaced, but its replacement "
+                    + ("is not recorded." if replacement is None else "is not in the project."),
+                )
+            )
+        if replacement is None:
+            continue
+        if state != superseded:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.ERROR,
+                    "CONTRADICTORY_REPLACEMENT_LINK",
+                    f"Scan {scan_id} names replacement {replacement} but its state is "
+                    f"'{state}', not replaced.",
+                )
+            )
+            continue
+        replacement_of[int(replacement)] = int(scan_id)
+        mine = batch_session.get(str(filed_batch))
+        theirs = batch_session.get(replacement_batch.get(int(replacement), ""))
+        if mine and theirs and mine != theirs:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.WARNING,
+                    "CROSS_SESSION_REPLACEMENT",
+                    f"Scan {scan_id} is replaced by scan {replacement} of another scan "
+                    "session; the replacement counts in the original's session.",
+                )
+            )
+    cycles = lineage_roots(replacement_of).cycles
+    if cycles:
+        issues.append(
+            HealthIssue(
+                HealthLevel.ERROR,
+                "RESCAN_LINEAGE_CYCLE",
+                f"Rescan replacements form a cycle through {len(cycles)} scan(s): "
+                + ", ".join(str(item) for item in sorted(cycles)),
+            )
+        )
+    per_session: dict[str, list[str]] = {}
+    for batch_id in holders:
+        owner = batch_session.get(str(batch_id))
+        if owner:
+            per_session.setdefault(owner, []).append(str(batch_id))
+    for _owner, batches in sorted(per_session.items()):
+        if len(batches) > 1:
+            issues.append(
+                HealthIssue(
+                    HealthLevel.WARNING,
+                    "SESSION_DOWNSTREAM_SPLIT",
+                    f"{len(batches)} batches of one scan session hold reconciliation "
+                    "state; Attendance, Results and Reports read only the oldest "
+                    "(" + ", ".join(sorted(item[:8] for item in batches)) + ").",
+                )
+            )
+    return issues
+
+
 def _backup_issue(project_root: Path) -> list[HealthIssue]:
     backups_dir = project_root / project_backup.BACKUP_DIR_NAME
     entries = project_backup.list_backups(backups_dir)
@@ -843,6 +967,7 @@ def full_check(database: ProjectDatabase, project_root: Path) -> HealthReport:
             _missing_verified_key_issue,
             _set_identity_issues,
             _scan_session_issues,
+            _session_population_issues,
         ):
             try:
                 issues += check(database)
