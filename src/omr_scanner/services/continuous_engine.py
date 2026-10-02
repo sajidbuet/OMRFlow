@@ -552,6 +552,15 @@ class ContinuousEngine:
         self._recogniser.close()
         if self._state is not EngineState.FAULTED:
             self._commit_all()
+            if self._buffer:
+                # Read results the writer still cannot save: the claims stay
+                # `processing` for recovery, and the engine says so.
+                self._state = EngineState.FAULTED
+                _LOGGER.error(
+                    "Continuous engine stopped with %d unsaved result(s); recovery on the "
+                    "next start returns their sheets to pending",
+                    len(self._buffer),
+                )
         if self._state is not EngineState.FAULTED:
             buffered = {claim.scan_id for claim, _processed in self._buffer}
             self._release(

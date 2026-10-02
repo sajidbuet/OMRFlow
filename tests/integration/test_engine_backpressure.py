@@ -423,6 +423,31 @@ class TestShutdown:
             statuses = set(session.scalars(select(batch_store.ScanBatch.status)).all())
         assert BatchStatus.INTERRUPTED.value in statuses
 
+    def test_a_writer_still_failing_at_shutdown_leaves_claims_for_recovery(
+        self, rig, tmp_path, monkeypatch
+    ):
+        held = HeldRecogniser()
+        engine = self._engine(rig, tmp_path, held)
+        engine.step()
+        original = batch_store.record_results
+
+        def broken(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("disk full (injected)")
+
+        monkeypatch.setattr(batch_store, "record_results", broken)
+        held.release(2)
+        engine.step()
+        status = engine.shutdown()
+        # Not "stopped": two read sheets could not be saved, so their claims
+        # are deliberately left for recovery rather than reported as clean.
+        assert status.state is EngineState.FAULTED
+        assert counts(rig)[ScanJobStatus.PROCESSING.value] == 2
+        monkeypatch.setattr(batch_store, "record_results", original)
+        restarted = engine_with(rig, HeldRecogniser(), EngineLimits(max_in_flight=6,
+                                                                    claim_window=6))
+        assert ScanJobStatus.PROCESSING.value not in counts(rig)
+        restarted.shutdown()
+
     def test_pause_and_cancel_primitives(self, rig, tmp_path):
         held = HeldRecogniser()
         engine = self._engine(rig, tmp_path, held)
