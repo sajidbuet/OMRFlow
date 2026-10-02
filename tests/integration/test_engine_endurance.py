@@ -34,8 +34,8 @@ from tests.crash.harness import integrity
 from tests.engine_rig import (
     OPTIONS,
     EngineRig,
-    Killed,
     KillAt,
+    Killed,
     committed_contents,
     digest,
     durable_view,

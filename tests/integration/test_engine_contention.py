@@ -74,7 +74,7 @@ def test_engine_and_resolve_decisions_write_concurrently(project_session):
                     started = time.perf_counter()
                     review_store.reopen(rig.database, conflict_id, reviewer="Reviewer")
                     latencies.append(time.perf_counter() - started)
-        except BaseException as exc:  # noqa: BLE001 - reported below
+        except BaseException as exc:
             errors.append(exc)
 
     thread = threading.Thread(target=operator, name="resolve-operator")

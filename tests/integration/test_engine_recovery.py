@@ -17,14 +17,15 @@ from __future__ import annotations
 import random
 from collections import Counter
 from collections.abc import Iterator, Sequence
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
 from tests.crash.harness import integrity
 from tests.engine_rig import (
     EngineRig,
-    Killed,
     KillAt,
+    Killed,
     committed_contents,
     digest,
     durable_view,
@@ -165,7 +166,7 @@ class TestKillAtEachBoundary:
         assert final["batches"][: len(before["batches"])] == [
             row for row in final["batches"] if row[0] in {b[0] for b in before["batches"]}
         ]
-        old_members = {row for row in before["members"]}
+        old_members = set(before["members"])
         assert old_members <= set(final["members"])
 
 
@@ -199,7 +200,9 @@ class TestMandatoryRegressions:
             row = session.get(BatchScan, acknowledged_lost)
             assert row is not None and row.attempt_count == 1
             assert session.scalar(
-                select(func.count()).select_from(BatchScan).where(BatchScan.content_sha256 == content)
+                select(func.count())
+                .select_from(BatchScan)
+                .where(BatchScan.content_sha256 == content)
             ) == 1
             assert session.scalar(select(func.count()).select_from(BatchScan)) == scans_before
             assert session.scalar(
@@ -406,7 +409,7 @@ class TestWriterFailure:
         original = review_store.sync_conflicts_in_session
         failures = {"left": 2}
 
-        def failing(session, **kwargs):  # type: ignore[no-untyped-def]
+        def failing(session: Any, **kwargs: Any) -> Any:
             # Fail *after* the result row was flushed in the same transaction.
             if failures["left"]:
                 failures["left"] -= 1
@@ -453,7 +456,7 @@ class TestWriterFailure:
 
         original = batch_store.record_results
 
-        def broken(*args, **kwargs):  # type: ignore[no-untyped-def]
+        def broken(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("database is locked (injected)")
 
         monkeypatch.setattr(batch_store, "record_results", broken)
@@ -483,7 +486,9 @@ class TestResolveAcrossRestarts:
             conflicts = session.scalars(
                 select(ReviewConflict).order_by(ReviewConflict.conflict_id)
             ).all()
-            open_ids = [row.conflict_id for row in conflicts if row.state == ConflictState.OPEN.value]
+            open_ids = [
+                row.conflict_id for row in conflicts if row.state == ConflictState.OPEN.value
+            ]
         assert len(open_ids) >= 2
         decided = open_ids[0]
         review_store.accept_machine_value(
@@ -514,7 +519,7 @@ class TestResolveAcrossRestarts:
         # Everything but the one human decision equals the uninterrupted run.
         assert view["results"] == expected["results"]
         assert view["effective"] == expected["effective"]
-        def machine(conflicts):  # type: ignore[no-untyped-def]
+        def machine(conflicts: list) -> list:
             return sorted((c[0], c[1], c[2], c[3], c[5]) for c in conflicts)
         assert machine(view["conflicts"]) == machine(expected["conflicts"])
 

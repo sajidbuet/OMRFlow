@@ -44,6 +44,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT / "src") not in sys.path:  # pragma: no cover - child bootstrap
@@ -120,34 +121,35 @@ def main() -> int:
             if arguments.pause == name and self.seen[name] >= arguments.pause_count:
                 block(name, **fields)
 
-        def claimed(self, claims):  # type: ignore[no-untyped-def]
+        def claimed(self, claims: Any) -> None:
             self._hit("claimed", sheets=[Path(item.path).stem for item in claims])
 
-        def submitted(self, claim):  # type: ignore[no-untyped-def]
+        def submitted(self, claim: Any) -> None:
             log.write("submitted", sheet=Path(claim.path).stem, scan_id=claim.scan_id)
 
-        def recognised(self, claim):  # type: ignore[no-untyped-def]
+        def recognised(self, claim: Any) -> None:
             self._hit("recognised", sheet=Path(claim.path).stem)
 
-        def before_commit(self, batch_id, claims):  # type: ignore[no-untyped-def]
+        def before_commit(self, batch_id: str, claims: Any) -> None:
             self.seen["before_commit"] = self.seen.get("before_commit", 0) + 1
-            if arguments.pause == "in_commit" and self.seen["before_commit"] >= arguments.pause_count:
+            due = self.seen["before_commit"] >= arguments.pause_count
+            if arguments.pause == "in_commit" and due:
                 armed["in_commit"] = True
 
-        def committed(self, batch_id, claims):  # type: ignore[no-untyped-def]
+        def committed(self, batch_id: str, claims: Any) -> None:
             sheets = [Path(item.path).stem for item in claims]
             self.committed_total += len(sheets)
             log.write("committed", sheets=sheets, batch_id=batch_id)
             self._hit("committed", sheets=sheets)
 
-        def finalising(self, batch_id):  # type: ignore[no-untyped-def]
+        def finalising(self, batch_id: str) -> None:
             self._hit("finalising", batch_id=batch_id)
 
-        def finalised(self, batch_id, status):  # type: ignore[no-untyped-def]
+        def finalised(self, batch_id: str, status: str) -> None:
             log.write("finalised", batch_id=batch_id, status=status)
 
     @event.listens_for(Session, "after_flush")
-    def _pause_inside_the_work_unit(session, _context):  # type: ignore[no-untyped-def]
+    def _pause_inside_the_work_unit(session: Any, _context: Any) -> None:
         # The first flush after `before_commit` is record_results' own: the
         # result rows are written to the database file; conflicts and the
         # commit have not happened yet.

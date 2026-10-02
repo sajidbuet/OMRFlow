@@ -155,10 +155,15 @@ def _differences(actual: dict, expected: dict) -> list[str]:
         if left[:5] != right[:5]:
             found.append(f"{key[:8]}: {left[:5]} != {right[:5]}")
         a, b = json.loads(left[5]), json.loads(right[5])
-        found += [f"{key[:8]}.{field}" for field in sorted(set(a) | set(b)) if a.get(field) != b.get(field)]
+        found += [
+            f"{key[:8]}.{field}"
+            for field in sorted(set(a) | set(b))
+            if a.get(field) != b.get(field)
+        ]
     for name in ("effective", "conflicts", "unread_duplicates", "pending"):
         if actual[name] != expected[name]:
-            found.append(f"{name}: {sorted(set(map(str, actual[name])) ^ set(map(str, expected[name])))[:4]}")
+            changed = set(map(str, actual[name])) ^ set(map(str, expected[name]))
+            found.append(f"{name}: {sorted(changed)[:4]}")
     return found
 
 
@@ -246,7 +251,9 @@ def downstream(rig: EngineRig, tmp: Path, candidates: dict[str, list[str]]) -> d
 
 
 class TestDownstream:
-    def test_attendance_and_scores_match_the_finite_run(self, projects, workspace, sheets, tmp_path):
+    def test_attendance_and_scores_match_the_finite_run(
+        self, projects, workspace, sheets, tmp_path
+    ):
         finite = new_rig(projects, workspace, "FiniteDown")
         run_finite(finite, sheets)
         identifiers = session_population.effective_identifiers(
@@ -262,7 +269,7 @@ class TestDownstream:
             code = codes.get(scan_id)
             if item.value and "?" not in item.value and code is not None and code.value:
                 candidates.setdefault(code.value, []).append(item.value)
-        candidates = {code: sorted(set(rolls)) + ["999999"] for code, rolls in candidates.items()}
+        candidates = {code: [*sorted(set(rolls)), "999999"] for code, rolls in candidates.items()}
         assert candidates, "the dataset produced no readable candidate"
         expected = downstream(finite, tmp_path, candidates)
 
@@ -337,7 +344,9 @@ def test_source_outage_does_not_stop_registered_work(projects, workspace, sheets
     status = engine.status()
     assert status.caught_up
     assert status.pending == 0
-    reached = {item.source_id: item.reachability.value for item in intake.list_sources(rig.database)}
+    reached = {
+        item.source_id: item.reachability.value for item in intake.list_sources(rig.database)
+    }
     assert reached[rig.sources["a"]] == "unreachable"
     view = durable_view(rig.database, rig.session_id)
     assert {digest(item) for item in sheets[:13]} <= set(view["results"]) | set(

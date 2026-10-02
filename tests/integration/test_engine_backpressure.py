@@ -15,6 +15,7 @@ import tracemalloc
 from collections import deque
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select
@@ -88,6 +89,33 @@ class HeldRecogniser:
     def close(self) -> list[int]:
         self.closed = True
         return self.cancel_queued()
+
+
+class ReversedOrder:
+    """Another recogniser whose finished sheets come back last-submitted first."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+
+    @property
+    def outstanding(self) -> int:
+        return int(self.inner.outstanding)
+
+    @property
+    def accepting(self) -> bool:
+        return bool(self.inner.accepting)
+
+    def submit(self, ticket: int, path: Path) -> None:
+        self.inner.submit(ticket, path)
+
+    def poll(self, timeout: float) -> list[RecognitionDone]:
+        return list(reversed(self.inner.poll(timeout)))
+
+    def cancel_queued(self) -> list[int]:
+        return list(self.inner.cancel_queued())
+
+    def close(self) -> list[int]:
+        return list(self.inner.close())
 
 
 @pytest.fixture
@@ -198,7 +226,7 @@ class TestBackpressure:
         original = batch_store.record_results
         sizes: list[int] = []
 
-        def slow(*args, **kwargs):  # type: ignore[no-untyped-def]
+        def slow(*args: Any, **kwargs: Any) -> Any:
             sizes.append(len(args[2]))
             time.sleep(0.01)
             return original(*args, **kwargs)
@@ -222,9 +250,10 @@ class TestBackpressure:
 class TestOrderAndFaults:
     def test_out_of_order_completion_gives_the_same_durable_state(self, workspace):
         """§59: later-submitted sheets finish first; the outcome is identical."""
+        from tests.engine_rig import OPTIONS
+
         from omr_scanner.services import create_project
         from omr_scanner.services.recognition_pool import InlineRecogniser
-        from tests.engine_rig import OPTIONS
 
         sheets = readable_sheets(30)[:24]
         views = []
@@ -237,22 +266,7 @@ class TestOrderAndFaults:
                 inline = InlineRecogniser(
                     rig.template, options=OPTIONS, recognise=rig.recognise, per_poll=8
                 )
-                if lifo:
-                    inner = inline
-
-                    class Reversed:
-                        outstanding = property(lambda self: inner.outstanding)
-                        accepting = property(lambda self: inner.accepting)
-                        submit = inner.submit
-                        cancel_queued = inner.cancel_queued
-                        close = inner.close
-
-                        def poll(self, timeout: float) -> list[RecognitionDone]:
-                            return list(reversed(inner.poll(timeout)))
-
-                    recogniser = Reversed()
-                else:
-                    recogniser = inline
+                recogniser: Any = ReversedOrder(inline) if lifo else inline
                 engine = rig.new_engine(
                     recogniser=recogniser,
                     limits=EngineLimits(max_in_flight=8, claim_window=8, max_commit_group=1),
@@ -321,7 +335,7 @@ class TestOrderAndFaults:
 
 
 class TestShutdown:
-    def _engine(self, rig, tmp_path, held):
+    def _engine(self, rig: EngineRig, tmp_path: Path, held: HeldRecogniser) -> ContinuousEngine:
         register_units(rig, units=2, size=10, tmp=tmp_path)
         return engine_with(rig, held, EngineLimits(max_in_flight=6, claim_window=6))
 
@@ -393,7 +407,7 @@ class TestShutdown:
         engine.step()
         original = batch_store.record_results
 
-        def busy(*args, **kwargs):  # type: ignore[no-untyped-def]
+        def busy(*args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("database is locked (injected)")
 
         monkeypatch.setattr(batch_store, "record_results", busy)

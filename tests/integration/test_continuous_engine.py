@@ -65,11 +65,15 @@ class TestBasicFlow:
 
 class TestMultiSourceScenario:
     def test_three_sources_arrivals_late_duplicate_and_restart(self, rig):
-        """§29: A1 and B1 register; A2 arrives while B1 is read; C comes later; a
-        later sheet repeats a Student ID; the engine is stopped with work left;
-        a new engine finishes the same session."""
-        from omr_scanner.domain.review import ConflictType
+        """§29: three sources, arrivals during processing, a late duplicate, a restart.
+
+        A1 and B1 register; A2 arrives while B1 is read; C comes later; a later
+        sheet repeats a Student ID; the engine is stopped with work left; a new
+        engine finishes the same session.
+        """
         from tests.engine_rig import KillAt, Killed
+
+        from omr_scanner.domain.review import ConflictType
 
         sheets = readable_sheets(48)[:40]
         # Index 18 repeats index 17's Student ID on a different image.

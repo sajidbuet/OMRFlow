@@ -27,7 +27,6 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -231,7 +230,7 @@ def test_kill_at_a_boundary(tmp_path, sources, expected, name, child):
 
 
 def test_kill_while_sheets_are_inside_the_workers(tmp_path, sources, expected):
-    at_kill, events = kill_and_resume(
+    at_kill, _events = kill_and_resume(
         tmp_path, sources, expected, "free", predicate=committed_at_least(10),
         what="10 committed sheets", workers=2,
     )

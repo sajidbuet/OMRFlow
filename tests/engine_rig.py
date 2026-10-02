@@ -144,7 +144,7 @@ class CountingRecognise:
         return sum(self.calls.values())
 
 
-class Killed(BaseException):  # noqa: N818 - it is what happens, not an error
+class Killed(BaseException):
     """Raised from a hook to abandon the engine at that exact boundary."""
 
 
@@ -341,7 +341,9 @@ def durable_view(database: Any, scan_session_id: str) -> dict[str, Any]:
             ).all()
             if item
         }
-    terminal = {ScanJobStatus.COMPLETED.value, ScanJobStatus.WARNING.value, ScanJobStatus.FAILED.value}
+    terminal = {
+        ScanJobStatus.COMPLETED.value, ScanJobStatus.WARNING.value, ScanJobStatus.FAILED.value
+    }
     results = {
         str(sha): (str(status), str(outcome), str(ident), str(code), int(attempts),
                    normalised_result(str(payload)))
@@ -403,7 +405,9 @@ def submissions_of_committed(rig: EngineRig, committed_contents: set[str]) -> di
 
 
 def committed_contents(database: Any) -> set[str]:
-    terminal = [ScanJobStatus.COMPLETED.value, ScanJobStatus.WARNING.value, ScanJobStatus.FAILED.value]
+    terminal = [
+        ScanJobStatus.COMPLETED.value, ScanJobStatus.WARNING.value, ScanJobStatus.FAILED.value
+    ]
     with database.session() as session:
         return {
             str(item)
