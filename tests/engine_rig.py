@@ -291,7 +291,10 @@ class EngineRig:
 # ----------------------------------------------------------------------
 # What a run leaves behind, comparable across projects
 # ----------------------------------------------------------------------
-_VOLATILE = ("source_path", "elapsed_seconds", "recognised_at", "timings")
+_VOLATILE = ("source_path", "source_name", "elapsed_seconds", "recognised_at", "timings")
+"""Fields that legitimately differ between two reads of the same bytes: where the
+file was (a watched unit reads phase 5's content-addressed project copy, a manual
+batch the operator's own file - ADR-0008), when, and how long it took."""
 
 
 def normalised_result(payload: str) -> str:
