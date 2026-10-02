@@ -692,10 +692,17 @@ Decision record: `docs/decisions/ADR-0005-scan-sessions-and-finite-batches.md`.
 - **Template pinning.** A session remembers the template of its first batch.
   Processing a batch with a different template asks first; continuing is
   recorded in the audit ledger.
-- **Downstream, for now:** Attendance, Results and Reports read **one** batch -
-  the active session's newest scan/reprocess batch that is not superseded -
-  never "the most recently updated batch". A session of several batches is not
-  yet added up; that arrives with session-level results.
+- **Downstream (revised phase 4):** Attendance, Results, Reports, duplicate-ID
+  detection and the Resolve queue read the **whole session**: every sheet of
+  every batch that currently counts (its *effective set*), never "the most
+  recently updated batch" and never "the latest batch wins". A rescan read in
+  any batch of the session replaces its original only when an operator
+  confirms it, for as many generations as needed (A → B → C). Superseded,
+  rejected and excluded sheets are kept for audit. A batch read again with
+  *Reprocess All* contributes nothing; its reprocess batch does. Another scan
+  session is never mixed in. The Scan list, its progress, resume and the Scan
+  CSV export stay per batch: they describe one run. See
+  [ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
 - A **processing manifest** (what the batch was run with) is stored at the end
   of every run and whenever a batch is sealed.
 

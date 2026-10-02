@@ -14,6 +14,9 @@ ordinary coding choices.
 | [ADR-0002](ADR-0002-project-on-disk-layout.md) | A project is a folder with a JSON manifest and a SQLite database |
 | [ADR-0003](ADR-0003-schema-migrations.md) | Hand-written forward-only migrations instead of Alembic |
 | [ADR-0004](ADR-0004-normalized-template-coordinates.md) | Normalised template coordinates and a stored bubble pitch |
+| [ADR-0005](ADR-0005-scan-sessions-and-finite-batches.md) | Scan sessions and finite batches |
+| [ADR-0006](ADR-0006-crash-safe-scan-work-units.md) | Crash-safe Scan work units and restart semantics |
+| [ADR-0007](ADR-0007-session-effective-sheet-set.md) | One canonical effective sheet set per scan session |
 
 Naming: `ADR-NNNN-short-title.md`, numbered sequentially. Status is Proposed,
 Accepted, Superseded (naming the replacement) or Deprecated. An accepted ADR is

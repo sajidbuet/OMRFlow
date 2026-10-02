@@ -40,7 +40,31 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Crash-safe Scan / Resolve persistence (`0.1.1` revised phase 3, 2026-10-01 — implemented; automated tests passing, including a real-process kill matrix; branch `feat/0.1.1-phase3-crash-safe-persistence`, not merged; no migration, schema 14)
+### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase4-session-effective-set`, not merged; no migration, schema 14)
+
+- **One resolver** (ADR-0007): `services/session_population.py` gives every
+  sheet of a scan session one disposition (`domain/session_population.py`).
+  Duplicate-ID detection, the Resolve queue and counts, Attendance, scoring,
+  Results, Reports and final export all read it. No module filters
+  "active sheets" on its own any more.
+- **Session-wide, never project-wide.** A Student ID read in two batches of one
+  session is a duplicate. The same ID in another session is not.
+- **Explicit supersession.** Only confirmed rescan links, lifecycle states and
+  live batch supersessions stop a sheet counting. Matching IDs never do, and
+  nothing follows "latest batch wins". Chains A→B→C count only their newest
+  sheet. A new cross-session link is refused.
+- **Population key**, no migration: downstream rows are stored under the
+  session's oldest batch holding them (else its oldest batch), and every entry
+  point normalises to it. After *Reprocess All*, `downstream_batch_id` is that
+  stable key, not the reprocess batch.
+- **Project Health:** `RESCAN_LINEAGE_CYCLE`, `DANGLING_REPLACEMENT`,
+  `CONTRADICTORY_REPLACEMENT_LINK`, `LIFECYCLE_BATCH_MISMATCH`,
+  `CROSS_SESSION_REPLACEMENT`, `SESSION_DOWNSTREAM_SPLIT`. Reported, never
+  repaired.
+- Not operator-validated. Details:
+  `development/releases/0.1.1-alpha.0/PHASE_D_HANDOFF.md`.
+
+### Crash-safe Scan / Resolve persistence (`0.1.1` revised phase 3, 2026-10-01 — implemented; automated tests passing, including a real-process kill matrix; merged into `main` at `0e94d67`; no migration, schema 14)
 
 - **Durable work unit** (ADR-0006): a sheet's result and the conflicts it
   implies for that sheet commit in one transaction
@@ -96,8 +120,8 @@ Update this file at the end of every phase.
   final outputs stale), Combine. Template pinning per session.
 - Attendance, Results and Reports read `scan_sessions.downstream_batch_id` -
   the active session's newest primary, non-superseded batch by creation - not
-  `list_batches(limit=1)`. **A multi-batch session is not aggregated yet**
-  (revised phase 4).
+  `list_batches(limit=1)`. A multi-batch session is aggregated since revised
+  phase 4 (above).
 - Upgrade backfill on the first writable open: one legacy session per batch;
   two batches grouped only by an unambiguous confirmed cross-batch rescan;
   ambiguous cases reported. Read-only schema-13 projects show virtual sessions.

@@ -263,6 +263,29 @@ Table `batch_supersession`: `supersession_id`, `superseded_batch_id`,
 `reversed_at IS NULL`. Rules: never self, same session, superseded batch
 sealed, at most one live superseding batch, no cycle (chains allowed).
 
+### The session's effective sheet set - *implemented (0.1.1 phase 4), not a table*
+
+A **projection**, computed on demand by `services/session_population.py`
+(ADR-0007). Nothing is stored for it, and no migration was needed (schema stays
+14). It is built from:
+- `batch_scan.status` (read or not);
+- `scan_rejection.state` and `replacement_scan_id` (lifecycle, and explicit
+  rescan links walked to their root);
+- live `batch_supersession` rows;
+- `scan_batch.scan_session_id`.
+
+Each sheet gets one disposition. `effective` and `effective_unreadable` count.
+`rejected_pending_rescan` and `deferred` are listed. `superseded_by_replacement`,
+`reimport_of_rejected`, `excluded`, `not_read`, `batch_superseded` and
+`counted_in_other_session` do not count.
+
+**Population key.** Downstream rows keyed `(roster_id, batch_id)`
+(`reconciliation_run/entry/script/decision`, `candidate_result`) are stored
+under one batch per session: the oldest session batch already holding them,
+else its oldest batch. Once state exists the key does not move. Per-sheet rows
+(`review_conflict`, `scan_rejection`) stay under the sheet's own batch;
+duplicate-ID records list related scans across the session's batches.
+
 ### BatchScan - *implemented (Phase 5)*
 
 One scanned sheet inside a batch. Table `batch_scan`, unique on

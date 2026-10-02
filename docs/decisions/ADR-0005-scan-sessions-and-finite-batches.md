@@ -165,6 +165,11 @@ creation** that has a primary role (`scan`, `legacy`, `reprocess`), is not
 superseded, and is not still `new`/`running`. Never `updated_at`. A
 multi-batch session is therefore **not yet authoritative** for scoring.
 
+> **Superseded by [ADR-0007](ADR-0007-session-effective-sheet-set.md)
+> (revised phase 4).** Downstream stages now read the whole session's
+> effective sheet set; `downstream_batch_id` returns the session's stable
+> population key.
+
 ### Crash safety is not in this decision
 
 Crash-safe Scan/Resolve persistence (gaps S1, S2, S3, R1; real-kill testing) is

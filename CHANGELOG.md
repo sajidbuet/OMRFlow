@@ -23,8 +23,19 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   batch".** They read the active scan session's newest scan / reprocess batch
   that is not superseded, by creation time (`scan_sessions.downstream_batch_id`),
   so retrying an old batch or reopening the project cannot change what is
-  scored (removes the cause of `0.1.0-alpha.2` defect 2). Still one batch: a
-  session of several batches is not added up until session-level results.
+  scored (removes the cause of `0.1.0-alpha.2` defect 2).
+- **Downstream stages read the whole scan session** (revised phase 4,
+  ADR-0007). Duplicate-ID detection, the Resolve queue, Attendance, scoring,
+  Results, Reports and final export read one canonical effective sheet set
+  covering every batch of the session. A Student ID read in two batches is a
+  duplicate. A confirmed rescan in any batch replaces its original, across
+  generations. Another session is never mixed in. After *Reprocess All*,
+  `downstream_batch_id` returns the session's stable population key rather
+  than the reprocess batch.
+- **A rescan link between two scan sessions is refused**
+  (`scan_lifecycle.confirm_replacement`); combine the sessions first.
+- **Project Health** reports malformed rescan lineage and split downstream
+  state.
 
 ### Fixed (`0.1.1` line)
 

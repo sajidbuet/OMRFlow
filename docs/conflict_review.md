@@ -109,7 +109,7 @@ queue, badge and block asks it rather than deciding for itself.
 | Student ID uncertain | A mark too faint, or too close to its runner-up. |
 | Student ID unreadable | A position could not be sampled at all. |
 | Student ID low confidence | Resolved, but below the template's own minimum confidence. |
-| Duplicate student ID | Two or more sheets in the batch resolved to the same identifier. |
+| Duplicate student ID | Two or more sheets that count in the **scan session** (any of its batches; revised phase 4) resolved to the same identifier. A rejected, excluded, deferred or replaced sheet does not take part, and another session never does. Each record lives in its sheet's own batch. |
 
 A blank or ambiguous identifier column is *always* a conflict, even when the
 engine was confident about the blankness: an identifier with a gap cannot name
@@ -176,6 +176,17 @@ decision layer computed from **the template's own** `ambiguity_margin` and
 and there is exactly one place where "how sure is sure enough" is configured.
 
 ---
+
+## 3b. The session queue (revised phase 4)
+
+Resolve shows the **scan session's** queue, opened from any of its batches:
+every conflict of every sheet that counts, and the session's rejected / rescan
+cases, deferred sheets and processed sheets. A decision on a sheet is recorded
+in the batch that sheet was read into. A decision that changes a Student ID
+re-runs the session's duplicate check once, so a correction can raise or clear
+a duplicate with a sheet in another batch. Reopening the project rebuilds the
+same queue from the database; Scan need not be visited. See
+[ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
 
 ## 4. The reviewer's workflow
 
