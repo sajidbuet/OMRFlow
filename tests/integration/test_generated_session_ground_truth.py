@@ -75,7 +75,8 @@ def cohort(template, tmp_path_factory):
         sheets[path.name] = (path, rendered.case, SPEC.kind_for_index(index))
     # The rescan of the rejected sheet: the same pixels, other bytes.
     rejected = next(name for name, (_p, _c, kind) in sheets.items() if kind is StressCaseKind.CLEAN)
-    image = cv2.imdecode(np.frombuffer(sheets[rejected][0].read_bytes(), np.uint8), cv2.IMREAD_COLOR)
+    content = np.frombuffer(sheets[rejected][0].read_bytes(), np.uint8)
+    image = cv2.imdecode(content, cv2.IMREAD_COLOR)
     rescan = folder / "rescan.png"
     cv2.imwrite(str(rescan), image, [cv2.IMWRITE_PNG_COMPRESSION, 1])
     kinds = {kind for _p, _c, kind in sheets.values()}
