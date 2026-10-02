@@ -125,12 +125,31 @@ def assert_never_reread(committed_before: set[str], later_events: list[dict[str,
     assert not (resubmitted & committed_before), sorted(resubmitted & committed_before)
 
 
+def exact_duplicates(project: Path) -> set[str]:
+    """Sheets left unread because their bytes repeat an earlier sheet (0.1.1 phase 4).
+
+    The crash dataset deliberately contains a byte-identical sheet. Since phase
+    4 it is linked to the sheet it repeats when the run registers its files and
+    is never read (status ``duplicate``): it is settled at registration, is
+    never committed by the recorder, and is never resubmitted by a resume.
+    """
+    return {name for name, row in h.committed_rows(project).items() if row["status"] == "duplicate"}
+
+
 def assert_each_sheet_read_once(project: Path) -> None:
-    """Independent witness: every row's attempt counter says it was recorded once."""
+    """Independent witness: every row's attempt counter says it was recorded once.
+
+    An exact duplicate image is never read at all - attempt count 0 - which is
+    the evidence that registration-time suppression cost no recognition.
+    """
     rows = h.committed_rows(project)
-    assert {row["attempts"] for row in rows.values()} == {1}, {
-        name: row["attempts"] for name, row in rows.items() if row["attempts"] != 1
+    duplicates = exact_duplicates(project)
+    assert {row["attempts"] for name, row in rows.items() if name not in duplicates} == {1}, {
+        name: row["attempts"]
+        for name, row in rows.items()
+        if row["attempts"] != 1 and name not in duplicates
     }
+    assert all(rows[name]["attempts"] == 0 for name in duplicates)
 
 
 def semantics(project: Path) -> dict[str, Any]:
@@ -319,7 +338,12 @@ def test_case_01_clean_close_halfway_through_scan(tmp_path, sheets_dir, referenc
         if status == "failed"
     }
     assert failures <= real_failures
-    assert {row["status"] for name, row in rows.items() if name not in committed} == {"cancelled"}
+    duplicates = exact_duplicates(project)
+    assert {
+        row["status"]
+        for name, row in rows.items()
+        if name not in committed and name not in duplicates
+    } == {"cancelled"}
 
     later = resume_to_end(project, tmp_path, "resume")
     reopened = opened(later)
@@ -354,7 +378,9 @@ def test_case_02_forced_kill_halfway_through_scan(tmp_path, sheets_dir):
     assert opened(later)["scan_entries_with_result"] == len(committed)
     assert_never_reread(committed, later)
     again = {name for run in h.submissions(later) for name in run}
-    assert again == {f"sheet_{i:05d}.png" for i in range(SHEETS)} - committed
+    assert again == (
+        {f"sheet_{i:05d}.png" for i in range(SHEETS)} - committed - exact_duplicates(project)
+    )
     assert_each_sheet_read_once(project)
     found = assert_consistent(project)
     evidence(
@@ -478,6 +504,29 @@ def unresolved_queue(project: Path) -> list[int]:
         session.close()
 
 
+def withdrawn_by_decisions(project: Path) -> set[int]:
+    """Conflicts the system withdrew, with an audit event, after a human decision.
+
+    0.1.1 phase 4 detects duplicate Student IDs on the *effective* value, so a
+    correction that makes one of a duplicate pair unique withdraws its
+    partner's undecided duplicate record - audited, never silent. Before
+    phase 4 the queue lost only what was decided; now it also loses exactly
+    these, and the crash assertions account for them explicitly.
+    """
+    shot = h.snapshot(project)
+    first_human = min(
+        (row[0] for row in shot["audit"] if row[1] in ("accepted", "corrected")),
+        default=None,
+    )
+    if first_human is None:
+        return set()
+    return {
+        int(row[2])
+        for row in shot["audit"]
+        if row[1] == "withdrawn" and row[0] > first_human and row[2] is not None
+    }
+
+
 def human_events(project: Path) -> list[tuple]:
     shot = h.snapshot(project)
     return [row for row in shot["audit"] if row[1] in ("accepted", "corrected")]
@@ -495,7 +544,10 @@ def test_case_05_clean_close_halfway_through_resolve(tmp_path, scanned):
     decided = [item["conflict_id"] for item in events if item["event"] == "decision_committed"]
     assert len(decided) == decisions
     assert len(human_events(project)) == decisions
-    assert unresolved_queue(project) == [cid for cid in before if cid not in decided]
+    withdrawn = withdrawn_by_decisions(project)
+    assert unresolved_queue(project) == [
+        cid for cid in before if cid not in decided and cid not in withdrawn
+    ]
     found = assert_consistent(project)
     evidence(
         "case_05", kill_point=f"clean close after {decisions} Resolve decisions",
@@ -591,7 +643,10 @@ def test_case_07_reopen_retains_machine_override_effective_and_history(killed_du
 def test_case_08_unresolved_items_remain_unresolved(killed_during_resolve):
     scenario = killed_during_resolve
     decided = {cid for cid, _action in scenario["decided"]}
-    expected = [cid for cid in scenario["before"] if cid not in decided]
+    withdrawn = withdrawn_by_decisions(scenario["project"])
+    expected = [
+        cid for cid in scenario["before"] if cid not in decided and cid not in withdrawn
+    ]
     assert unresolved_queue(scenario["project"]) == expected
     for events in scenario["inspected"]:
         assert opened(events)["resolve_queue"] == expected
@@ -627,7 +682,11 @@ def test_case_15_resolve_is_reachable_after_reopen_without_visiting_scan(killed_
     scenario = killed_during_resolve
     first = opened(scenario["inspected"][0])
     assert first["resolve_batch_id"] is not None
-    assert first["resolve_queue"], "Resolve opened with an empty queue"
+    # Exactly the unresolved items the database holds (0.1.1 phase 4: since
+    # the identical image is no longer read and corrections can withdraw a
+    # partner's duplicate record, this queue may be short or empty after the
+    # harness's decisions - what matters is that it is the persisted one).
+    assert sorted(first["resolve_queue"]) == sorted(unresolved_queue(scenario["project"]))
     resolved = len(scenario["decided"])
     assert f"<b>{resolved}</b> resolved" in first["resolve_summary"]
     evidence("case_15", resolve_summary=first["resolve_summary"], queue=len(first["resolve_queue"]))
@@ -746,7 +805,7 @@ def test_case_13a_killed_after_recognition_before_the_batch_review_pass(
     )
     h.kill(child)
     committed = committed_now(project)
-    assert len(committed) == SHEETS
+    assert len(committed) == SHEETS - len(exact_duplicates(project))
     kinds = {row[2] for row in h.snapshot(project)["conflicts"]}
     assert "identifier_duplicate" not in kinds  # the batch-scope pass never ran
 
@@ -837,13 +896,12 @@ def test_case_14_an_interrupted_sealed_batch_stays_sealed_and_resumes_its_member
     try:
         current = scan_sessions.active_scan_session(session.database)
         assert current is not None
-        # Close (seals the batch), then reopen: the batch stays sealed.
-        scan_sessions.close_scan_session(
-            session.database, current.scan_session_id, closed_by=REVIEWER
-        )
-        scan_sessions.reopen_scan_session(
-            session.database, current.scan_session_id, reopened_by=REVIEWER
-        )
+        # Seal the interrupted batch. (Before 0.1.1 phase 4 this closed and
+        # reopened the session, which seals as a side effect; closing now
+        # refuses a session with unread sheets - closure checks - so the
+        # batch is sealed directly, which is what this case is about.)
+        (batch,) = scan_sessions.batches_of(session.database, current.scan_session_id)
+        assert scan_sessions.seal_batch(session.database, batch.batch_id, sealed_by=REVIEWER)
         (batch,) = scan_sessions.batches_of(session.database, current.scan_session_id)
         sealed_at = batch.sealed_at
         assert sealed_at is not None

@@ -51,9 +51,17 @@ from omr_scanner.domain.reporting import (
     total_header_for,
 )
 from omr_scanner.domain.scoring import ResultStatus
+from omr_scanner.domain.session_population import SheetDisposition
+from omr_scanner.domain.set_identity import canonical_code
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.reporting import excel as rx
-from omr_scanner.services import reconciliation_store, scan_lifecycle, scoring_store, set_identity
+from omr_scanner.services import (
+    reconciliation_store,
+    scan_lifecycle,
+    scoring_store,
+    session_population,
+    set_identity,
+)
 from omr_scanner.services.answer_key import plan_for
 from omr_scanner.services.report_readiness import (
     acknowledge_incomplete_results,
@@ -108,6 +116,7 @@ def known_sets(database: ProjectDatabase, roster_id: int, batch_id: str) -> tupl
     a set worth listing (an operator preparing report templates ahead of
     scoring).
     """
+    batch_id = session_population.population_key(database, batch_id)
     from_keys = set(scoring_store.known_set_codes(database))
     from_results = {
         item.set_code
@@ -170,6 +179,7 @@ def set_overview(
     one query per set, so the page costs the same whether the project has
     two sets or twenty.
     """
+    batch_id = session_population.population_key(database, batch_id)
     results = scoring_store.list_results(database, roster_id, batch_id)
     keys = scoring_store.verified_keys(database)
     policy = scoring_store.active_policy(database)
@@ -694,6 +704,7 @@ def gather_set_inputs(
     state - every later step in generation works from what this function
     returned, never from a second, possibly inconsistent read.
     """
+    batch_id = session_population.population_key(database, batch_id)
     entries = reconciliation_store.list_entries(database, roster_id, batch_id)
     results = scoring_store.list_results(database, roster_id, batch_id, template)
     results_by_candidate = {item.candidate_id: item for item in results}
@@ -829,6 +840,7 @@ def check_readiness(
             what a preview may show and what a final export must never
             present as finished.
     """
+    batch_id = session_population.population_key(database, batch_id)
     try:
         roster = load_roster_for_set(database, set_code)
     except (ReportStoreError, ReportTemplateError) as exc:
@@ -854,7 +866,174 @@ def check_readiness(
         unattached_rescans=inputs.unattached_rescans,
         unattached_deferred=inputs.unattached_deferred,
     )
+    report = with_session_issues(report, database, batch_id, final=for_final_export)
     return block_stale_results_for_final_export(report) if for_final_export else report
+
+
+# ----------------------------------------------------------------------
+# Session scope: provisional while open, final only once closed (0.1.1 phase 4)
+# ----------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class SessionScope:
+    """The scan session a report is generated from.
+
+    Attributes:
+        scan_session_id: The session, or ``None`` for a batch belonging to no
+            session (only before the upgrade backfill).
+        name: Its name, for labels.
+        is_open: Whether it is OPEN - its results are then provisional.
+        closed_at: The ``closed_at`` of its current close (``None`` while open).
+    """
+
+    scan_session_id: str | None
+    name: str = ""
+    is_open: bool = False
+    closed_at: datetime | None = None
+
+    @property
+    def provisional(self) -> bool:
+        """Whether results from this scope are provisional (an open session)."""
+        return self.scan_session_id is not None and self.is_open
+
+
+def session_scope(database: ProjectDatabase, batch_id: str) -> SessionScope:
+    """The scan session ``batch_id`` (any batch of it, or its store) belongs to."""
+    from omr_scanner.domain.scan_sessions import ScanSessionState
+    from omr_scanner.services import scan_sessions
+
+    scan_session_id = session_population.session_of_batch(database, batch_id)
+    if scan_session_id.startswith(session_population.LONE_BATCH_PREFIX):
+        return SessionScope(scan_session_id=None)
+    info = scan_sessions.get_scan_session(database, scan_session_id)
+    if info is None or info.virtual:
+        return SessionScope(scan_session_id=None)
+    return SessionScope(
+        scan_session_id=scan_session_id,
+        name=info.name,
+        is_open=info.state is not ScanSessionState.CLOSED,
+        closed_at=info.closed_at if info.state is ScanSessionState.CLOSED else None,
+    )
+
+
+def provisional_notice(scope: SessionScope) -> str:
+    """The sentence every provisional screen and export carries."""
+    return (
+        f"PROVISIONAL RESULTS: scan session '{scope.name}' is still open; these "
+        "results may change. Final Export closes the session first."
+    )
+
+
+def with_session_issues(
+    report: ReadinessReport, database: ProjectDatabase, batch_id: str, *, final: bool
+) -> ReadinessReport:
+    """Add the session-level readiness issues one set's rows cannot show.
+
+    * Sheets of the session not read yet (a batch still running, or
+      interrupted): results could still change - blocking for Final Export.
+    * For a Final Export, an OPEN session: :attr:`ReadinessIssueKind.SESSION_OPEN`,
+      blocking and not acknowledgeable - Final Export requires a CLOSED session.
+    """
+    from dataclasses import replace as _replace
+
+    from omr_scanner.domain.reporting import ReadinessIssue
+
+    extra: list[ReadinessIssue] = []
+    unread = len(
+        session_population.population(database, batch_id).with_disposition(
+            SheetDisposition.NOT_READ
+        )
+    )
+    if unread:
+        extra.append(
+            ReadinessIssue(
+                ReadinessIssueKind.SCORING_INCOMPLETE,
+                f"{unread} sheet(s) of this scan session have not been read yet. "
+                "Finish or resume the batch on the Scan stage first.",
+            )
+        )
+    scope = session_scope(database, batch_id)
+    if final and scope.provisional:
+        extra.append(
+            ReadinessIssue(
+                ReadinessIssueKind.SESSION_OPEN,
+                f"Scan session '{scope.name}' is open, so its results are provisional. "
+                "Final Export requires a closed session - choose Close session and "
+                "generate final export.",
+            )
+        )
+    if not extra:
+        return report
+    return _replace(report, issues=(*report.issues, *extra))
+
+
+@dataclass(frozen=True, slots=True)
+class FinalExportStatus:
+    """Whether a set's latest Final Export still stands.
+
+    Attributes:
+        state: ``none`` (never exported finally from this session),
+            ``current`` (generated from the session's present close) or
+            ``stale`` (the session was reopened since - re-closing does not
+            revive it; only regeneration does).
+        report_id / generated_at / output_path: The latest final output.
+    """
+
+    state: str
+    report_id: int = 0
+    generated_at: datetime | None = None
+    output_path: str = ""
+
+    @property
+    def label(self) -> str:
+        """Operator-facing wording."""
+        return {
+            "none": "No final export yet",
+            "current": "Final export current",
+            "stale": "Final export STALE - session reopened; regenerate",
+        }[self.state]
+
+
+def _same_moment(first: datetime | None, second: datetime | None) -> bool:
+    if first is None or second is None:
+        return False
+    return first.replace(tzinfo=None) == second.replace(tzinfo=None)
+
+
+def final_export_status(
+    database: ProjectDatabase, batch_id: str, set_code: str
+) -> FinalExportStatus:
+    """The state of ``set_code``'s latest Final Export from ``batch_id``'s session."""
+    from omr_scanner.services import scan_sessions
+
+    scope = session_scope(database, batch_id)
+    if scope.scan_session_id is None or not scan_sessions.has_scope_schema(database):
+        return FinalExportStatus(state="none")
+    wanted = canonical_code(set_code)
+    with database.session() as session:
+        rows = session.execute(
+            select(
+                GeneratedReport.report_id,
+                GeneratedReport.set_code,
+                GeneratedReport.generated_at,
+                GeneratedReport.output_path,
+                GeneratedReport.session_closed_at,
+            )
+            .where(GeneratedReport.scan_session_id == scope.scan_session_id)
+            .where(GeneratedReport.is_final.is_(True))
+            .where(GeneratedReport.status == "success")
+            .order_by(GeneratedReport.generated_at.desc(), GeneratedReport.report_id.desc())
+        ).all()
+    for report_id, code, generated_at, output_path, closed_at in rows:
+        if canonical_code(str(code)) != wanted:
+            continue
+        current = not scope.is_open and _same_moment(closed_at, scope.closed_at)
+        return FinalExportStatus(
+            state="current" if current else "stale",
+            report_id=int(report_id),
+            generated_at=generated_at,
+            output_path=str(output_path),
+        )
+    return FinalExportStatus(state="none")
 
 
 class SetGenerationRefusedError(ReportStoreError):
@@ -1027,6 +1206,7 @@ def generate_xlsx(
         because X" is itself part of the permanent record (§33: one set's
         failure must be diagnosable without corrupting anything else's).
     """
+    batch_id = session_population.population_key(database, batch_id)
     moment = _now()
     if should_cancel is not None and should_cancel():
         return GenerationOutcome(
@@ -1048,6 +1228,8 @@ def generate_xlsx(
         unattached_rescans=inputs.unattached_rescans,
         unattached_deferred=inputs.unattached_deferred,
     )
+    readiness = with_session_issues(readiness, database, batch_id, final=final)
+    scope = session_scope(database, batch_id)
     outstanding = readiness.outstanding_rescans
     deferred = readiness.deferred_sheets
     incomplete = incomplete_phrase(outstanding, deferred)
@@ -1083,6 +1265,9 @@ def generate_xlsx(
             if acknowledged
             else f"Results incomplete: {incomplete}.",
         )
+    if scope.provisional:
+        # Every export of an open session says so, first of all.
+        warnings.insert(0, provisional_notice(scope))
 
     try:
         association = (
@@ -1101,7 +1286,9 @@ def generate_xlsx(
             if not header_matches_maximum(current_header, maximum):
                 header_override = total_header_for(maximum)
 
-        stem = default_output_stem(project_name, set_code, "Result")
+        stem = default_output_stem(
+            project_name, set_code, "Result_Provisional" if scope.provisional else "Result"
+        )
         output_path = unique_output_path(output_dir, stem, ".xlsx")
 
         rx.copy_into(association_path(association), output_path)
@@ -1185,6 +1372,7 @@ def generate_xlsx(
         answer_key_revision=inputs.verified_key.revision if inputs.verified_key else 0,
         layout=layout, summary=summary, output_path=output_path,
         output_hash=output_hash, warnings=warnings, moment=moment, computed_by=computed_by,
+        scope=scope, final=final,
     )
     if acknowledged:
         scan_lifecycle.record_incomplete_export(
@@ -1248,6 +1436,7 @@ def generate_for_set(
     template = one independently generated result workbook" an invariant of
     the code rather than a rule somebody has to remember.
     """
+    batch_id = session_population.population_key(database, batch_id)
     from omr_scanner.services import project_sets
 
     try:
@@ -1395,6 +1584,8 @@ def _record_success(
     warnings: Sequence[str],
     moment: datetime,
     computed_by: str,
+    scope: SessionScope | None = None,
+    final: bool = False,
 ) -> int:
     import json
 
@@ -1413,9 +1604,23 @@ def _record_success(
             status="success", generated_at=moment, generated_by=computed_by.strip(),
             application_version=__version__,
         )
+        _stamp_scope(database, row, scope, final=final)
         session.add(row)
         session.flush()
         return row.report_id
+
+
+def _stamp_scope(
+    database: ProjectDatabase, row: GeneratedReport, scope: SessionScope | None, *, final: bool
+) -> None:
+    """Record an output's session, finality and the close it came from (migration 15)."""
+    from omr_scanner.services import scan_sessions
+
+    if scope is None or not scan_sessions.has_scope_schema(database):
+        return
+    row.scan_session_id = scope.scan_session_id
+    row.is_final = bool(final and scope.scan_session_id is not None and not scope.is_open)
+    row.session_closed_at = scope.closed_at if row.is_final else None
 
 
 def _record_failure(
@@ -1501,6 +1706,7 @@ def generate_pdf(
     to agree, and a multi-sheet workbook never leaks Meritwise data into a
     Rollwise PDF or vice versa.
     """
+    batch_id = session_population.population_key(database, batch_id)
     import tempfile
     from pathlib import Path as _Path
 
@@ -1528,7 +1734,12 @@ def generate_pdf(
         with tempfile.TemporaryDirectory(prefix="omrflow_pdf_src_") as scratch:
             single_sheet = _Path(scratch) / "sheet.xlsx"
             _extract_single_sheet(xlsx_outcome.output_path, sheet_name, single_sheet)
-            stem = default_output_stem(project_name, set_code, report_label)
+            label = (
+                f"{report_label}_Provisional"
+                if session_scope(database, batch_id).provisional
+                else report_label
+            )
+            stem = default_output_stem(project_name, set_code, label)
             output_pdf = unique_output_path(output_dir, stem, ".pdf")
             pdf_exporter.export(single_sheet, output_pdf)
         output_hash = _hash_file(output_pdf)
@@ -1545,6 +1756,7 @@ def generate_pdf(
             status="success", generated_at=moment, generated_by=computed_by.strip(),
             application_version=__version__,
         )
+        _stamp_scope(database, row, session_scope(database, batch_id), final=final)
         session.add(row)
         session.flush()
         report_id = row.report_id

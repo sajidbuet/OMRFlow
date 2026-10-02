@@ -58,12 +58,13 @@ Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
 |---|---|---|---|---|---|---|
 | 1 — Set identity (migration 13) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
 | 2 — ScanSession + finite ScanBatch lifecycle (migration 14) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
-| 3 — Crash-safe Scan/Resolve persistence (no migration) | ✅ on branch `feat/0.1.1-phase3-crash-safe-persistence`, not merged | ✅ passing, incl. a real-process kill matrix (40 sheets; 1,000-sheet percentage series) | n/a | ❌ not performed | ❌ not performed | ❌ not performed |
-| 4 — Session-level effective results | Pending | — | — | — | — | — |
+| 3 — Crash-safe Scan/Resolve persistence (no migration) | ✅ merged | ✅ passing, incl. a real-process kill matrix (40 sheets; 1,000-sheet percentage series) | n/a | ❌ not performed | ❌ not performed | ❌ not performed |
+| 4 — Session-level effective results (migration 15) | ✅ on branch `feat/0.1.1-phase4-session-effective-set`, not merged | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
 | 5–10 — Intake, continuous processing, quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
 
-Until revised phase 4, a scan session with several batches is **not** added up:
-Attendance, Results and Reports read one batch of it.
+Since revised phase 4, a scan session with several batches is added up: every
+downstream stage reads the session's one effective sheet set
+([ADR-0007](../decisions/ADR-0007-session-effective-sheet-set.md)).
 
 **Architecture:** `Project → ScanSession → one or more finite ScanBatch
 objects → sheets`. A *scan batch* stays a finite, auditable processing and

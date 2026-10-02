@@ -63,6 +63,7 @@ from omr_scanner.services import (
     ScanResult,
     process_batch,
     recognise_scan,
+    scan_lifecycle,
     scan_provenance,
 )
 from omr_scanner.services.batch_processor import BatchStage
@@ -134,6 +135,9 @@ class BatchWorker(QThread):
 
     progress = Signal(object)
     scan_done = Signal(object)
+    duplicates_linked = Signal(object)
+    """``tuple[DuplicateImage, ...]``: files of this run left unread because the
+    scan session already holds their exact bytes (0.1.1 phase 4)."""
     finished_report = Signal(object)
     failed = Signal(str)
 
@@ -206,6 +210,7 @@ class BatchWorker(QThread):
     def run(self) -> None:
         """Process the batch. Runs on the worker thread; touches no widget."""
         self._hash_sources_for_provenance()
+        self._leave_exact_duplicates_unread()
         if self._hooks is not None:
             self._hooks.submitted(self._batch_id, tuple(self._paths))
         try:
@@ -251,6 +256,31 @@ class BatchWorker(QThread):
             )
         except Exception:
             _LOGGER.exception("Content-hash provenance pass failed; processing continues")
+
+    def _leave_exact_duplicates_unread(self) -> None:
+        """Take the run's exact-duplicate images out of the work list, unread.
+
+        The last step of registering the run's files, once their hashes are
+        recorded and before any sheet is read: a byte-identical copy of a sheet
+        the scan session already holds is linked to it
+        (:func:`~omr_scanner.services.scan_lifecycle.link_exact_duplicates`)
+        and never recognised. Like hashing, never allowed to fail the run.
+        """
+        if self._recorder is None:
+            return
+        try:
+            linked = scan_lifecycle.link_exact_duplicates(
+                self._recorder.database, self._recorder.batch_id, self._paths
+            )
+        except Exception:
+            _LOGGER.exception("Exact-duplicate check failed; every file will be read")
+            return
+        if not linked:
+            return
+        skipped = {str(item.path) for item in linked}
+        self._paths = [path for path in self._paths if str(path) not in skipped]
+        self._tracker.start(len(self._paths), workers=self._workers)
+        self.duplicates_linked.emit(linked)
 
     def _flush_recorder(self) -> None:
         """Commit whatever the recorder still holds, if there is one.

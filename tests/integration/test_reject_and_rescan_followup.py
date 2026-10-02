@@ -698,8 +698,19 @@ class TestCountedExactlyOnce:
                 )
             in_a = scoring_store.list_results(reopened.database, roster, batch_a, TEMPLATE)
             in_b = scoring_store.list_results(reopened.database, roster, later, TEMPLATE)
+            # 0.1.1 phase 4: the writable reopen ran the scan-session backfill,
+            # which puts two batches joined by a confirmed rescan in one session;
+            # both batch ids now name that session, so they return the *same*
+            # result rows. Before phase 4 each batch held its own result set and
+            # the two lists were concatenated; now one list is the whole session.
+            from omr_scanner.services import scan_sessions
+
+            assert scan_sessions.session_of_batch(
+                reopened.database, batch_a
+            ) == scan_sessions.session_of_batch(reopened.database, later)
+            assert [item.result_id for item in in_a] == [item.result_id for item in in_b]
             scored = [
-                item for item in (*in_a, *in_b)
+                item for item in in_a
                 if item.candidate_id == "300122" and item.status is ResultStatus.SCORED
             ]
             assert [(item.scan_id, item.correct_count) for item in scored] == [(rescan, 20)]

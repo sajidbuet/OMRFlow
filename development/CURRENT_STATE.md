@@ -40,7 +40,45 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Crash-safe Scan / Resolve persistence (`0.1.1` revised phase 3, 2026-10-01 — implemented; automated tests passing, including a real-process kill matrix; branch `feat/0.1.1-phase3-crash-safe-persistence`, not merged; no migration, schema 14)
+### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase4-session-effective-set`, not merged; migration 15, schema 15)
+
+- **One resolver** (ADR-0007): `services/session_population.py` gives every
+  sheet of a scan session one disposition (`domain/session_population.py`).
+  Duplicate-ID detection, the Resolve queue and counts, Attendance, scoring,
+  Results, Reports and final export all read it. No module filters
+  "active sheets" on its own any more.
+- **Session-wide, never project-wide.** A Student ID read in two batches of one
+  session is a duplicate. The same ID in another session is not.
+- **Explicit supersession.** Only confirmed rescan links, lifecycle states and
+  live batch supersessions stop a sheet counting. Matching IDs never do, and
+  nothing follows "latest batch wins". Chains A→B→C count only their newest
+  sheet. A new cross-session link is refused.
+- **Recorded session scope (migration 15):** `scan_session.downstream_batch_id`
+  binds a session to its downstream store - recorded by the first reconcile /
+  score or the upgrade step, never re-derived; an upgraded session keeps the
+  state the schema-14 build showed. `services/session_scope.py` takes a
+  `scan_session_id`; Attendance, Results and Reports hold one (default: the
+  active session; *Switch Scan Session* on the Scan stage). Combining sessions
+  that both hold decisions is refused unless the operator names whose to keep.
+- **Bounded duplicate IDs:** only the groups a decision touches are
+  re-derived (≈0.02 s at 10k-100k synthetic sheets); (set, identifier)
+  grouping is an office option, default unchanged.
+- **Exact duplicate images** are linked at registration and never read
+  (defect 4, manual adds).
+- **Final Export requires a CLOSED session:** provisional labelling while open;
+  closure checks; one-step *Close session and generate final export* that
+  closes nothing unless the export can run; outputs record session, finality
+  and close; stale after reopen until regenerated.
+- **Golden regression:** a one-batch session reproduces `main`'s
+  reconciliation rows, results and workbook cells exactly.
+- **Project Health:** `RESCAN_LINEAGE_CYCLE`, `DANGLING_REPLACEMENT`,
+  `CONTRADICTORY_REPLACEMENT_LINK`, `LIFECYCLE_BATCH_MISMATCH`,
+  `CROSS_SESSION_REPLACEMENT`, `SESSION_DOWNSTREAM_SPLIT`,
+  `SESSION_STORE_NOT_IN_SESSION`. Reported, never repaired.
+- Not operator-validated. Details:
+  `development/releases/0.1.1-alpha.0/PHASE_D_HANDOFF.md`.
+
+### Crash-safe Scan / Resolve persistence (`0.1.1` revised phase 3, 2026-10-01 — implemented; automated tests passing, including a real-process kill matrix; merged into `main` at `0e94d67`; no migration, schema 14)
 
 - **Durable work unit** (ADR-0006): a sheet's result and the conflicts it
   implies for that sheet commit in one transaction
@@ -96,8 +134,8 @@ Update this file at the end of every phase.
   final outputs stale), Combine. Template pinning per session.
 - Attendance, Results and Reports read `scan_sessions.downstream_batch_id` -
   the active session's newest primary, non-superseded batch by creation - not
-  `list_batches(limit=1)`. **A multi-batch session is not aggregated yet**
-  (revised phase 4).
+  `list_batches(limit=1)`. A multi-batch session is aggregated since revised
+  phase 4 (above).
 - Upgrade backfill on the first writable open: one legacy session per batch;
   two batches grouped only by an unambiguous confirmed cross-batch rescan;
   ambiguous cases reported. Read-only schema-13 projects show virtual sessions.

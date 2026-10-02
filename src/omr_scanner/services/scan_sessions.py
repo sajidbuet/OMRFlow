@@ -207,6 +207,11 @@ def has_lifecycle_schema(database: ProjectDatabase) -> bool:
     return database.schema_version >= LIFECYCLE_SCHEMA_VERSION
 
 
+def has_scope_schema(database: ProjectDatabase) -> bool:
+    """Whether the database records session scope (schema 15 or later)."""
+    return database.schema_version >= 15
+
+
 def _audit(
     session: Session,
     *,
@@ -517,13 +522,111 @@ def set_active_scan_session(
         return _info(session, row)
 
 
+@dataclass(frozen=True, slots=True)
+class ClosureBlocker:
+    """One reason a scan session cannot be closed yet (ARCHITECTURE_NOTES §14.3).
+
+    Attributes:
+        kind: ``running``, ``unread``, ``conflicts``, ``rescans`` or ``deferred``.
+        message: The operator-facing sentence.
+        acknowledgeable: Whether an operator may close past it by explicitly
+            accepting incomplete results - only outstanding rescans and
+            deferred sheets, matching the existing *Export incomplete
+            results* decision. Unread sheets and unresolved conflicts never.
+    """
+
+    kind: str
+    message: str
+    acknowledgeable: bool = False
+
+
+def closure_blockers(database: ProjectDatabase, scan_session_id: str) -> tuple[ClosureBlocker, ...]:
+    """Everything that stops a session closing, from persisted state (0.1.1 phase 4).
+
+    A batch still running; sheets not read yet (``pending`` / ``queued`` /
+    ``processing`` / ``cancelled``); unresolved required conflicts on the
+    session's sheets (open or deferred, session-wide, as Resolve counts them);
+    rejected sheets whose rescan is outstanding; deferred sheets. Empty means
+    the session may be closed.
+    """
+    from omr_scanner.domain.session_population import SheetDisposition
+    from omr_scanner.services import review_store, session_population
+
+    found: list[ClosureBlocker] = []
+    with database.session() as session:
+        running = session.scalar(
+            select(func.count())
+            .select_from(ScanBatch)
+            .where(ScanBatch.scan_session_id == scan_session_id)
+            .where(ScanBatch.status == BatchStatus.RUNNING.value)
+        )
+    if running:
+        found.append(
+            ClosureBlocker(
+                "running", f"{running} batch(es) of this scan session are still being read."
+            )
+        )
+    population = session_population.session_population(database, scan_session_id)
+    if not population.batch_ids:
+        return tuple(found)
+    counts = population.counts()
+    unread = counts.get(SheetDisposition.NOT_READ, 0)
+    if unread:
+        found.append(
+            ClosureBlocker(
+                "unread",
+                f"{unread} sheet(s) have not been read yet - resume the batch on the "
+                "Scan stage.",
+            )
+        )
+    conflicts = review_store.count_conflicts(
+        database, population.batch_ids[0], session_wide=True
+    )
+    unresolved = conflicts.open_count + conflicts.deferred
+    if unresolved:
+        found.append(
+            ClosureBlocker(
+                "conflicts",
+                f"{unresolved} conflict(s) are unresolved on the Resolve stage.",
+            )
+        )
+    rescans = counts.get(SheetDisposition.REJECTED_PENDING_RESCAN, 0)
+    if rescans:
+        found.append(
+            ClosureBlocker(
+                "rescans",
+                f"{rescans} rejected sheet(s) are awaiting a rescan.",
+                acknowledgeable=True,
+            )
+        )
+    deferred = counts.get(SheetDisposition.DEFERRED, 0)
+    if deferred:
+        found.append(
+            ClosureBlocker(
+                "deferred",
+                f"{deferred} sheet(s) are deferred on the Attendance stage.",
+                acknowledgeable=True,
+            )
+        )
+    return tuple(found)
+
+
 def close_scan_session(
-    database: ProjectDatabase, scan_session_id: str, *, closed_by: str = "", reason: str = ""
+    database: ProjectDatabase,
+    scan_session_id: str,
+    *,
+    closed_by: str = "",
+    reason: str = "",
+    acknowledge_incomplete: bool = False,
 ) -> ScanSessionInfo:
-    """Close a session: seal every open batch, then refuse new batches.
+    """Close a session: run the closure checks, seal every open batch, refuse new batches.
 
     Refused while one of its batches is being processed (``running``) - a
-    session cannot be declared finished under a run that is still reading.
+    session cannot be declared finished under a run that is still reading -
+    and, since 0.1.1 phase 4, while any :func:`closure_blockers` remain:
+    unread sheets and unresolved conflicts always; outstanding rescans and
+    deferred sheets unless ``acknowledge_incomplete`` (an operator's explicit
+    acceptance of incomplete results, recorded in the close's audit event).
     """
     moment = _now()
     with database.session() as session:
@@ -531,6 +634,36 @@ def close_scan_session(
         problem = close_problem(ScanSessionState(row.state))
         if problem:
             raise ScanSessionError(f"Cannot close {scan_session_id}", user_message=problem)
+    found = closure_blockers(database, scan_session_id)
+    if any(item.kind == "running" for item in found):
+        # Checked first, as before: a session cannot be declared finished
+        # under a run that is still reading.
+        raise ScanSessionError(
+            "Batch running",
+            user_message=(
+                "A batch of this scan session is still being processed. Wait for "
+                "it to finish (or cancel it), then close the session."
+            ),
+        )
+    blockers = list(found)
+    accepted = [item for item in blockers if item.acknowledgeable and acknowledge_incomplete]
+    refused = [item for item in blockers if item not in accepted]
+    if refused:
+        raise ScanSessionError(
+            f"Cannot close {scan_session_id}: closure blockers",
+            user_message="The scan session cannot be closed yet: "
+            + " ".join(item.message for item in refused),
+        )
+    if accepted and not closed_by.strip():
+        raise ScanSessionError(
+            "Closing with incomplete results needs an operator",
+            user_message=(
+                "Closing with incomplete results must be accepted by a named operator. "
+                "Set your name in File > Settings first."
+            ),
+        )
+    with database.session() as session:
+        row = _require(session, scan_session_id)
         running = session.scalars(
             select(ScanBatch.batch_id)
             .where(ScanBatch.scan_session_id == scan_session_id)
@@ -564,7 +697,13 @@ def close_scan_session(
             previous_value=ScanSessionState.OPEN.value,
             new_value=ScanSessionState.CLOSED.value,
             reason=reason,
-            detail=f"sealed {len(open_batches)} open batch(es)",
+            detail=f"sealed {len(open_batches)} open batch(es)"
+            + (
+                "; incomplete results accepted: "
+                + " ".join(item.message for item in accepted)
+                if accepted
+                else ""
+            ),
         )
         return _info(session, row)
 
@@ -1142,25 +1281,26 @@ _NOT_YET_READABLE = (BatchStatus.NEW.value, BatchStatus.RUNNING.value)
 
 
 def downstream_batch_id(database: ProjectDatabase) -> str | None:
-    """The one batch Attendance, Results and Reports read until session aggregation.
+    """The population key Attendance, Results and Reports read for the active session.
 
-    **The active scan session's most recent eligible batch**: newest by
-    *creation* (then id) - never by ``updated_at``, which a retry or
-    ``recover_interrupted`` bumps (defect 2's cause) - among batches that are
+    **Since 0.1.1 phase 4 this names a whole scan session, not one batch.**
+    It returns the active session's *population key*
+    (:func:`omr_scanner.services.session_population.population_key`) - the
+    one ``batch_id`` value the session's downstream state is stored under -
+    and every downstream service expands it to the session's effective sheet
+    set, from all of its batches. ``None`` while the active session has no
+    batch that has been (or is being) read: only ``new`` or ``running``
+    batches, or none at all.
 
-    * a primary role (``scan``, ``legacy`` or ``reprocess``; a ``rescan``
-      batch's replacements count in the original's batch);
-    * not superseded;
-    * not still ``new`` or ``running``.
+    With **no** active session, the newest batch that belongs to no session
+    yet and is readable - a batch written before the upgrade backfill ran (or
+    directly, by a tool) - is its own one-batch population. On a pre-session
+    project opened read-only: the newest batch by creation.
 
-    ``None`` when the active session has no such batch. With **no** active
-    session, the newest such batch that belongs to no session yet - a batch
-    written before the upgrade backfill ran (or directly, by a tool), read
-    exactly as before sessions existed. On a pre-session project opened
-    read-only: the newest batch by creation.
-
-    This is a **temporary single-batch rule**. A session of several batches is
-    not aggregated; that is session-level results' work.
+    Never chosen by ``updated_at`` (defect 2's cause): a retry or
+    ``recover_interrupted`` cannot move it, and nor can a later batch, a
+    rescan batch or a reprocess batch - those change the population, not its
+    key.
     """
     if not has_lifecycle_schema(database):
         with database.session() as session:
@@ -1185,37 +1325,88 @@ def downstream_batch_id(database: ProjectDatabase) -> str | None:
             .where(owner)
             .order_by(ScanBatch.created_at.desc(), ScanBatch.batch_id.desc())
         ).all()
+    from omr_scanner.services import session_population
+
+    if pointer:
+        if not any(str(status) not in _NOT_YET_READABLE for _b, _r, status in rows):
+            return None
+        return session_population.session_key(database, pointer)
     for batch_id, role, status in rows:
         if (
             BatchRole(role).is_primary
             and str(batch_id) not in live
             and str(status) not in _NOT_YET_READABLE
         ):
-            return str(batch_id)
+            return session_population.population_key(database, str(batch_id))
     return None
 
 
+def downstream_session_id(database: ProjectDatabase) -> str | None:
+    """The scan session Attendance, Results and Reports select by default.
+
+    The **active** session, once it has a batch that has been (or is being)
+    read - the session-level counterpart of :func:`downstream_batch_id`,
+    which names that session's downstream store. ``batch:<id>`` for a batch
+    that belongs to no session yet (before the upgrade backfill). ``None``
+    when there is nothing to show. Pages hold this id and resolve the store
+    from it (:mod:`omr_scanner.services.session_scope`).
+    """
+    from omr_scanner.services import session_population
+
+    key = downstream_batch_id(database)
+    if key is None:
+        return None
+    return session_population.session_of_batch(database, key)
+
+
 def describe_downstream(database: ProjectDatabase, batch_id: str | None) -> str:
-    """One sentence for a stage header naming the session and the single batch read."""
+    """One sentence for a stage header naming the session and what it holds.
+
+    Since 0.1.1 phase 4 the stages read the whole session's effective sheet
+    set, so this says how many scripts count and from how many batches.
+    """
     if batch_id is None:
         return ""
-    scan_session = active_scan_session(database)
-    name = scan_session.name if scan_session is not None else "no scan session"
-    count = scan_session.batch_count if scan_session is not None else 1
-    note = (
-        f" - this session has {count} batches; only this one is read here until "
-        "session-level results arrive"
-        if count > 1
-        else ""
+    from omr_scanner.services import session_population
+
+    population = session_population.population(database, batch_id)
+    found = (
+        None
+        if population.session_id.startswith(session_population.LONE_BATCH_PREFIX)
+        else get_scan_session(database, population.session_id)
     )
-    return f"Scan session '{name}', batch {batch_id[:8]}{note}."
+    name = found.name if found is not None else f"batch {batch_id[:8]}"
+    return f"Scan session '{name}': {session_population.describe(population)}."
 
 
 # ----------------------------------------------------------------------
 # Combine
 # ----------------------------------------------------------------------
+def downstream_holders(
+    database: ProjectDatabase, session_ids: Sequence[str]
+) -> dict[str, str]:
+    """``session id -> its downstream store`` for each of ``session_ids`` holding any.
+
+    A session "holds downstream state" once Attendance has reconciled or
+    Results has scored against it - the operator decisions a combine must not
+    silently lose (0.1.1 phase 4).
+    """
+    from omr_scanner.services import session_population
+
+    found: dict[str, str] = {}
+    for scan_session_id in dict.fromkeys(session_ids):
+        store = session_population.held_store(database, scan_session_id)
+        if store is not None:
+            found[scan_session_id] = store
+    return found
+
+
 def combine_problems(
-    database: ProjectDatabase, source_ids: Sequence[str], target_id: str
+    database: ProjectDatabase,
+    source_ids: Sequence[str],
+    target_id: str,
+    *,
+    keep_downstream_of: str | None = None,
 ) -> tuple[str, ...]:
     """Every reason *Combine into one session* would be refused (empty = allowed).
 
@@ -1226,11 +1417,34 @@ def combine_problems(
     the same file path, or the same content hash where one was recorded.
     Session-level duplicate *identity* (two scripts for one candidate) is the
     effective-scan-set service's to judge, later.
+
+    **Downstream decisions (0.1.1 phase 4).** A combined session has one
+    downstream store. When more than one of the sessions already holds
+    Attendance / Results state, combining would leave all but one session's
+    reconciliation decisions outside the combined session; that is refused
+    unless the operator names, in ``keep_downstream_of``, the session whose
+    decisions the combined session keeps (the others stay in the database as
+    history and the choice is audited).
     """
     problems: list[str] = []
     sources = [item for item in dict.fromkeys(source_ids) if item != target_id]
     if not sources:
         return ("Choose at least one other scan session to combine into this one.",)
+    holders = downstream_holders(database, [target_id, *sources])
+    if len(holders) > 1 and keep_downstream_of not in holders:
+        with database.session() as session:
+            names = [
+                (row.name if row is not None else item[:8])
+                for item in holders
+                for row in (session.get(ScanSession, item),)
+            ]
+        problems.append(
+            "More than one of these scan sessions already has Attendance or Results "
+            f"decisions ({", ".join(repr(item) for item in names)}). A combined session "
+            "keeps one session's decisions; choose which, or the combine is refused."
+        )
+    elif keep_downstream_of is not None and keep_downstream_of not in holders:
+        problems.append("The session chosen to keep decisions from holds none.")
     with database.session() as session:
         project_id = _project_id(session)
         target = session.get(ScanSession, target_id)
@@ -1308,6 +1522,7 @@ def combine_scan_sessions(
     *,
     combined_by: str,
     reason: str = "",
+    keep_downstream_of: str | None = None,
 ) -> CombineOutcome:
     """Move every batch of the source sessions into the open target session.
 
@@ -1324,12 +1539,16 @@ def combine_scan_sessions(
             "Combine needs an operator",
             user_message="Set your name in File > Settings before combining scan sessions.",
         )
-    problems = combine_problems(database, source_ids, target_id)
+    problems = combine_problems(
+        database, source_ids, target_id, keep_downstream_of=keep_downstream_of
+    )
     if problems:
         raise ScanSessionError(
             "Combine refused", user_message="Cannot combine: " + " ".join(problems)
         )
     sources = [item for item in dict.fromkeys(source_ids) if item != target_id]
+    holders = downstream_holders(database, [target_id, *sources])
+    kept = keep_downstream_of if keep_downstream_of in holders else next(iter(holders), None)
     moved: list[str] = []
     moment = _now()
     with database.session() as session:
@@ -1374,6 +1593,31 @@ def combine_scan_sessions(
             )
             if _setting(session, SettingKey.ACTIVE_SCAN_SESSION) == source_id:
                 _activate(session, target_id, actor=combined_by)
+        if has_scope_schema(database):
+            # The combined session's store is a recorded choice, never the
+            # derivation rule over the merged batch list (which could move).
+            target.downstream_batch_id = holders[kept] if kept is not None else None
+            for source_id in sources:
+                _require(session, source_id).downstream_batch_id = None
+            if len(holders) > 1 and kept is not None:
+                _audit(
+                    session,
+                    action=SessionAction.COMBINED,
+                    entity_type=SESSION_ENTITY,
+                    entity_id=target_id,
+                    actor=combined_by,
+                    previous_value=",".join(sorted(holders)),
+                    new_value=kept,
+                    reason=reason,
+                    detail=(
+                        f"downstream decisions kept from session {kept[:8]} (store "
+                        f"{holders[kept][:8]}); the other session(s)' decisions are "
+                        "retained as history under "
+                        + ", ".join(
+                            store[:8] for owner, store in holders.items() if owner != kept
+                        )
+                    ),
+                )
         if not target.template_id and moved:
             first = session.execute(
                 select(
@@ -1388,6 +1632,13 @@ def combine_scan_sessions(
                 target.template_id, target.template_name, target.geometry_fingerprint,
                 target.recognition_fingerprint, target.engine_version,
             ) = first
+    if moved:
+        # The combined session is a new population (0.1.1 phase 4): its
+        # duplicate IDs and existing reconciliations are re-derived over it.
+        # A combine is rare and explicit, so this is the full rebuild.
+        from omr_scanner.services import scan_lifecycle
+
+        scan_lifecycle.refresh_session_after_combine(database, moved[0])
     return CombineOutcome(
         target_id=target_id, moved_batches=tuple(moved), emptied_sessions=tuple(sources)
     )

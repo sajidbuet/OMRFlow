@@ -127,6 +127,7 @@ from omr_scanner.services import (
 )
 from omr_scanner.services.batch_store import BatchSealedError
 from omr_scanner.services.recognition_models import utc_timestamp
+from omr_scanner.services.renamed_export import RenamedExport, export_renamed_copies
 from omr_scanner.services.scan_sessions import ScanSessionError, TemplatePinError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -281,6 +282,10 @@ class ScanPage(WorkflowPage):
     template_changed = Signal(object)
     benchmark_finished = Signal(object)
     review_requested = Signal(str)
+    active_session_changed = Signal()
+    """The active scan session - the one Attendance, Results and Reports
+    select by default - was switched, created, combined, closed or reopened
+    (0.1.1 phase 4)."""
 
     processing_changed = Signal(bool)
     """Emitted when a batch starts or stops running.
@@ -476,6 +481,19 @@ class ScanPage(WorkflowPage):
         self.reopen_session_action.triggered.connect(self._prompt_reopen_scan_session)
         self.combine_session_action = self.session_menu.addAction("Combine Into This Session...")
         self.combine_session_action.triggered.connect(self._prompt_combine_scan_sessions)
+        self.switch_session_action = self.session_menu.addAction("Switch Scan Session...")
+        self.switch_session_action.setObjectName("switchScanSessionAction")
+        self.switch_session_action.triggered.connect(self._prompt_switch_scan_session)
+        self.session_menu.addSeparator()
+        self.export_renamed_action = self.session_menu.addAction(
+            "Export Renamed Copies of Session..."
+        )
+        self.export_renamed_action.setObjectName("exportRenamedCopiesAction")
+        self.export_renamed_action.setToolTip(
+            "Copy every sheet that counts in this scan session - after review, across "
+            "all its batches - into a folder, named by Student ID"
+        )
+        self.export_renamed_action.triggered.connect(self._prompt_export_renamed_copies)
         self.session_menu_button.setMenu(self.session_menu)
         session_row.addWidget(self.session_menu_button)
         process_layout.addLayout(session_row)
@@ -980,7 +998,88 @@ class ScanPage(WorkflowPage):
         self.state.batch_id = None
         self._refresh_batch_state_label()
         self._refresh_session_label()
+        self.active_session_changed.emit()
         return True
+
+    def switch_scan_session(self, scan_session_id: str) -> bool:
+        """Make another scan session the active one - the downstream selection. No dialog.
+
+        Attendance, Results and Reports follow (``active_session_changed``).
+        The page lets go of a batch that is not in the selected session.
+        """
+        database = self.database
+        if database is None or (self._worker is not None and self._worker.isRunning()):
+            return False
+        try:
+            scan_sessions.set_active_scan_session(
+                database, scan_session_id, activated_by=self._operator
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Switch scan session")
+            return False
+        if self.state.batch_id is not None and (
+            scan_sessions.session_of_batch(database, self.state.batch_id) != scan_session_id
+        ):
+            self.state.batch_id = None
+        self._refresh_batch_state_label()
+        self._refresh_session_label()
+        self._refresh_controls()
+        self.active_session_changed.emit()
+        return True
+
+    def export_renamed_copies_to(self, folder: Path) -> RenamedExport | None:
+        """Copy the active session's effective sheets into ``folder``, renamed. No dialog."""
+        database, current = self.database, self.active_scan_session()
+        if database is None or current is None:
+            return None
+        try:
+            exported = export_renamed_copies(database, current.scan_session_id, folder)
+        except (OMRScannerError, OSError) as exc:
+            QMessageBox.warning(self, "Renamed copies not exported", str(exc))
+            return None
+        missing = (
+            f"; {len(exported.missing_sources)} image(s) no longer on disk"
+            if exported.missing_sources
+            else ""
+        )
+        self.progress_label.setText(
+            f"Exported {len(exported.copies)} renamed cop(ies) of scan session "
+            f"'{current.name}' to {folder}{missing}"
+        )
+        return exported
+
+    def _prompt_export_renamed_copies(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Export renamed copies to")
+        if folder:
+            self.export_renamed_copies_to(Path(folder))
+
+    def _prompt_switch_scan_session(self) -> None:
+        database = self.database
+        if database is None:
+            return
+        sessions = [
+            item for item in scan_sessions.list_scan_sessions(database)
+            if not item.merged_into_session_id
+        ]
+        if not sessions:
+            return
+        labels = [f"{item.label} - {item.batch_count} batch(es)" for item in sessions]
+        current = self.active_scan_session()
+        index = next(
+            (
+                position
+                for position, item in enumerate(sessions)
+                if current is not None and item.scan_session_id == current.scan_session_id
+            ),
+            0,
+        )
+        choice, accepted = QInputDialog.getItem(
+            self, "Switch scan session",
+            "Attendance, Results and Reports will show this scan session:",
+            labels, index, False,
+        )
+        if accepted and choice in labels:
+            self.switch_scan_session(sessions[labels.index(choice)].scan_session_id)
 
     def rename_active_scan_session(self, name: str) -> bool:
         """Rename the active scan session. No dialog."""
@@ -997,8 +1096,13 @@ class ScanPage(WorkflowPage):
         self._refresh_session_label()
         return True
 
-    def close_active_scan_session(self) -> bool:
-        """Close the active scan session, sealing its batches. No dialog."""
+    def close_active_scan_session(self, *, acknowledge_incomplete: bool = False) -> bool:
+        """Close the active scan session, sealing its batches. No dialog.
+
+        The closure checks run in the service (0.1.1 phase 4): unread sheets
+        or unresolved conflicts refuse; outstanding rescans and deferred sheets
+        refuse unless ``acknowledge_incomplete``.
+        """
         database, current = self.database, self.active_scan_session()
         if database is None or current is None:
             return False
@@ -1006,7 +1110,10 @@ class ScanPage(WorkflowPage):
             return False
         try:
             scan_sessions.close_scan_session(
-                database, current.scan_session_id, closed_by=self._operator
+                database,
+                current.scan_session_id,
+                closed_by=self._operator,
+                acknowledge_incomplete=acknowledge_incomplete,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Close scan session")
@@ -1014,6 +1121,7 @@ class ScanPage(WorkflowPage):
         self._refresh_batch_state_label()
         self._refresh_session_label()
         self._refresh_controls()
+        self.active_session_changed.emit()
         return True
 
     def reopen_active_scan_session(self) -> bool:
@@ -1037,22 +1145,62 @@ class ScanPage(WorkflowPage):
             self._refresh_batch_state_label()
         self._refresh_session_label()
         self._refresh_controls()
+        self.active_session_changed.emit()
         return True
 
-    def combine_into_active_session(self, source_ids: Sequence[str]) -> bool:
-        """Combine other scan sessions into the active one. No dialog."""
+    def combine_into_active_session(
+        self, source_ids: Sequence[str], *, keep_downstream_of: str | None = None
+    ) -> bool:
+        """Combine other scan sessions into the active one.
+
+        When more than one of the sessions already holds Attendance / Results
+        decisions (0.1.1 phase 4), the operator is asked whose the combined
+        session keeps (:meth:`choose_kept_decisions`) unless
+        ``keep_downstream_of`` says; cancelling combines nothing.
+        """
         database, current = self.database, self.active_scan_session()
         if database is None or current is None:
             return False
+        if keep_downstream_of is None:
+            holders = scan_sessions.downstream_holders(
+                database, [current.scan_session_id, *source_ids]
+            )
+            if len(holders) > 1:
+                keep_downstream_of = self.choose_kept_decisions(list(holders))
+                if keep_downstream_of is None:
+                    return False
         try:
             scan_sessions.combine_scan_sessions(
-                database, source_ids, current.scan_session_id, combined_by=self._operator
+                database, source_ids, current.scan_session_id, combined_by=self._operator,
+                keep_downstream_of=keep_downstream_of,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Combine scan sessions")
             return False
         self._refresh_session_label()
+        self.active_session_changed.emit()
         return True
+
+    def choose_kept_decisions(self, scan_session_ids: list[str]) -> str | None:
+        """Ask whose Attendance / Results decisions a combined session keeps."""
+        database = self.database
+        if database is None:
+            return None
+        names = []
+        for scan_session_id in scan_session_ids:
+            info = scan_sessions.get_scan_session(database, scan_session_id)
+            names.append(info.name if info is not None else scan_session_id[:8])
+        choice, accepted = QInputDialog.getItem(
+            self,
+            "Keep whose decisions?",
+            "More than one of these scan sessions already has Attendance or Results "
+            "decisions. The combined session keeps one session's; the others stay "
+            "in the project as history and the choice is recorded.\n\nKeep:",
+            names, 0, False,
+        )
+        if not accepted or choice not in names:
+            return None
+        return scan_session_ids[names.index(choice)]
 
     def _prompt_new_scan_session(self) -> None:
         name, ok = QInputDialog.getText(
@@ -1073,16 +1221,41 @@ class ScanPage(WorkflowPage):
         current = self.active_scan_session()
         if current is None:
             return
+        database = self.database
+        blockers = (
+            scan_sessions.closure_blockers(database, current.scan_session_id)
+            if database is not None
+            else ()
+        )
+        hard = [item.message for item in blockers if not item.acknowledgeable]
+        if hard:
+            QMessageBox.information(
+                self,
+                "Scan session cannot be closed yet",
+                f"'{current.name}' was not closed:\n\n"
+                + "\n".join(f"• {item.message}" for item in blockers),
+            )
+            return
+        soft = [item.message for item in blockers if item.acknowledgeable]
+        text = (
+            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
+            "batches until it is reopened."
+        )
+        if soft:
+            text += (
+                "\n\nIts results are incomplete:\n"
+                + "\n".join(f"• {item}" for item in soft)
+                + "\n\nClosing accepts that, recorded against your name."
+            )
         answer = QMessageBox.question(
             self,
             "Close scan session",
-            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
-            "batches until it is reopened.",
+            text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self.close_active_scan_session()
+            self.close_active_scan_session(acknowledge_incomplete=bool(soft))
 
     def _prompt_reopen_scan_session(self) -> None:
         current = self.active_scan_session()
@@ -1325,6 +1498,7 @@ class ScanPage(WorkflowPage):
             return False
 
         stored = {result.source_path: result for result in completed_results(database, batch_id)}
+        duplicates = scan_lifecycle.duplicate_images(database, batch_id)
         paths = scan_paths(database, batch_id)
         self.state.entries = [
             ScanEntry(
@@ -1332,6 +1506,7 @@ class ScanPage(WorkflowPage):
                 processed=(
                     ProcessedScan(result=stored[path]) if path in stored else None
                 ),
+                duplicate_of=duplicates.get(path, ""),
             )
             for path in paths
         ]
@@ -1977,6 +2152,7 @@ class ScanPage(WorkflowPage):
         )
         worker.progress.connect(self._on_progress)
         worker.scan_done.connect(self._on_scan_done)
+        worker.duplicates_linked.connect(self._on_duplicates_linked)
         worker.finished_report.connect(self._on_batch_finished)
         worker.failed.connect(self._on_batch_failed)
         self._worker = worker
@@ -2027,6 +2203,18 @@ class ScanPage(WorkflowPage):
         :meth:`_refresh_progress` on a timer - so a machine that finishes fifty
         sheets a second does not ask Qt to repaint fifty times a second.
         """
+
+    def _on_duplicates_linked(self, linked: Sequence[scan_lifecycle.DuplicateImage]) -> None:
+        """Mark the run's exact duplicate images in the list: linked, never read."""
+        by_path = {str(item.path): item for item in linked}
+        rows = []
+        for row, entry in enumerate(self.state.entries):
+            found = by_path.get(str(entry.path))
+            if found is not None:
+                entry.duplicate_of = found.original_name or f"scan {found.original_scan_id}"
+                rows.append(row)
+        self._scan_model.mark_dirty(rows)
+        _LOGGER.info("%d exact duplicate image(s) left unread", len(linked))
 
     def _on_scan_done(self, processed: ProcessedScan) -> None:
         """Record one finished scan and mark its row for redrawing.

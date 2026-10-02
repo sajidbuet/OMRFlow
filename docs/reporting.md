@@ -163,6 +163,30 @@ Every failing check is a message naming what is wrong - never a stack trace.
 **Final Export** refuses while any of these stand; **Preview** shows them as
 warnings instead.
 
+### 8a. Provisional while the scan session is open (0.1.1 phase 4)
+
+A report covers the whole **scan session** - every batch of it - not one
+batch. While the session is open its results are **provisional**: the Results
+header and the Reports heading say so, and a preview is written as
+`…_Result_Provisional.xlsx` with a *PROVISIONAL RESULTS* line first in its
+Processing Log. Every sheet of the session must be read (no batch still
+running or interrupted) before a final export.
+
+**Final Export requires a closed session.** On an open session, Generate
+offers **Close session and generate final export**. It first checks
+everything that would stop it - unread sheets, unresolved conflicts on the
+Resolve stage, outstanding rescans and deferred sheets (which you may accept
+as incomplete results, recorded against your name), and each chosen set's own
+readiness. If anything blocks, it lists it and **closes nothing and exports
+nothing**. Otherwise it closes the session (sealing its batches, recorded) and
+generates the final workbooks.
+
+Each output records the session it came from and the close. A set's row then
+reads *Final export current*. **Reopening the session makes it stale**
+(*Final export STALE - session reopened; regenerate*); closing again does not
+make the old file current - only generating again does. A report generated
+before this version records no session and is not shown as current.
+
 ## 9. Regenerate, never patch
 
 Changing the answer key, the scoring configuration, an effective answer, the

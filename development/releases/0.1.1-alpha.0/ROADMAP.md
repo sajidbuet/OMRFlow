@@ -193,8 +193,8 @@ and crash safety gets its own phase:
 |---|---|---|---|
 | **1** Set Identity Foundation | Canonical set identity, physical marks, migration 13 | A | Implemented; tested; merged |
 | **2** ScanSession + finite ScanBatch lifecycle | Sessions, sealing, roles, supersession, backfill, pinning, manifests, minimal menu, migration 14 | B (lifecycle) | Implemented; tested; merged |
-| **3** Crash-safe Scan/Resolve persistence | S1, S2, S3, R1; durable-completion invariant; real-kill matrix (ACCEPTANCE §5.4) | **B (crash safety, moved here)** | Implemented; tested (cases 1–15 with real process kills at 40 sheets; 1/25/50/75/99 % also at 1,000); branch `feat/0.1.1-phase3-crash-safe-persistence`, not merged; no migration (ADR-0006, [handoff](PHASE_C_HANDOFF.md)) |
-| **4** Session-level effective results | Effective scan set, session Resolve queue, reconciliation, scoring, Results, Reports, final export | C | Pending |
+| **3** Crash-safe Scan/Resolve persistence | S1, S2, S3, R1; durable-completion invariant; real-kill matrix (ACCEPTANCE §5.4) | **B (crash safety, moved here)** | Implemented; tested (cases 1–15 with real process kills at 40 sheets; 1/25/50/75/99 % also at 1,000); merged (`0e94d67`); no migration (ADR-0006, [handoff](PHASE_C_HANDOFF.md)) |
+| **4** Session-level effective results | Effective scan set, session Resolve queue, reconciliation, scoring, Results, Reports, final export | C | Implemented; tested (unit, integration, GUI; 3-batch / 100+-script acceptance scenario; generated-cohort ground truth; golden one-batch regression against `main`; scripted GUI). Migration 15 (session scope, report scope, lookup indexes). Branch `feat/0.1.1-phase4-session-effective-set`, not merged. Not operator-validated (ADR-0007, [handoff](PHASE_D_HANDOFF.md)) |
 | **5** Intake sources + ledger | | D | Pending |
 | **6** Continuous-processing engine | Unit scheduler, writer strategy, restart sequence | E (first part) | Pending |
 | **7** Quality / rescan / session controls | Quality decision layer, rescan suggestions, pause/finish semantics, session snapshot | E (second part) | Pending |
@@ -549,9 +549,9 @@ qualified*, *released*. Each phase is tracked on separate tracks:
 | Phase | Implemented | Tested | Synthetic | Network share | Real scanners | Production |
 |---|---|---|---|---|---|---|
 | A (revised 1) | **Done** (merged `ce3f082`) | **Passing** | n/a | n/a | Pending | Pending |
-| B lifecycle (revised 2) | **Done** (branch, unmerged) | **Passing** | n/a | n/a | Pending | Pending |
-| B crash safety (revised 3) | Pending | Pending | n/a | n/a | Pending | Pending |
-| C | Pending | Pending | Pending | n/a | Pending | Pending |
+| B lifecycle (revised 2) | **Done** (merged `1798e84`) | **Passing** | n/a | n/a | Pending | Pending |
+| B crash safety (revised 3) | **Done** (merged `0e94d67`) | **Passing** | n/a | n/a | Pending | Pending |
+| C (revised 4) | **Done** (branch, unmerged) | **Passing** | Pending (the intake campaign is Phase G's) | n/a | Pending | Pending |
 | D | Pending | Pending | Pending | Pending | Pending | Pending |
 | E | Pending | Pending | Pending | Pending | Pending | Pending |
 | F | Pending | Pending | Pending | Pending | Pending | Pending |

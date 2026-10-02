@@ -86,9 +86,10 @@ Every batch belongs to a **scan session** — the examination sitting. The first
 project adds a new batch to it, and the earlier batch is **sealed** (its list of
 scans is final; it can still be resumed). The *Session* button on the Scan
 stage offers New, Rename, Close, Reopen and Combine; a single-folder
-examination never needs it. Until session-level results arrive, Attendance,
-Results and Reports read **one batch** of the active session — not a total
-over all of them. Details: `docs/scan_workflow.md` §12b.
+examination never needs it. Attendance, Results, Reports and the Resolve
+queue read the **whole session** — every batch — counting each sheet once:
+a rescan replaces its original only when you confirm it, and another session
+is never mixed in. Details: `docs/scan_workflow.md` §12b.
 
 ## Reading the outcome
 

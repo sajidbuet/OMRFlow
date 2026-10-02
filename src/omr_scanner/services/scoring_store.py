@@ -66,11 +66,9 @@ from omr_scanner.domain.scoring import (
 )
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.services import (
-    batch_store,
     project_sets,
     reconciliation_store,
-    review_store,
-    scan_lifecycle,
+    session_population,
     set_identity,
 )
 from omr_scanner.services.answer_key import QuestionPlan, compatibility_issues, plan_for
@@ -793,35 +791,20 @@ def gather_inputs(
     the recognition result alone: those hold what the *machine* read, and
     marking against them would ignore every correction a reviewer made.
     """
+    batch_id = session_population.population_key(database, batch_id)
     plan = plan_for(template)
     entries = reconciliation_store.list_entries(database, roster_id, batch_id)
-    # A rejected, superseded or re-imported scan never supplies answers, even
-    # if something upstream still named it: no answers, no mark.
-    ineligible = scan_lifecycle.ineligible_scan_ids(database, batch_id)
-    results = {
-        scan_id: result
-        for scan_id, result in batch_store.results_by_scan(database, batch_id).items()
-        if scan_id not in ineligible
-    }
-    decisions = review_store.effective_answers(database, batch_id, template)
-    set_codes = review_store.effective_set_codes(database, batch_id)
-    # A confirmed rescan read into another batch stands in for its original
-    # here; its result, its reviewed answers and its set come from its own
-    # batch, where they were recorded.
-    adopted = scan_lifecycle.adopted_replacements(database, batch_id)
-    for other in {scan_lifecycle.batch_of(database, scan_id) for scan_id in adopted}:
-        if other is None:
-            continue
-        theirs = batch_store.results_by_scan(database, other)
-        their_answers = review_store.effective_answers(database, other, template)
-        their_codes = review_store.effective_set_codes(database, other)
-        for scan_id in adopted:
-            if scan_id in theirs:
-                results[scan_id] = theirs[scan_id]
-            if scan_id in their_answers:
-                decisions[scan_id] = their_answers[scan_id]
-            if scan_id in their_codes:
-                set_codes[scan_id] = their_codes[scan_id]
+    # Only the session's effective sheets supply answers (0.1.1 phase 4): a
+    # rejected, superseded, re-imported, excluded or deferred sheet, or one
+    # in a batch read again as a whole, never does - even if something
+    # upstream still named it: no answers, no mark. Each sheet's result,
+    # reviewed answers and set come from its own batch, where they were
+    # recorded, whichever batch of the session that is.
+    population = session_population.population(database, batch_id)
+    effective = population.effective
+    results = session_population.results_by_scan(database, population, effective)
+    decisions = session_population.effective_answers(database, population, template, effective)
+    set_codes = session_population.effective_set_codes(database, population, effective)
 
     answers: dict[int, CandidateAnswers] = {}
     for scan_id, result in results.items():
@@ -903,6 +886,7 @@ def unreconciled_rosters(
     database: ProjectDatabase, roster_ids: Sequence[int], batch_id: str
 ) -> tuple[UnreconciledRoster, ...]:
     """The rosters among ``roster_ids`` with no reconciliation of ``batch_id``."""
+    batch_id = session_population.population_key(database, batch_id)
     labels: dict[str | None, str] = {
         exam_set.set_id: exam_set.display_label
         for exam_set in project_sets.list_sets(database)
@@ -987,6 +971,7 @@ def score_batch(
             (legacy ``A`` and ``a``). Which key marks such a script cannot be
             decided, so nothing is scored until the operator renames one.
     """
+    batch_id = session_population.bind_store(database, batch_id)
     set_identity.require_no_collision(
         set_identity.load(database), purpose="Calculate Results"
     )
@@ -1285,6 +1270,7 @@ def list_results(
     are recomputed and compared too, which is what catches a Phase 6 correction
     made since the batch was scored.
     """
+    batch_id = session_population.population_key(database, batch_id)
     current = (
         gather_inputs(database, roster_id, batch_id, template)
         if template is not None
@@ -1403,6 +1389,7 @@ def get_result(
     staleness, so calling it per candidate is quadratic: anything iterating
     over a cohort - a report, a export - wants :func:`list_results` once.
     """
+    batch_id = session_population.population_key(database, batch_id)
     found = [
         item
         for item in list_results(database, roster_id, batch_id, template)
@@ -1444,6 +1431,7 @@ def count_results(
     template: OmrTemplate | None = None,
 ) -> ResultCounts:
     """Summarise a batch's results."""
+    batch_id = session_population.population_key(database, batch_id)
     return summarise(list_results(database, roster_id, batch_id, template))
 
 
@@ -1477,6 +1465,7 @@ def clear_results(database: ProjectDatabase, roster_id: int, batch_id: str) -> i
     stored inputs produced, and removing it removes the only record of a mark
     somebody may already have been told.
     """
+    batch_id = session_population.population_key(database, batch_id)
     with database.session() as session:
         outcome = session.execute(
             delete(CandidateResult)

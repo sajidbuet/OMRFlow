@@ -21,6 +21,7 @@ Three rules the page is arranged around, matching Phase 8's Results page:
 
 from __future__ import annotations
 
+import html
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.domain.reporting import ReadinessIssueKind
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
@@ -53,6 +55,7 @@ from omr_scanner.services import (
     reconciliation_store,
     report_store,
     scan_sessions,
+    session_scope,
     set_attendance,
 )
 
@@ -180,6 +183,11 @@ class ReportsPageState:
     ``set_id`` (§19). ``None`` in a project whose attendance is entirely
     per-set, which is the ordinary Part 2 state."""
     batch_id: str | None = None
+    """The selected session's downstream **store** - derived from
+    :attr:`scan_session_id` (0.1.1 phase 4)."""
+    scan_session_id: str | None = None
+    """The scan session reported on: the authoritative selection (default:
+    the active session)."""
     reviewer: str = ""
     project_name: str = ""
     exam_name: str = ""
@@ -355,6 +363,7 @@ class ReportsPage(WorkflowPage):
         self.state.sets = []
         self.state.roster_id = None
         self.state.batch_id = None
+        self.state.scan_session_id = None
         self.state.project_name = session.name if session is not None else ""
         self.state.exam_name = session.exam_name if session is not None else ""
         if session is not None:
@@ -364,9 +373,9 @@ class ReportsPage(WorkflowPage):
             # one rather than "whichever roster is active".
             roster = reconciliation_store.active_roster(session.database, None)
             self.state.roster_id = roster.roster_id if roster else None
-            # The active scan session's batch - never "the most recently
-            # updated one" (0.1.1 phase 2; one batch until session results).
-            self.state.batch_id = scan_sessions.downstream_batch_id(session.database)
+            # The active scan session - never "the most recently updated
+            # batch" (0.1.1 phase 4: the session is the selection).
+            self._select_session(scan_sessions.downstream_session_id(session.database))
         self.refresh_table()
         self._update_enabled()
 
@@ -385,11 +394,37 @@ class ReportsPage(WorkflowPage):
         self.refresh_table()
         self._update_enabled()
 
-    def set_batch(self, batch_id: str) -> None:
-        """Report on a particular batch rather than the most recent one."""
-        self.state.batch_id = batch_id
+    def set_session(self, scan_session_id: str | None) -> None:
+        """Report on one scan session (the authoritative selection)."""
+        self._select_session(scan_session_id)
         self.refresh_table()
         self._update_enabled()
+
+    def set_batch(self, batch_id: str) -> None:
+        """Compatibility: report on the scan session ``batch_id`` belongs to."""
+        database = self.database
+        self.set_session(
+            session_scope.session_of(database, batch_id) if database is not None else None
+        )
+
+    def _select_session(self, scan_session_id: str | None) -> None:
+        database = self.database
+        self.state.scan_session_id = scan_session_id
+        self.state.batch_id = None
+        if database is not None and scan_session_id is not None:
+            try:
+                self.state.batch_id = session_scope.store(database, scan_session_id)
+            except session_scope.SessionScopeError:
+                self.state.scan_session_id = None
+
+    def _scope_id(self) -> str | None:
+        """The selected session id (derived from the store for a direct caller)."""
+        database = self.database
+        if self.state.scan_session_id is not None:
+            return self.state.scan_session_id
+        if database is not None and self.state.batch_id is not None:
+            return session_scope.session_of(database, self.state.batch_id)
+        return None
 
     # ------------------------------------------------------------------
     # The set table
@@ -421,12 +456,11 @@ class ReportsPage(WorkflowPage):
     def _build_rows(self, database: ProjectDatabase) -> list[SetRow]:
         """Assemble one row per defined set, then per uncovered legacy code."""
         overviews: dict[str, SetOverview] = {}
-        if self.state.roster_id is not None and self.state.batch_id is not None:
+        scope_id = self._scope_id()
+        if self.state.roster_id is not None and scope_id is not None:
             overviews = {
                 item.set_code: item
-                for item in report_store.set_overview(
-                    database, self.state.roster_id, self.state.batch_id
-                )
+                for item in session_scope.overview(database, self.state.roster_id, scope_id)
             }
 
         rows: list[SetRow] = []
@@ -466,11 +500,10 @@ class ReportsPage(WorkflowPage):
         again per set is the only way those counts can be about the right
         candidates (§19).
         """
-        if status.roster is None or self.state.batch_id is None:
+        scope_id = self._scope_id()
+        if status.roster is None or scope_id is None:
             return None
-        for item in report_store.set_overview(
-            database, status.roster.roster_id, self.state.batch_id
-        ):
+        for item in session_scope.overview(database, status.roster.roster_id, scope_id):
             if item.set_code == status.exam_set.code:
                 return item
         return None
@@ -504,8 +537,19 @@ class ReportsPage(WorkflowPage):
             if defined
             else " · no sets defined - see File &gt; Project Configuration..."
         )
+        scope_text = ""
+        database = self.database
+        if database is not None and self.state.batch_id is not None:
+            scope = report_store.session_scope(database, self.state.batch_id)
+            if scope.provisional:
+                scope_text = (
+                    f"<br><span style='color:#8a5a00'><b>Provisional</b> - scan session "
+                    f"'{html.escape(scope.name)}' is open; Final Export closes it first.</span>"
+                )
+            elif scope.scan_session_id is not None:
+                scope_text = f"<br>Scan session '{html.escape(scope.name)}' · closed"
         self.exam_name_label.setText(
-            f"<b>Exam:</b> {self.state.exam_name}{suffix}"
+            f"<b>Exam:</b> {self.state.exam_name}{suffix}{scope_text}"
         )
 
     def _rebuild_table(self) -> None:
@@ -528,7 +572,7 @@ class ReportsPage(WorkflowPage):
                 str(item.script_count),
                 str(item.scored_count),
                 key_status,
-                item.report_readiness_label,
+                item.report_readiness_label + self._final_export_suffix(item),
             )
             for column, text in enumerate(values):
                 cell = QTableWidgetItem(text)
@@ -541,6 +585,19 @@ class ReportsPage(WorkflowPage):
                     cell.setToolTip(item.blocker)
                 self.set_table.setItem(row, column, cell)
         self.set_table.blockSignals(False)
+
+    def final_export_status(self, row: SetRow) -> report_store.FinalExportStatus | None:
+        """The state of ``row``'s latest Final Export from this session."""
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return None
+        return report_store.final_export_status(database, self.state.batch_id, row.set_code)
+
+    def _final_export_suffix(self, row: SetRow) -> str:
+        status = self.final_export_status(row)
+        if status is None or status.state == "none":
+            return ""
+        return f" · {status.label}"
 
     def _restore_selection(self, set_code: str | None) -> None:
         """Reselect a set by code, which is unique across every row.
@@ -724,8 +781,10 @@ class ReportsPage(WorkflowPage):
                 return None
         if roster_id is None:
             return None
-        return report_store.check_readiness(
-            database, roster_id, self.state.batch_id, self.state.template,
+        scope_id = self._scope_id()
+        assert scope_id is not None  # batch_id was checked above
+        return session_scope.readiness(
+            database, roster_id, scope_id, self.state.template,
             row.set_code, for_final_export=for_final_export,
         )
 
@@ -740,7 +799,10 @@ class ReportsPage(WorkflowPage):
             self._update_enabled()
             return
 
-        heading = f"<b>Set {overview.set_code}</b> · {overview.report_readiness_label}"
+        heading = (
+            f"<b>Set {overview.set_code}</b> · {overview.report_readiness_label}"
+            f"{self._final_export_suffix(overview)}"
+        )
         if overview.description:
             heading += f"<br>{overview.description}"
         if overview.attendance_file:
@@ -842,6 +904,146 @@ class ReportsPage(WorkflowPage):
         box.setDefaultButton(cancel)
         box.exec()
         return box.clickedButton() is export
+
+    def _ensure_closed_for_final(self, rows: list[SetRow] | None = None) -> str | None:
+        """Final Export needs a CLOSED session: offer to close it in one step.
+
+        Returns:
+            ``"closed"`` when the session is (now) closed, ``"acknowledged"``
+            when it was just closed with incomplete results the operator
+            accepted, or ``None`` when nothing may be exported - the operator
+            declined, or a closure blocker remains (listed, nothing changed).
+
+        ARCHITECTURE_NOTES §8.2 / §14.3 (decided, §16 Q4): on an open session
+        Final Export offers *Close session and generate final export*, which
+        runs the closure checks and either lists the blockers and closes
+        nothing, or closes the session (sealing its batches, audited) and then
+        generates from the now-authoritative state.
+        """
+        database = self.database
+        if database is None or self.state.batch_id is None:
+            return None
+        scope = report_store.session_scope(database, self.state.batch_id)
+        if not scope.provisional or scope.scan_session_id is None:
+            return "closed"
+        if not self.confirm_close_and_export(scope.name):
+            return None
+        blockers = scan_sessions.closure_blockers(database, scope.scan_session_id)
+        hard = [item.message for item in blockers if not item.acknowledgeable]
+        # The export itself must be able to run once the session is closed:
+        # otherwise the one step would close the session and export nothing.
+        # Each chosen set's own blocking readiness issues - other than the
+        # open session and the acknowledgeable rescans / deferrals - are
+        # blockers too.
+        for row in rows or []:
+            if row.blocker:
+                hard.append(f"Set {row.set_code}: {row.blocker}")
+                continue
+            report = self._readiness_for(row, for_final_export=True)
+            if report is None:
+                continue
+            hard.extend(
+                f"Set {row.set_code}: {issue.message}"
+                for issue in report.issues
+                if issue.blocking
+                and issue.kind is not ReadinessIssueKind.SESSION_OPEN
+                and not issue.kind.is_acknowledgeable
+            )
+        if hard:
+            listed = [item.message for item in blockers if item.acknowledgeable]
+            self.show_closure_blockers(scope.name, hard + listed)
+            return None
+        soft = [item.message for item in blockers if item.acknowledgeable]
+        if soft and not self.confirm_incomplete_close(scope.name, soft):
+            return None
+        try:
+            scan_sessions.close_scan_session(
+                database,
+                scope.scan_session_id,
+                closed_by=self.state.reviewer,
+                reason="Close session and generate final export",
+                acknowledge_incomplete=bool(soft),
+            )
+        except OMRScannerError as exc:
+            QMessageBox.warning(self, "Scan session not closed", exc.user_message or str(exc))
+            return None
+        _LOGGER.info("Scan session %s closed for Final Export", scope.scan_session_id)
+        self.refresh_table()
+        return "acknowledged" if soft else "closed"
+
+    def confirm_close_and_export(self, session_name: str) -> bool:
+        """Ask whether to close the open session and generate the final export."""
+        box = QMessageBox(self)
+        box.setObjectName("closeAndExportConfirmation")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Scan session is open")
+        box.setText(
+            f"Scan session '{session_name}' is still open, so its results are "
+            "provisional. A final export is made from a closed session.\n\n"
+            "Close the session now - its batches are sealed and it accepts no new "
+            "scans until it is reopened - and generate the final export?"
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        close = box.addButton(
+            "Close session and generate final export", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is close
+
+    def show_closure_blockers(self, session_name: str, blockers: list[str]) -> None:
+        """List why the session cannot be closed; nothing was changed."""
+        shown = blockers[:15]
+        more = f"\n• ...and {len(blockers) - len(shown)} more" if len(blockers) > len(shown) else ""
+        QMessageBox.information(
+            self,
+            "Scan session cannot be closed yet",
+            f"Scan session '{session_name}' was not closed and nothing was exported:\n\n"
+            + "\n".join(f"• {item}" for item in shown)
+            + more,
+        )
+
+    def confirm_incomplete_close(self, session_name: str, incomplete: list[str]) -> bool:
+        """Ask before closing with outstanding rescans or deferred sheets. Cancel by default."""
+        box = QMessageBox(self)
+        box.setObjectName("incompleteCloseConfirmation")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Results are incomplete")
+        box.setText(
+            f"Scan session '{session_name}' can only be closed with incomplete results:"
+            "\n\n" + "\n".join(f"• {item}" for item in incomplete) + "\n\nClosing now "
+            "and exporting produces final reports marked as INCOMPLETE, and the "
+            "decision is recorded against your name."
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        accept = box.addButton(
+            "Close and export incomplete results", QMessageBox.ButtonRole.AcceptRole
+        )
+        box.setDefaultButton(cancel)
+        box.exec()
+        return box.clickedButton() is accept
+
+    def _final_acknowledgement(self, rows: list[SetRow]) -> bool | None:
+        """Close the session if needed, then ask about incomplete results if needed.
+
+        Generation's own preconditions are checked **first**: closing the
+        session for a final export that then could not run would leave it
+        closed with nothing exported.
+        """
+        if (
+            self.database is None
+            or self.state.batch_id is None
+            or self.state.template is None
+            or not rows
+            or (self.state.roster_id is None and any(not row.set_id for row in rows))
+        ):
+            return None
+        closed = self._ensure_closed_for_final(rows)
+        if closed is None:
+            return None
+        if closed == "acknowledged":
+            return True
+        return self._acknowledge_if_needed(rows)
 
     def _run_jobs(
         self, jobs: list[ReportJob], *, final: bool, acknowledge_incomplete: bool = False
@@ -954,7 +1156,7 @@ class ReportsPage(WorkflowPage):
         row = self.selected_overview()
         if row is None:
             return False
-        acknowledged = self._acknowledge_if_needed([row])
+        acknowledged = self._final_acknowledgement([row])
         if acknowledged is None:
             return False
         return self._run_jobs(
@@ -966,7 +1168,7 @@ class ReportsPage(WorkflowPage):
         row = self.selected_overview()
         if row is None:
             return False
-        acknowledged = self._acknowledge_if_needed([row])
+        acknowledged = self._final_acknowledgement([row])
         if acknowledged is None:
             return False
         return self._run_jobs(
@@ -985,7 +1187,7 @@ class ReportsPage(WorkflowPage):
         jobs = [
             job for row in self.state.sets for job in self._jobs_for(row, ("xlsx",))
         ]
-        acknowledged = self._acknowledge_if_needed(list(self.state.sets))
+        acknowledged = self._final_acknowledgement(list(self.state.sets))
         if acknowledged is None:
             return False
         return self._run_jobs(jobs, final=True, acknowledge_incomplete=acknowledged)

@@ -75,15 +75,15 @@ from omr_scanner.domain.reconciliation import (
     ScriptView,
 )
 from omr_scanner.domain.scan_lifecycle import LifecycleState
+from omr_scanner.domain.session_population import SheetDisposition
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import scan_lifecycle, set_identity
+from omr_scanner.services import scan_lifecycle, session_population, set_identity
 from omr_scanner.services.reconciliation import (
     ReconciliationInput,
     count_entries,
     reconcile,
 )
 from omr_scanner.services.reconciliation_leads import OutOfSetScript
-from omr_scanner.services.review_store import effective_identifiers, effective_set_codes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -95,6 +95,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.scan_lifecycle import RescanCase
     from omr_scanner.services.candidate_import import RosterValidation
     from omr_scanner.services.review_store import EffectiveIdentifier
+    from omr_scanner.services.session_population import SessionPopulation
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -697,54 +698,65 @@ _LIFECYCLE_PLACEMENTS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class _BatchReadings:
-    """A batch's scripts' effective values, including adopted replacements.
+    """A scan session's sheets' effective values, from its population.
 
     Attributes:
+        population: The session's effective sheet set and every sheet's
+            disposition (:mod:`omr_scanner.services.session_population`) -
+            the one place it is decided which sheets count.
         identifiers / set_codes: The review ledger's effective values for
-            every scan of the batch **and** for every replacement from another
-            batch that stands in for one of its originals (read from that
-            replacement's own batch, where its review records live).
-        adopted: ``replacement scan id -> original scan id`` for those.
-        elsewhere: This batch's scans that count in another batch instead.
+            every sheet reconciliation places: those that count, those listed
+            without counting (awaiting a rescan, deferred), and the other
+            lifecycle states (so they can be reported where they belong). Read
+            from each sheet's own batch, where its review records live.
+        cases: The lifecycle record of every placed sheet that has one.
     """
 
+    population: SessionPopulation
     identifiers: dict[int, EffectiveIdentifier]
     set_codes: dict[int, EffectiveIdentifier]
-    adopted: dict[int, int]
-    elsewhere: dict[int, str]
+    cases: dict[int, RescanCase]
+
+    @property
+    def elsewhere(self) -> frozenset[int]:
+        """Rescans of another session's sheets: they count there, not here."""
+        return self.population.with_disposition(SheetDisposition.COUNTED_IN_OTHER_SESSION)
+
+
+_NOT_PLACED = frozenset({SheetDisposition.NOT_READ, SheetDisposition.BATCH_SUPERSEDED})
+"""Dispositions reconciliation does not place at all: a sheet never read is
+not a script yet, and a batch read again as a whole is history."""
 
 
 def _batch_readings(database: ProjectDatabase, batch_id: str) -> _BatchReadings:
-    """Read a batch's effective values, adopting cross-batch replacements.
+    """Read the session population of ``batch_id``, with its effective values.
 
-    Reconciliation, scoring and reporting all work per batch, and a sheet's
-    candidate lives in the batch the sheet was first read in. A rescan read
-    into a later batch therefore **stands in for its original in the
-    original's batch** - that is where it is reconciled and marked - and is
-    left out of its own batch's reconciliation so it counts exactly once.
+    **Session-wide since 0.1.1 phase 4.** A rescan read into a later batch is
+    simply an effective sheet of the same session and its superseded original
+    is not; there is no per-batch adoption any more. Which sheets count is the
+    population's answer, never this module's.
     """
-    identifiers = dict(effective_identifiers(database, batch_id))
-    set_codes = dict(effective_set_codes(database, batch_id))
-    adopted = scan_lifecycle.adopted_replacements(database, batch_id)
-    by_batch: dict[str, list[int]] = {}
-    for scan_id in adopted:
-        other = scan_lifecycle.batch_of(database, scan_id)
-        if other is not None:
-            by_batch.setdefault(other, []).append(scan_id)
-    for other, scan_ids in by_batch.items():
-        theirs = effective_identifiers(database, other)
-        codes = effective_set_codes(database, other)
-        for scan_id in scan_ids:
-            if scan_id in theirs:
-                identifiers[scan_id] = theirs[scan_id]
-            if scan_id in codes:
-                set_codes[scan_id] = codes[scan_id]
+    population_ = session_population.population(database, batch_id)
+    placed = [
+        scan for scan, kind in population_.dispositions.items() if kind not in _NOT_PLACED
+    ]
+    cases = scan_lifecycle.session_cases(database, population_, live=False)
     return _BatchReadings(
-        identifiers=identifiers,
-        set_codes=set_codes,
-        adopted=adopted,
-        elsewhere=scan_lifecycle.counted_elsewhere(database, batch_id),
+        population=population_,
+        identifiers=session_population.effective_identifiers(database, population_, placed),
+        set_codes=session_population.effective_set_codes(database, population_, placed),
+        cases={scan: case for scan, case in cases.items() if scan in set(placed)},
     )
+
+
+def _key(database: ProjectDatabase, batch_id: str) -> str:
+    """Any batch of a session -> the session's population key (see ADR-0007).
+
+    Every public function here that is given a ``batch_id`` normalises it
+    first, so a caller holding any batch of the session reads and writes the
+    session's one reconciliation.
+    """
+    return session_population.population_key(database, batch_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -810,8 +822,8 @@ def _placements(
     """
     identity = set_identity.load(database)
     target = identity.logical(set_code)
-    cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
     readings = _batch_readings(database, batch_id)
+    cases = readings.cases
     placements: dict[int, tuple[ScriptSetPlacement, str]] = {}
     for scan_id, found in readings.set_codes.items():
         code = found.value
@@ -914,27 +926,21 @@ def script_scope(database: ProjectDatabase, roster_id: int, batch_id: str) -> Se
     For an unscoped roster (a project with no sets, or a list from before
     attendance was per-set) every script is in scope, as it always was.
     """
+    batch_id = _key(database, batch_id)
     set_code = _set_code_of_roster(database, roster_id)
     if set_code is None:
-        states = scan_lifecycle.lifecycle_states(database, batch_id)
-        scripts = batch_scripts(database, batch_id)
+        counts = session_population.population(database, batch_id).counts()
         return SetScriptScope(
             set_code="",
-            in_set=sum(1 for item in scripts if not item.rejected and not item.deferred),
-            rescan_required=sum(
-                1
-                for item in states.values()
-                if item is LifecycleState.REJECTED_PENDING_RESCAN
-            ),
-            superseded=sum(
-                1
-                for item in states.values()
-                if item
-                in (LifecycleState.SUPERSEDED_BY_REPLACEMENT, LifecycleState.REIMPORT_OF_REJECTED)
-            ),
-            counted_elsewhere=len(scan_lifecycle.counted_elsewhere(database, batch_id)),
-            excluded=sum(1 for item in states.values() if item is LifecycleState.EXCLUDED),
-            deferred=sum(1 for item in states.values() if item is LifecycleState.DEFERRED),
+            in_set=counts.get(SheetDisposition.EFFECTIVE, 0)
+            + counts.get(SheetDisposition.EFFECTIVE_UNREADABLE, 0),
+            rescan_required=counts.get(SheetDisposition.REJECTED_PENDING_RESCAN, 0),
+            superseded=counts.get(SheetDisposition.SUPERSEDED_BY_REPLACEMENT, 0)
+            + counts.get(SheetDisposition.REIMPORT_OF_REJECTED, 0)
+            + counts.get(SheetDisposition.EXACT_DUPLICATE, 0),
+            counted_elsewhere=counts.get(SheetDisposition.COUNTED_IN_OTHER_SESSION, 0),
+            excluded=counts.get(SheetDisposition.EXCLUDED, 0),
+            deferred=counts.get(SheetDisposition.DEFERRED, 0),
         )
     in_set = unresolved = undefined = rescan = superseded = elsewhere = 0
     excluded = deferred = 0
@@ -989,6 +995,7 @@ def out_of_set_scripts(
     set's script only for an identical ID, because the same roll number in two
     sets is normally two different people. Empty for an unscoped roster.
     """
+    batch_id = _key(database, batch_id)
     set_code = _set_code_of_roster(database, roster_id)
     if set_code is None:
         return ()
@@ -1046,9 +1053,10 @@ def batch_scripts(
     :attr:`~omr_scanner.domain.reconciliation.ScriptRecord.deferred`. Neither
     ever counts. See :mod:`omr_scanner.services.scan_lifecycle`.
     """
+    batch_id = _key(database, batch_id)
     readings = _batch_readings(database, batch_id)
     identifiers = readings.identifiers
-    cases = scan_lifecycle.cases_by_scan(database, batch_id, live=False)
+    cases = readings.cases
     keep: set[int] | None = None
     if set_code is not None:
         sets = set_identity.load(database)
@@ -1064,28 +1072,20 @@ def batch_scripts(
                 and _in_set(sets, _code, set_code)
             )
         }
+    population_ = readings.population
+    wanted = population_.reconciled
+    order = {batch: position for position, batch in enumerate(population_.batch_ids)}
     with database.session() as session:
-        rows = session.scalars(
-            select(BatchScan)
-            .where(BatchScan.batch_id == batch_id)
-            .order_by(BatchScan.batch_index)
-        ).all()
-        # Replacements read into other batches stand in for this batch's
-        # originals, after its own scans; this batch's scans that stand in
-        # for another's originals are counted there, not here.
-        if readings.adopted:
-            rows = [
-                *rows,
-                *session.scalars(
-                    select(BatchScan)
-                    .where(BatchScan.scan_id.in_(list(readings.adopted)))
-                    .order_by(BatchScan.scan_id)
-                ).all(),
-            ]
+        # The session's scripts: every sheet that counts and every sheet
+        # listed without counting, from all its batches, in session order
+        # (batch creation, then the order each batch read them). Nothing else
+        # decides membership here - see session_population.
+        rows = sorted(
+            session.scalars(select(BatchScan).where(BatchScan.scan_id.in_(sorted(wanted)))).all(),
+            key=lambda row: (order.get(row.batch_id, len(order)), row.batch_index, row.scan_id),
+        )
         scripts = []
         for row in rows:
-            if row.scan_id in readings.elsewhere:
-                continue
             if keep is not None and row.scan_id not in keep:
                 continue
             found = identifiers.get(row.scan_id)
@@ -1249,6 +1249,8 @@ def reconcile_batch(
     classification left behind from a roster that is no longer active.
     Operator decisions are *not* touched: they are the input, not the output.
     """
+    # The first downstream write fixes the session's store (migration 15).
+    batch_id = session_population.bind_store(database, batch_id)
     candidates = roster_candidates(database, roster_id)
     # A set's roster is reconciled against that set's scripts only. A script
     # of another set is outside this universe - not an unknown candidate - and
@@ -1451,6 +1453,7 @@ def stored_counts(
     database: ProjectDatabase, roster_id: int, batch_id: str
 ) -> ReconciliationCounts | None:
     """Return the counts recorded by the last reconciliation, or ``None``."""
+    batch_id = _key(database, batch_id)
     with database.session() as session:
         run = session.scalars(
             select(ReconciliationRun)
@@ -1468,6 +1471,7 @@ def last_reconciled_at(
     database: ProjectDatabase, roster_id: int, batch_id: str
 ) -> datetime | None:
     """When this roster/batch pair was last reconciled."""
+    batch_id = _key(database, batch_id)
     with database.session() as session:
         return session.scalars(
             select(ReconciliationRun.updated_at)
@@ -1519,6 +1523,7 @@ def list_entries(
     conflict queue is: a ten-thousand-candidate cohort must cost a page, not a
     walk.
     """
+    batch_id = _key(database, batch_id)
     rules = filters or EntryFilter()
     with database.session() as session:
         statement = (
@@ -1632,6 +1637,7 @@ def count_entries_stored(
     database: ProjectDatabase, roster_id: int, batch_id: str
 ) -> dict[ReconciliationStatus, int]:
     """Return how many entries hold each status, as one grouped query."""
+    batch_id = _key(database, batch_id)
     with database.session() as session:
         rows = session.execute(
             select(ReconciliationEntryRow.status, func.count())
@@ -1747,6 +1753,7 @@ def entry_id_for(
     database: ProjectDatabase, roster_id: int, batch_id: str, candidate_id: str
 ) -> int | None:
     """Return the stored entry id filed under a candidate ID."""
+    batch_id = _key(database, batch_id)
     with database.session() as session:
         return session.scalars(
             select(ReconciliationEntryRow.entry_id)
@@ -1830,6 +1837,7 @@ def assign_script(
     recognition read, the assignment is recorded beside it, and the audit event
     carries both.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     explanation = validate_reason(reason, reason_text)
     target = candidate_id.strip()
@@ -1891,6 +1899,7 @@ def clear_script_assignment(
     The withdrawn assignment stays in the ledger under the name of whoever made
     it. Undoing a decision is itself a decision.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     machine_value, previous = _script_context(database, roster_id, batch_id, scan_id)
     with database.session() as session:
@@ -1936,6 +1945,7 @@ def set_script_excluded(
     its candidate and is shown as set aside. That is the difference between
     resolving a duplicate and destroying evidence.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     explanation = validate_reason(reason, reason_text) if excluded else ""
     machine_value, current = _script_context(database, roster_id, batch_id, scan_id)
@@ -1994,6 +2004,7 @@ def set_primary_script(
     candidate and remain visible. This records a preference for a later phase
     to honour, not a judgement that the rest are invalid.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     machine_value, current = _script_context(database, roster_id, batch_id, scan_id)
     with database.session() as session:
@@ -2073,6 +2084,7 @@ def override_attendance(
     Passing :attr:`~omr_scanner.domain.reconciliation.AttendanceState.UNKNOWN`
     withdraws a previous override and restores the roster's own value.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     explanation = validate_reason(reason, reason_text)
     with database.session() as session:
@@ -2143,6 +2155,7 @@ def dismiss_entry(
     work but keeps its classification, so it is still visible under the
     *Accepted as-is* filter rather than looking resolved.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     explanation = validate_reason(reason, reason_text)
     with database.session() as session:
@@ -2182,6 +2195,7 @@ def reopen_entry(
 
     The dismissal stays in the ledger under the name of whoever made it.
     """
+    batch_id = _key(database, batch_id)
     named = validate_operator(operator)
     with database.session() as session:
         decision = _upsert_decision(

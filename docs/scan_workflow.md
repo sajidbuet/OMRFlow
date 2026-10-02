@@ -692,10 +692,33 @@ Decision record: `docs/decisions/ADR-0005-scan-sessions-and-finite-batches.md`.
 - **Template pinning.** A session remembers the template of its first batch.
   Processing a batch with a different template asks first; continuing is
   recorded in the audit ledger.
-- **Downstream, for now:** Attendance, Results and Reports read **one** batch -
-  the active session's newest scan/reprocess batch that is not superseded -
-  never "the most recently updated batch". A session of several batches is not
-  yet added up; that arrives with session-level results.
+- **Downstream (revised phase 4):** Attendance, Results, Reports, duplicate-ID
+  detection and the Resolve queue read the **whole session**: every sheet of
+  every batch that currently counts (its *effective set*), never "the most
+  recently updated batch" and never "the latest batch wins". A rescan read in
+  any batch of the session replaces its original only when an operator
+  confirms it, for as many generations as needed (A → B → C). Superseded,
+  rejected and excluded sheets are kept for audit. A batch read again with
+  *Reprocess All* contributes nothing; its reprocess batch does. Another scan
+  session is never mixed in. The Scan list, its progress, resume and the Scan
+  CSV export stay per batch: they describe one run. See
+  [ADR-0007](decisions/ADR-0007-session-effective-sheet-set.md).
+- **Identical images are read once (phase 4).** When a run starts, every new
+  file's content is fingerprinted (SHA-256) before anything is read. A file
+  whose bytes repeat a sheet the scan session already has - under another
+  name, from another folder, in another batch - is **not read**: the list
+  shows *Duplicate of <file> (not read)*, it is linked to that sheet and
+  recorded, and it never becomes a second script. A copy of a rejected sheet
+  is a re-import, as before. An identical image in another session is not
+  affected.
+- **Session menu (phase 4):** *Switch Scan Session...* chooses the session
+  Attendance, Results and Reports show (default: the active one). *Export
+  Renamed Copies of Session...* copies every sheet that counts in the session
+  - after review, across all its batches - into a folder named by Student ID
+  (`_a`, `_b` for repeats; `UNRESOLVED_###` when the ID is not trusted).
+  *Close Session* now lists what stops it (unread sheets, unresolved
+  conflicts; outstanding rescans and deferred sheets unless you accept
+  incomplete results).
 - A **processing manifest** (what the batch was run with) is stored at the end
   of every run and whenever a batch is sealed.
 

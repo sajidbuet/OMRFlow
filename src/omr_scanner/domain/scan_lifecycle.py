@@ -65,6 +65,13 @@ class LifecycleState(StrEnum):
     or administrative page. Reversible (*Restore*). Recorded from the
     Attendance stage."""
 
+    DUPLICATE_CONTENT = "duplicate_content"
+    """A scan whose bytes are identical to an earlier sheet of the same scan
+    session (0.1.1 phase 4). Detected from the content hash when the file is
+    registered for a run, **before** recognition: it is never read, never a
+    second script, and is linked to the sheet it repeats
+    (``scan_rejection.reimport_of_scan_id``) for provenance."""
+
     DEFERRED = "deferred"
     """An operator postponed the decision about this sheet. Left out of
     reconciliation counts, scoring and results **while deferred**, but still
@@ -115,6 +122,7 @@ _STATE_LABELS: dict[LifecycleState, str] = {
     LifecycleState.REJECTED_PENDING_RESCAN: "REJECTED — RESCAN REQUIRED",
     LifecycleState.SUPERSEDED_BY_REPLACEMENT: "Rejected — replaced by rescan",
     LifecycleState.REIMPORT_OF_REJECTED: "Re-import of a rejected scan",
+    LifecycleState.DUPLICATE_CONTENT: "Exact duplicate image (not read)",
     LifecycleState.EXCLUDED: "REJECTED — EXCLUDED FROM RESULTS",
     LifecycleState.DEFERRED: "DEFERRED — DECISION POSTPONED",
 }
@@ -124,6 +132,7 @@ _STATE_MARKERS: dict[LifecycleState, str] = {
     LifecycleState.REJECTED_PENDING_RESCAN: "✖",  # heavy multiplication x
     LifecycleState.SUPERSEDED_BY_REPLACEMENT: "⇄",  # replaced
     LifecycleState.REIMPORT_OF_REJECTED: "⧉",  # copy
+    LifecycleState.DUPLICATE_CONTENT: "⧉",  # copy
     LifecycleState.EXCLUDED: "⊘",  # circled division slash
     LifecycleState.DEFERRED: "⏸",  # pause
 }
@@ -284,6 +293,10 @@ class LifecycleAction(StrEnum):
     REIMPORT_LINKED = "reimport_linked"
     """A scan with a rejected scan's exact bytes was linked back to it."""
 
+    DUPLICATE_CONTENT_LINKED = "duplicate_linked"
+    """A newly registered scan with an earlier sheet's exact bytes was linked
+    to it and left unread (0.1.1 phase 4)."""
+
     IMAGE_QUARANTINED = "image_quarantined"
     """A superseded original's image moved into project quarantine."""
 
@@ -321,6 +334,7 @@ class LifecycleAction(StrEnum):
             LifecycleAction.LINKED_AS_REPLACEMENT: "Confirmed as the rescan",
             LifecycleAction.REPLACEMENT_REMOVED: "Replacement link removed",
             LifecycleAction.REIMPORT_LINKED: "Re-import of rejected content",
+            LifecycleAction.DUPLICATE_CONTENT_LINKED: "Exact duplicate image linked",
             LifecycleAction.IMAGE_QUARANTINED: "Image moved to quarantine",
             LifecycleAction.IMAGE_PURGED: "Image permanently deleted",
             LifecycleAction.EXPORT_INCOMPLETE: "Incomplete results exported",
@@ -515,6 +529,8 @@ class RescanCounts:
     reimports: int = 0
     excluded: int = 0
     deferred: int = 0
+    duplicates: int = 0
+    """Exact duplicate images, linked and never read (0.1.1 phase 4)."""
 
     @property
     def total(self) -> int:

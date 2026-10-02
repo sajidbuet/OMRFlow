@@ -56,6 +56,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -74,7 +75,8 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.domain.exam_sets import ExamSet
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import project_sets, set_identity, update_exam_name
+from omr_scanner.services import project_sets, review_store, set_identity, update_exam_name
+from omr_scanner.services.conflict_policy import DuplicateGrouping
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from omr_scanner.domain.template import OmrTemplate
@@ -200,8 +202,11 @@ class ProjectConfigDialog(QDialog):
         parent: Optional Qt parent.
     """
 
-    def __init__(self, session: ProjectSession, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, session: ProjectSession, parent: QWidget | None = None, *, operator: str = ""
+    ) -> None:
         super().__init__(parent)
+        self._operator = operator.strip()
         self.setObjectName("projectConfigDialog")
         self.setWindowTitle("Project Configuration")
         self.setModal(True)
@@ -357,7 +362,48 @@ class ProjectConfigDialog(QDialog):
         self.suggest_button.clicked.connect(self._prompt_adopt_suggestions)
         self.suggest_button.setVisible(False)
         layout.addWidget(self.suggest_button)
+
+        # An examination-office decision (ARCHITECTURE_NOTES §9.2), off by
+        # default: whether the same Student ID on two sets' papers is one
+        # candidate scanned twice or two candidates.
+        self.duplicate_by_set_checkbox = QCheckBox(
+            "Check duplicate Student IDs within each set only "
+            "(the same ID on different sets is two candidates)"
+        )
+        self.duplicate_by_set_checkbox.setObjectName("duplicateBySetCheckbox")
+        self.duplicate_by_set_checkbox.setToolTip(
+            "Off (the default): two sheets of a scan session with the same Student ID "
+            "are a duplicate whatever set each was read as. On: only sheets of the "
+            "same set are. Changing it re-checks every scan session and is recorded."
+        )
+        self.duplicate_by_set_checkbox.setChecked(
+            review_store.duplicate_grouping(self._session.database)
+            is DuplicateGrouping.SET_AND_IDENTIFIER
+        )
+        self.duplicate_by_set_checkbox.toggled.connect(self.set_duplicate_grouping_by_set)
+        layout.addWidget(self.duplicate_by_set_checkbox)
         return box
+
+    def set_duplicate_grouping_by_set(self, by_set: bool) -> bool:
+        """Store the duplicate-ID grouping choice. No dialog unless no operator is named."""
+        grouping = (
+            DuplicateGrouping.SET_AND_IDENTIFIER if by_set else DuplicateGrouping.IDENTIFIER
+        )
+        if review_store.duplicate_grouping(self._session.database) is grouping:
+            return True
+        try:
+            review_store.set_duplicate_grouping(
+                self._session.database, grouping, set_by=self._operator
+            )
+        except OMRScannerError as exc:
+            self.duplicate_by_set_checkbox.blockSignals(True)
+            self.duplicate_by_set_checkbox.setChecked(not by_set)
+            self.duplicate_by_set_checkbox.blockSignals(False)
+            QMessageBox.warning(
+                self, "Duplicate check not changed", exc.user_message or str(exc)
+            )
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Examination name
@@ -703,6 +749,7 @@ class ProjectConfigDialog(QDialog):
             self.move_up_button,
             self.move_down_button,
             self.suggest_button,
+            self.duplicate_by_set_checkbox,
         ):
             button.setEnabled(False)
 

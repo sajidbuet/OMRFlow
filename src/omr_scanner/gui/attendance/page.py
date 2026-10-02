@@ -135,6 +135,8 @@ from omr_scanner.services import (
     resolve_active_template,
     scan_lifecycle,
     scan_sessions,
+    session_population,
+    session_scope,
     set_attendance,
 )
 from omr_scanner.services.candidate_import import (
@@ -396,6 +398,11 @@ class AttendancePageState:
     selected_set_id: str | None = None
     roster: RosterSummary | None = None
     batch_id: str | None = None
+    """The selected session's downstream **store** - derived from
+    :attr:`scan_session_id` (0.1.1 phase 4)."""
+    scan_session_id: str | None = None
+    """The scan session being reconciled: the authoritative selection
+    (default: the active session)."""
     operator: str = ""
     template: OmrTemplate | None = None
     entries: list[ReconciliationEntry] = field(default_factory=list)
@@ -1158,6 +1165,7 @@ class AttendancePage(WorkflowPage):
         self.state.scope = None
         self.state.outside = None
         self.state.template = None
+        self.state.scan_session_id = None
         if session is not None:
             self.state.batch_id = self._latest_batch()
             self.state.template = self._project_template(session)
@@ -1194,11 +1202,15 @@ class AttendancePage(WorkflowPage):
             if database is not None and batch_id
             else ""
         )
-        multi = "only this one is read" in scope
+        # A session of several batches is reconciled as one population (0.1.1
+        # phase 4): name the session, not the batch its state is stored under.
+        multi = (
+            database is not None
+            and batch_id is not None
+            and len(session_population.population(database, batch_id).batch_ids) > 1
+        )
         self.batch_label.setText(
-            (f"Batch: <b>{batch_id[:8]}</b>" + (" · <i>one batch of several</i>" if multi else ""))
-            if batch_id
-            else ""
+            ("Scan session" if multi else f"Batch: <b>{batch_id[:8]}</b>") if batch_id else ""
         )
         self.batch_label.setToolTip(scope)
 
@@ -1408,19 +1420,52 @@ class AttendancePage(WorkflowPage):
         self._refresh_inspector_context()
 
     def _latest_batch(self) -> str | None:
-        """The batch to reconcile: the active scan session's (0.1.1 phase 2).
+        """Select the active scan session and return its downstream store.
 
-        :func:`omr_scanner.services.scan_sessions.downstream_batch_id` - never
-        "the most recently updated batch", which a retry or a project reopen
-        could change silently. One batch until session-level results exist.
+        The session is the selection (0.1.1 phase 4):
+        :func:`omr_scanner.services.scan_sessions.downstream_session_id` -
+        never "the most recently updated batch", which a retry or a project
+        reopen could change silently. The store is resolved from the session.
         """
         database = self.database
         if database is None:
             return None
-        return scan_sessions.downstream_batch_id(database)
+        self.state.scan_session_id = scan_sessions.downstream_session_id(database)
+        return self._store_of(self.state.scan_session_id)
+
+    def _store_of(self, scan_session_id: str | None) -> str | None:
+        database = self.database
+        if database is None or scan_session_id is None:
+            return None
+        try:
+            return session_scope.store(database, scan_session_id)
+        except session_scope.SessionScopeError:
+            return None
+
+    def _scope_id(self) -> str | None:
+        """The selected session id (derived from the store for a direct caller)."""
+        database = self.database
+        if self.state.scan_session_id is not None:
+            return self.state.scan_session_id
+        if database is not None and self.state.batch_id is not None:
+            return session_scope.session_of(database, self.state.batch_id)
+        return None
+
+    def set_session(self, scan_session_id: str | None) -> None:
+        """Reconcile one scan session (the authoritative selection)."""
+        self.state.scan_session_id = scan_session_id
+        self._adopt_store(self._store_of(scan_session_id))
 
     def set_batch(self, batch_id: str) -> None:
-        """Reconcile a particular batch rather than the most recent one."""
+        """Compatibility: reconcile the scan session ``batch_id`` belongs to."""
+        database = self.database
+        if database is None:
+            self._adopt_store(batch_id)
+            return
+        self.state.scan_session_id = session_scope.session_of(database, batch_id)
+        self._adopt_store(self._store_of(self.state.scan_session_id) or batch_id)
+
+    def _adopt_store(self, batch_id: str | None) -> None:
         self.state.batch_id = batch_id
         self.state.all_entries = None
         self.state.scope = None
@@ -1684,9 +1729,10 @@ class AttendancePage(WorkflowPage):
         """Show the counts from the last reconciliation, as chips and one line."""
         database = self.database
         roster = self.state.roster
+        scope_id = self._scope_id()
         counts = (
-            reconciliation_store.stored_counts(database, roster.roster_id, self.state.batch_id)
-            if database is not None and roster is not None and self.state.batch_id is not None
+            session_scope.stored_counts(database, roster.roster_id, scope_id)
+            if database is not None and roster is not None and scope_id is not None
             else None
         )
         scope = self._script_scope()
@@ -1906,10 +1952,10 @@ class AttendancePage(WorkflowPage):
             return
         else:
             self.state.entries = list(
-                reconciliation_store.list_entries(
+                session_scope.entries(
                     database,
                     roster.roster_id,
-                    self.state.batch_id,
+                    self._scope_id() or "",
                     filters=self._current_filter(),
                 )
             )
@@ -2057,8 +2103,8 @@ class AttendancePage(WorkflowPage):
         if not self.state.entries:
             if self.database is not None and self.state.batch_id is not None and (
                 self.state.roster is not None
-                and reconciliation_store.stored_counts(
-                    self.database, self.state.roster.roster_id, self.state.batch_id
+                and session_scope.stored_counts(
+                    self.database, self.state.roster.roster_id, self._scope_id() or ""
                 )
                 is not None
             ):
@@ -2259,9 +2305,7 @@ class AttendancePage(WorkflowPage):
             roster = self.state.roster
             self.state.all_entries = (
                 list(
-                    reconciliation_store.list_entries(
-                        database, roster.roster_id, self.state.batch_id
-                    )
+                    session_scope.entries(database, roster.roster_id, self._scope_id() or "")
                 )
                 if database is not None and roster is not None and self.state.batch_id
                 else []

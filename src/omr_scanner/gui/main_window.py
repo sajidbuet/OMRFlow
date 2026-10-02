@@ -362,6 +362,7 @@ class MainWindow(QMainWindow):
                 scan_page = ScanPage(spec)
                 scan_page.review_requested.connect(self.review_batch)
                 scan_page.batch_finished.connect(self._on_batch_finished)
+                scan_page.active_session_changed.connect(self._on_active_session_changed)
                 # The scoring stages read with the Scan stage's template. Without
                 # this the project's template reached Scan and nothing else, and
                 # the Answer Key stage asked for a template it had been given.
@@ -927,7 +928,7 @@ class MainWindow(QMainWindow):
         """
         if self._session is None:
             return
-        ProjectConfigDialog(self._session, self).exec()
+        ProjectConfigDialog(self._session, self, operator=self._config.reviewer_name).exec()
         self._broadcast_project_change()
 
     def create_diagnostic_bundle_at(self, output_path: Path) -> bool:
@@ -1244,21 +1245,26 @@ class MainWindow(QMainWindow):
         # replacements count in the original's batch, so reading the rescan
         # batch would show an empty cohort. In an ordinary run the two agree.
         session = self._session
-        batch_id = (
-            scan_sessions.downstream_batch_id(session.database) if session is not None else None
-        ) or scanned
-        # Attendance first: left on the previous batch, it reconciled that one
-        # while Results marked this one, which had no reconciliation - and
-        # every set scored zero candidates with no error.
+        # The downstream stages select a *scan session* (0.1.1 phase 4): the
+        # active one, whose population now includes this run's sheets.
+        scan_session_id = (
+            scan_sessions.downstream_session_id(session.database) if session is not None else None
+        )
+        if scan_session_id is None and session is not None:
+            from omr_scanner.services import session_scope
+
+            scan_session_id = session_scope.session_of(session.database, scanned)
+        # Attendance first: left on another session, it reconciled that one
+        # while Results marked this one - and every set scored zero candidates.
         attendance = self._attendance_page()
-        if attendance is not None and attendance.state.batch_id != batch_id:
-            attendance.set_batch(batch_id)
+        if attendance is not None and attendance.state.scan_session_id != scan_session_id:
+            attendance.set_session(scan_session_id)
         results = self._results_page()
         if results is not None:
-            results.set_batch(batch_id)
+            results.set_session(scan_session_id)
         reports = self._reports_page()
         if reports is not None:
-            reports.set_batch(batch_id)
+            reports.set_session(scan_session_id)
         resolve = self._resolve_page()
         if resolve is not None and resolve.state.batch_id is not None:
             # A rescan read into any batch of the project - this one or a
@@ -1277,6 +1283,16 @@ class MainWindow(QMainWindow):
         answer_key.offer_set_codes(
             [item.value for item in found.values() if item.value and not item.unresolved]
         )
+
+    def _on_active_session_changed(self) -> None:
+        """The active scan session changed: the downstream stages follow it."""
+        session = self._session
+        scan_session_id = (
+            scan_sessions.downstream_session_id(session.database) if session is not None else None
+        )
+        for page in (self._attendance_page(), self._results_page(), self._reports_page()):
+            if page is not None:
+                page.set_session(scan_session_id)
 
     def reconcile_batch(self, batch_id: str) -> bool:
         """Open a batch's candidate reconciliation in the Attendance stage.

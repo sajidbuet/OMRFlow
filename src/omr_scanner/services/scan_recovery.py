@@ -119,9 +119,20 @@ def complete_batch_review_state(database: ProjectDatabase, batch_id: str) -> int
     detection, so it does not take part. Called when a run ends - before the
     batch's status is settled - and by :func:`recover_on_open` for a batch a
     crash left ``running``. Re-running it on unchanged data writes nothing.
+
+    Duplicate Student IDs are re-derived only for the identifier groups this
+    batch's sheets take part in (the bounded pass, 0.1.1 phase 4): a batch
+    finishing in a large session does not regroup every sheet of the session.
     """
     scan_lifecycle.sync_reimports(database, batch_id)
-    duplicates = review_store.sync_duplicate_identifiers(database, batch_id)
+    with database.session() as session:
+        scans = [
+            int(item)
+            for item in session.scalars(
+                select(BatchScan.scan_id).where(BatchScan.batch_id == batch_id)
+            ).all()
+        ]
+    duplicates = review_store.sync_duplicate_identifiers_for(database, scans).in_conflict
     review_store.sync_undefined_set_codes(database, batch_id)
     return duplicates
 

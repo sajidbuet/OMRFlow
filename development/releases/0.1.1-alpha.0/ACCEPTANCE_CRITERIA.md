@@ -145,6 +145,19 @@ Rules that apply to every section:
   and duplicates matches the generator's independently computed ground truth,
   and matches the same cohort processed as one batch.
 
+> **Evidence on branch `feat/0.1.1-phase4-session-effective-set` (2026-10-02,
+> automated tests; not operator-validated).** C1 `test_session_population*`,
+> `test_exact_duplicates`; C2 `test_session_resolve_gui` (session queue, batch
+> filter; a *source* filter waits for Phase D's intake source); C3
+> `test_session_population::TestDuplicateMatrix`, `test_duplicate_sync_bounded`;
+> C4 `TestGroupingPolicy`, `test_duplicate_grouping_gui`; C5
+> `test_exact_duplicates`, `test_exact_duplicates_gui`; C6
+> `test_session_acceptance`, `session_scope`; C7 Resolve's batch filter (labelled
+> diagnostic) and Attendance's script panel, which names each script's batch; C8 `test_final_export_lifecycle`,
+> `test_close_and_export_gui`; C9 `test_golden_one_batch` (against `main`
+> `0e94d67`); C10 `test_generated_session_ground_truth`. Details:
+> `PHASE_D_HANDOFF.md`.
+
 ### D — Intake sources and ledger
 
 - D1. Every stable file in every enabled source is registered **exactly once**,

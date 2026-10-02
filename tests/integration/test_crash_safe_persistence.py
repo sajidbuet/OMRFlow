@@ -610,7 +610,22 @@ class TestLifecycleUntouched:
         batch_store.record_results(database, batch_id, outcomes[:4], template=template)
         current = scan_sessions.active_scan_session(database)
         assert current is not None
-        scan_sessions.close_scan_session(database, current.scan_session_id, closed_by=REVIEWER)
+        # A closed session whose batch a crash left running. Closing through
+        # the service now runs the closure checks (0.1.1 phase 4), which refuse
+        # a session with unread sheets; recovery, not closing, is under test
+        # here, so the closed state is written as a crash would have left it.
+        from datetime import UTC, datetime
+
+        from sqlalchemy import update
+
+        from omr_scanner.database.models import ScanSession
+
+        with database.session() as db:
+            db.execute(
+                update(ScanSession)
+                .where(ScanSession.scan_session_id == current.scan_session_id)
+                .values(state="closed", closed_at=datetime.now(UTC), closed_by=REVIEWER)
+            )
         # The shape a crash leaves if the batch was being resumed.
         _set_running(database, batch_id, sheets[4:])
 
