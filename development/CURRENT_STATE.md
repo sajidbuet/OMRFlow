@@ -40,7 +40,7 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Continuous-processing engine (`0.1.1` revised phase 6 / roadmap E first part, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase6-continuous-engine`, not merged; no migration, schema 16; headless)
+### Continuous-processing engine (`0.1.1` revised phase 6 / roadmap E first part, 2026-10-02 — implemented; automated tests passing; merged to `main` as `141d703`; no migration, schema 16; headless)
 
 - **What exists:** `domain/processing.py` (engine states, `EngineLimits`,
   `UnitPolicy`, the pure unit rule `plan_units`),

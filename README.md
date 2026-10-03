@@ -218,9 +218,8 @@ ten revised phases.
   (migration 15; merged as `fd063f8`; not used by an operator); phase 5, intake
   sources and the intake ledger (migration 16; merged as `59ba8df`; headless;
   not network-share or real-scanner validated).
-- **Under testing (implemented, tests passing, not merged):** phase 6, the
-  continuous-processing engine, on branch `feat/0.1.1-phase6-continuous-engine`
-  (no migration) - a **headless** engine that turns ready intake files into
+- **Implemented, tests passing, merged as `141d703`:** phase 6, the
+  continuous-processing engine (no migration) - a **headless** engine that turns ready intake files into
   finite, sealed units of one source and processes them while further files
   arrive and further units form in the same open scan session. A sheet is
   claimed in the database before it reaches a worker and counted only once its
@@ -243,7 +242,7 @@ ten revised phases.
 | 3 — Crash-safe Scan/Resolve persistence | ✅ merged | ✅ passing, incl. real-process kill matrix | ✅ synthetic crash/restart (40 and 1,000 sheets) | ❌ | ❌ | ❌ |
 | 4 — Session-level effective results | ✅ merged (`fd063f8`; migration 15) | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression against `main` | ✅ synthetic only | ❌ | n/a | ❌ |
 | 5 — Intake sources + ledger | ✅ merged (`59ba8df`; migration 16; headless) | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer and engine process kills, and a 2,400-arrival seeded soak | 🟠 local temporary-directory and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
-| 6 — Continuous-processing engine | ✅ (branch, unmerged; no migration; headless) | ✅ passing, incl. a deterministic kill-boundary matrix, real process kills at six boundaries, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
+| 6 — Continuous-processing engine | ✅ merged (`141d703`; no migration; headless) | ✅ passing, incl. a deterministic kill-boundary matrix, real process kills at six boundaries, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
 | 7 — Quality / rescan / session controls | ⚪ pending | — | — | — | — | — |
 | 8 — Operational GUI | ⚪ pending | — | — | — | — | — |
 | 9 — Automated qualification | ⚪ pending | — | — | — | — | — |

@@ -24,8 +24,8 @@ bounded-processing tests.* It is headless: nothing in the GUI starts it.
 ## 2. Branch
 
 * Branch `feat/0.1.1-phase6-continuous-engine`, worktree
-  `C:\Research\OMRflow-p6`. Pushed; **not merged, not tagged, nothing
-  released.**
+  `C:\Research\OMRflow-p6`. Pushed; **merged into `main` as `141d703`** (2026-10-03, on the
+  owner's instruction); not tagged, nothing released.
 
 ## 3. Baseline and tip
 
