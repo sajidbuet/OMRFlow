@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import case, func, literal, select
+from sqlalchemy import case, func, literal, select, union
 
 from omr_scanner.database.models import (
     BatchScan,
@@ -249,17 +249,67 @@ def _flag_columns() -> tuple[Any, ...]:
     return lifecycle, conflict, suggestion, retry, unresolved, resolved
 
 
+def _flagged_scans(with_quality: bool) -> Any:
+    """SQL: the sheets that carry anything beyond "active, read or not, nothing to decide".
+
+    A non-active lifecycle row, a required conflict in any live state, or a
+    quality decision other than *accept*. Driven from those (comparatively
+    small) tables, so only these sheets pay for the per-sheet flags; every
+    other sheet is counted from the ``(batch_id, status)`` index alone.
+    """
+    parts: list[Any] = [
+        select(ScanRejection.scan_id).where(ScanRejection.state != "active"),
+        select(ReviewConflict.scan_id)
+        .where(ReviewConflict.conflict_type.in_(_RESOLUTION_VALUES))
+        .where(ReviewConflict.state.in_((*_UNRESOLVED, ConflictState.RESOLVED.value))),
+    ]
+    if with_quality:
+        parts.append(
+            select(ScanQualityDecision.scan_id).where(
+                ScanQualityDecision.decision.in_(
+                    (
+                        QualityDecision.RESCAN_REQUIRED.value,
+                        QualityDecision.RETRY_PROCESSING.value,
+                    )
+                )
+            )
+        )
+    return union(*parts)
+
+
 def _classify_groups(
     run: _Run,
+    sheets: _Sheets,
     scan_session_id: str,
     batches: list[str],
     superseded: set[str],
-    linked: set[int],
+    linked: Counter[tuple[str, str]],
     with_quality: bool,
-) -> _Sheets:
-    sheets = _Sheets()
+    linked_ids: set[int],
+) -> None:
+    """Classify every sheet of the session's batches, in two grouped statements.
+
+    1. ``(batch, status) -> count`` for every sheet - an index-only scan.
+    2. The *flagged* sheets (:func:`_flagged_scans`) grouped by
+       ``(batch, status, lifecycle, flags)`` with their conflict counts.
+
+    The difference - sheets with nothing beyond their processing status - is
+    classified as active and unflagged. Each group, flagged or not, is given
+    its disposition by the canonical :func:`classify`. ``linked`` holds the
+    lineage sheets classified separately, to leave out here.
+    """
     if not batches:
-        return sheets
+        return
+    base: Counter[tuple[str, str]] = Counter(
+        {
+            (str(batch_id), str(status)): int(count)
+            for batch_id, status, count in run.all(
+                select(BatchScan.batch_id, BatchScan.status, func.count())
+                .where(BatchScan.batch_id.in_(batches))
+                .group_by(BatchScan.batch_id, BatchScan.status)
+            )
+        }
+    )
     lifecycle, conflict, suggestion, retry, unresolved, resolved = _flag_columns()
     if not with_quality:
         suggestion = literal(0)
@@ -276,25 +326,30 @@ def _classify_groups(
             func.coalesce(func.sum(unresolved), 0),
             func.coalesce(func.sum(resolved), 0),
         )
+        .where(BatchScan.scan_id.in_(_flagged_scans(with_quality)))
         .where(BatchScan.batch_id.in_(batches))
         .group_by(BatchScan.batch_id, BatchScan.status, lifecycle, conflict, suggestion, retry)
     )
-    if linked:
-        statement = statement.where(BatchScan.scan_id.not_in(sorted(linked)))
+    if linked_ids:
+        statement = statement.where(BatchScan.scan_id.not_in(sorted(linked_ids)))
+    plain = base - linked
     for row in run.all(statement):
         batch_id, status, state, has_conflict, has_suggestion, needs_retry = row[:6]
         count, open_n, done_n = row[6:]
-        facts = SheetFacts(
-            scan_id=0,
-            batch_id=str(batch_id),
-            status=str(status),
-            lifecycle=str(state),
-            batch_superseded=str(batch_id) in superseded,
-        )
+        plain[(str(batch_id), str(status))] -= int(count)
         sheets.add(
             batch_id=str(batch_id),
             status=str(status),
-            disposition=classify(facts, scan_session_id),
+            disposition=classify(
+                SheetFacts(
+                    scan_id=0,
+                    batch_id=str(batch_id),
+                    status=str(status),
+                    lifecycle=str(state),
+                    batch_superseded=str(batch_id) in superseded,
+                ),
+                scan_session_id,
+            ),
             conflict=bool(has_conflict),
             suggestion=bool(has_suggestion),
             retry=bool(needs_retry),
@@ -302,7 +357,28 @@ def _classify_groups(
             unresolved=int(open_n or 0),
             resolved=int(done_n or 0),
         )
-    return sheets
+    for (batch_id, status), count in plain.items():
+        if count <= 0:
+            continue
+        sheets.add(
+            batch_id=batch_id,
+            status=status,
+            disposition=classify(
+                SheetFacts(
+                    scan_id=0,
+                    batch_id=batch_id,
+                    status=status,
+                    batch_superseded=batch_id in superseded,
+                ),
+                scan_session_id,
+            ),
+            conflict=False,
+            suggestion=False,
+            retry=False,
+            count=count,
+            unresolved=0,
+            resolved=0,
+        )
 
 
 def _linked_sheets(database: ProjectDatabase, scan_session_id: str) -> SheetsOfSession | None:
@@ -333,14 +409,18 @@ def _classify_linked(
     classified: SheetsOfSession | None,
     sheets: _Sheets,
     with_quality: bool,
-) -> int:
+    batches: list[str],
+) -> tuple[int, Counter[tuple[str, str]]]:
     """Add the lineage sheets' flags (read in the snapshot's transaction) to ``sheets``.
 
     Returns how many of them were adopted from another session (rescans read
-    there whose lineage counts here).
+    there whose lineage counts here), and ``(batch, status) -> count`` of those
+    read into this session's own batches (left out of the grouped pass).
     """
+    in_session: Counter[tuple[str, str]] = Counter()
     if classified is None or not classified.dispositions:
-        return 0
+        return 0, in_session
+    members = set(batches)
     lifecycle, conflict, suggestion, retry, unresolved, resolved = _flag_columns()
     del lifecycle
     if not with_quality:
@@ -359,8 +439,11 @@ def _classify_linked(
     )
     for scan_id, status, has_conflict, has_suggestion, needs_retry, open_n, done_n in rows:
         scan = int(scan_id)
+        batch_id = classified.batch_of[scan]
+        if batch_id in members:
+            in_session[(batch_id, str(status))] += 1
         sheets.add(
-            batch_id=classified.batch_of[scan],
+            batch_id=batch_id,
             status=str(status),
             disposition=classified.dispositions[scan],
             conflict=bool(has_conflict),
@@ -370,7 +453,7 @@ def _classify_linked(
             unresolved=int(open_n or 0),
             resolved=int(done_n or 0),
         )
-    return len(classified.adopted & set(classified.dispositions))
+    return len(classified.adopted & set(classified.dispositions)), in_session
 
 
 def take_snapshot(
@@ -405,13 +488,22 @@ def take_snapshot(
             select(ScanSession.state).where(ScanSession.scan_session_id == scan_session_id)
         )
         batch_rows = run.all(
-            select(ScanBatch.batch_id, ScanBatch.status, ScanBatch.source_id)
+            select(
+                ScanBatch.batch_id, ScanBatch.status, ScanBatch.source_id, ScanBatch.updated_at
+            )
             .where(ScanBatch.scan_session_id == scan_session_id)
             .order_by(ScanBatch.created_at, ScanBatch.batch_id)
         )
         batches = [str(row[0]) for row in batch_rows]
         source_of = {str(row[0]): (str(row[2]) if row[2] else "") for row in batch_rows}
         running = sum(1 for row in batch_rows if str(row[1]) == BatchStatus.RUNNING.value)
+        since = moment - timedelta(seconds=rate_window_seconds)
+        # A sheet read since `since` was committed since then, and a commit
+        # stamps its unit's `updated_at`: only those units can hold one.
+        touched = [
+            str(row[0]) for row in batch_rows
+            if row[3] is not None and (_aware(row[3]) or since) >= since
+        ]
         superseded = {
             str(item)
             for (item,) in run.all(
@@ -420,8 +512,13 @@ def take_snapshot(
                 )
             )
         }
-        sheets = _classify_groups(
-            run, scan_session_id, batches, superseded, linked, with_quality
+        sheets = _Sheets()
+        adopted, linked_counts = _classify_linked(
+            run, classified, sheets, with_quality, batches
+        )
+        _classify_groups(
+            run, sheets, scan_session_id, batches, superseded, linked_counts, with_quality,
+            linked,
         )
         registered_rows = int(
             run.scalar(
@@ -439,11 +536,16 @@ def take_snapshot(
                 func.count(),
             )
             .where(IntakeFile.scan_session_id == scan_session_id)
+            # A registered row is counted through its sheet: not read here,
+            # which keeps this an index range over the unregistered few.
+            .where(IntakeFile.state != IntakeState.REGISTERED.value)
             .group_by(IntakeFile.source_id, IntakeFile.state, IntakeFile.batch_scan_id.is_not(None))
         ) if with_intake else []
-        recent = _recent_by_source(run, batches, moment - timedelta(seconds=rate_window_seconds))
-        alarms = _alarm_samples(run, batches, alarm_policy.window)
-        adopted = _classify_linked(run, classified, sheets, with_quality)
+        recent = _recent_by_source(run, touched, since)
+        alarms = _alarm_samples(
+            run, _latest_units(batch_rows, sheets.by_batch_processed, alarm_policy.window),
+            alarm_policy.window,
+        )
         query_count = run.count + 1  # + BEGIN
 
     # --- the ledger side of the partition ------------------------------------
@@ -617,10 +719,28 @@ def _activity(
     return SessionActivity.CAUGHT_UP
 
 
+def _latest_units(
+    batch_rows: list[Any], processed: Counter[str], window: int
+) -> list[str]:
+    """Per source, its newest units until they hold ``window`` read sheets.
+
+    The alarm only looks at a source's latest ``window`` read sheets; those are
+    in its most recent units, so the windowed query reads those units only -
+    bounded by the window and the unit size, not by the session.
+    """
+    chosen: list[str] = []
+    held: Counter[str] = Counter()
+    for row in reversed(batch_rows):  # newest first
+        batch_id, source = str(row[0]), row[2]
+        if not source or held[str(source)] >= window:
+            continue
+        chosen.append(batch_id)
+        held[str(source)] += processed.get(batch_id, 0)
+    return chosen
+
+
 def _recent_by_source(run: _Run, batches: list[str], since: datetime) -> dict[str, int]:
-    """Sheets read since ``since``, per source (one grouped query)."""
-    if not batches:
-        return {}
+    """Sheets read since ``since``, per source (one grouped query, always issued)."""
     rows = run.all(
         select(ScanBatch.source_id, func.count())
         .join(BatchScan, BatchScan.batch_id == ScanBatch.batch_id)
@@ -636,10 +756,9 @@ def _alarm_samples(run: _Run, batches: list[str], window: int) -> dict[str, tupl
     """Per source: ``(samples, registration failures)`` among its latest ``window`` read sheets.
 
     The evidence is each sheet's stored recognition outcome
-    (``registration_failed``) - no new measurement. One windowed query.
+    (``registration_failed``) - no new measurement. One windowed query, always
+    issued (so a snapshot's statement count never depends on the data).
     """
-    if not batches:
-        return {}
     rank = (
         func.row_number()
         .over(
