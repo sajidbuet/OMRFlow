@@ -27,8 +27,9 @@
   / `516428b` tests, `3973564` snapshot deadlock fix + recovery / contention
   tests, `9fd3168` crash kills, `888e60c` scenario, `c426146` snapshot
   performance, then the documentation commit(s). Tip: see the final report.
-* Push / merge: see the final report. **Not merged** into `main`; nothing
-  tagged or released.
+* Pushed to `origin` as a branch (the phase workflow: phase branches are
+  pushed, merged only on the owner's instruction). **Not merged** into `main`;
+  nothing tagged or released.
 * Working tree: clean apart from the main checkout's unrelated, untracked
   `docs/debug/` (not touched, not committed).
 
@@ -348,7 +349,40 @@ duplicate 3, excluded 0, deferred 0, counted_elsewhere 0}
 Baseline (`main` `e8200b4`, canonical `pytest-ruff-mypy.ps1`): 6,919 passed,
 16 skipped, 7 deselected; ruff clean; mypy clean (222 files).
 
-Phase 7 tip: filled in from the final run (below).
+Phase 7 (`80ee036`, canonical `pytest-ruff-mypy.ps1` run from the worktree
+with the main checkout's `.venv`, log `Scratch\Log\2026-10-04_022249`):
+
+| Check | Result |
+|---|---|
+| pytest (default suite) | **7,007 passed, 29 skipped, 7 deselected** (1 h 04 min 45 s) |
+| ruff `check src tests tools scripts` | All checks passed |
+| mypy `src` | Success: no issues found in 232 source files |
+| Stress (`-m stress`, separately) | **7 passed** (21 min 49 s): crash matrix case 11 at 1,000 sheets, 10k-scan progress model, engine endurance (waves + kills), intake soak, three full-size sets, kill/resume at 10,000, reconciliation + reports at 10,000 |
+
+* **Skips vs baseline (29 vs 16):** the 13 extra are
+  `tests/local/test_real_marked_sheets.py`, which need the gitignored
+  `Scratch/Project1` fixture the worktree lacks. Run against it (temporary
+  junction, removed afterwards): **13 passed**. The 10
+  `test_real_folded_corner.py` skips need `Scratch/Sample Scripts`, absent in
+  the main checkout too.
+* **+88 passed** over the baseline: the phase 7 tests.
+* **One earlier gate run failed:** run `2026-10-04_013209` of the same commit
+  died with a native abort (exit `0xC0000409`, no Python traceback or Qt
+  message captured) at about 18 %, inside
+  `tests/gui/test_stress_qualification_gui.py` (a pre-existing file phase 7
+  does not touch). That file alone: 37 passed; the whole `tests/gui`
+  directory: 1,923 passed, 2 skipped; the next full run (above) passed. **Not
+  reproduced, cause not identified** - recorded as an intermittent native GUI
+  crash, not as a pass.
+* Edited pre-existing tests (not weakened):
+  `tests/integration/test_continuous_engine.py::test_status_snapshot_and_idempotent_start`
+  - a second engine on the same project is now refused by the coordinator
+  lease (`CoordinatorBusyError`) where it used to start; the test asserts the
+  refusal, shuts the first engine down and keeps every original assertion.
+  `tests/integration/test_intake_migration.py` - pinned `SCHEMA_VERSION == 16`
+  and a `-to-16` backup name; now `>= 16`, `schema_version == SCHEMA_VERSION`
+  and `-to-{SCHEMA_VERSION}`, so the schema-15 -> current upgrade it tests
+  still runs in full.
 
 ## 15. Known limitations
 
