@@ -1019,6 +1019,68 @@ def _intake_issues(database: ProjectDatabase) -> list[HealthIssue]:
     return issues
 
 
+def _processing_issues(database: ProjectDatabase) -> list[HealthIssue]:
+    """States the continuous engine can never leave (0.1.1 revised phase 6).
+
+    Bounded: two aggregate queries. Normal in-flight state - a running unit
+    with claimed (``processing``) sheets - is *not* reported here; it is the
+    ``STALE_PROCESSING_JOBS`` / ``BATCH_LEFT_RUNNING`` warnings above when no
+    process is processing.
+
+    * a sheet claimed (``processing``) in a batch that is not ``running``: the
+      engine commits a claim and its batch's ``running`` status in one
+      transaction, and releases every claim before a unit leaves ``running``;
+    * a watched-source ledger row that more than one scan names as its
+      registration: a watched file is registered exactly once, as one scan
+      (a manual row may legitimately be read again by *Reprocess All*).
+    """
+    from omr_scanner.database.models import IntakeFile, IntakeSource
+
+    issues: list[HealthIssue] = []
+    with database.session() as session:
+        stray_claims = session.scalar(
+            select(func.count())
+            .select_from(BatchScan)
+            .join(ScanBatch, ScanBatch.batch_id == BatchScan.batch_id)
+            .where(BatchScan.status == ScanJobStatus.PROCESSING.value)
+            .where(ScanBatch.status != BatchStatus.RUNNING.value)
+        )
+        twice = 0
+        if database.schema_version >= 16:
+            repeated = (
+                select(BatchScan.intake_file_id)
+                .join(IntakeFile, IntakeFile.intake_file_id == BatchScan.intake_file_id)
+                .join(IntakeSource, IntakeSource.source_id == IntakeFile.source_id)
+                .where(IntakeSource.kind == "watched")
+                .group_by(BatchScan.intake_file_id)
+                .having(func.count() > 1)
+                .subquery()
+            )
+            twice = int(session.scalar(select(func.count()).select_from(repeated)) or 0)
+    if stray_claims:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.ERROR,
+                code="CLAIM_OUTSIDE_RUNNING_BATCH",
+                message=(
+                    f"{stray_claims} scan(s) are claimed for processing in a batch that is "
+                    "not running. Reopening the project for editing returns them to pending."
+                ),
+            )
+        )
+    if twice:
+        issues.append(
+            HealthIssue(
+                level=HealthLevel.ERROR,
+                code="INTAKE_REGISTERED_TWICE",
+                message=(
+                    f"{twice} watched intake file(s) are registered as more than one scan."
+                ),
+            )
+        )
+    return issues
+
+
 def _backup_issue(project_root: Path) -> list[HealthIssue]:
     backups_dir = project_root / project_backup.BACKUP_DIR_NAME
     entries = project_backup.list_backups(backups_dir)
@@ -1104,6 +1166,7 @@ def full_check(database: ProjectDatabase, project_root: Path) -> HealthReport:
             _scan_session_issues,
             _session_population_issues,
             _intake_issues,
+            _processing_issues,
         ):
             try:
                 issues += check(database)

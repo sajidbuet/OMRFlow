@@ -7,7 +7,7 @@ What OMRFlow promises about opening a project written by a different version.
 | | Current source (`0.1.1` development line, unreleased) |
 |---|---|
 | **Project format version** — the shape of `project.json` | **3** |
-| **Database schema version** — the shape of `database.sqlite` | **16** (on branch `feat/0.1.1-phase5-intake-ledger`; `main` is at 15) |
+| **Database schema version** — the shape of `database.sqlite` | **16** (`main` since the phase 5 merge `59ba8df`; revised phase 6 adds no migration) |
 
 (This table previously read format 2 / schema 9, which no longer matched the
 code; corrected 2026-10-01 from `project_format_version` in a project written
@@ -38,6 +38,17 @@ of the data.
 **A migration that cannot complete stops.**
 It fails with a message and leaves the project as it was, rather than
 half-applying.
+
+## No schema change — continuous processing (`0.1.1` line, revised phase 6)
+
+The continuous-processing engine stores everything in schema-16 columns that
+already existed: a sheet being read is `batch_scan.status = processing` (a
+value that existed and is now written), and a unit's provenance is in its
+`settings_json`. A project processed by it opens in any schema-16 build, whose
+recovery on open returns unfinished `processing` sheets to `pending` exactly as
+it does for an interrupted Scan batch. (Whether that build's Scan stage then
+offers *Resume* for a particular unit depends on which batch it adopts - not
+tested.)
 
 ## Schema 16 — intake sources and ledger (`0.1.1` line, revised phase 5)
 

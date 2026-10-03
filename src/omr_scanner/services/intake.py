@@ -250,6 +250,23 @@ class ReadyItem:
     ready_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ReadySource:
+    """One source's ready files for a session, summarised (0.1.1 revised phase 6).
+
+    Attributes:
+        source_id: The source.
+        oldest_ready_at: ``ready_at`` of its oldest ready file.
+        oldest_intake_file_id: That file's ledger id (the tie-breaker).
+        count: How many of its files are ready for the session.
+    """
+
+    source_id: str
+    oldest_ready_at: datetime
+    oldest_intake_file_id: int
+    count: int
+
+
 @dataclass(slots=True)
 class ReconcileReport:
     """What one reconciliation of one source did (counts of ledger changes)."""
@@ -1621,12 +1638,7 @@ class IntakeService:
         """
         with self._database.session() as session:
             query = (
-                select(IntakeFile)
-                .where(IntakeFile.state == IntakeState.READY.value)
-                .where(IntakeFile.reverify_required.is_(False))
-                .where(IntakeFile.present.is_(True))
-                .where(IntakeFile.is_current == true())
-                .where(IntakeFile.scan_session_id == scan_session_id)
+                _ready_for(select(IntakeFile), scan_session_id)
                 .order_by(IntakeFile.ready_at, IntakeFile.intake_file_id)
             )
             if source_id is not None:
@@ -1646,6 +1658,45 @@ class IntakeService:
                 )
                 for row in session.scalars(query).all()
             )
+
+    def ready_sources(self, *, scan_session_id: str) -> tuple[ReadySource, ...]:
+        """Which sources hold ready files for ``scan_session_id``, oldest first.
+
+        One grouped query with exactly :meth:`ready_items`' readiness rule, so
+        a scheduler can decide which source forms the next unit without
+        loading every ready row (0.1.1 revised phase 6). Ordered by each
+        source's oldest ready file - ``(ready_at, intake_file_id)``, the same
+        stable order :meth:`ready_items` uses within a source.
+        """
+        with self._database.session() as session:
+            rows = session.execute(
+                _ready_for(
+                    select(
+                        IntakeFile.source_id,
+                        func.min(IntakeFile.ready_at),
+                        func.count(),
+                    ),
+                    scan_session_id,
+                ).group_by(IntakeFile.source_id)
+            ).all()
+            found: list[ReadySource] = []
+            for source_id, oldest_at, count in rows:
+                oldest_id = session.scalar(
+                    _ready_for(select(func.min(IntakeFile.intake_file_id)), scan_session_id)
+                    .where(IntakeFile.source_id == source_id)
+                    .where(IntakeFile.ready_at == oldest_at)
+                )
+                found.append(
+                    ReadySource(
+                        source_id=str(source_id),
+                        oldest_ready_at=_aware(oldest_at) or moment_floor(),
+                        oldest_intake_file_id=int(oldest_id or 0),
+                        count=int(count),
+                    )
+                )
+        return tuple(
+            sorted(found, key=lambda item: (item.oldest_ready_at, item.oldest_intake_file_id))
+        )
 
     def register(
         self,
@@ -1950,6 +2001,22 @@ class IntakeService:
         return result
 
 
+def _ready_for(statement: Any, scan_session_id: str) -> Any:
+    """Restrict a query on ``intake_file`` to rows that may be registered now.
+
+    The single readiness rule: ready, verified (not awaiting re-verification
+    after a restart), present, current, intended for the session. Shared by
+    :meth:`IntakeService.ready_items` and :meth:`IntakeService.ready_sources`.
+    """
+    return (
+        statement.where(IntakeFile.state == IntakeState.READY.value)
+        .where(IntakeFile.reverify_required.is_(False))
+        .where(IntakeFile.present.is_(True))
+        .where(IntakeFile.is_current == true())
+        .where(IntakeFile.scan_session_id == scan_session_id)
+    )
+
+
 def moment_floor() -> datetime:
     """A sentinel ``ready_at`` for a row that somehow has none (never in practice)."""
     return datetime.min.replace(tzinfo=UTC)
@@ -2154,6 +2221,7 @@ __all__ = [
     "IntakeService",
     "LedgerRow",
     "ReadyItem",
+    "ReadySource",
     "ReconcileReport",
     "RecoveryReport",
     "Registration",

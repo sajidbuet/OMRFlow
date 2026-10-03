@@ -40,7 +40,42 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Intake sources and ledger (`0.1.1` revised phase 5 / roadmap D, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase5-intake-ledger`, not merged; migration 16, schema 16; headless)
+### Continuous-processing engine (`0.1.1` revised phase 6 / roadmap E first part, 2026-10-02 — implemented; automated tests passing; branch `feat/0.1.1-phase6-continuous-engine`, not merged; no migration, schema 16; headless)
+
+- **What exists:** `domain/processing.py` (engine states, `EngineLimits`,
+  `UnitPolicy`, the pure unit rule `plan_units`),
+  `services/recognition_pool.py` (`Recogniser` protocol; a warm `spawn`
+  `ProcessRecogniser` using the finite path's worker entry points;
+  `InlineRecogniser`), `services/continuous_engine.py` (`ContinuousEngine`,
+  `claim_scans`, `release_claims`, `EngineStatus`, `EngineHooks`). Reference:
+  ADR-0009; `docs/intake.md` (*Processing registered units*);
+  `PHASE_F_HANDOFF.md`.
+- **Units:** a source's oldest ready files (ledger order), up to
+  `max_unit_size` or whatever is ready after `trickle_seconds`, registered
+  through phase 5's `IntakeService.register` as one sealed batch; never
+  extended. Starting values, unvalidated.
+- **Durable claims:** `pending`/`cancelled -> processing` by compare-and-set in
+  one transaction with the batch's `running` status, before submission;
+  results only onto rows still `processing`
+  (`record_results(..., claimed_only=True)`); a sheet is counted only after its
+  work unit (result + its conflicts) commits. `processing` is now written.
+- **One writer:** the engine's coordinator thread does every processing write;
+  workers never open the database; explicit `PRAGMA busy_timeout = 5000`.
+- **Unit end:** `complete_batch_review_state` (session-wide duplicate IDs for
+  the unit's groups, undefined set codes, re-imports) then `finalise_batch`,
+  before the unit leaves `running`.
+- **Restart:** `recover_on_open` then intake recovery; same session, same
+  batches, never a new or superseding batch.
+- **Bounds / stopping:** `max_in_flight` bounds futures, results and writer
+  backlog; `pause_intake`, `pause_scheduling`, `cancel_queued`,
+  `shutdown(drain=...)` - after a clean shutdown nothing claimed remains.
+- **Health:** `CLAIM_OUTSIDE_RUNNING_BATCH`, `INTAKE_REGISTERED_TWICE`.
+- **Not yet:** any GUI (phase 8); operator stop/finish policy, quality
+  decisions, held-file decisions (phase 7); the engine must not run beside a
+  finite Scan stage run of the same project; network share, real scanners,
+  power loss, a fresh 100k run.
+
+### Intake sources and ledger (`0.1.1` revised phase 5 / roadmap D, 2026-10-02 — implemented; automated tests passing; merged to `main` as `59ba8df`; migration 16, schema 16; headless)
 
 - **What exists:** `domain/intake.py` (states, transition table, reasons,
   stabilisation policy, name rules), `services/intake.py` (sources, attachment,
@@ -80,9 +115,9 @@ Update this file at the end of every phase.
   journal) could not be reopened - the pre-migration read-only probe failed.
 - **Also fixed:** the schema-14 upgrade fixtures' databases had never been
   committed.
-- **Not yet:** any operator-facing watched intake (no source panel, no engine,
-  no continuous recognition - phases 6-8); SMB / network-share validation;
-  real scanners; production use.
+- **Not yet:** any operator-facing watched intake (no source panel - phase 8;
+  the headless engine is revised phase 6, above); SMB / network-share
+  validation; real scanners; production use.
 
 ### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; merged to `main` as `fd063f8`; migration 15, schema 15)
 

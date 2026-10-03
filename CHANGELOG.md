@@ -80,6 +80,24 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
 - **Project Health** reports intake-ledger inconsistencies (a registration
   without its scan, mismatched links or hashes, a missing verified copy, a
   duplicate without its original, a malformed hash).
+- **Continuous-processing engine** (revised phase 6, roadmap E first part;
+  headless - nothing in the GUI starts it yet; ADR-0009). Ready intake files
+  become finite, sealed units of one source (up to a unit size, or whatever is
+  ready after a trickle timeout; starting values, not validated), processed
+  while further files arrive and further units form in the same open scan
+  session. Each sheet is claimed (`processing`, now actually written) in the
+  database before it reaches a worker, read from the verified project copy by
+  a warm worker pool, and counted only once its result and its conflicts have
+  committed together; a unit's session-wide duplicate-ID and set-code passes
+  run before it is finished. After a kill at any point the same session and
+  units resume: interrupted sheets are read again, committed ones never. The
+  number of sheets in flight is bounded whatever the backlog. Stop primitives
+  (pause intake, pause processing, cancel queued, drain and stop) for phase 7.
+  *Add Folder -> Process All* is unchanged. **No schema change** (schema 16).
+- **`PRAGMA busy_timeout` is set explicitly** (5 s, the value Python's
+  `sqlite3` already applied implicitly) on every connection.
+- **Project Health** reports a sheet claimed for processing in a batch that is
+  not running, and a watched file registered as more than one scan.
 
 ### Fixed (`0.1.1` line)
 

@@ -60,16 +60,21 @@ Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
 | 2 — ScanSession + finite ScanBatch lifecycle (migration 14) | ✅ merged into `main` | ✅ passing | n/a | n/a | ❌ not performed | ❌ not performed |
 | 3 — Crash-safe Scan/Resolve persistence (no migration) | ✅ merged | ✅ passing, incl. a real-process kill matrix (40 sheets; 1,000-sheet percentage series) | n/a | ❌ not performed | ❌ not performed | ❌ not performed |
 | 4 — Session-level effective results (migration 15) | ✅ merged into `main` (`fd063f8`) | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
-| 5 — Intake sources + ledger (migration 16; headless) | ✅ on branch `feat/0.1.1-phase5-intake-ledger`, not merged | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer / engine process kills and a 2,400-arrival soak | 🟠 local temp-directory soak only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
-| 6–10 — Continuous processing, quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
+| 5 — Intake sources + ledger (migration 16; headless) | ✅ merged into `main` (`59ba8df`) | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer / engine process kills and a 2,400-arrival soak | 🟠 local temp-directory soak only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
+| 6 — Continuous-processing engine (no migration; headless) | ✅ on branch `feat/0.1.1-phase6-continuous-engine`, not merged | ✅ passing, incl. a kill-boundary matrix, real process kills, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
+| 7–10 — Quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
 
 Since revised phase 4, a scan session with several batches is added up: every
 downstream stage reads the session's one effective sheet set
 ([ADR-0007](../decisions/ADR-0007-session-effective-sheet-set.md)). Revised
 phase 5 adds the **headless** intake layer - sources, the intake ledger,
 stabilisation, verified copy ingest and a registration API
-([intake](../intake.md), [ADR-0008](../decisions/ADR-0008-intake-copy-or-reference.md));
-watched folders are not yet scanned for an operator (phases 6–8).
+([intake](../intake.md), [ADR-0008](../decisions/ADR-0008-intake-copy-or-reference.md)).
+Revised phase 6 adds the **headless** continuous-processing engine - finite
+sealed units per source, durable claims, one coordinator writing, crash-safe
+restart in the same session and batches
+([ADR-0009](../decisions/ADR-0009-continuous-engine-single-writer.md)); watched
+folders are still not scanned for an operator (the GUI is phase 8).
 
 **Architecture:** `Project → ScanSession → one or more finite ScanBatch
 objects → sheets`. A *scan batch* stays a finite, auditable processing and
