@@ -6,8 +6,10 @@ Purpose:
     lives as styling code inside `MainWindow`.
 
 Layout:
-    * :mod:`.app_chrome` - the single chrome row: menu, wordmark, density and
-      workflow controls, the ribbon, and the window buttons.
+    * :mod:`.app_chrome` - the single chrome row: menu, wordmark, interface
+      zoom and workflow controls, the ribbon, and the window buttons.
+    * :mod:`.page_stack` - the workflow pages' container, which scrolls a page
+      that cannot fit rather than clipping it.
     * :mod:`.window_buttons` - the minimise/maximise/close controls that
       replaced the native title bar's.
     * :mod:`.workflow_ribbon`, :mod:`.workflow_step` - the one-line responsive
@@ -39,6 +41,7 @@ from omr_scanner.gui.widgets.buttons import (
 from omr_scanner.gui.widgets.card import ActionRow, Card, EmptyState
 from omr_scanner.gui.widgets.collapsible import CollapsibleSection
 from omr_scanner.gui.widgets.page_header import PageHeader
+from omr_scanner.gui.widgets.page_stack import PageStack
 from omr_scanner.gui.widgets.status_chips import StatusChip, StatusChipStrip
 from omr_scanner.gui.widgets.status_footer import AppStatus, FooterTier, StatusFooter
 from omr_scanner.gui.widgets.window_buttons import WindowButton, WindowButtonKind
@@ -59,6 +62,7 @@ __all__ = [
     "FooterTier",
     "LayoutPlan",
     "PageHeader",
+    "PageStack",
     "RibbonMode",
     "StatusChip",
     "StatusChipStrip",

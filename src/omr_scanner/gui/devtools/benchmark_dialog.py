@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.gui.ui_scale import set_dialog_minimum_size
 from omr_scanner.services import format_count, format_duration
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -86,7 +87,7 @@ class BenchmarkResultsDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("benchmarkResultsDialog")
         self.setWindowTitle("Recognition Benchmark")
-        self.setMinimumSize(760, 560)
+        set_dialog_minimum_size(self, 760, 560)
 
         self._report = report
         self._report_dir = report_dir

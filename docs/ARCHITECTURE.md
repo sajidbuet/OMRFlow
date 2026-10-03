@@ -118,12 +118,19 @@ replaced one.
 
 ```text
 gui/theme/      tokens.py       colours, spacing, radii, type, shell metrics,
-                                the ribbon's density levels
+                                the ribbon's density levels - all at 100%
                                 (no Qt import at all)
-                stylesheet.py   the Qt stylesheets, composed from tokens
+                scale.py        UiScale: the interface zoom as a value, and
+                                its rounding rules (no Qt import at all)
+                stylesheet.py   the Qt stylesheets, composed from tokens,
+                                each a function of the UiScale
+gui/ui_scale.py                 UiScaleManager: applies the interface zoom to
+                                the running application
 gui/widgets/    app_chrome      the single chrome row: menu button, wordmark,
-                                density and previous/next controls, the
-                                ribbon, the window buttons, window dragging
+                                interface zoom and previous/next controls,
+                                the ribbon, the window buttons, dragging
+                page_stack      the pages' container; scrolls a page that
+                                cannot fit instead of squeezing it
                 window_buttons  minimise / maximise / restore / close
                 workflow_ribbon / workflow_step
                                 the one-line responsive chevron ribbon and
@@ -163,9 +170,48 @@ transition repositions the same nine step widgets and re-parents the same two
 dashboard columns. Rebuilding would discard page state and, on the editor
 stages, reload sheet images for no reason.
 
+### Interface zoom
+
+`View > Zoom +`, `Zoom -` and `Zoom 100%` - and the chrome row's `-`/`+`,
+which are bound to the first two actions with `setDefaultAction` and so can
+never disagree with the menu - scale the **whole interface** from 80% to
+200% in steps of 10. The preference is `ui_zoom_percent` in the per-user
+`omrflow.config.json`; no project, template or result file carries it.
+
+The zoom is applied, live, by `gui/ui_scale.py`'s `UiScaleManager`, one per
+`QApplication`:
+
+| What | How it follows the zoom |
+|---|---|
+| Text | The application font is the platform's own 100% UI font - captured once, never re-read from an already-scaled font - times the zoom. Semantic sizes are `(base + FontSize delta) x zoom`, declared with `set_relative_font` |
+| Stylesheet geometry | `application_stylesheet(scale)` and the page-scoped sheets are recomposed from the 100% tokens; colours never change |
+| Qt's own metrics | A `QProxyStyle` multiplies icon sizes, indicator sizes, default layout margins and spacing, header sections and similar interface metrics, so a dialog that set none of them still scales |
+| Geometry set in Python | Declared with `scale_widget`, `scale_layout`, `add_scaled_spacing` and `set_scaled_stylesheet`, which store the 100% value as a Qt dynamic property and apply it at every zoom |
+| Arithmetic geometry | The chrome row, ribbon, window buttons, footer, charts and a few row-fitted tables implement `apply_ui_scale(scale)` |
+
+Every value is computed from the canonical 100% token, so 100% -> 150% -> 100%
+returns the original values and 110% then 120% means 120%. The tokens are
+never mutated.
+
+What is **not** scaled, by classification rather than by omission: document
+and image geometry (template coordinates, bubble radii, scene coordinates,
+calibration and recognition values, the scan preview's overlay labels, which
+are sized from the sheet), every sheet or image view's own zoom (Template
+Designer, Calibration, Scan, Resolve - Ctrl++/Ctrl+-/Ctrl+0 stay theirs), and
+*workspace floors*: a splitter panel's or preview's minimum size, and the
+window's own minimum. Scaling those would let a 200% interface demand more
+than a 1366x768 display has. Instead the page stack scrolls a page that needs
+more room than the window gives it.
+
+Qt only pushes a new application font into a widget styled by a stylesheet
+when that sheet is applied again, so the manager re-applies the application
+sheet and every widget-level sheet after changing the font. Applying a zoom
+walks `QApplication.allWidgets()` once - about 0.6 s with every stage built -
+and rebuilds nothing.
+
 ### Why the menu bar is hidden rather than removed
 
-The chrome row's menu button replaces the permanent *File / Tools / Help* row, but
+The chrome row's menu button replaces the permanent *File / View / Tools / Help* row, but
 the menus are still built on `menuBar()` and are then added to one application
 menu as submenus. That keeps the hierarchy, the nesting, the actions and Qt's
 own shortcut context exactly as they were, with nothing duplicated or

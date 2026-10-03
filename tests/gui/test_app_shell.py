@@ -162,7 +162,7 @@ class TestBMenuButton:
         button = window.chrome.menu_button
         for other in (
             window.chrome.logo,
-            window.chrome.density_out_button,
+            window.chrome.zoom_out_button,
             window.chrome.ribbon,
             window.chrome.close_button,
         ):
@@ -192,17 +192,18 @@ class TestBMenuButton:
     def test_the_button_opens_the_application_menu(self, window: MainWindow):
         assert window.chrome.menu_button.menu() is window.application_menu
 
-    def test_the_menu_offers_exactly_file_tools_and_help(self, window: MainWindow):
+    def test_the_menu_offers_exactly_file_view_tools_and_help(self, window: MainWindow):
         submenus = [
             action.menu().title()
             for action in window.application_menu.actions()
             if action.menu() is not None
         ]
-        assert submenus == ["&File", "&Tools", "&Help"]
+        assert submenus == ["&File", "&View", "&Tools", "&Help"]
 
     def test_the_button_explains_itself_in_a_tooltip(self, window: MainWindow):
         tooltip = window.chrome.menu_button.toolTip()
-        assert "File" in tooltip and "Tools" in tooltip and "Help" in tooltip
+        for menu in ("File", "View", "Tools", "Help"):
+            assert menu in tooltip
 
 
 # ----------------------------------------------------------------------
@@ -690,8 +691,8 @@ class TestJAccessibility:
         chrome = window.chrome
         for control in (
             chrome.menu_button,
-            chrome.density_out_button,
-            chrome.density_in_button,
+            chrome.zoom_out_button,
+            chrome.zoom_in_button,
             chrome.previous_button,
             chrome.next_button,
             chrome.minimise_button,
@@ -707,8 +708,8 @@ class TestJAccessibility:
         chrome = window.chrome
         for control in (
             chrome.menu_button,
-            chrome.density_out_button,
-            chrome.density_in_button,
+            chrome.zoom_out_button,
+            chrome.zoom_in_button,
             chrome.previous_button,
             chrome.next_button,
             chrome.minimise_button,

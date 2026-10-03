@@ -46,45 +46,52 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from omr_scanner.gui.theme import Color, FontSize, FontWeight, Spacing, Stroke
+from omr_scanner.gui.theme import Color, FontSize, FontWeight, Spacing, Stroke, UiScale
+from omr_scanner.gui.ui_scale import current_scale, scale_layout, scale_widget, set_relative_font
 
-_HEADER_STYLE = f"""
-QToolButton#{{name}} {{{{
+
+def _header_style(name: str, scale: UiScale) -> str:
+    """The header's own rules, scoped to its object name, at ``scale``.
+
+    Why the header carries its own style rather than inheriting one:
+
+    A checkable `QToolButton` is painted as an *active toggle* by every style
+    worth having - the application's own sheet tints it, and the native Windows
+    style fills it with the desktop accent colour and centres white text across
+    its full width. That is the right look for a toolbar button that is
+    currently engaged and entirely the wrong one for "this section is open": it
+    turns a quiet form into four saturated bands, and it reads as four things
+    being switched on.
+
+    Scoping the rules to the header's object name keeps them off every other
+    tool button in the application, and stating them here rather than in the
+    theme means a section looks right in a dialog that was built before the
+    application stylesheet was applied.
+    """
+    px = scale.px
+    st = scale.stroke
+    return f"""
+QToolButton#{name} {{
     background: transparent;
     border: none;
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
     border-radius: 0px;
     color: {Color.TEXT_PRIMARY};
-    padding: {Spacing.XS}px {Spacing.XXS}px;
+    padding: {px(Spacing.XS)}px {px(Spacing.XXS)}px;
     text-align: left;
-}}}}
+}}
 
-QToolButton#{{name}}:hover {{{{
+QToolButton#{name}:hover {{
     background: {Color.SURFACE_HOVER};
-}}}}
+}}
 
-QToolButton#{{name}}:checked {{{{
+QToolButton#{name}:checked {{
     background: transparent;
-}}}}
+}}
 
-QToolButton#{{name}}:focus {{{{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
-}}}}
-"""
-"""Why the header carries its own style rather than inheriting one.
-
-A checkable `QToolButton` is painted as an *active toggle* by every style
-worth having - the application's own sheet tints it, and the native Windows
-style fills it with the desktop accent colour and centres white text across
-its full width. That is the right look for a toolbar button that is currently
-engaged and entirely the wrong one for "this section is open": it turns a
-quiet form into four saturated bands, and it reads as four things being
-switched on.
-
-Scoping the rules to the header's object name keeps them off every other tool
-button in the application, and stating them here rather than in the theme
-means a section looks right in a dialog that was built before the application
-stylesheet was applied.
+QToolButton#{name}:focus {{
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
+}}
 """
 
 
@@ -122,7 +129,7 @@ class CollapsibleSection(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XXS)
+        scale_layout(layout, spacing=Spacing.XXS)
 
         self.header = QToolButton(self)
         self.header.setObjectName(f"collapsibleHeader_{_slug(title)}")
@@ -142,20 +149,17 @@ class CollapsibleSection(QWidget):
         font.setWeight(QFont.Weight(FontWeight.SEMIBOLD))
         self.header.setFont(font)
         self.header.setAccessibleName(title)
-        self.header.setStyleSheet(_HEADER_STYLE.format(name=self.header.objectName()))
+        self._scale: UiScale | None = None
+        self.apply_ui_scale(current_scale())
         self.header.toggled.connect(self._on_toggled)
         layout.addWidget(self.header)
 
         self.summary_label = QLabel("", self)
         self.summary_label.setObjectName(f"collapsibleSummary_{_slug(title)}")
         self.summary_label.setWordWrap(True)
-        summary_font = self.summary_label.font()
-        summary_font.setPointSizeF(
-            max(summary_font.pointSizeF() + FontSize.SECONDARY, FontSize.MIN_POINT_SIZE)
-        )
-        self.summary_label.setFont(summary_font)
+        set_relative_font(self.summary_label, FontSize.SECONDARY)
         self.summary_label.setStyleSheet(f"color: {Color.TEXT_SECONDARY};")
-        self.summary_label.setContentsMargins(Spacing.LG, 0, 0, 0)
+        scale_widget(self.summary_label, contents_margins=(Spacing.LG, 0, 0, 0))
         self.summary_label.setVisible(False)
         layout.addWidget(self.summary_label)
 
@@ -165,6 +169,13 @@ class CollapsibleSection(QWidget):
         layout.addWidget(content)
 
         self._summary = ""
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Re-pad the header for the interface zoom."""
+        if scale == self._scale:
+            return
+        self._scale = scale
+        self.header.setStyleSheet(_header_style(self.header.objectName(), scale))
 
     # ------------------------------------------------------------------
     # State

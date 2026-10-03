@@ -125,9 +125,19 @@ also the window's title bar:
 - **The active stage is always visible.** However you move — a click, the
   `‹`/`›` arrows, a menu command, a keyboard shortcut — the ribbon scrolls it
   into view or becomes it.
-- **`−` and `+` set how much room the workflow takes**, not how big the page
-  is. They change the ribbon's padding only, within readable limits, and your
-  choice is remembered in your own settings — no project file is involved.
+- **`−` and `+` zoom the whole interface**, from 80 % to 200 % in 10 % steps:
+  text, buttons, icons, the chrome row itself, the footer, menus and every
+  dialog opened afterwards. They are the same commands as **View → Zoom −** and
+  **View → Zoom +**, and **View → Zoom 100%** restores the normal size. The
+  change is immediate, keeps the stage, project and selection you are on, and
+  is remembered in your own settings — no project file is involved. It is not
+  the sheet zoom: the Template, Calibrate, Scan and Resolve stages keep their
+  own image zoom (Ctrl++ / Ctrl+− / Ctrl+0 in the Template Designer), which the
+  interface zoom never changes. A stage that no longer fits the window at a
+  large zoom scrolls instead of overlapping its controls.
+- **View → Ribbon Density** (*More Compact* / *Roomier*) sets how much room
+  each workflow step takes — what `−` and `+` used to do. It changes the
+  ribbon's padding only and is remembered the same way.
 - **The footer says which project is open**, by its examination title rather
   than its folder path, and updates the moment you create, open, rename or
   close one.
@@ -290,6 +300,7 @@ synthetically tested" to a qualified stable release.
 | Resolve: overriding a confident reading | 🟠 **Implemented — automated tests passing; acceptance scenario driven in a rendered harness, not yet worked by a real operator.** Explicit full-field editing of the Student ID or Question Set / Set Code can now overrule a position the machine read confidently, after a warning, as an audited override that one `Ctrl+Z` takes back. Both editors are now **sheet actions**, available whatever record is selected and on a sheet with no conflict on that field; set codes with multi-character symbols (`10`, `11`) are reassembled by symbol. See below |
 | Reject & Rescan | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (screenshots inspected), not yet worked by an operator on real sheets.** An unusable scan is rejected on Resolve, stops counting at once, is replaced only by an explicitly confirmed rescan, and its image can later be quarantined or purged. **Follow-up hardening (implemented — automated tests passing; scripted in the real window, not yet worked by an operator):** the rescan may be read in a later batch; a sheet with no conflict can be rejected from *All processed sheets*; Undo Reject and unlinking bring duplicate-ID records back. See below |
 | Attendance dispositions (Keep / Reject / Defer / Restore) | 🟠 **Implemented — automated tests passing; acceptance scenario driven in the real window by a script (24/24 checks, screenshots at 1366×768 and 1100×680 inspected), not yet worked by an operator on real sheets.** A duplicate is settled by inspecting each copy and keeping one; an unwanted sheet is rejected / excluded; an undecided one is deferred; each is restorable. One eligibility rule (the Reject & Rescan lifecycle) from reconciliation through scoring, Results, reports and reopening. See below |
+| Global interface zoom | 🟠 **Implemented — automated tests passing; inspected in scripted screenshots of the real window at 1366×768 and 1100×680 (80–200 %), not yet used by an operator.** `View → Zoom + / Zoom − / Zoom 100%` and the chrome row's `−`/`+` scale the whole interface live, 80–200 % in 10 % steps, remembered per user. Sheet and image zoom in the stages is unchanged and separate. See below |
 | Results Dashboard tab | 🟠 **Implemented — under testing.** Automated tests passing; driven in the real window by a script (49/49 checks, screenshots at 1366×768 and 1100×680 inspected); not yet used by an operator. Read-only statistics for Overall Exam or one set — marks distribution, question difficulty and discrimination, distractors, review flags, set comparison, KR-20 — from exactly the rows the Results table lists. See below |
 | Scan-quality / page geometry | 🟠 **Implemented — under testing.** Detects a physically folded, curled or lifted sheet that registers cleanly but whose printing has moved. Validated on synthetic lattices, the committed sample sheet and two real scans; see [Scan quality](docs/scan_quality.md) |
 | Synthetic answer keys, solution sheets & candidate performance | 🟠 **Implemented — automated tests passing; taken through the real Answer Key → Results path in the application window (driven offscreen, not yet by a person), where five operator-path defects were found and fixed.** Every generated dataset now has a `solution/` folder with one clean solution OMR sheet and one answer-key text file per set, both derived from one canonical key; candidates answer against their own set's key with a truncated-normal score distribution (default 65 % ± 15 %). OMRFlow's own engine reads every solution sheet back as its set code and key. See below |
@@ -301,6 +312,53 @@ synthetically tested" to a qualified stable release.
 | Scan sessions & finite batches (`0.1.1` revised phase 2) | 🟠 **Implemented — automated tests passing; not used with a real scanner or by an operator; not production qualified.** Every batch belongs to a scan session (created silently by the first Process All); a later Process All - also after reopening the project - adds a new batch to the same session and seals the previous one; Reprocess creates a superseding batch and deletes nothing; minimal Session menu; migration 14 with upgrade backfill tested from schema-13 projects written by the schema-13 build. Downstream stages read the whole session since phase 4 (below). Crash-safe recovery: phase 3, above. [Handoff](development/releases/0.1.1-alpha.0/PHASE_B_HANDOFF.md) |
 | Set identity (`0.1.1` phase A) | 🟠 **Implemented — automated tests passing; not used with a real scanner or real paper; not production qualified.** Set codes compare without regard to case, width or surrounding spaces everywhere (one function, enforced by an architecture test); a set may be *Printed on sheet as* another mark (Set 10 as `A`), translated once after Resolve with the raw reading kept; migration 13, with legacy `A` / `a` pairs kept, reported and blocking only their own set-dependent stages. Upgrade tested from schema-12 projects written by the schema-12 build. Counts and limitations: [handoff](development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md) |
 | Synthetic written Student ID & set code; used-reference cleanup | 🟠 **Implemented — automated tests passing; inspected visually on generated sheets and a real used sample form, not yet used in a real session.** The *intended* Student ID and set code (not the bubbled ones) are written in the boxes above their bubbles; a used reference form has its old writing **and its old bubble marks** removed first, keeping the printed rings, labels and borders. On the sample: 110/110 filled bubbles removed, none of the 390 unfilled touched; generated sheets read back 100/100. Full suite after the set-code and cleanup work: 5817 passed, 15 skipped, 0 failed. See below |
+
+#### Global interface zoom (2026-10-03)
+
+**Status: 🟠 Implemented — automated tests passing; driven in the real window
+by a script at 1366×768 and 1100×680 at 80, 100, 120, 150 and 200 % with
+screenshots inspected; not yet used by an operator. Not validated.**
+
+- **What it does.** **View → Zoom +**, **Zoom −** and **Zoom 100%** (and the
+  chrome row's `−`/`+`, which are bound to the same two actions) scale the
+  whole interface: text, buttons, icons, the chrome row and ribbon, the
+  footer, menus, tables, tabs, scroll bars and every dialog opened afterwards.
+  80–200 % in 10 % steps; 100 % is the unchanged design. The change is applied
+  at once, without rebuilding the window or reopening the project, and the
+  current stage, project, selections and unsaved template edits are kept.
+- **Where it is stored.** `ui_zoom_percent` in the per-user
+  `omrflow.config.json`. No project, template, scan session or result file
+  changes; an older configuration file loads at 100 %; an out-of-range value
+  is clamped rather than discarding the other preferences.
+- **What it is not.** It never changes a sheet or image zoom: the Template
+  Designer's document zoom (Ctrl++ / Ctrl+− / Ctrl+0 keep that meaning), the
+  Calibration preview's fit or manual zoom, the Scan preview and the Resolve
+  views. The interface zoom deliberately has no keyboard shortcut.
+- **Ribbon density** moved from the chrome row's `−`/`+` to **View → Ribbon
+  Density → More Compact / Roomier**, unchanged in behaviour and storage.
+- **Small displays.** Workspace floors (splitter panels, previews) and the
+  window minimum are not scaled, so a large zoom never demands more than the
+  screen has; a stage that no longer fits scrolls instead of overlapping its
+  own controls.
+- **Known limitations.** After the first zoom change OMRFlow sets the
+  application font explicitly, so a Windows text-size change made *while*
+  OMRFlow is running is picked up at the next start rather than live. Some
+  painted chart insets (2–12 px between axis labels and the plot) and the
+  scan preview's on-sheet labels, which are sized from the sheet, do not
+  follow the zoom. At 150–200 % on a 1366-pixel screen the workflow ribbon
+  switches to its scrolling or current-stage layout, as it would for any
+  width the nine stages do not fit; *More Compact* density recovers some room.
+  Panes whose width is a canonical floor keep that width, so long names in the
+  Template Designer's region tree are elided (full text in the tree) at 150 %
+  on a 1366-pixel window. Validation was on one Windows 11 machine whose
+  display is 1920×1080 at 150 % system scaling (1280×720 logical), so the
+  1366×768 window was larger than the logical screen.
+- **Found and fixed during validation.** A Getting Started row whose
+  description wraps to a third line (at 150 %, and already at 100 % for the
+  disabled "Project information" text) drew that line over its heading; the
+  row now takes the height its wrapped text needs. At 150–200 % the Resolve
+  decision panel was squeezed below its buttons' size by a fixed pane floor;
+  floors now give way to their content away from 100 %.
 
 #### Results Dashboard (2026-10-01)
 

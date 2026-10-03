@@ -92,6 +92,7 @@ from omr_scanner.evaluation.synthetic_dataset import (
     RenderMode,
 )
 from omr_scanner.gui.theme import Spacing
+from omr_scanner.gui.ui_scale import current_scale, scale_layout
 from omr_scanner.gui.widgets.collapsible import CollapsibleSection
 
 DEFAULT_COUNT = 50
@@ -364,8 +365,7 @@ class GenerateDatasetDialog(QDialog):
         form = QWidget()
         form.setObjectName("datasetForm")
         inner = QVBoxLayout(form)
-        inner.setContentsMargins(0, 0, Spacing.SM, 0)
-        inner.setSpacing(Spacing.SM)
+        scale_layout(inner, margins=(0, 0, Spacing.SM, 0), spacing=Spacing.SM)
 
         self.source_section = self._section(
             "Source and destination",
@@ -497,8 +497,12 @@ class GenerateDatasetDialog(QDialog):
         parent = self.parentWidget()
         screen = parent.screen() if parent is not None else self.screen()
         available = screen.availableGeometry()
-        width = min(PREFERRED_WIDTH, int(available.width() * MAX_WIDTH_FRACTION))
-        height = min(PREFERRED_HEIGHT, int(available.height() * MAX_HEIGHT_FRACTION))
+        # The preferred and minimum sizes are 100% interface-zoom values; the
+        # screen caps below apply after the zoom, so a 200% interface still
+        # opens a dialog that fits.
+        px = current_scale().px
+        width = min(px(PREFERRED_WIDTH), int(available.width() * MAX_WIDTH_FRACTION))
+        height = min(px(PREFERRED_HEIGHT), int(available.height() * MAX_HEIGHT_FRACTION))
         self.resize(width, height)
 
         # The floor is what the *viewport* needs to stay usable, deliberately
@@ -506,8 +510,8 @@ class GenerateDatasetDialog(QDialog):
         # the content would reintroduce exactly the defect this method exists
         # to fix: a dialog that cannot be made small enough to fit.
         self.setMinimumSize(
-            min(MINIMUM_WIDTH, available.width()),
-            min(MINIMUM_HEIGHT, available.height()),
+            min(px(MINIMUM_WIDTH), available.width()),
+            min(px(MINIMUM_HEIGHT), available.height()),
         )
 
     # ------------------------------------------------------------------
@@ -667,8 +671,7 @@ class GenerateDatasetDialog(QDialog):
         self.fold_corners_widget.setObjectName("datasetFoldCornersGrid")
         grid = QGridLayout(self.fold_corners_widget)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(Spacing.LG)
-        grid.setVerticalSpacing(Spacing.XXS)
+        scale_layout(grid, horizontal_spacing=Spacing.LG, vertical_spacing=Spacing.XXS)
         self.fold_corner_boxes: dict[FoldCorner, QCheckBox] = {}
         for index, corner in enumerate(FoldCorner):
             corner_box = QCheckBox(CORNER_LABELS[corner])
@@ -823,8 +826,7 @@ class GenerateDatasetDialog(QDialog):
         self.families_widget.setObjectName("datasetFamiliesGrid")
         grid = QGridLayout(self.families_widget)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(Spacing.LG)
-        grid.setVerticalSpacing(Spacing.XXS)
+        scale_layout(grid, horizontal_spacing=Spacing.LG, vertical_spacing=Spacing.XXS)
         self.family_boxes: dict[CaseFamily, QCheckBox] = {}
         for index, family in enumerate(CaseFamily):
             family_box = QCheckBox(family.value.replace("_", " ").title())
@@ -1507,7 +1509,7 @@ def _paired(first: QWidget, label: str, second: QWidget) -> QWidget:
     container = QWidget()
     layout = QHBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(Spacing.SM)
+    scale_layout(layout, spacing=Spacing.SM)
     layout.addWidget(first)
     caption = QLabel(label)
     caption.setBuddy(second)

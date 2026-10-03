@@ -66,6 +66,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.gui.ui_scale import resize_scaled, scale_widget
+
 # ----------------------------------------------------------------------
 # What the harness calls its files
 # ----------------------------------------------------------------------
@@ -532,7 +534,7 @@ class StressQualificationDialog(QDialog):
         self.setObjectName("stressQualificationDialog")
         self.setWindowTitle("Run 100,000-Sheet Stress Test")
         self.setModal(True)
-        self.resize(720, 680)
+        resize_scaled(self, 720, 680)
 
         self._launcher = launcher
         self._preflight_runner = preflight_runner
@@ -914,7 +916,7 @@ def _description_label(text: str, object_name: str) -> QLabel:
     label = QLabel(text)
     label.setObjectName(object_name)
     label.setWordWrap(True)
-    label.setContentsMargins(22, 0, 0, 8)
+    scale_widget(label, contents_margins=(22, 0, 0, 8))
     return label
 
 

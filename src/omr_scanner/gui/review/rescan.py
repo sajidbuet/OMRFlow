@@ -63,6 +63,7 @@ from omr_scanner.gui.theme import (
     Color,
     Spacing,
 )
+from omr_scanner.gui.ui_scale import resize_scaled, scale_layout, scale_widget
 from omr_scanner.services.set_identity import same_set
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -114,9 +115,9 @@ class RejectScanDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("rejectScanDialog")
         self.setWindowTitle("Reject scan - rescan required")
-        self.setMinimumWidth(460)
+        scale_widget(self, minimum_width=460)
         layout = QVBoxLayout(self)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(layout, spacing=Spacing.SM)
 
         intro = QLabel(
             f"<b>{html.escape(scan_name or '(unnamed scan)')}</b><br>"
@@ -256,8 +257,11 @@ class RescanPanel(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(
+            layout,
+            margins=(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS),
+            spacing=Spacing.XS,
+        )
         scroll.setWidget(body)
         outer.addWidget(scroll)
 
@@ -278,12 +282,12 @@ class RescanPanel(QWidget):
         # the left, what can be done on the right - so the candidates and the
         # actions are on screen at 1366x768 without scrolling past the record.
         columns = QHBoxLayout()
-        columns.setSpacing(Spacing.MD)
+        scale_layout(columns, spacing=Spacing.MD)
         columns.addWidget(self.details_label, stretch=37, alignment=Qt.AlignmentFlag.AlignTop)
         actions_box = QWidget()
         actions = QVBoxLayout(actions_box)
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(Spacing.XS)
+        scale_layout(actions, spacing=Spacing.XS)
         columns.addWidget(actions_box, stretch=63)
         layout.addLayout(columns)
 
@@ -293,8 +297,7 @@ class RescanPanel(QWidget):
         self.candidates_list = QListWidget()
         self.candidates_list.setObjectName("rescanCandidatesList")
         self.candidates_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.candidates_list.setMinimumHeight(40)
-        self.candidates_list.setMaximumHeight(64)
+        scale_widget(self.candidates_list, minimum_height=40, maximum_height=64)
         # Wrapped, never scrolled sideways: the batch a rescan came from ends
         # the line, and at 1366 px it would otherwise be out of sight.
         self.candidates_list.setWordWrap(True)
@@ -326,7 +329,7 @@ class RescanPanel(QWidget):
         actions.addWidget(self.association_search)
 
         row = QHBoxLayout()
-        row.setSpacing(Spacing.SM)
+        scale_layout(row, spacing=Spacing.SM)
         self.use_button = QPushButton("Use as replacement")
         self.use_button.setObjectName("useAsReplacementButton")
         self.use_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
@@ -349,7 +352,7 @@ class RescanPanel(QWidget):
         actions.addLayout(row)
 
         row2 = QHBoxLayout()
-        row2.setSpacing(Spacing.SM)
+        scale_layout(row2, spacing=Spacing.SM)
         self.compare_button = QPushButton("Show replacement")
         self.compare_button.setObjectName("compareRescanButton")
         self.compare_button.setCheckable(True)
@@ -628,7 +631,7 @@ class LifecycleHistoryDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("lifecycleHistoryDialog")
         self.setWindowTitle("Rejection history")
-        self.resize(560, 420)
+        resize_scaled(self, 560, 420)
         layout = QVBoxLayout(self)
         label = QLabel(render_lifecycle_history(case, events))
         label.setObjectName("lifecycleHistoryText")
@@ -665,8 +668,11 @@ class SheetPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("sheetInspectPanel")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(
+            layout,
+            margins=(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS),
+            spacing=Spacing.XS,
+        )
         self.state_label = QLabel("Select a sheet from the list.")
         self.state_label.setObjectName("sheetStateLabel")
         self.state_label.setTextFormat(Qt.TextFormat.RichText)
@@ -781,9 +787,9 @@ class PurgeRejectsDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("purgeRejectsDialog")
         self.setWindowTitle("Purge Rejects")
-        self.resize(760, 460)
+        resize_scaled(self, 760, 460)
         layout = QVBoxLayout(self)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(layout, spacing=Spacing.SM)
 
         self.summary_label = QLabel(purge_summary(plan))
         self.summary_label.setObjectName("purgeSummaryLabel")

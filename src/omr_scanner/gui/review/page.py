@@ -46,7 +46,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -120,13 +120,12 @@ from omr_scanner.gui.theme import (
     CANDIDATE_CHOSEN,
     CANDIDATE_MACHINE,
     CANDIDATE_STATE_PROPERTY,
-    RESOLVE_STAGE_STYLESHEET,
-    TEMPLATE_DESIGNER_STYLESHEET,
     VARIANT_PRIMARY,
     VARIANT_PROPERTY,
     Color,
     Spacing,
 )
+from omr_scanner.gui.ui_scale import scale_layout, scale_widget, set_floor, set_scaled_stylesheet
 from omr_scanner.services import (
     ConflictFilter,
     ConflictRecord,
@@ -452,7 +451,7 @@ class ResolvePage(WorkflowPage):
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setObjectName("resolvePage")
-        self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET + RESOLVE_STAGE_STYLESHEET)
+        set_scaled_stylesheet(self, "template_designer", "resolve_stage")
 
         self.state = ResolvePageState()
         self._worker: SheetWorker | OriginalImageWorker | None = None
@@ -471,9 +470,9 @@ class ResolvePage(WorkflowPage):
         self.main_splitter.setObjectName("resolveMainSplitter")
         self.main_splitter.setChildrenCollapsible(False)
         queue_panel = self._build_queue_panel()
-        queue_panel.setMinimumWidth(QUEUE_MIN_WIDTH)
+        set_floor(queue_panel, minimum_width=QUEUE_MIN_WIDTH)
         workspace = self._build_workspace()
-        workspace.setMinimumWidth(WORKSPACE_MIN_WIDTH)
+        set_floor(workspace, minimum_width=WORKSPACE_MIN_WIDTH)
         self.main_splitter.addWidget(queue_panel)
         self.main_splitter.addWidget(workspace)
         self.main_splitter.setStretchFactor(0, QUEUE_STRETCH)
@@ -492,10 +491,9 @@ class ResolvePage(WorkflowPage):
         """Build the left-hand queue, its filters and the batch summary."""
         panel = QWidget()
         panel.setObjectName("conflictQueuePanel")
-        panel.setMaximumWidth(QUEUE_PANEL_WIDTH + 200)
+        scale_widget(panel, maximum_width=QUEUE_PANEL_WIDTH + 200)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 6, 0)
-        layout.setSpacing(6)
+        scale_layout(layout, margins=(0, 0, 6, 0), spacing=6)
 
         self.batch_label = QLabel("No batch selected")
         self.batch_label.setObjectName("reviewBatchLabel")
@@ -505,7 +503,7 @@ class ResolvePage(WorkflowPage):
         filters = QWidget()
         filter_layout = QHBoxLayout(filters)
         filter_layout.setContentsMargins(0, 0, 0, 0)
-        filter_layout.setSpacing(Spacing.XS)
+        scale_layout(filter_layout, spacing=Spacing.XS)
 
         # Labelled, on one row. Two bare combo boxes reading "Unresolved" and
         # "All types" look like values of something unnamed; an operator should
@@ -642,7 +640,7 @@ class ResolvePage(WorkflowPage):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        scale_layout(layout, spacing=4)
 
         layout.addWidget(self._build_toolbar())
 
@@ -659,7 +657,7 @@ class ResolvePage(WorkflowPage):
         self.workspace_splitter.setObjectName("resolveWorkspaceSplitter")
         self.workspace_splitter.setChildrenCollapsible(False)
         views = self._build_views()
-        views.setMinimumHeight(PREVIEW_MIN_HEIGHT)
+        set_floor(views, minimum_height=PREVIEW_MIN_HEIGHT)
         # The conflict decision panel, or - for a Rejected / Rescan case - the
         # case panel, in the same place and at the same size.
         self.decision_stack = QStackedWidget()
@@ -679,7 +677,7 @@ class ResolvePage(WorkflowPage):
         self.sheet_panel.reject_requested.connect(self.prompt_reject_current_sheet)
         self.decision_stack.addWidget(self.sheet_panel)
         decisions = self.decision_stack
-        decisions.setMinimumHeight(RESOLUTION_MIN_HEIGHT)
+        set_floor(decisions, minimum_height=RESOLUTION_MIN_HEIGHT)
         self.workspace_splitter.addWidget(views)
         self.workspace_splitter.addWidget(decisions)
         self.workspace_splitter.setStretchFactor(0, PREVIEW_STRETCH)
@@ -744,7 +742,7 @@ class ResolvePage(WorkflowPage):
         """
         toolbar = QToolBar("Review")
         toolbar.setObjectName("reviewToolbar")
-        toolbar.setIconSize(QSize(18, 18))
+        scale_widget(toolbar, icon_size=18)
         toolbar.setMovable(False)
 
         self.undo_action = QAction(load_icon("undo-2"), "Undo decision", self)
@@ -886,7 +884,7 @@ class ResolvePage(WorkflowPage):
         original_tab = QWidget()
         original_layout = QVBoxLayout(original_tab)
         original_layout.setContentsMargins(0, 0, 0, 0)
-        original_layout.setSpacing(2)
+        scale_layout(original_layout, spacing=2)
         self.original_view = ScanPreviewView()
         self.original_view.setObjectName("originalSheetView")
         original_layout.addWidget(self.original_view, stretch=1)
@@ -911,8 +909,11 @@ class ResolvePage(WorkflowPage):
         panel = QWidget()
         panel.setObjectName("conflictDecisionPanel")
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        layout.setSpacing(Spacing.MD)
+        scale_layout(
+            layout,
+            margins=(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS),
+            spacing=Spacing.MD,
+        )
 
         layout.addWidget(self._build_machine_panel(), stretch=MACHINE_PANEL_STRETCH)
 
@@ -935,7 +936,7 @@ class ResolvePage(WorkflowPage):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XXS)
+        scale_layout(layout, spacing=Spacing.XXS)
 
         heading = QLabel("MACHINE OBSERVATION")
         heading.setObjectName("resolveSectionHeading")
@@ -998,7 +999,7 @@ class ResolvePage(WorkflowPage):
         box = QWidget()
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         header = QWidget()
         header_layout = QHBoxLayout(header)
@@ -1020,7 +1021,7 @@ class ResolvePage(WorkflowPage):
         self.choice_row = QWidget()
         self.choice_layout = QHBoxLayout(self.choice_row)
         self.choice_layout.setContentsMargins(0, 0, 0, 0)
-        self.choice_layout.setSpacing(Spacing.XS)
+        scale_layout(self.choice_layout, spacing=Spacing.XS)
         layout.addWidget(self.choice_row)
         self._choice_buttons: list[QPushButton] = []
 
@@ -1077,11 +1078,11 @@ class ResolvePage(WorkflowPage):
         holder = QWidget()
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XXS)
+        scale_layout(layout, spacing=Spacing.XXS)
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(Spacing.SM)
+        scale_layout(actions, spacing=Spacing.SM)
         self.field_edit_buttons: dict[FieldKind, QToolButton] = {}
         for kind, name in (
             (FieldKind.IDENTIFIER, "editFullFieldButton"),
@@ -1103,7 +1104,7 @@ class ResolvePage(WorkflowPage):
         self.field_edit_row = QWidget()
         row = QHBoxLayout(self.field_edit_row)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(Spacing.SM)
+        scale_layout(row, spacing=Spacing.SM)
 
         self.field_edit_label = QLabel("Correct value")
         row.addWidget(self.field_edit_label)
@@ -1149,7 +1150,7 @@ class ResolvePage(WorkflowPage):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(layout, spacing=Spacing.SM)
 
         layout.addWidget(QLabel("Reason"))
         self.reason_combo = QComboBox()
@@ -1168,7 +1169,7 @@ class ResolvePage(WorkflowPage):
         # rows this control used to take were three rows the preview did not
         # get. It is still a QTextEdit, so nothing that reads or writes it
         # changes.
-        self.reason_text.setFixedHeight(NOTE_HEIGHT_PX)
+        scale_widget(self.reason_text, fixed_height=NOTE_HEIGHT_PX)
         self.reason_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.reason_text.setVerticalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -1188,8 +1189,11 @@ class ResolvePage(WorkflowPage):
         strip = QFrame()
         strip.setObjectName("conflictProvenanceStrip")
         layout = QHBoxLayout(strip)
-        layout.setContentsMargins(Spacing.SM, Spacing.XXS, Spacing.SM, Spacing.XXS)
-        layout.setSpacing(Spacing.MD)
+        scale_layout(
+            layout,
+            margins=(Spacing.SM, Spacing.XXS, Spacing.SM, Spacing.XXS),
+            spacing=Spacing.MD,
+        )
 
         self.summary_machine = QLabel("")
         self.summary_machine.setObjectName("provenanceMachineValue")
@@ -1214,12 +1218,12 @@ class ResolvePage(WorkflowPage):
         buttons = QWidget()
         layout = QHBoxLayout(buttons)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(layout, spacing=Spacing.SM)
 
         self.confirm_button = QPushButton(load_icon("circle-check"), "Confirm resolution")
         self.confirm_button.setObjectName("confirmResolutionButton")
         self.confirm_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
-        self.confirm_button.setMinimumHeight(ACTION_BUTTON_HEIGHT_PX)
+        scale_widget(self.confirm_button, minimum_height=ACTION_BUTTON_HEIGHT_PX)
         self.confirm_button.setDefault(True)
         self.confirm_button.clicked.connect(self.confirm_resolution)
         layout.addWidget(self.confirm_button, stretch=3)
@@ -1227,13 +1231,13 @@ class ResolvePage(WorkflowPage):
         self.defer_button = QPushButton("Defer")
         self.defer_button.setObjectName("deferConflictButton")
         self.defer_button.setToolTip("Postpone this decision (D)")
-        self.defer_button.setMinimumHeight(ACTION_BUTTON_HEIGHT_PX)
+        scale_widget(self.defer_button, minimum_height=ACTION_BUTTON_HEIGHT_PX)
         self.defer_button.clicked.connect(self.defer_conflict)
         layout.addWidget(self.defer_button, stretch=1)
 
         self.reopen_button = QPushButton(load_icon("rotate-ccw"), "Reopen")
         self.reopen_button.setObjectName("reopenConflictButton")
-        self.reopen_button.setMinimumHeight(ACTION_BUTTON_HEIGHT_PX)
+        scale_widget(self.reopen_button, minimum_height=ACTION_BUTTON_HEIGHT_PX)
         self.reopen_button.setToolTip(
             "Discard every decision on this conflict and put it back in the queue. "
             "Nothing is erased - the earlier corrections stay in the history. "
@@ -2349,8 +2353,9 @@ class ResolvePage(WorkflowPage):
                 + (f" (press {key})" if len(key) == 1 else "")
             )
             button.setAccessibleName(f"Choose {label}")
-            button.setFixedHeight(CHOICE_BUTTON_HEIGHT)
-            button.setMinimumWidth(CHOICE_BUTTON_MIN_WIDTH)
+            scale_widget(
+                button, fixed_height=CHOICE_BUTTON_HEIGHT, minimum_width=CHOICE_BUTTON_MIN_WIDTH
+            )
             button.setSizePolicy(
                 QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
             )

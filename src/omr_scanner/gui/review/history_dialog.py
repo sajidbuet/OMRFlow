@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.domain.review import ReviewAction
+from omr_scanner.gui.ui_scale import resize_scaled
 from omr_scanner.services import group_of, is_override
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -150,7 +151,7 @@ class HistoryDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("conflictHistoryDialog")
         self.setWindowTitle("Conflict history")
-        self.resize(DIALOG_WIDTH, DIALOG_HEIGHT)
+        resize_scaled(self, DIALOG_WIDTH, DIALOG_HEIGHT)
 
         layout = QVBoxLayout(self)
 

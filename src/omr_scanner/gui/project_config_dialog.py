@@ -75,6 +75,7 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.domain.exam_sets import ExamSet
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.gui.ui_scale import resize_scaled
 from omr_scanner.services import project_sets, review_store, set_identity, update_exam_name
 from omr_scanner.services.conflict_policy import DuplicateGrouping
 
@@ -136,7 +137,7 @@ class SetEditorDialog(QDialog):
         self.setObjectName("setEditorDialog")
         self.setWindowTitle(title)
         self.setModal(True)
-        self.resize(520, 170)
+        resize_scaled(self, 520, 170)
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -210,7 +211,7 @@ class ProjectConfigDialog(QDialog):
         self.setObjectName("projectConfigDialog")
         self.setWindowTitle("Project Configuration")
         self.setModal(True)
-        self.resize(720, 560)
+        resize_scaled(self, 720, 560)
 
         self._session = session
         self._sets: tuple[ExamSet, ...] = ()

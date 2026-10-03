@@ -75,13 +75,20 @@ from omr_scanner.gui.answer_key.solution_dialog import SolutionSheetDialog
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.theme import (
-    ANSWER_KEY_STAGE_STYLESHEET,
     VARIANT_PRIMARY,
     VARIANT_PROPERTY,
     Color,
     Spacing,
+    UiScale,
 )
 from omr_scanner.gui.theme.stylesheet import ANSWER_KEY_STATE_PROPERTY
+from omr_scanner.gui.ui_scale import (
+    current_scale,
+    scale_layout,
+    scale_widget,
+    set_floor,
+    set_scaled_stylesheet,
+)
 from omr_scanner.services import project_sets, scoring_store, set_identity
 from omr_scanner.services.answer_key import (
     KeyDraft,
@@ -237,7 +244,7 @@ class AnswerKeyPage(WorkflowPage):
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
-        self.setStyleSheet(ANSWER_KEY_STAGE_STYLESHEET)
+        set_scaled_stylesheet(self, "answer_key_stage")
         self.state = AnswerKeyPageState()
         self._tiles: dict[str, QToolButton] = {}
         self._rebuilding = False
@@ -251,10 +258,10 @@ class AnswerKeyPage(WorkflowPage):
         content.setObjectName("answerKeyContent")
         # Below this the splitter would squeeze the table to a few rows; the
         # page scrolls instead, and the action bar below stays in view.
-        content.setMinimumHeight(430)
+        scale_widget(content, minimum_height=430)
         column = QVBoxLayout(content)
         column.setContentsMargins(0, 0, 0, 0)
-        column.setSpacing(Spacing.SM)
+        scale_layout(column, spacing=Spacing.SM)
         column.addWidget(self._build_sets_bar())
         column.addWidget(self._build_set_box())
 
@@ -288,8 +295,11 @@ class AnswerKeyPage(WorkflowPage):
         bar = QFrame()
         bar.setObjectName("answerKeySetsBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(
+            layout,
+            margins=(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS),
+            spacing=Spacing.SM,
+        )
 
         self.readiness_label = QLabel("")
         self.readiness_label.setObjectName("answerKeyReadinessLabel")
@@ -311,7 +321,7 @@ class AnswerKeyPage(WorkflowPage):
         self.tile_scroll.setStyleSheet("QScrollArea#answerKeySetTiles { background: transparent; }")
         self.tile_layout = QHBoxLayout(host)
         self.tile_layout.setContentsMargins(0, 0, 0, 0)
-        self.tile_layout.setSpacing(Spacing.XS)
+        scale_layout(self.tile_layout, spacing=Spacing.XS)
         self.tile_layout.addStretch(1)
         self.tile_scroll.setWidget(host)
         self.tile_group = QButtonGroup(self)
@@ -324,15 +334,18 @@ class AnswerKeyPage(WorkflowPage):
         box = QFrame()
         box.setObjectName("answerKeySetBox")
         grid = QGridLayout(box)
-        grid.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
-        grid.setHorizontalSpacing(Spacing.SM)
-        grid.setVerticalSpacing(Spacing.XS)
+        scale_layout(
+            grid,
+            margins=(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM),
+            horizontal_spacing=Spacing.SM,
+            vertical_spacing=Spacing.XS,
+        )
 
         set_label = QLabel("Set:")
         grid.addWidget(set_label, 0, 0)
         self.set_combo = QComboBox()
         self.set_combo.setObjectName("answerKeySetCombo")
-        self.set_combo.setMinimumWidth(110)
+        scale_widget(self.set_combo, minimum_width=110)
         self.set_combo.setToolTip(
             "The question-paper set this key answers. Sets come from Project "
             "Configuration; codes may be more than one character - '10' and "
@@ -351,8 +364,7 @@ class AnswerKeyPage(WorkflowPage):
         grid.addWidget(revision_label, 0, 3)
         self.revision_combo = QComboBox()
         self.revision_combo.setObjectName("answerKeyRevisionCombo")
-        self.revision_combo.setMinimumWidth(220)
-        self.revision_combo.setMaximumWidth(460)
+        scale_widget(self.revision_combo, minimum_width=220, maximum_width=460)
         self.revision_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.revision_combo.setToolTip(
             "Every revision stored for this set, newest first. Choosing one "
@@ -395,10 +407,10 @@ class AnswerKeyPage(WorkflowPage):
         """The sequence, the full-credit list, and the checks."""
         panel = QWidget()
         panel.setObjectName("answerKeyEditorPanel")
-        panel.setMinimumWidth(300)
+        set_floor(panel, minimum_width=300)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         heading = self._heading("Answer sequence")
         layout.addWidget(heading)
@@ -415,8 +427,7 @@ class AnswerKeyPage(WorkflowPage):
             "leaves a question unanswered."
         )
         self.key_edit.setTabChangesFocus(True)
-        self.key_edit.setMaximumHeight(96)
-        self.key_edit.setMinimumHeight(56)
+        scale_widget(self.key_edit, minimum_height=56, maximum_height=96)
         heading.setBuddy(self.key_edit)
         self.key_edit.textChanged.connect(self._revalidate)
         layout.addWidget(self.key_edit)
@@ -462,10 +473,10 @@ class AnswerKeyPage(WorkflowPage):
         """The same key, question by question - the place to correct one answer."""
         panel = QWidget()
         panel.setObjectName("answerKeyTablePanel")
-        panel.setMinimumWidth(340)
+        set_floor(panel, minimum_width=340)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         header = QHBoxLayout()
         header.addWidget(self._heading("Questions"))
@@ -520,8 +531,11 @@ class AnswerKeyPage(WorkflowPage):
         bar = QFrame()
         bar.setObjectName("answerKeyActionBar")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(
+            layout,
+            margins=(Spacing.SM, Spacing.XS, Spacing.SM, Spacing.XS),
+            spacing=Spacing.SM,
+        )
 
         text = QVBoxLayout()
         text.setSpacing(0)
@@ -717,7 +731,6 @@ class AnswerKeyPage(WorkflowPage):
             tile.setParent(None)
             tile.deleteLater()
         self._tiles = {}
-        tallest = 0
         for index, code in enumerate(codes):
             tile = QToolButton()
             tile.setObjectName("answerKeySetTile")
@@ -727,12 +740,25 @@ class AnswerKeyPage(WorkflowPage):
             self.tile_group.addButton(tile)
             self.tile_layout.insertWidget(index, tile)
             self._tiles[code] = tile
-            tallest = max(tallest, tile.sizeHint().height())
-        # One row of tiles plus room for the horizontal scroll bar a long set
-        # list needs - no taller, so the bar never eats the table's height.
-        bar = self.tile_scroll.horizontalScrollBar().sizeHint().height()
-        self.tile_scroll.setFixedHeight(max(tallest, 28) + bar + 2)
+        self._fit_tile_strip()
         self._refresh_tile_states()
+
+    def _fit_tile_strip(self) -> None:
+        """Size the set strip to one row of tiles and a scroll bar.
+
+        One row plus room for the horizontal scroll bar a long set list needs
+        - no taller, so the bar never eats the table's height. Measured from
+        the tiles themselves, so it is re-run when the interface zoom changes
+        the tiles' text size.
+        """
+        tallest = max((tile.sizeHint().height() for tile in self._tiles.values()), default=0)
+        px = current_scale().px
+        bar = self.tile_scroll.horizontalScrollBar().sizeHint().height()
+        self.tile_scroll.setFixedHeight(max(tallest, px(28)) + bar + px(2))
+
+    def apply_ui_scale(self, _scale: UiScale) -> None:
+        """Re-fit the set strip, whose height is measured from its tiles."""
+        self._fit_tile_strip()
 
     def set_state(self, code: str) -> str:
         """The state a set is shown in: its stored state, or ``unsaved`` / ``invalid``."""

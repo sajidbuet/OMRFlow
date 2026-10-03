@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from omr_scanner.config.paths import app_config_file
 from omr_scanner.config.processing import ProcessingSettings
@@ -56,6 +56,21 @@ no Qt in it at all. The two therefore have to agree, and
 ``tests/unit/test_theme_tokens.py`` asserts that they do rather than leaving
 it to a comment: a design system that added a sixth density level without
 widening this range would silently refuse to save it.
+"""
+
+MIN_UI_ZOOM_PERCENT = 80
+MAX_UI_ZOOM_PERCENT = 200
+DEFAULT_UI_ZOOM_PERCENT = 100
+UI_ZOOM_STEP_PERCENT = 10
+"""The interface zoom's range and step, in percent of the canonical design.
+
+Here rather than in the user interface for the same reason as the ribbon
+density range above: the stored preference has to validate in a process with
+no Qt in it. The floor stops short of the size at which the smallest secondary
+text stops being legible; the ceiling is where a 1366x768 display still has a
+usable workspace below the chrome row. A stored value outside the range is
+clamped when it is read, never rejected - see
+:meth:`AppConfig._clamp_ui_zoom`.
 """
 
 MIN_SPLIT_RATIO = 0.3
@@ -111,6 +126,16 @@ class AppConfig(BaseModel):
             the exception table takes, beside the detail pane. ``None`` until
             the operator first moves the divider. A layout preference, kept
             with the person like :attr:`ribbon_density`, not with a project.
+        ui_zoom_percent: How large the whole interface is drawn - text,
+            controls, icons, chrome, spacing - as a percentage of the
+            canonical design, :data:`MIN_UI_ZOOM_PERCENT` to
+            :data:`MAX_UI_ZOOM_PERCENT`. An accessibility and display
+            preference that follows the person at this machine, so it lives
+            here and in no project, template or result file. Independent of
+            every sheet and image zoom in the stages, which are views of a
+            document rather than of the interface. A file written before this
+            field existed loads at 100%, which is why adding it needed no
+            :data:`CONFIG_VERSION` bump.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -127,6 +152,19 @@ class AppConfig(BaseModel):
         default=DEFAULT_RIBBON_DENSITY, ge=MIN_RIBBON_DENSITY, le=MAX_RIBBON_DENSITY
     )
     attendance_split_ratio: float | None = None
+    ui_zoom_percent: int = DEFAULT_UI_ZOOM_PERCENT
+
+    @field_validator("ui_zoom_percent", mode="after")
+    @classmethod
+    def _clamp_ui_zoom(cls, value: int) -> int:
+        """Bring a stored zoom inside the supported range.
+
+        Clamped rather than rejected, unlike :attr:`ribbon_density`'s bounds:
+        a value of 250 typed into the file by hand should give the largest
+        interface, not discard the recent-project list and every other
+        preference along with it, which is what a validation error does.
+        """
+        return max(MIN_UI_ZOOM_PERCENT, min(MAX_UI_ZOOM_PERCENT, value))
 
     def log_level_value(self) -> int:
         """Return :attr:`log_level` as a :mod:`logging` numeric level."""
@@ -175,6 +213,18 @@ class AppConfig(BaseModel):
         """
         clamped = max(MIN_RIBBON_DENSITY, min(MAX_RIBBON_DENSITY, level))
         return self.model_copy(update={"ribbon_density": clamped})
+
+    def with_ui_zoom_percent(self, percent: int) -> AppConfig:
+        """Return a copy remembering the interface zoom; the receiver is unchanged.
+
+        Args:
+            percent: The requested zoom. Clamped rather than rejected, for the
+                reason :meth:`with_ribbon_density` gives: this arrives from a
+                button press, and the last press of ``+`` must be a no-op, not
+                an exception.
+        """
+        clamped = max(MIN_UI_ZOOM_PERCENT, min(MAX_UI_ZOOM_PERCENT, int(percent)))
+        return self.model_copy(update={"ui_zoom_percent": clamped})
 
     def with_attendance_split_ratio(self, ratio: float) -> AppConfig:
         """Return a copy remembering the Attendance divider; clamped, never rejected."""

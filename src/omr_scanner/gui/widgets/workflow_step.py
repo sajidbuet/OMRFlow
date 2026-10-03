@@ -58,7 +58,15 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
 from omr_scanner.gui.icons import load_icon
-from omr_scanner.gui.theme import Color, Density, FontWeight, Navigator, Radius, Stroke
+from omr_scanner.gui.theme import (
+    Color,
+    Density,
+    FontWeight,
+    Navigator,
+    Radius,
+    Stroke,
+    UiScale,
+)
 
 TILE_EXTRA_H_PADDING = 2
 """A tile has no arrow to clear, so it can afford a touch more breathing room
@@ -81,7 +89,7 @@ paying for a row that says what it means.
 """
 
 MENU_INDICATOR_WIDTH = 15
-"""Room reserved at a step's right end for the "there is more here" caret.
+"""Room reserved, at 100% interface zoom, at a step's right end for the "there is more here" caret.
 
 Only the narrow layout's single current-step control shows one, and it is the
 difference between a lone step that looks like a dead label and one that
@@ -156,6 +164,11 @@ class StepGeometry:
         has_right_point: Whether the right edge comes to a point.
         has_menu_indicator: Whether to reserve room for, and paint, the caret
             that says this control opens the workflow selector.
+        scale: The interface zoom. Every length below is the density level's
+            canonical value through this scale, so the ribbon's layout
+            decision - all nine, scrolling, or the current stage alone - is
+            made against the steps as they will actually be drawn. Part of
+            the geometry's equality, so a zoom change re-measures the step.
     """
 
     shape: StepShape
@@ -163,6 +176,7 @@ class StepGeometry:
     has_left_notch: bool
     has_right_point: bool
     has_menu_indicator: bool = False
+    scale: UiScale = UiScale.IDENTITY
 
     @property
     def arrow_depth(self) -> int:
@@ -172,33 +186,49 @@ class StepGeometry:
         """
         if self.shape is StepShape.TILE:
             return 0
-        return Density.level(self.density).arrow_depth
+        return self.scale.px(Density.level(self.density).arrow_depth)
 
     @property
     def height(self) -> int:
-        """The step's height - the same at every density; see `Density`."""
-        return Navigator.STEP_HEIGHT
+        """The step's height - the same at every density; see `Density`.
+
+        Not the same at every *zoom*: the interface zoom scales the whole
+        chrome row, and the step with it.
+        """
+        return self.scale.px(Navigator.STEP_HEIGHT)
 
     @property
     def icon_extent(self) -> int:
         """Edge length of the step's icon."""
-        return Density.level(self.density).icon_extent
+        return self.scale.px(Density.level(self.density).icon_extent)
 
     @property
     def h_padding(self) -> int:
         """Padding inside each end of the step, clear of the arrow geometry."""
         padding = Density.level(self.density).h_padding
-        return padding + TILE_EXTRA_H_PADDING if self.shape is StepShape.TILE else padding
+        if self.shape is StepShape.TILE:
+            padding += TILE_EXTRA_H_PADDING
+        return self.scale.px(padding)
 
     @property
     def icon_text_gap(self) -> int:
         """Gap between the icon and the label."""
-        return Density.level(self.density).icon_text_gap
+        return self.scale.px(Density.level(self.density).icon_text_gap)
 
     @property
     def min_label_width(self) -> int:
         """The narrowest the label itself may be drawn at this density."""
-        return Density.level(self.density).min_label_width
+        return self.scale.px(Density.level(self.density).min_label_width)
+
+    @property
+    def menu_indicator_width(self) -> int:
+        """Room for the caret, when this step has one."""
+        return self.scale.px(MENU_INDICATOR_WIDTH) if self.has_menu_indicator else 0
+
+    @property
+    def step_gap(self) -> int:
+        """The visible seam between this step and the next."""
+        return self.scale.px(Navigator.STEP_GAP)
 
     @property
     def left_inset(self) -> int:
@@ -211,7 +241,7 @@ class StepGeometry:
         return (
             self.h_padding
             + (self.arrow_depth if self.has_right_point else 0)
-            + (MENU_INDICATOR_WIDTH if self.has_menu_indicator else 0)
+            + self.menu_indicator_width
         )
 
     @property
@@ -248,8 +278,8 @@ class StepGeometry:
         whole reason a row of these reads as one process.
         """
         if self.shape is StepShape.TILE:
-            return width + Navigator.STEP_GAP
-        return width - self.arrow_depth + Navigator.STEP_GAP
+            return width + self.step_gap
+        return width - self.arrow_depth + self.step_gap
 
 
 CHEVRON_DEFAULT = StepGeometry(
@@ -465,11 +495,10 @@ class WorkflowStep(QAbstractButton):
     def _shape_path(self) -> QPainterPath:
         """The step's outline, in widget coordinates."""
         if self._geometry.shape is StepShape.TILE:
+            radius = float(self._geometry.scale.px(Radius.MD))
             path = QPainterPath()
             path.addRoundedRect(
-                QRect(0, 0, self.width() - 1, self.height() - 1).toRectF(),
-                float(Radius.MD),
-                float(Radius.MD),
+                QRect(0, 0, self.width() - 1, self.height() - 1).toRectF(), radius, radius
             )
             return path
         return self._chevron_path()
@@ -487,7 +516,7 @@ class WorkflowStep(QAbstractButton):
         bottom = float(self.height()) - 1.0
         # A flat end still gets a small radius, so the row's outer corners are
         # not sharp against the band behind them.
-        radius = float(Radius.SM)
+        radius = float(self._geometry.scale.px(Radius.SM))
 
         path = QPainterPath()
         path.moveTo(0.0 if self._geometry.has_left_notch else radius, 0.0)
@@ -533,14 +562,15 @@ class WorkflowStep(QAbstractButton):
         return QColor(Color.TEXT_PRIMARY)
 
     def _border_pen(self) -> QPen:
+        width = float(self._geometry.scale.stroke(Stroke.BORDER))
         if not self.isEnabled():
-            pen = QPen(QColor(Color.BORDER_STRONG), float(Stroke.BORDER))
+            pen = QPen(QColor(Color.BORDER_STRONG), width)
             pen.setStyle(Qt.PenStyle.CustomDashLine)
             pen.setDashPattern(list(_DISABLED_DASH_PATTERN))
             return pen
         if self.isChecked():
-            return QPen(QColor(Color.PRIMARY), float(Stroke.BORDER))
-        return QPen(QColor(Color.BORDER), float(Stroke.BORDER))
+            return QPen(QColor(Color.PRIMARY), width)
+        return QPen(QColor(Color.BORDER), width)
 
     def paintEvent(self, _event: object) -> None:
         """Draw the shape, then the icon, then the label."""
@@ -590,22 +620,25 @@ class WorkflowStep(QAbstractButton):
         foreground - white on the active accent, charcoal otherwise - without
         a second tinted pixmap for a shape that is three lines long.
         """
+        scale = self._geometry.scale
         centre_x = (
             self.width()
             - self._geometry.h_padding
             - (self._geometry.arrow_depth if self._geometry.has_right_point else 0)
-            - MENU_INDICATOR_WIDTH / 2.0
+            - self._geometry.menu_indicator_width / 2.0
         )
         centre_y = self.height() / 2.0
-        pen = QPen(colour, float(Stroke.FOCUS_RING))
+        half_width = scale.pen(_MENU_CARET_HALF_WIDTH)
+        half_height = scale.pen(_MENU_CARET_HEIGHT) / 2.0
+        pen = QPen(colour, scale.pen(Stroke.FOCUS_RING))
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         caret = QPainterPath()
-        caret.moveTo(centre_x - _MENU_CARET_HALF_WIDTH, centre_y - _MENU_CARET_HEIGHT / 2.0)
-        caret.lineTo(centre_x, centre_y + _MENU_CARET_HEIGHT / 2.0)
-        caret.lineTo(centre_x + _MENU_CARET_HALF_WIDTH, centre_y - _MENU_CARET_HEIGHT / 2.0)
+        caret.moveTo(centre_x - half_width, centre_y - half_height)
+        caret.lineTo(centre_x, centre_y + half_height)
+        caret.lineTo(centre_x + half_width, centre_y - half_height)
         painter.drawPath(caret)
 
     def _paint_icon(self, painter: QPainter, rect: QRect, colour: QColor) -> None:
@@ -636,11 +669,12 @@ class WorkflowStep(QAbstractButton):
         single-colour ring would disappear exactly where it matters most.
         """
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        halo = QPen(QColor(Color.FOCUS_HALO), float(Stroke.FOCUS_RING) + 1.5)
+        ring_width = float(self._geometry.scale.stroke(Stroke.FOCUS_RING))
+        halo = QPen(QColor(Color.FOCUS_HALO), ring_width + 1.5)
         halo.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(halo)
         painter.drawPath(path)
-        ring = QPen(QColor(Color.FOCUS), float(Stroke.FOCUS_RING))
+        ring = QPen(QColor(Color.FOCUS), ring_width)
         ring.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(ring)
         painter.drawPath(path)

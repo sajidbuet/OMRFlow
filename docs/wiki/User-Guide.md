@@ -38,9 +38,19 @@ the window's title bar:
 - **When the window is narrow** the ribbon shows only the stage you are on.
   Hover it, click it, or press **Down** to get a list of all nine; **Escape**
   closes the list. No stage is ever unreachable.
-- **`−` and `+`** make the workflow steps tighter or roomier. They change the
-  ribbon only — never the size of the page below — and OMRFlow remembers your
-  choice. If not all nine stages fit on your screen, press `−`.
+- **`−` and `+`** make the whole interface smaller or larger — text, buttons,
+  icons, the ribbon, the footer and every dialog — from 80 % to 200 % in steps
+  of 10 %. They are the same commands as **Application menu → View → Zoom −**
+  and **Zoom +**; **View → Zoom 100%** goes back to the normal size. OMRFlow
+  remembers your choice. This is not the sheet zoom: the Template, Calibrate,
+  Scan and Resolve stages keep their own image zoom (Ctrl++, Ctrl+−, Ctrl+0 in
+  the Template Designer), and changing the interface zoom does not change it.
+- **If not all nine stages fit on your screen**, use **View → Ribbon Density →
+  More Compact** to give each workflow step less room, or a smaller interface
+  zoom. The ribbon scrolls or shows just the current stage when they still do
+  not fit.
+- **At a large zoom on a small screen**, a stage that no longer fits gets
+  scroll bars rather than overlapping controls.
 - **Drag the window** by the OMRFlow logo or the empty space in the row, and
   double-click there to maximise or restore it.
 

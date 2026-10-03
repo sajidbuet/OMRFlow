@@ -51,6 +51,7 @@ from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.reports.layout_dialog import ReportLayoutDialog
 from omr_scanner.gui.reports.template_dialog import TemplateMappingDialog
 from omr_scanner.gui.reports.worker import ReportGenerationWorker, ReportJob, ReportRunResult
+from omr_scanner.gui.ui_scale import scale_layout
 from omr_scanner.services import (
     reconciliation_store,
     report_store,
@@ -235,7 +236,7 @@ class ReportsPage(WorkflowPage):
         panel = QWidget()
         panel.setObjectName("reportsExamHeading")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 4)
+        scale_layout(layout, margins=(0, 0, 0, 4))
 
         self.exam_name_label = QLabel("")
         self.exam_name_label.setObjectName("reportsExamNameLabel")

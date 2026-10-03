@@ -123,12 +123,13 @@ from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.review.inspector import ScriptInspector
 from omr_scanner.gui.theme import (
-    ATTENDANCE_STAGE_STYLESHEET,
     VARIANT_PRIMARY,
     VARIANT_PROPERTY,
     Color,
     Spacing,
+    UiScale,
 )
+from omr_scanner.gui.ui_scale import current_scale, scale_layout, set_scaled_stylesheet
 from omr_scanner.services import (
     load_template,
     reconciliation_store,
@@ -461,7 +462,7 @@ class AttendancePage(WorkflowPage):
 
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
-        self.setStyleSheet(ATTENDANCE_STAGE_STYLESHEET)
+        set_scaled_stylesheet(self, "attendance_stage")
         self.state = AttendancePageState()
         self.last_template_blocker = ""
         """Why the last assigned file did not become the set's result template."""
@@ -479,7 +480,7 @@ class AttendancePage(WorkflowPage):
         top = QWidget()
         top_layout = QVBoxLayout(top)
         top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.setSpacing(Spacing.XS)
+        scale_layout(top_layout, spacing=Spacing.XS)
         top_layout.addWidget(self._build_roster_bar())
         top_layout.addWidget(self._build_summary())
 
@@ -522,10 +523,10 @@ class AttendancePage(WorkflowPage):
         box.setObjectName("candidateRosterBox")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         heading = QHBoxLayout()
-        heading.setSpacing(Spacing.MD)
+        scale_layout(heading, spacing=Spacing.MD)
         heading.addWidget(_section_heading("Attendance by set"))
         self.exam_label = QLabel("")
         self.exam_label.setObjectName("attendanceExamNameLabel")
@@ -568,7 +569,7 @@ class AttendancePage(WorkflowPage):
         layout.addWidget(self.unassigned_label)
 
         buttons = QHBoxLayout()
-        buttons.setSpacing(Spacing.SM)
+        scale_layout(buttons, spacing=Spacing.SM)
         self.import_button = QPushButton(
             load_icon("file-plus"), "Choose / Replace Attendance File..."
         )
@@ -634,7 +635,7 @@ class AttendancePage(WorkflowPage):
         bar.setObjectName("reconciliationSummaryBox")
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
         for key, label, tooltip in (
             ("matched", "Matched", "Expected present, exactly one script."),
             ("missing", "Missing script", "Expected present, no script found."),
@@ -683,10 +684,10 @@ class AttendancePage(WorkflowPage):
         panel.setObjectName("reconciliationTablePanel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         filters = QHBoxLayout()
-        filters.setSpacing(Spacing.SM)
+        scale_layout(filters, spacing=Spacing.SM)
         self.status_filter = QComboBox()
         self.status_filter.setObjectName("reconciliationStatusFilter")
         for label, _ in _STATUS_FILTERS:
@@ -732,7 +733,7 @@ class AttendancePage(WorkflowPage):
         layout.addWidget(self.table, stretch=1)
 
         footer = QHBoxLayout()
-        footer.setSpacing(Spacing.SM)
+        scale_layout(footer, spacing=Spacing.SM)
         self.table_count_label = QLabel("")
         self.table_count_label.setObjectName("reconciliationCountLabel")
         self.table_count_label.setTextFormat(Qt.TextFormat.RichText)
@@ -776,8 +777,7 @@ class AttendancePage(WorkflowPage):
         panel = QWidget()
         panel.setObjectName("reconciliationDetailPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(Spacing.SM, 0, Spacing.SM, Spacing.SM)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, margins=(Spacing.SM, 0, Spacing.SM, Spacing.SM), spacing=Spacing.XS)
 
         self.detail_label = QLabel("Select a row to see what needs attention.")
         self.detail_label.setObjectName("reconciliationDetailLabel")
@@ -856,10 +856,10 @@ class AttendancePage(WorkflowPage):
         box.setObjectName("sheetDispositionBox")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         navigator = QHBoxLayout()
-        navigator.setSpacing(Spacing.SM)
+        scale_layout(navigator, spacing=Spacing.SM)
         self.previous_script_button = QPushButton("◀ Previous")
         self.previous_script_button.setObjectName("previousScriptButton")
         self.previous_script_button.setToolTip("Show the previous script of this entry.")
@@ -886,7 +886,7 @@ class AttendancePage(WorkflowPage):
         layout.addWidget(self.script_facts_label)
 
         first = QHBoxLayout()
-        first.setSpacing(Spacing.SM)
+        scale_layout(first, spacing=Spacing.SM)
         self.inspect_button = QPushButton(load_icon("scan-line"), "Inspect / Correct ID / Set")
         self.inspect_button.setObjectName("inspectScriptButton")
         self.inspect_button.setProperty(VARIANT_PROPERTY, VARIANT_PRIMARY)
@@ -911,7 +911,7 @@ class AttendancePage(WorkflowPage):
         layout.addLayout(first)
 
         second = QHBoxLayout()
-        second.setSpacing(Spacing.SM)
+        scale_layout(second, spacing=Spacing.SM)
         self.exclude_sheet_button = QPushButton("Reject / Exclude...")
         self.exclude_sheet_button.setObjectName("excludeSheetButton")
         self.exclude_sheet_button.setToolTip(STATE_EXPLANATIONS[LifecycleState.EXCLUDED])
@@ -955,7 +955,7 @@ class AttendancePage(WorkflowPage):
         box.setObjectName("reconciliationActionBox")
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         self.operator_label = QLabel("")
         self.operator_label.setObjectName("reconciliationOperatorLabel")
@@ -1290,10 +1290,17 @@ class AttendancePage(WorkflowPage):
     def _fit_set_table(self) -> None:
         """Size the set table to its rows, up to a few, then let it scroll."""
         rows = max(1, min(self.set_table.rowCount(), SET_TABLE_VISIBLE_ROWS))
-        header = self.set_table.horizontalHeader().height() or 24
+        px = current_scale().px
+        header = self.set_table.horizontalHeader().sizeHint().height() or px(24)
         row_height = self.set_table.verticalHeader().defaultSectionSize()
         frame = self.set_table.frameWidth() * 2
-        self.set_table.setFixedHeight(header + rows * row_height + frame + 2)
+        self.set_table.setFixedHeight(header + rows * row_height + frame + px(2))
+
+    def apply_ui_scale(self, _scale: UiScale) -> None:
+        """Re-fit the tables and lists whose heights are measured from their rows."""
+        self._fit_set_table()
+        for widget in (self.scripts_list, self.leads_list):
+            _fit_list(widget)
 
     @staticmethod
     def _template_sentence(status: SetAttendanceStatus, *, rich: bool) -> str:
@@ -3352,7 +3359,7 @@ class ExclusionDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self.resize(520, self.sizeHint().height())
+        self.resize(current_scale().px(520), self.sizeHint().height())
 
     def values(self) -> tuple[RejectionReason, str]:
         """The chosen reason and note."""
@@ -3385,9 +3392,10 @@ LIST_VISIBLE_ROWS = 4
 
 def _fit_list(widget: QListWidget) -> None:
     """Size a short list to its rows - one to four - rather than a fixed box."""
+    px = current_scale().px
     rows = max(1, min(widget.count(), LIST_VISIBLE_ROWS))
-    row_height = widget.sizeHintForRow(0) if widget.count() else 24
-    widget.setFixedHeight(rows * max(row_height, 20) + widget.frameWidth() * 2 + 6)
+    row_height = widget.sizeHintForRow(0) if widget.count() else px(24)
+    widget.setFixedHeight(rows * max(row_height, px(20)) + widget.frameWidth() * 2 + px(6))
 
 
 def _paint_chip(chip: QPushButton, key: str, value: int) -> None:

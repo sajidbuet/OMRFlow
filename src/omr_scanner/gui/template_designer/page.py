@@ -36,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import ValidationError
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog,
@@ -103,7 +103,7 @@ from omr_scanner.gui.template_designer.state import (
     DetectionMethod,
     MarkerStatus,
 )
-from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
+from omr_scanner.gui.ui_scale import add_scaled_spacing, scale_widget, set_scaled_stylesheet
 from omr_scanner.services import (
     DecodedImage,
     MarkerSearchConfig,
@@ -188,7 +188,7 @@ class TemplateDesignerPage(WorkflowPage):
         # would spend roughly a sixth of the window's height above the canvas. The
         # sentence survives as the title's tooltip and status tip.
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
-        self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET)
+        set_scaled_stylesheet(self, "template_designer")
 
         self._session: ProjectSession | None = None
         self._designer_state: DesignerState | None = None
@@ -480,7 +480,7 @@ class TemplateDesignerPage(WorkflowPage):
         """
         toolbar = QToolBar(title)
         toolbar.setObjectName(object_name)
-        toolbar.setIconSize(QSize(TOOLBAR_ICON_SIZE_PX, TOOLBAR_ICON_SIZE_PX))
+        scale_widget(toolbar, icon_size=TOOLBAR_ICON_SIZE_PX)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.setMovable(False)
         return toolbar
@@ -578,7 +578,7 @@ class TemplateDesignerPage(WorkflowPage):
             self.cursor_label, self.state_label,
         ):
             row.addWidget(label)
-            row.addSpacing(12)
+            add_scaled_spacing(row, 12)
         row.addStretch(1)
         self.body.addLayout(row)
 

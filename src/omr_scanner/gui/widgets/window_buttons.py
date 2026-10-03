@@ -33,6 +33,11 @@ Why the metrics copy Windows':
     memory: the close button has to be where the operator's hand already
     goes, and has to be the same size their pointer is already used to
     hitting.
+
+    At an interface zoom other than 100% the buttons, their glyphs and their
+    focus ring scale with the rest of the chrome row - a 150% row with 100%
+    window buttons would leave the one control nobody can afford to miss as
+    the smallest thing on it.
 """
 
 from __future__ import annotations
@@ -43,7 +48,8 @@ from PySide6.QtCore import QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
-from omr_scanner.gui.theme import Chrome, Color, Stroke
+from omr_scanner.gui.theme import Chrome, Color, Stroke, UiScale
+from omr_scanner.gui.ui_scale import current_scale
 
 _GLYPH_PEN_WIDTH = 1.0
 """Hairline, like the platform's own. Wider reads as a toolbar icon rather
@@ -103,8 +109,9 @@ class WindowButton(QAbstractButton):
     ) -> None:
         super().__init__(parent)
         self._kind = kind
+        self._scale = current_scale()
         self.setObjectName(f"windowButton_{kind.name.lower()}")
-        self.setFixedSize(Chrome.WINDOW_BUTTON_WIDTH, Chrome.HEIGHT)
+        self.setFixedSize(*self._scale.size(Chrome.WINDOW_BUTTON_WIDTH, Chrome.HEIGHT))
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.ArrowCursor)
         # Reachable from the keyboard, which a native title bar's buttons are
@@ -114,6 +121,14 @@ class WindowButton(QAbstractButton):
         # less thing that needs a pointer.
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self._apply_kind()
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Resize to the chrome row's height and a title-bar button's width."""
+        if scale == self._scale:
+            return
+        self._scale = scale
+        self.setFixedSize(*scale.size(Chrome.WINDOW_BUTTON_WIDTH, Chrome.HEIGHT))
+        self.update()
 
     @property
     def kind(self) -> WindowButtonKind:
@@ -166,7 +181,7 @@ class WindowButton(QAbstractButton):
         if background is not None:
             painter.fillRect(self.rect(), background)
 
-        pen = QPen(self._foreground(), _GLYPH_PEN_WIDTH)
+        pen = QPen(self._foreground(), float(self._scale.stroke(_GLYPH_PEN_WIDTH)))
         pen.setCapStyle(Qt.PenCapStyle.SquareCap)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -183,13 +198,14 @@ class WindowButton(QAbstractButton):
         rather than across two of them, which is the difference between a
         crisp line and a grey smear at 100% scaling.
         """
-        extent = float(Chrome.WINDOW_BUTTON_GLYPH)
+        extent = float(self._scale.px(Chrome.WINDOW_BUTTON_GLYPH))
         left = round((self.width() - extent) / 2.0) + 0.5
         top = round((self.height() - extent) / 2.0) + 0.5
         return QRectF(left, top, extent, extent)
 
     def _glyph_path(self) -> QPainterPath:
         box = self._glyph_box()
+        offset = self._scale.pen(_RESTORE_OFFSET)
         path = QPainterPath()
         if self._kind is WindowButtonKind.MINIMISE:
             middle = box.center().y()
@@ -200,19 +216,19 @@ class WindowButton(QAbstractButton):
         elif self._kind is WindowButtonKind.RESTORE:
             front = QRectF(
                 box.left(),
-                box.top() + _RESTORE_OFFSET,
-                box.width() - _RESTORE_OFFSET,
-                box.height() - _RESTORE_OFFSET,
+                box.top() + offset,
+                box.width() - offset,
+                box.height() - offset,
             )
             path.addRect(front)
             # The window behind, drawn as the two edges of it that are not
             # covered by the front one - a full second rectangle would show
             # through and read as a grid.
-            path.moveTo(front.left() + _RESTORE_OFFSET, front.top())
-            path.lineTo(front.left() + _RESTORE_OFFSET, box.top())
+            path.moveTo(front.left() + offset, front.top())
+            path.lineTo(front.left() + offset, box.top())
             path.lineTo(box.right(), box.top())
-            path.lineTo(box.right(), box.bottom() - _RESTORE_OFFSET)
-            path.lineTo(front.right(), box.bottom() - _RESTORE_OFFSET)
+            path.lineTo(box.right(), box.bottom() - offset)
+            path.lineTo(front.right(), box.bottom() - offset)
         else:
             path.moveTo(box.topLeft())
             path.lineTo(box.bottomRight())
@@ -222,11 +238,11 @@ class WindowButton(QAbstractButton):
 
     def _paint_focus_ring(self, painter: QPainter) -> None:
         """An inset accent outline, so keyboard focus is unmistakable."""
-        ring = QPen(QColor(Color.FOCUS), float(Stroke.FOCUS_RING))
+        inset = self._scale.stroke(Stroke.FOCUS_RING)
+        ring = QPen(QColor(Color.FOCUS), float(inset))
         ring.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(ring)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        inset = Stroke.FOCUS_RING
         painter.drawRect(self.rect().adjusted(inset, inset, -inset, -inset))
 
     # ------------------------------------------------------------------
@@ -244,7 +260,7 @@ class WindowButton(QAbstractButton):
 
     def sizeHint(self) -> QSize:
         """A title-bar button's width, at the chrome row's full height."""
-        return QSize(Chrome.WINDOW_BUTTON_WIDTH, Chrome.HEIGHT)
+        return QSize(*self._scale.size(Chrome.WINDOW_BUTTON_WIDTH, Chrome.HEIGHT))
 
 
 __all__ = ["WindowButton", "WindowButtonKind"]

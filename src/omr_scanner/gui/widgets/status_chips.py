@@ -40,7 +40,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from omr_scanner.gui.theme import Color, FontSize, Radius, Spacing, Stroke
+from omr_scanner.gui.theme import Color, FontSize, Radius, Spacing, Stroke, UiScale
+from omr_scanner.gui.ui_scale import current_scale, set_relative_font
 
 TONES: dict[str, str] = {
     "ok": Color.STATUS_READY,
@@ -75,23 +76,27 @@ class StatusChip(QLabel):
             parent: Optional Qt parent.
         """
         super().__init__(text, parent)
-        foreground = TONES.get(tone, TONES["neutral"])
+        self._foreground = TONES.get(tone, TONES["neutral"])
         self.setObjectName(f"statusChip_{tone if tone in TONES else 'neutral'}")
-        self.setStyleSheet(
-            f"color: {foreground};"
-            f"background: {Color.SURFACE_MUTED};"
-            f"border: {Stroke.HAIRLINE}px solid {foreground};"
-            f"border-radius: {Radius.SM}px;"
-            f"padding: {Spacing.XXS}px {Spacing.SM}px;"
-        )
-        font = self.font()
-        font.setPointSizeF(
-            max(font.pointSizeF() + FontSize.SECONDARY, FontSize.MIN_POINT_SIZE)
-        )
-        self.setFont(font)
+        self._scale: UiScale | None = None
+        self.apply_ui_scale(current_scale())
+        set_relative_font(self, FontSize.SECONDARY)
         self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         # What a screen reader announces. The tone is decoration on top of it.
         self.setAccessibleName(text)
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Re-pad the chip for the interface zoom; its colours do not change."""
+        if scale == self._scale:
+            return
+        self._scale = scale
+        self.setStyleSheet(
+            f"color: {self._foreground};"
+            f"background: {Color.SURFACE_MUTED};"
+            f"border: {scale.stroke(Stroke.HAIRLINE)}px solid {self._foreground};"
+            f"border-radius: {scale.px(Radius.SM)}px;"
+            f"padding: {scale.px(Spacing.XXS)}px {scale.px(Spacing.SM)}px;"
+        )
 
 
 class FlowLayout(QLayout):
@@ -104,11 +109,21 @@ class FlowLayout(QLayout):
     """
 
     def __init__(self, parent: QWidget | None = None, *, spacing: int = Spacing.XS) -> None:
-        """Create the layout."""
+        """Create the layout.
+
+        Args:
+            parent: Optional Qt parent.
+            spacing: The gap between chips at 100% interface zoom. Read
+                through the current zoom each time the chips are arranged.
+        """
         super().__init__(parent)
         self._items: list[QLayoutItem] = []
-        self._space = spacing
+        self._canonical_space = spacing
         self.setContentsMargins(0, 0, 0, 0)
+
+    @property
+    def _space(self) -> int:
+        return current_scale().px(self._canonical_space)
 
     def addItem(self, item: QLayoutItem) -> None:
         """Take ownership of ``item``."""

@@ -1,10 +1,18 @@
 """The application's single chrome row.
 
 Purpose:
-    Carry, in one 46-pixel line, everything the shell used to spread across a
-    native title bar, a branded header band and a workflow navigator band:
+    Carry, in one 46-pixel line (at 100% interface zoom), everything the shell
+    used to spread across a native title bar, a branded header band and a
+    workflow navigator band:
 
         [menu] [OMRFlow] | [-][+] [<] [ 1 Project > ... > 9 Reports ] [>]  _ □ X
+
+    ``[-]`` and ``[+]`` are the *interface zoom* controls: they make the whole
+    application - this row included - smaller or larger, and they are the
+    same commands as ``View > Zoom -`` and ``View > Zoom +``. They used to
+    adjust only the workflow ribbon's density; that adjustment now lives at
+    ``View > Ribbon Density``, because a ``-``/``+`` pair in a title bar reads
+    as zoom and should be zoom.
 
     Every pixel saved here is a pixel the Template, Calibrate, Scan, Resolve
     and Reports stages get back, which on a 1366x768 display is the difference
@@ -18,9 +26,13 @@ What does NOT belong here:
     * The application menu's *contents*. The row is handed a `QMenu` the main
       window already built and still owns, so there is exactly one File menu
       in the application.
-    * What a navigation, a density change or a window-state change *means*.
-      Every control emits; the main window decides. That is what lets this
-      widget be built and driven in a test with no window behind it.
+    * What a navigation, a zoom change or a window-state change *means*.
+      Every control emits or triggers an action; the main window decides.
+      That is what lets this widget be built and driven in a test with no
+      window behind it.
+    * The zoom itself. The buttons are bound to the main window's
+      ``View > Zoom`` actions (:meth:`AppChrome.bind_zoom_actions`), so the
+      menu and the row cannot disagree about what is enabled.
     * The workflow layout algorithm - see
       :mod:`omr_scanner.gui.widgets.workflow_ribbon`.
 
@@ -62,14 +74,15 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.gui.branding import LOGO_ASPECT_RATIO, logo_svg_path, logo_view_box
 from omr_scanner.gui.icons import load_icon
-from omr_scanner.gui.theme import Chrome, IconSize
+from omr_scanner.gui.theme import Chrome, IconSize, UiScale
+from omr_scanner.gui.ui_scale import add_scaled_spacing, current_scale
 from omr_scanner.gui.widgets.window_buttons import WindowButton, WindowButtonKind
 from omr_scanner.gui.widgets.workflow_ribbon import WorkflowRibbon
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable
 
-    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtGui import QAction, QMouseEvent
 
     from omr_scanner.gui.widgets.workflow_ribbon import StageSpec
 
@@ -83,18 +96,10 @@ an icon-only control must never be.
 
 LOGO_ACCESSIBLE_NAME = "OMRFlow"
 
-DENSITY_OUT_NAME = "Compact workflow ribbon"
-DENSITY_IN_NAME = "Roomier workflow ribbon"
+ZOOM_OUT_NAME = "Decrease interface zoom"
+ZOOM_IN_NAME = "Increase interface zoom"
 PREVIOUS_NAME = "Previous workflow stage"
 NEXT_NAME = "Next workflow stage"
-
-_DENSITY_TOOLTIP = (
-    "{name}.\nChanges how much room the workflow steps take. "
-    "It does not scale the page below."
-)
-"""Said explicitly because ``-``/``+`` in a title bar reads as zoom, and this
-is not zoom: it changes the ribbon's own padding and nothing else. A user who
-pressed it expecting the page to shrink would press it again, and again."""
 
 
 class AppChrome(QWidget):
@@ -111,8 +116,9 @@ class AppChrome(QWidget):
         step_activated: A workflow stage was chosen. Carries its key.
         previous_requested: The ``<`` button was pressed.
         next_requested: The ``>`` button was pressed.
-        density_changed: The ribbon's density level changed, by either
-            button. Carries the new level, for persistence.
+        density_changed: The ribbon's density level changed. Carries the new
+            level, for persistence. Relayed from the ribbon, whatever changed
+            it - today that is ``View > Ribbon Density``.
         minimise_requested: The minimise button was pressed.
         maximise_toggled: The maximise/restore button was pressed, or a valid
             drag area was double-clicked.
@@ -123,7 +129,9 @@ class AppChrome(QWidget):
         logo: The wordmark. Also a drag handle.
         ribbon: The :class:`~omr_scanner.gui.widgets.workflow_ribbon.WorkflowRibbon`.
         previous_button, next_button: The workflow arrows.
-        density_out_button, density_in_button: The ``-`` and ``+`` controls.
+        zoom_out_button, zoom_in_button: The ``-`` and ``+`` interface zoom
+            controls. Inert until :meth:`bind_zoom_actions` hands them the
+            main window's actions.
         minimise_button, maximise_button, close_button: The window controls.
     """
 
@@ -144,15 +152,17 @@ class AppChrome(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("appChrome")
-        self.setFixedHeight(Chrome.HEIGHT)
+        self._scale = current_scale()
+        self.setFixedHeight(self._scale.px(Chrome.HEIGHT))
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(self)
+        self._layout = layout
         # No vertical margin: the window buttons are the row's full height, as
         # a title bar's are, and the shorter controls are centred by the
         # layout rather than by a margin that would cap them.
-        layout.setContentsMargins(Chrome.H_PADDING, 0, 0, 0)
-        layout.setSpacing(Chrome.GROUP_GAP)
+        layout.setContentsMargins(self._scale.px(Chrome.H_PADDING), 0, 0, 0)
+        layout.setSpacing(self._scale.px(Chrome.GROUP_GAP))
 
         self.menu_button = self._build_menu_button(menu)
         layout.addWidget(self.menu_button, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -163,21 +173,17 @@ class AppChrome(QWidget):
         self.separator = self._build_separator()
         layout.addWidget(self.separator, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        self.density_out_button = self._build_small_button(
-            "minus", DENSITY_OUT_NAME, "densityOutButton"
+        self.zoom_out_button = self._build_small_button(
+            "zoom-out", ZOOM_OUT_NAME, "zoomOutButton"
         )
-        self.density_out_button.setToolTip(
-            _DENSITY_TOOLTIP.format(name=DENSITY_OUT_NAME)
-        )
-        self.density_out_button.clicked.connect(self._on_density_out)
-        layout.addWidget(self.density_out_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.zoom_out_button.setToolTip(ZOOM_OUT_NAME)
+        layout.addWidget(self.zoom_out_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-        self.density_in_button = self._build_small_button(
-            "plus", DENSITY_IN_NAME, "densityInButton"
+        self.zoom_in_button = self._build_small_button(
+            "zoom-in", ZOOM_IN_NAME, "zoomInButton"
         )
-        self.density_in_button.setToolTip(_DENSITY_TOOLTIP.format(name=DENSITY_IN_NAME))
-        self.density_in_button.clicked.connect(self._on_density_in)
-        layout.addWidget(self.density_in_button, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.zoom_in_button.setToolTip(ZOOM_IN_NAME)
+        layout.addWidget(self.zoom_in_button, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.previous_button = self._build_small_button(
             "chevron-left", PREVIOUS_NAME, "previousStageButton"
@@ -188,7 +194,7 @@ class AppChrome(QWidget):
 
         self.ribbon = WorkflowRibbon(specs, density=density, parent=self)
         self.ribbon.step_activated.connect(self.step_activated.emit)
-        self.ribbon.density_changed.connect(self._on_ribbon_density_changed)
+        self.ribbon.density_changed.connect(self.density_changed.emit)
         layout.addWidget(self.ribbon, 1, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self.next_button = self._build_small_button(
@@ -201,7 +207,7 @@ class AppChrome(QWidget):
         # The gap between the workflow arrows and the window controls. It is
         # the row's only guaranteed drag area once the ribbon fills its
         # viewport, which is why it is a named width and not zero.
-        layout.addSpacing(Chrome.DRAG_HANDLE_WIDTH)
+        add_scaled_spacing(layout, Chrome.DRAG_HANDLE_WIDTH)
 
         self.minimise_button = WindowButton(WindowButtonKind.MINIMISE, self)
         self.minimise_button.clicked.connect(self.minimise_requested.emit)
@@ -214,8 +220,6 @@ class AppChrome(QWidget):
         self.close_button = WindowButton(WindowButtonKind.CLOSE, self)
         self.close_button.clicked.connect(self.close_requested.emit)
         layout.addWidget(self.close_button)
-
-        self._sync_density_buttons()
 
     # ------------------------------------------------------------------
     # Construction
@@ -231,17 +235,19 @@ class AppChrome(QWidget):
         button = QToolButton(self)
         button.setObjectName("appMenuButton")
         button.setIcon(load_icon("menu"))
-        button.setIconSize(QSize(IconSize.CHROME_MENU, IconSize.CHROME_MENU))
-        button.setFixedSize(Chrome.MENU_BUTTON_SIZE, Chrome.MENU_BUTTON_SIZE)
+        extent = self._scale.px(IconSize.CHROME_MENU)
+        button.setIconSize(QSize(extent, extent))
+        side = self._scale.px(Chrome.MENU_BUTTON_SIZE)
+        button.setFixedSize(side, side)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         # Reachable by Tab, and it is the first thing in the tab order, so the
         # whole menu hierarchy is available from the keyboard without a mouse.
         button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         button.setAccessibleName(MENU_ACCESSIBLE_NAME)
-        button.setAccessibleDescription("Open the File, Tools and Help menus")
-        button.setToolTip("Application menu (File, Tools, Help)")
-        button.setStatusTip("File, Tools and Help")
+        button.setAccessibleDescription("Open the File, View, Tools and Help menus")
+        button.setToolTip("Application menu (File, View, Tools, Help)")
+        button.setStatusTip("File, View, Tools and Help")
         if menu is not None:
             button.setMenu(menu)
         return button
@@ -276,8 +282,7 @@ class AppChrome(QWidget):
         renderer = logo.renderer()
         if renderer is not None:  # pragma: no branch - the asset always loads
             renderer.setViewBox(logo_view_box())
-        width = round(Chrome.LOGO_HEIGHT * LOGO_ASPECT_RATIO)
-        logo.setFixedSize(width, Chrome.LOGO_HEIGHT)
+        logo.setFixedSize(self._logo_size())
         logo.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         logo.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         logo.setAccessibleName(LOGO_ACCESSIBLE_NAME)
@@ -288,7 +293,7 @@ class AppChrome(QWidget):
         separator = QFrame(self)
         separator.setObjectName("appChromeSeparator")
         separator.setFrameShape(QFrame.Shape.VLine)
-        separator.setFixedSize(1, Chrome.HEIGHT - 2 * Chrome.V_PADDING)
+        separator.setFixedSize(self._separator_size())
         separator.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         return separator
 
@@ -299,36 +304,86 @@ class AppChrome(QWidget):
         button.setObjectName(object_name)
         button.setProperty("chromeControl", True)
         button.setIcon(load_icon(icon_name))
-        button.setIconSize(QSize(IconSize.CHROME_CONTROL, IconSize.CHROME_CONTROL))
-        button.setFixedSize(Chrome.SMALL_BUTTON_SIZE, Chrome.SMALL_BUTTON_SIZE)
+        extent = self._scale.px(IconSize.CHROME_CONTROL)
+        button.setIconSize(QSize(extent, extent))
+        side = self._scale.px(Chrome.SMALL_BUTTON_SIZE)
+        button.setFixedSize(side, side)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         button.setAccessibleName(accessible_name)
         button.setStatusTip(accessible_name)
         return button
 
+    def _logo_size(self) -> QSize:
+        height = self._scale.px(Chrome.LOGO_HEIGHT)
+        return QSize(round(height * LOGO_ASPECT_RATIO), height)
+
+    def _separator_size(self) -> QSize:
+        return QSize(
+            self._scale.stroke(1),
+            self._scale.px(Chrome.HEIGHT) - 2 * self._scale.px(Chrome.V_PADDING),
+        )
+
     # ------------------------------------------------------------------
-    # Density
+    # Interface zoom
     # ------------------------------------------------------------------
-    def _on_density_out(self) -> None:
-        self.ribbon.set_density(self.ribbon.density - 1)
+    def bind_zoom_actions(self, zoom_out: QAction, zoom_in: QAction) -> None:
+        """Make ``-`` and ``+`` trigger the main window's zoom actions.
 
-    def _on_density_in(self) -> None:
-        self.ribbon.set_density(self.ribbon.density + 1)
-
-    def _on_ribbon_density_changed(self, level: int) -> None:
-        self._sync_density_buttons()
-        self.density_changed.emit(level)
-
-    def _sync_density_buttons(self) -> None:
-        """Disable whichever of ``-``/``+`` would now do nothing.
-
-        A control at the end of its range that still looks pressable is a
-        control that lies. Both keep their accessible name and tooltip while
-        disabled, so it is clear *which* end has been reached.
+        ``setDefaultAction`` and not a ``clicked`` connection: the button then
+        takes its enabled state from the action, so at 200% the ``+`` in this
+        row and ``View > Zoom +`` are disabled by the same call, and they
+        cannot be out of step. The buttons keep their own icon, size and
+        accessible name - the action supplies the behaviour, the tooltip and
+        whether it is available.
         """
-        self.density_out_button.setEnabled(self.ribbon.can_decrease_density())
-        self.density_in_button.setEnabled(self.ribbon.can_increase_density())
+        for button, action, name, icon in (
+            (self.zoom_out_button, zoom_out, ZOOM_OUT_NAME, "zoom-out"),
+            (self.zoom_in_button, zoom_in, ZOOM_IN_NAME, "zoom-in"),
+        ):
+            button.setDefaultAction(action)
+            button.setIcon(load_icon(icon))
+            button.setAccessibleName(name)
+            button.setStatusTip(name)
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Resize the whole row - height, controls, icons, gaps - to ``scale``.
+
+        The ribbon and the window buttons rescale themselves; this sizes
+        everything the row owns directly. Nothing is rebuilt: the same
+        widgets, with the same state, get new metrics.
+        """
+        if scale == self._scale:
+            return
+        self._scale = scale
+        self.setFixedHeight(scale.px(Chrome.HEIGHT))
+        self._layout.setContentsMargins(scale.px(Chrome.H_PADDING), 0, 0, 0)
+        self._layout.setSpacing(scale.px(Chrome.GROUP_GAP))
+
+        menu_side = scale.px(Chrome.MENU_BUTTON_SIZE)
+        menu_icon = scale.px(IconSize.CHROME_MENU)
+        self.menu_button.setFixedSize(menu_side, menu_side)
+        self.menu_button.setIconSize(QSize(menu_icon, menu_icon))
+
+        self.logo.setFixedSize(self._logo_size())
+        self.separator.setFixedSize(self._separator_size())
+
+        small_side = scale.px(Chrome.SMALL_BUTTON_SIZE)
+        small_icon = scale.px(IconSize.CHROME_CONTROL)
+        for button in (
+            self.zoom_out_button,
+            self.zoom_in_button,
+            self.previous_button,
+            self.next_button,
+        ):
+            button.setFixedSize(small_side, small_side)
+            button.setIconSize(QSize(small_icon, small_icon))
+
+        for window_button in (self.minimise_button, self.maximise_button, self.close_button):
+            window_button.apply_ui_scale(scale)
+        self.ribbon.apply_ui_scale(scale)
+        self._layout.invalidate()
+        self.updateGeometry()
 
     # ------------------------------------------------------------------
     # Workflow arrows
@@ -379,7 +434,7 @@ class AppChrome(QWidget):
 
         Returns:
             ``True`` for the row's empty space and for the logo, ``False``
-            over any interactive control - the menu button, the density and
+            over any interactive control - the menu button, the zoom and
             arrow buttons, a workflow step, and the window buttons.
 
         Implemented as "is there an interactive child here?" rather than as a
@@ -418,7 +473,7 @@ class AppChrome(QWidget):
 
         Only from a valid drag area, for the same reason a press only starts a
         move from one: double-clicking the ``+`` button twice quickly must
-        increase the density twice, not maximise the window.
+        zoom in twice, not maximise the window.
         """
         if event.button() is Qt.MouseButton.LeftButton and self.is_drag_area(
             event.position().toPoint()
@@ -439,31 +494,35 @@ class AppChrome(QWidget):
         Including a ribbon width would make the workflow dictate how small the
         application can be, and the narrow layout exists precisely so that it
         does not.
+
+        Measured at the current interface zoom, so a larger zoom raises the
+        floor by exactly what the row's own controls grew by, and no more.
         """
+        px = self._scale.px
         fixed = (
-            Chrome.H_PADDING
-            + Chrome.MENU_BUTTON_SIZE
+            px(Chrome.H_PADDING)
+            + px(Chrome.MENU_BUTTON_SIZE)
             + self.logo.width()
             + self.separator.width()
-            + 4 * Chrome.SMALL_BUTTON_SIZE
-            + 3 * Chrome.WINDOW_BUTTON_WIDTH
-            + Chrome.DRAG_HANDLE_WIDTH
-            + 8 * Chrome.GROUP_GAP
+            + 4 * px(Chrome.SMALL_BUTTON_SIZE)
+            + 3 * px(Chrome.WINDOW_BUTTON_WIDTH)
+            + px(Chrome.DRAG_HANDLE_WIDTH)
+            + 8 * px(Chrome.GROUP_GAP)
         )
-        return QSize(fixed, Chrome.HEIGHT)
+        return QSize(fixed, px(Chrome.HEIGHT))
 
     def sizeHint(self) -> QSize:
         """The minimum plus whatever the ribbon would like."""
         minimum = self.minimumSizeHint()
-        return QSize(minimum.width() + self.ribbon.sizeHint().width(), Chrome.HEIGHT)
+        return QSize(minimum.width() + self.ribbon.sizeHint().width(), minimum.height())
 
 
 __all__ = [
-    "DENSITY_IN_NAME",
-    "DENSITY_OUT_NAME",
     "LOGO_ACCESSIBLE_NAME",
     "MENU_ACCESSIBLE_NAME",
     "NEXT_NAME",
     "PREVIOUS_NAME",
+    "ZOOM_IN_NAME",
+    "ZOOM_OUT_NAME",
     "AppChrome",
 ]

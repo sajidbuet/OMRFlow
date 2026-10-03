@@ -65,6 +65,7 @@ from omr_scanner.gui.results.dashboard import DashboardInputs, ResultsDashboard
 from omr_scanner.gui.results.policy_dialog import ScoringPolicyDialog
 from omr_scanner.gui.results.worker import ScoringResult, ScoringWorker
 from omr_scanner.gui.theme import Spacing
+from omr_scanner.gui.ui_scale import scale_layout
 from omr_scanner.services import (
     batch_store,
     project_sets,
@@ -185,7 +186,7 @@ class ResultsPage(WorkflowPage):
         results_tab = QWidget()
         results_tab.setObjectName("resultsMainTab")
         results_layout = QVBoxLayout(results_tab)
-        results_layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
+        scale_layout(results_layout, margins=(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM))
         results_layout.addWidget(self._build_policy_bar())
         results_layout.addWidget(self._build_summary())
 
