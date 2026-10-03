@@ -21,8 +21,12 @@ What does NOT belong here:
 
 from omr_scanner.config.app_config import (
     DEFAULT_RIBBON_DENSITY,
+    DEFAULT_UI_ZOOM_PERCENT,
     MAX_RIBBON_DENSITY,
+    MAX_UI_ZOOM_PERCENT,
     MIN_RIBBON_DENSITY,
+    MIN_UI_ZOOM_PERCENT,
+    UI_ZOOM_STEP_PERCENT,
     AppConfig,
     load_app_config,
     save_app_config,
@@ -44,9 +48,13 @@ from omr_scanner.config.processing import (
 __all__ = [
     "AUTOMATIC_WORKER_LIMIT",
     "DEFAULT_RIBBON_DENSITY",
+    "DEFAULT_UI_ZOOM_PERCENT",
     "MAX_CONFIGURABLE_WORKERS",
     "MAX_RIBBON_DENSITY",
+    "MAX_UI_ZOOM_PERCENT",
     "MIN_RIBBON_DENSITY",
+    "MIN_UI_ZOOM_PERCENT",
+    "UI_ZOOM_STEP_PERCENT",
     "AppConfig",
     "ProcessingMode",
     "ProcessingSettings",

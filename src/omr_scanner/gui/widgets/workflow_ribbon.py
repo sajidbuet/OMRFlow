@@ -36,6 +36,15 @@ Why the workflow never wraps:
     always present, always enabled or disabled for its own reason, and always
     reachable.
 
+Why the layout follows the interface zoom:
+    Every length the plan uses - step height, padding, arrow depth, icon, the
+    seam between chevrons - comes from :class:`~.workflow_step.StepGeometry`
+    at the ribbon's current :class:`~omr_scanner.gui.theme.UiScale`, and every
+    label is measured in the font the steps are drawn in. So at 150% the
+    nine stages are measured as 150% stages, and the same width rule that
+    chooses scrolling for a large Windows text size chooses it for a large
+    interface zoom. No breakpoint is written down anywhere.
+
 Why the layout is computed rather than laid out by Qt:
     Consecutive chevrons overlap by the arrow depth, so the advance from one
     step to the next is *less* than the step's own width. Expressing that to
@@ -75,7 +84,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from omr_scanner.gui.theme import Density, Navigator, Stroke
+from omr_scanner.gui.theme import Density, Navigator, Stroke, UiScale
+from omr_scanner.gui.ui_scale import current_scale
 from omr_scanner.gui.widgets.workflow_step import (
     StepGeometry,
     StepShape,
@@ -268,7 +278,8 @@ class WorkflowRibbon(QWidget):
         super().__init__(parent)
         self.setObjectName("workflowRibbon")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(Navigator.STEP_HEIGHT + 2 * Navigator.STRIP_V_PADDING)
+        self._scale = current_scale()
+        self.setFixedHeight(self._ribbon_height())
 
         self._steps: list[WorkflowStep] = []
         self._current_key: str | None = None
@@ -293,12 +304,8 @@ class WorkflowRibbon(QWidget):
         self._scroll.setWidget(self._strip)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(
-            Navigator.STRIP_H_PADDING,
-            Navigator.STRIP_V_PADDING,
-            Navigator.STRIP_H_PADDING,
-            Navigator.STRIP_V_PADDING,
-        )
+        self._outer = outer
+        self._apply_strip_padding()
         outer.setSpacing(0)
         outer.addWidget(self._scroll)
 
@@ -324,6 +331,43 @@ class WorkflowRibbon(QWidget):
         if self._steps:
             self.set_current_key(self._steps[0].key)
         self._relayout()
+
+    # ------------------------------------------------------------------
+    # Interface zoom
+    # ------------------------------------------------------------------
+    @property
+    def ui_scale(self) -> UiScale:
+        """The interface zoom the ribbon is currently laid out for."""
+        return self._scale
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Re-plan the ribbon for a new interface zoom.
+
+        The density level is untouched: zoom and density are independent,
+        one scaling the whole interface and the other only the steps'
+        horizontal room. The current stage, the enabled states and the
+        scroll target are untouched too; only the measurements change, and
+        the layout decision is re-made from them.
+        """
+        if scale == self._scale:
+            return
+        self._scale = scale
+        self.setFixedHeight(self._ribbon_height())
+        self._apply_strip_padding()
+        self._relayout()
+
+    def _ribbon_height(self) -> int:
+        return self._scale.px(Navigator.STEP_HEIGHT) + 2 * self._scale.px(
+            Navigator.STRIP_V_PADDING
+        )
+
+    def _strip_h_padding(self) -> int:
+        return self._scale.px(Navigator.STRIP_H_PADDING)
+
+    def _apply_strip_padding(self) -> None:
+        horizontal = self._strip_h_padding()
+        vertical = self._scale.px(Navigator.STRIP_V_PADDING)
+        self._outer.setContentsMargins(horizontal, vertical, horizontal, vertical)
 
     # ------------------------------------------------------------------
     # The stages
@@ -425,7 +469,7 @@ class WorkflowRibbon(QWidget):
         step = self.step(self._current_key)
         if step is None:  # pragma: no cover - defensive
             return
-        self._scroll.ensureWidgetVisible(step, xmargin=Navigator.SCROLL_MARGIN)
+        self._scroll.ensureWidgetVisible(step, xmargin=self._scale.px(Navigator.SCROLL_MARGIN))
 
     def _on_step_clicked(self) -> None:
         step = self.sender()
@@ -482,8 +526,8 @@ class WorkflowRibbon(QWidget):
 
         Returns:
             Whether the level actually changed. ``False`` at either end of the
-            range, which is how the chrome's ``-``/``+`` buttons know to
-            disable themselves rather than silently doing nothing.
+            range, which is how ``View > Ribbon Density`` knows to disable
+            the matching command rather than silently doing nothing.
 
         Changes how much room a step takes, never what a step *is*: the same
         nine stages, in the same order, with the same enabled state and the
@@ -521,6 +565,7 @@ class WorkflowRibbon(QWidget):
             density=self._density,
             has_left_notch=not first_in_row,
             has_right_point=True,
+            scale=self._scale,
         )
 
     def _current_only_geometry(self) -> StepGeometry:
@@ -531,6 +576,7 @@ class WorkflowRibbon(QWidget):
             has_left_notch=False,
             has_right_point=False,
             has_menu_indicator=True,
+            scale=self._scale,
         )
 
     def _chevron_row_width(
@@ -549,7 +595,7 @@ class WorkflowRibbon(QWidget):
         ]
         if not widths:
             return 0, widths, geometries
-        overlap = sum(geom.arrow_depth - Navigator.STEP_GAP for geom in geometries[1:])
+        overlap = sum(geom.arrow_depth - geom.step_gap for geom in geometries[1:])
         return sum(widths) - overlap, widths, geometries
 
     def _place_chevron_row(
@@ -592,7 +638,9 @@ class WorkflowRibbon(QWidget):
             return 0
         _, widths, geometries = self._chevron_row_width(self._steps)
         widest = sorted(widths, reverse=True)[:MIN_SCROLL_STEPS]
-        overlap = (MIN_SCROLL_STEPS - 1) * (geometries[-1].arrow_depth - Navigator.STEP_GAP)
+        overlap = (MIN_SCROLL_STEPS - 1) * (
+            geometries[-1].arrow_depth - geometries[-1].step_gap
+        )
         return sum(widest) - overlap
 
     def plan_for_width(self, available_width: int) -> LayoutPlan:
@@ -612,9 +660,10 @@ class WorkflowRibbon(QWidget):
         reachable by hover, click and keyboard.
         """
         available = max(available_width, 1)
+        step_height = self._scale.px(Navigator.STEP_HEIGHT)
 
         if not self._steps:  # pragma: no cover - the catalog is never empty
-            return LayoutPlan(RibbonMode.FULL, (), QSize(available, Navigator.STEP_HEIGHT))
+            return LayoutPlan(RibbonMode.FULL, (), QSize(available, step_height))
 
         full_total, _, _ = self._chevron_row_width(self._steps)
         if full_total <= available:
@@ -622,7 +671,7 @@ class WorkflowRibbon(QWidget):
             return LayoutPlan(
                 mode=RibbonMode.FULL,
                 placements=tuple(placements),
-                strip_size=QSize(available, Navigator.STEP_HEIGHT),
+                strip_size=QSize(available, step_height),
             )
 
         if available >= self.scroll_floor():
@@ -630,7 +679,7 @@ class WorkflowRibbon(QWidget):
             return LayoutPlan(
                 mode=RibbonMode.SCROLL,
                 placements=tuple(placements),
-                strip_size=QSize(full_total, Navigator.STEP_HEIGHT),
+                strip_size=QSize(full_total, step_height),
             )
 
         return self._plan_current_only(available)
@@ -650,7 +699,7 @@ class WorkflowRibbon(QWidget):
                     geometry=geometry,
                 ),
             ),
-            strip_size=QSize(width, Navigator.STEP_HEIGHT),
+            strip_size=QSize(width, geometry.height),
         )
 
     # ------------------------------------------------------------------
@@ -667,7 +716,7 @@ class WorkflowRibbon(QWidget):
         resize. Falling back to this widget's width less its padding is the
         same number the viewport will report once it catches up.
         """
-        own = max(self.width() - 2 * Navigator.STRIP_H_PADDING, 1)
+        own = max(self.width() - 2 * self._strip_h_padding(), 1)
         viewport_width = self._scroll.viewport().width()
         if abs(viewport_width - own) <= Stroke.HAIRLINE:
             return viewport_width
@@ -751,7 +800,7 @@ class WorkflowRibbon(QWidget):
     def sizeHint(self) -> QSize:
         """Preferred size: the whole row at the current density."""
         total, _, _ = self._chevron_row_width(self._steps)
-        return QSize(total + 2 * Navigator.STRIP_H_PADDING, self.height())
+        return QSize(total + 2 * self._strip_h_padding(), self.height())
 
     def minimumSizeHint(self) -> QSize:
         """The ribbon never demands width: it changes layout instead.
@@ -760,7 +809,7 @@ class WorkflowRibbon(QWidget):
         would make the narrow layout unreachable - the opposite of the point
         of having it.
         """
-        return QSize(2 * Navigator.STRIP_H_PADDING, self.height())
+        return QSize(2 * self._strip_h_padding(), self.height())
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Re-decide the layout for the new width."""
@@ -797,7 +846,7 @@ class WorkflowRibbon(QWidget):
             super().wheelEvent(event)
             return
         notches = delta / 120.0
-        bar.setValue(bar.value() - round(notches * Navigator.WHEEL_STEP))
+        bar.setValue(bar.value() - round(notches * self._scale.px(Navigator.WHEEL_STEP)))
         event.accept()
 
     # ------------------------------------------------------------------
@@ -938,7 +987,9 @@ class WorkflowRibbon(QWidget):
 
         target.setFocus(Qt.FocusReason.TabFocusReason)
         if self._mode is RibbonMode.SCROLL:
-            self._scroll.ensureWidgetVisible(target, xmargin=Navigator.SCROLL_MARGIN)
+            self._scroll.ensureWidgetVisible(
+                target, xmargin=self._scale.px(Navigator.SCROLL_MARGIN)
+            )
         event.accept()
 
 

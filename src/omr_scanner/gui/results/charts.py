@@ -32,7 +32,8 @@ from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
-from omr_scanner.gui.theme import ChartColor, Color, FontSize
+from omr_scanner.gui.theme import ChartColor, Color, FontSize, UiScale
+from omr_scanner.gui.ui_scale import current_scale, relative_font
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -72,12 +73,8 @@ def format_value(value: float) -> str:
 
 
 def _small_font(font: QFont) -> QFont:
-    """The widget font at the theme's secondary size."""
-    small = QFont(font)
-    size = small.pointSizeF()
-    if size > 0:
-        small.setPointSizeF(max(FontSize.MIN_POINT_SIZE, size + FontSize.SECONDARY))
-    return small
+    """The widget font at the theme's secondary size, at the interface zoom."""
+    return relative_font(font, FontSize.SECONDARY)
 
 
 class ChartBase(QWidget):
@@ -92,7 +89,7 @@ class ChartBase(QWidget):
         super().__init__(parent)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.setMinimumHeight(self.MIN_HEIGHT)
+        self.setMinimumHeight(current_scale().px(self.MIN_HEIGHT))
         self.empty_text = "No data."
         self.hovered: int | None = None
         self.selected: int | None = None
@@ -102,7 +99,18 @@ class ChartBase(QWidget):
     # -- geometry ---------------------------------------------------------
     def sizeHint(self) -> QSize:
         """Wide and moderately tall; the layout decides the width."""
-        return QSize(480, max(self.MIN_HEIGHT, 240))
+        px = current_scale().px
+        return QSize(px(480), px(max(self.MIN_HEIGHT, 240)))
+
+    def minimum_chart_height(self) -> int:
+        """The floor for this chart's height at the current interface zoom."""
+        return current_scale().px(self.MIN_HEIGHT)
+
+    def apply_ui_scale(self, _scale: UiScale) -> None:
+        """Re-derive the height floor; the drawing reads the zoom as it paints."""
+        self.setMinimumHeight(self.minimum_chart_height())
+        self.updateGeometry()
+        self.update()
 
     def item_count(self) -> int:
         """How many hoverable items the chart has."""
@@ -110,15 +118,27 @@ class ChartBase(QWidget):
 
     def y_label_width(self) -> int:
         """Room for the widest y tick label."""
-        return QFontMetrics(_small_font(self.font())).horizontalAdvance("0000") + 6
+        return QFontMetrics(_small_font(self.font())).horizontalAdvance(
+            "0000"
+        ) + current_scale().px(6)
 
     def plot_rect(self) -> QRectF:
-        """The data area, inside the axis labels."""
+        """The data area, inside the axis labels.
+
+        The gaps between the labels and the plot are interface lengths and
+        follow the zoom; the plot's own coordinates are data and do not.
+        """
+        px = current_scale().px
         metrics = QFontMetrics(_small_font(self.font()))
         line = metrics.height()
-        left = self.y_label_width() + (line + 4 if self.y_title else 0) + 4
-        bottom = line + 8 + (line + 2 if self.x_title else 0)
-        return QRectF(left, line // 2 + 6, self.width() - left - 10, self.height() - bottom - 12)
+        left = self.y_label_width() + (line + px(4) if self.y_title else 0) + px(4)
+        bottom = line + px(8) + (line + px(2) if self.x_title else 0)
+        return QRectF(
+            left,
+            line // 2 + px(6),
+            self.width() - left - px(10),
+            self.height() - bottom - px(12),
+        )
 
     # -- interaction ------------------------------------------------------
     def index_at(self, point: QPointF) -> int | None:
@@ -355,14 +375,19 @@ class BoxPlotChart(ChartBase):
         """Replace the boxes; the height grows with the number of rows."""
         self.rows = list(rows)
         self.scale = scale
-        line = QFontMetrics(self.font()).height()
-        self.setMinimumHeight(max(self.MIN_HEIGHT, 3 * line + len(self.rows) * (2 * line + 8)))
+        self.setMinimumHeight(self.minimum_chart_height())
         self.updateGeometry()
         self.update()
 
+    def minimum_chart_height(self) -> int:
+        """Tall enough for every row, in the font and zoom in use."""
+        px = current_scale().px
+        line = QFontMetrics(self.font()).height()
+        return max(px(self.MIN_HEIGHT), 3 * line + len(self.rows) * (2 * line + px(8)))
+
     def sizeHint(self) -> QSize:
         """Tall enough for every row."""
-        return QSize(420, self.minimumHeight())
+        return QSize(current_scale().px(420), self.minimumHeight())
 
     def item_count(self) -> int:
         """One item per box."""
@@ -511,7 +536,9 @@ class QuestionChart(ChartBase):
 
     def y_label_width(self) -> int:
         """Room for ``100%`` or ``-1.0``."""
-        return QFontMetrics(_small_font(self.font())).horizontalAdvance("100%") + 6
+        return QFontMetrics(_small_font(self.font())).horizontalAdvance(
+            "100%"
+        ) + current_scale().px(6)
 
     def _slot(self, plot: QRectF) -> float:
         return plot.width() / max(len(self.bars), 1)
@@ -661,15 +688,20 @@ class OptionChart(ChartBase):
     def set_data(self, bars: Sequence[OptionBar]) -> None:
         """Replace the options; the height follows their number."""
         self.bars = list(bars)
-        line = QFontMetrics(self.font()).height()
-        self.setMinimumHeight(max(self.MIN_HEIGHT, len(self.bars) * (line + 10) + 16))
+        self.setMinimumHeight(self.minimum_chart_height())
         self.updateGeometry()
         self.hovered = None
         self.update()
 
+    def minimum_chart_height(self) -> int:
+        """Tall enough for every option, in the font and zoom in use."""
+        px = current_scale().px
+        line = QFontMetrics(self.font()).height()
+        return max(px(self.MIN_HEIGHT), len(self.bars) * (line + px(10)) + px(16))
+
     def sizeHint(self) -> QSize:
         """Tall enough for every option."""
-        return QSize(320, self.minimumHeight())
+        return QSize(current_scale().px(320), self.minimumHeight())
 
     def item_count(self) -> int:
         """One item per option."""

@@ -40,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -80,7 +80,8 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.scan.preview import ScanPreviewView
-from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET, Spacing
+from omr_scanner.gui.theme import Spacing
+from omr_scanner.gui.ui_scale import scale_layout, scale_widget, set_floor, set_scaled_stylesheet
 from omr_scanner.gui.widgets import CollapsibleSection, StatusChipStrip
 from omr_scanner.services import (
     CalibrationStatus,
@@ -224,7 +225,7 @@ class CalibrationPage(WorkflowPage):
         """Whether the preview is following the viewport or a zoom the user chose."""
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setObjectName("calibrationPage")
-        self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET)
+        set_scaled_stylesheet(self, "template_designer")
 
         self.state = CalibrationPageState()
         self._worker: CalibrationWorker | None = None
@@ -252,8 +253,7 @@ class CalibrationPage(WorkflowPage):
         panel = QWidget()
         panel.setObjectName("calibrationControlPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, Spacing.XS, 0)
-        layout.setSpacing(Spacing.SM)
+        scale_layout(layout, margins=(0, 0, Spacing.XS, 0), spacing=Spacing.SM)
 
         layout.addWidget(self._build_template_box())
         layout.addWidget(self._build_scans_box())
@@ -277,8 +277,8 @@ class CalibrationPage(WorkflowPage):
         scroller.setFrameShape(QScrollArea.Shape.NoFrame)
         scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroller.setWidget(panel)
-        scroller.setMaximumWidth(CONTROL_PANEL_WIDTH + 60)
-        scroller.setMinimumWidth(CONTROL_PANEL_WIDTH)
+        scale_widget(scroller, maximum_width=CONTROL_PANEL_WIDTH + 60)
+        set_floor(scroller, minimum_width=CONTROL_PANEL_WIDTH)
         return scroller
 
     def _build_template_box(self) -> QGroupBox:
@@ -331,7 +331,7 @@ class CalibrationPage(WorkflowPage):
 
         self.test_scan_list = QListWidget()
         self.test_scan_list.setObjectName("testScanList")
-        self.test_scan_list.setMaximumHeight(140)
+        scale_widget(self.test_scan_list, maximum_height=140)
         self.test_scan_list.currentRowChanged.connect(self._on_list_row_changed)
         box_layout.addWidget(self.test_scan_list)
 
@@ -434,7 +434,7 @@ class CalibrationPage(WorkflowPage):
         row = QWidget()
         layout = QVBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         self.save_button = QPushButton(load_icon("save"), "Save to Template")
         self.save_button.setObjectName("saveCalibrationButton")
@@ -525,7 +525,7 @@ class CalibrationPage(WorkflowPage):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         layout.addWidget(self._build_preview_toolbar())
 
@@ -558,14 +558,14 @@ class CalibrationPage(WorkflowPage):
         preview_column = QWidget()
         preview_layout = QVBoxLayout(preview_column)
         preview_layout.setContentsMargins(0, 0, 0, 0)
-        preview_layout.setSpacing(Spacing.XS)
+        scale_layout(preview_layout, spacing=Spacing.XS)
         preview_layout.addWidget(self.preview, stretch=1)
 
         status_row = QWidget()
         status_row.setObjectName("calibrationStatusStrip")
         status_layout = QVBoxLayout(status_row)
         status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(Spacing.XXS)
+        scale_layout(status_layout, spacing=Spacing.XXS)
         status_layout.addWidget(self.calibration_status_label)
         status_layout.addWidget(self.status_chip_strip)
         preview_layout.addWidget(status_row)
@@ -662,7 +662,7 @@ class CalibrationPage(WorkflowPage):
     def _build_preview_toolbar(self) -> QToolBar:
         toolbar = QToolBar("Calibration view")
         toolbar.setObjectName("calibrationPreviewToolbar")
-        toolbar.setIconSize(QSize(18, 18))
+        scale_widget(toolbar, icon_size=18)
         toolbar.setMovable(False)
 
         self.previous_action = QAction(load_icon("undo-2"), "Previous", self)
@@ -785,7 +785,7 @@ class CalibrationPage(WorkflowPage):
         """
         box = QWidget()
         box_layout = QVBoxLayout(box)
-        box_layout.setContentsMargins(0, Spacing.XS, 0, 0)
+        scale_layout(box_layout, margins=(0, Spacing.XS, 0, 0))
 
         # The full per-scan detail that used to sit permanently under the
         # preview. Same text, same information, on request.
@@ -816,10 +816,9 @@ class CalibrationPage(WorkflowPage):
     def _build_diagnostics_panel(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("bubbleDiagnosticPanel")
-        panel.setMaximumWidth(DIAGNOSTIC_PANEL_WIDTH + 100)
+        scale_widget(panel, maximum_width=DIAGNOSTIC_PANEL_WIDTH + 100)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(6, 0, 0, 0)
-        layout.setSpacing(6)
+        scale_layout(layout, margins=(6, 0, 0, 0), spacing=6)
 
         heading = QLabel("Bubble inspector")
         heading_font = heading.font()

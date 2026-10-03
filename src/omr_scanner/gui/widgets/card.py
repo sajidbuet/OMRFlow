@@ -33,7 +33,7 @@ Why :class:`ActionRow` is a `QAbstractButton`:
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QSize, Qt
-from PySide6.QtGui import QColor, QEnterEvent, QFont, QIcon, QPainter, QPen
+from PySide6.QtGui import QColor, QEnterEvent, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
     QFrame,
@@ -56,6 +56,13 @@ from omr_scanner.gui.theme import (
     Radius,
     Spacing,
     Stroke,
+    UiScale,
+)
+from omr_scanner.gui.ui_scale import (
+    current_scale,
+    scale_layout,
+    scale_widget,
+    set_relative_font,
 )
 
 CARD_PROPERTY = "card"
@@ -68,11 +75,10 @@ unique to be useful for anything else.
 """
 
 
-def _titled_font(base: QFont, delta: int, weight: int) -> QFont:
-    font = QFont(base)
-    font.setPointSizeF(max(base.pointSizeF() + delta, FontSize.MIN_POINT_SIZE))
-    font.setWeight(QFont.Weight(weight))
-    return font
+def _disabled_pixmap_label(label: QLabel, icon_name: str, extent: int) -> None:
+    """Show ``icon_name`` greyed in ``label``, at ``extent`` through the zoom."""
+    side = current_scale().px(extent)
+    label.setPixmap(load_icon(icon_name).pixmap(QSize(side, side), QIcon.Mode.Disabled))
 
 
 class Card(QFrame):
@@ -102,21 +108,22 @@ class Card(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(
-            CardMetrics.PADDING, CardMetrics.PADDING, CardMetrics.PADDING, CardMetrics.PADDING
+        scale_layout(
+            outer,
+            margins=(CardMetrics.PADDING,) * 4,
+            spacing=CardMetrics.TITLE_GAP,
         )
-        outer.setSpacing(CardMetrics.TITLE_GAP)
 
         self.title_label: QLabel | None = None
         if title or trailing is not None:
             header = QHBoxLayout()
             header.setContentsMargins(0, 0, 0, 0)
-            header.setSpacing(Spacing.SM)
+            scale_layout(header, spacing=Spacing.SM)
             if title:
                 self.title_label = QLabel(title, self)
                 self.title_label.setObjectName("cardTitle")
-                self.title_label.setFont(
-                    _titled_font(self.font(), FontSize.SECTION_TITLE, FontWeight.BOLD)
+                set_relative_font(
+                    self.title_label, FontSize.SECTION_TITLE, weight=FontWeight.BOLD
                 )
                 header.addWidget(self.title_label)
             header.addStretch(1)
@@ -126,7 +133,7 @@ class Card(QFrame):
 
         self.body = QVBoxLayout()
         self.body.setContentsMargins(0, 0, 0, 0)
-        self.body.setSpacing(CardMetrics.GAP)
+        scale_layout(self.body, spacing=CardMetrics.GAP)
         outer.addLayout(self.body)
 
     def add_divider(self) -> QFrame:
@@ -134,7 +141,7 @@ class Card(QFrame):
         divider = QFrame(self)
         divider.setObjectName("cardDivider")
         divider.setFrameShape(QFrame.Shape.NoFrame)
-        divider.setFixedHeight(Stroke.HAIRLINE)
+        scale_widget(divider, fixed_height=Stroke.HAIRLINE)
         self.body.addWidget(divider)
         return divider
 
@@ -148,24 +155,17 @@ class Card(QFrame):
         host = QWidget(self)
         host.setObjectName("cardEmptyNote")
         layout = QVBoxLayout(host)
-        layout.setContentsMargins(0, Spacing.LG, 0, Spacing.LG)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, margins=(0, Spacing.LG, 0, Spacing.LG), spacing=Spacing.XS)
 
-        icon = QLabel(host)
+        icon = _ScaledPixmapLabel("folder", IconSize.EMPTY_STATE // 2, host)
         icon.setObjectName("cardEmptyIcon")
-        icon.setPixmap(
-            load_icon("folder").pixmap(
-                QSize(IconSize.EMPTY_STATE // 2, IconSize.EMPTY_STATE // 2),
-                QIcon.Mode.Disabled,
-            )
-        )
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(icon)
 
         title = QLabel(headline, host)
         title.setObjectName("emptyStateTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setFont(_titled_font(self.font(), FontSize.BODY, FontWeight.MEDIUM))
+        set_relative_font(title, FontSize.BODY, weight=FontWeight.MEDIUM)
         layout.addWidget(title)
 
         if detail:
@@ -215,25 +215,19 @@ class EmptyState(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(Spacing.XL, Spacing.XL, Spacing.XL, Spacing.XL)
-        outer.setSpacing(Spacing.MD)
+        scale_layout(outer, margins=(Spacing.XL,) * 4, spacing=Spacing.MD)
         outer.addStretch(1)
 
-        self.icon_label = QLabel(self)
+        self.icon_label = _ScaledPixmapLabel(icon_name, IconSize.EMPTY_STATE, self)
         self.icon_label.setObjectName("emptyStateIcon")
-        self.icon_label.setPixmap(
-            load_icon(icon_name).pixmap(
-                QSize(IconSize.EMPTY_STATE, IconSize.EMPTY_STATE), QIcon.Mode.Disabled
-            )
-        )
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer.addWidget(self.icon_label)
 
         self.headline_label = QLabel(headline, self)
         self.headline_label.setObjectName("emptyStateTitle")
         self.headline_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.headline_label.setFont(
-            _titled_font(self.font(), FontSize.PAGE_TITLE - 3, FontWeight.BOLD)
+        set_relative_font(
+            self.headline_label, FontSize.PAGE_TITLE - 3, weight=FontWeight.BOLD
         )
         self.headline_label.setWordWrap(True)
         outer.addWidget(self.headline_label)
@@ -246,8 +240,7 @@ class EmptyState(QFrame):
         outer.addWidget(self.detail_label)
 
         self.actions_layout = QHBoxLayout()
-        self.actions_layout.setContentsMargins(0, Spacing.SM, 0, 0)
-        self.actions_layout.setSpacing(Spacing.MD)
+        scale_layout(self.actions_layout, margins=(0, Spacing.SM, 0, 0), spacing=Spacing.MD)
         self.actions_layout.addStretch(1)
         self._action_tail = self.actions_layout.count()
         self.actions_layout.addStretch(1)
@@ -291,44 +284,42 @@ class ActionRow(QAbstractButton):
         self.setObjectName(f"actionRow_{icon_name}")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.setMinimumHeight(CardMetrics.ROW_HEIGHT)
+        # Height-for-width, because the supporting line wraps: at a larger
+        # interface zoom (or in a narrower column) it takes a third line, and
+        # a fixed-height row would draw that line over the heading.
+        policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        scale_widget(self, minimum_height=CardMetrics.ROW_HEIGHT)
         self._unavailable_reason = ""
         self._detail = detail
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
-        layout.setSpacing(Spacing.MD)
+        scale_layout(layout, margins=(Spacing.SM,) * 4, spacing=Spacing.MD)
 
         self.plate = _IconPlate(icon_name, self)
         layout.addWidget(self.plate)
 
         text_column = QVBoxLayout()
         text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(1)
+        scale_layout(text_column, spacing=1)
 
         self.heading_label = QLabel(heading, self)
         self.heading_label.setObjectName("actionRowHeading")
-        self.heading_label.setFont(
-            _titled_font(self.font(), FontSize.CARD_TITLE, FontWeight.SEMIBOLD)
-        )
+        set_relative_font(self.heading_label, FontSize.CARD_TITLE, weight=FontWeight.SEMIBOLD)
         text_column.addWidget(self.heading_label)
 
         self.detail_label = QLabel(detail, self)
         self.detail_label.setObjectName("actionRowDetail")
         self.detail_label.setWordWrap(True)
         self.detail_label.setVisible(bool(detail))
-        font = QFont(self.font())
-        font.setPointSizeF(
-            max(font.pointSizeF() + FontSize.SECONDARY, FontSize.MIN_POINT_SIZE)
-        )
-        self.detail_label.setFont(font)
+        set_relative_font(self.detail_label, FontSize.SECONDARY)
         text_column.addWidget(self.detail_label)
         layout.addLayout(text_column, 1)
 
         self.chevron = QLabel(self)
         self.chevron.setObjectName("actionRowChevron")
-        self.chevron.setFixedSize(IconSize.MD, IconSize.MD)
+        scale_widget(self.chevron, fixed_width=IconSize.MD, fixed_height=IconSize.MD)
         layout.addWidget(self.chevron)
 
         # One hit target: without this, a click that happens to land on the
@@ -366,12 +357,17 @@ class ActionRow(QAbstractButton):
         self.heading_label.setStyleSheet(f"color: {heading};")
         self.detail_label.setStyleSheet(f"color: {detail};")
         self.plate.set_enabled_look(enabled)
+        side = current_scale().px(IconSize.MD)
         self.chevron.setPixmap(
             load_icon("chevron-right").pixmap(
-                QSize(IconSize.MD, IconSize.MD),
+                QSize(side, side),
                 QIcon.Mode.Normal if enabled else QIcon.Mode.Disabled,
             )
         )
+
+    def apply_ui_scale(self, _scale: UiScale) -> None:
+        """Re-render the chevron at the new zoom; the layout is declarative."""
+        self._refresh_palette()
 
     def changeEvent(self, event: QEvent) -> None:
         """Restyle the child labels when the enabled state changes.
@@ -385,36 +381,49 @@ class ActionRow(QAbstractButton):
 
     def sizeHint(self) -> QSize:
         """Room for the plate, the wider text line, and the chevron."""
+        px = current_scale().px
         return QSize(
-            IconSize.GETTING_STARTED_PLATE
-            + Spacing.MD
+            px(IconSize.GETTING_STARTED_PLATE)
+            + px(Spacing.MD)
             + max(
                 self.heading_label.sizeHint().width(),
                 self.detail_label.sizeHint().width(),
             )
-            + Spacing.MD
-            + IconSize.MD
-            + 2 * Spacing.SM,
-            max(CardMetrics.ROW_HEIGHT, super().sizeHint().height()),
+            + px(Spacing.MD)
+            + px(IconSize.MD)
+            + 2 * px(Spacing.SM),
+            max(px(CardMetrics.ROW_HEIGHT), super().sizeHint().height()),
         )
+
+    def hasHeightForWidth(self) -> bool:
+        """The row's height depends on how many lines its detail wraps to."""
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        """Tall enough for the heading and every wrapped detail line."""
+        layout = self.layout()
+        needed = layout.totalHeightForWidth(width) if layout is not None else 0
+        return max(current_scale().px(CardMetrics.ROW_HEIGHT), needed)
 
     def paintEvent(self, _event: object) -> None:
         """Paint only the interaction background; the children draw the rest."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rounded = self.rect().adjusted(0, 0, -1, -1).toRectF()
+        scale = current_scale()
+        radius = scale.px(Radius.MD)
 
         if self.isEnabled() and (self.isDown() or self.underMouse()):
             fill = Color.SURFACE_PRESSED if self.isDown() else Color.SURFACE_HOVER
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(fill))
-            painter.drawRoundedRect(rounded, Radius.MD, Radius.MD)
+            painter.drawRoundedRect(rounded, radius, radius)
 
         if self.hasFocus():
-            pen = QPen(QColor(Color.FOCUS), float(Stroke.FOCUS_RING))
+            pen = QPen(QColor(Color.FOCUS), float(scale.stroke(Stroke.FOCUS_RING)))
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rounded, Radius.MD, Radius.MD)
+            painter.drawRoundedRect(rounded, radius, radius)
         painter.end()
 
     def enterEvent(self, event: QEnterEvent) -> None:
@@ -434,8 +443,10 @@ class _IconPlate(QWidget):
     def __init__(self, icon_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("actionRowPlate")
-        self.setFixedSize(
-            IconSize.GETTING_STARTED_PLATE, IconSize.GETTING_STARTED_PLATE
+        scale_widget(
+            self,
+            fixed_width=IconSize.GETTING_STARTED_PLATE,
+            fixed_height=IconSize.GETTING_STARTED_PLATE,
         )
         self._icon = load_icon(icon_name)
         self._enabled_look = True
@@ -453,7 +464,7 @@ class _IconPlate(QWidget):
         )
         painter.drawEllipse(self.rect())
 
-        extent = IconSize.GETTING_STARTED
+        extent = current_scale().px(IconSize.GETTING_STARTED)
         ratio = self.devicePixelRatioF()
         pixmap = self._icon.pixmap(
             QSize(extent, extent) * ratio,
@@ -470,6 +481,24 @@ class _IconPlate(QWidget):
         offset = (self.width() - extent) // 2
         painter.drawPixmap(offset, offset, extent, extent, pixmap)
         painter.end()
+
+
+class _ScaledPixmapLabel(QLabel):
+    """A greyed illustration whose pixmap is re-rendered for each zoom.
+
+    A `QLabel` pixmap is a raster of a fixed size, so unlike text it does not
+    follow the application font; it is rendered again from the vector icon
+    whenever the interface zoom changes, which keeps it sharp at every size.
+    """
+
+    def __init__(self, icon_name: str, extent: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._icon_name = icon_name
+        self._extent = extent
+        self.apply_ui_scale(current_scale())
+
+    def apply_ui_scale(self, _scale: UiScale) -> None:
+        _disabled_pixmap_label(self, self._icon_name, self._extent)
 
 
 __all__ = ["CARD_PROPERTY", "ActionRow", "Card", "EmptyState"]

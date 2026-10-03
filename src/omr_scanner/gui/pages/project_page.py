@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QFormLayout,
@@ -47,7 +47,8 @@ from PySide6.QtWidgets import (
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.pages.catalog import WorkflowPageSpec
-from omr_scanner.gui.theme import Dashboard, IconSize, Spacing
+from omr_scanner.gui.theme import Dashboard, IconSize, Spacing, UiScale
+from omr_scanner.gui.ui_scale import current_scale, scale_layout, scale_widget
 from omr_scanner.gui.widgets.buttons import primary_button, secondary_button
 from omr_scanner.gui.widgets.card import ActionRow, Card, EmptyState
 from omr_scanner.services import ProjectSession, project_sets
@@ -126,11 +127,12 @@ class ProjectPage(WorkflowPage):
         self._canvas = QWidget()
         self._canvas.setObjectName("projectDashboard")
         self._grid = QGridLayout(self._canvas)
-        self._grid.setContentsMargins(
-            Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM
+        scale_layout(
+            self._grid,
+            margins=(Spacing.SM,) * 4,
+            horizontal_spacing=Dashboard.COLUMN_GAP,
+            vertical_spacing=Dashboard.COLUMN_GAP,
         )
-        self._grid.setHorizontalSpacing(Dashboard.COLUMN_GAP)
-        self._grid.setVerticalSpacing(Dashboard.COLUMN_GAP)
 
         self._main_column = self._build_main_column()
         self._side_column = self._build_side_column()
@@ -147,7 +149,7 @@ class ProjectPage(WorkflowPage):
         card = Card(parent=self._canvas)
         card.setObjectName("projectMainCard")
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        card.setMinimumWidth(Dashboard.MAIN_MIN_WIDTH // 2)
+        scale_widget(card, minimum_width=Dashboard.MAIN_MIN_WIDTH // 2)
 
         # No stage heading. The workflow ribbon above already says "1.
         # Project" in accent colour, and the card's own empty state says what
@@ -160,13 +162,13 @@ class ProjectPage(WorkflowPage):
         )
         self.create_button = primary_button("Create Project", "createProjectButton")
         self.create_button.setIcon(load_icon("plus"))
-        self.create_button.setIconSize(QSize(IconSize.MD, IconSize.MD))
+        scale_widget(self.create_button, icon_size=IconSize.MD)
         self.create_button.clicked.connect(self.create_requested.emit)
         self.create_button.setToolTip("Set up a new examination project")
 
         self.open_button = secondary_button("Open Project", "openProjectButton")
         self.open_button.setIcon(load_icon("folder-open"))
-        self.open_button.setIconSize(QSize(IconSize.MD, IconSize.MD))
+        scale_widget(self.open_button, icon_size=IconSize.MD)
         self.open_button.clicked.connect(self.open_requested.emit)
         self.open_button.setToolTip("Open a project saved earlier")
 
@@ -178,9 +180,11 @@ class ProjectPage(WorkflowPage):
         self._details.setObjectName("projectDetails")
         form = QFormLayout(self._details)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setContentsMargins(0, Spacing.SM, 0, 0)
-        form.setHorizontalSpacing(Spacing.LG)
-        form.setVerticalSpacing(Spacing.SM)
+        scale_layout(
+            form,
+            margins=(0, Spacing.SM, 0, 0), horizontal_spacing=Spacing.LG,
+            vertical_spacing=Spacing.SM,
+        )
 
         self._value_labels: dict[str, QLabel] = {}
         for caption in (
@@ -214,7 +218,7 @@ class ProjectPage(WorkflowPage):
 
         layout = QVBoxLayout(column)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Dashboard.COLUMN_GAP)
+        scale_layout(layout, spacing=Dashboard.COLUMN_GAP)
 
         self.getting_started_card = self._build_getting_started(column)
         layout.addWidget(self.getting_started_card)
@@ -262,7 +266,7 @@ class ProjectPage(WorkflowPage):
     def _build_recent_card(self, parent: QWidget) -> Card:
         self.view_all_button = secondary_button("View All", "viewAllRecentButton")
         self.view_all_button.setIcon(load_icon("chevron-right"))
-        self.view_all_button.setIconSize(QSize(IconSize.SM, IconSize.SM))
+        scale_widget(self.view_all_button, icon_size=IconSize.SM)
         self.view_all_button.setToolTip("Show every remembered project")
         self.view_all_button.clicked.connect(self.view_all_recent_requested.emit)
 
@@ -270,7 +274,7 @@ class ProjectPage(WorkflowPage):
         card.setObjectName("recentProjectsCard")
         self._recent_body = QVBoxLayout()
         self._recent_body.setContentsMargins(0, 0, 0, 0)
-        self._recent_body.setSpacing(Spacing.XXS)
+        scale_layout(self._recent_body, spacing=Spacing.XXS)
         card.body.addLayout(self._recent_body)
         self._recent_empty = card.add_empty_note(NO_RECENT_HEADLINE, NO_RECENT_DETAIL)
         return card
@@ -384,10 +388,21 @@ class ProjectPage(WorkflowPage):
         widths plus the gap - a measurement of what the content needs, not a
         screen size. Below it the page stacks rather than squeezing the
         information column into the unusable strip the brief warns about.
+        Measured at the interface zoom, because the content it protects is
+        drawn at that zoom: at 150% the columns stack at the width where
+        150% text stops fitting, not where 100% text would have.
         """
+        px = current_scale().px
         return available >= (
-            Dashboard.MAIN_MIN_WIDTH + Dashboard.SIDE_MIN_WIDTH + Dashboard.COLUMN_GAP
+            px(Dashboard.MAIN_MIN_WIDTH) + px(Dashboard.SIDE_MIN_WIDTH) + px(Dashboard.COLUMN_GAP)
         )
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Re-decide between one column and two at the new zoom."""
+        if self._side_by_side:
+            self._side_column.setMinimumWidth(scale.px(Dashboard.SIDE_MIN_WIDTH))
+            self._side_column.setMaximumWidth(scale.px(Dashboard.SIDE_MAX_WIDTH))
+        self._apply_columns(side_by_side=self.fits_side_by_side(self.content_width()))
 
     def _apply_columns(self, *, side_by_side: bool) -> None:
         if side_by_side == self._side_by_side:
@@ -404,8 +419,8 @@ class ProjectPage(WorkflowPage):
             self._grid.setColumnStretch(1, Dashboard.SIDE_STRETCH)
             self._grid.setRowStretch(0, 1)
             self._grid.setRowStretch(1, 0)
-            self._side_column.setMinimumWidth(Dashboard.SIDE_MIN_WIDTH)
-            self._side_column.setMaximumWidth(Dashboard.SIDE_MAX_WIDTH)
+            self._side_column.setMinimumWidth(current_scale().px(Dashboard.SIDE_MIN_WIDTH))
+            self._side_column.setMaximumWidth(current_scale().px(Dashboard.SIDE_MAX_WIDTH))
         else:
             # Stacked order, from the brief: heading and main content first,
             # then Getting Started, then Recent Projects. The heading lives

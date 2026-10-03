@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.gui.ui_scale import scale_widget
 from omr_scanner.services import format_count, format_duration, format_rate
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -74,7 +75,7 @@ class GenerationProgressDialog(QDialog):
         self.setObjectName("generationProgressDialog")
         self.setWindowTitle("Generating Synthetic Dataset")
         self.setModal(True)
-        self.setMinimumWidth(420)
+        scale_widget(self, minimum_width=420)
 
         self._worker = worker
         self._total = total
@@ -204,7 +205,7 @@ class GenerationSummaryDialog(QDialog):
         self.setObjectName("generationSummaryDialog")
         self.setWindowTitle("Synthetic Dataset Generated")
         self.setModal(True)
-        self.setMinimumWidth(460)
+        scale_widget(self, minimum_width=460)
 
         self._output_dir = output_dir
         generator = manifest.generator

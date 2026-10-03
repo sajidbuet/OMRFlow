@@ -13,8 +13,14 @@ Responsibilities:
     * :class:`FontSize`, :class:`FontWeight` - type.
     * :class:`Navigator`, :class:`Chrome`, :class:`Footer` - metrics for the
       three shell components that need fixed relationships between parts.
-    * :class:`Density` - the workflow ribbon's five density levels, which the
-      chrome's ``-``/``+`` buttons step between.
+    * :class:`Density` - the workflow ribbon's five density levels, which
+      ``View > Ribbon Density`` steps between.
+
+Every length here is the canonical design at 100% interface zoom. The
+operator's zoom is applied on the way out, through
+:class:`~omr_scanner.gui.theme.scale.UiScale`; nothing ever writes a scaled
+value back into these classes, so they keep meaning the same thing at every
+zoom.
 
 What does NOT belong here:
     * Widget construction, and any Qt import at all. This module is plain
@@ -236,7 +242,7 @@ class IconSize:
     """The hamburger button's glyph, in the chrome row."""
 
     CHROME_CONTROL: Final = 14
-    """The density and previous/next glyphs, which sit beside the ribbon and
+    """The zoom and previous/next glyphs, which sit beside the ribbon and
     must read as secondary to both it and the menu button."""
 
     PAGE_HEADER: Final = 32
@@ -308,13 +314,17 @@ class Density:
     touches the step's height or its font, for two separate reasons. The
     height is shared with the window controls and the logo in one chrome row,
     so varying it would make the whole application shell jump between two
-    sizes when someone pressed ``-``. And the font is what a user reads: the
-    brief's own line is that density must stay "within reasonable accessible
-    limits", which a control that shrank the type would not be.
+    sizes when someone tightened the ribbon. And the font is what a user
+    reads: the brief's own line is that density must stay "within reasonable
+    accessible limits", which a control that shrank the type would not be.
+
+    Density is not the interface zoom. The zoom (``View > Zoom``, and the
+    chrome row's ``-``/``+``) scales everything, these values included; the
+    density only trades the steps' horizontal room against each other.
 
     :data:`DEFAULT` is what a fresh installation uses;
-    :data:`MINIMUM`/:data:`MAXIMUM` are the bounds the ``-``/``+`` buttons
-    clamp to.
+    :data:`MINIMUM`/:data:`MAXIMUM` are the bounds ``View > Ribbon Density``
+    clamps to.
     """
 
     LEVELS: Final = (
@@ -367,9 +377,9 @@ class Navigator:
     """
 
     STEP_HEIGHT: Final = 34
-    """A step's height, at every density.
+    """A step's height, at every density, at 100% interface zoom.
 
-    Constant on purpose - see :class:`Density`. Comfortably past the 32px
+    Constant across densities on purpose - see :class:`Density`. Comfortably past the 32px
     a pointer target wants, and short enough that the whole application
     chrome - logo, menu, ribbon and window controls - fits in one
     :data:`Chrome.HEIGHT` row.
@@ -396,8 +406,11 @@ class Chrome:
     """Metrics for the single application chrome row.
 
     One row carries everything the shell used to spread over two bands and a
-    native title bar: the application menu, the wordmark, the density and
-    previous/next controls, the workflow ribbon, and the window buttons.
+    native title bar: the application menu, the wordmark, the interface
+    zoom and previous/next controls, the workflow ribbon, and the window
+    buttons. Every value is the 100% design; at another interface zoom the
+    whole row - height included - is drawn through
+    :class:`~omr_scanner.gui.theme.scale.UiScale`.
     """
 
     HEIGHT: Final = 46
@@ -418,8 +431,8 @@ class Chrome:
 
     MENU_BUTTON_SIZE: Final = 32
     SMALL_BUTTON_SIZE: Final = 26
-    """The density and previous/next buttons. Smaller than the menu button
-    and still a comfortable target at 100% scaling."""
+    """The interface zoom and previous/next buttons. Smaller than the menu
+    button and still a comfortable target at 100% scaling."""
 
     LOGO_HEIGHT: Final = 24
     """The wordmark's height; its width follows from the artwork's own aspect

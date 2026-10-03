@@ -49,7 +49,18 @@ from omr_scanner import (
     __version__,
     build_identifier,
 )
-from omr_scanner.gui.theme import Color
+from omr_scanner.gui.theme import Color, FontWeight
+from omr_scanner.gui.ui_scale import (
+    add_scaled_spacing,
+    current_scale,
+    resize_scaled,
+    scale_layout,
+    scale_widget,
+    set_relative_font,
+)
+
+ABOUT_TITLE_DELTA = 8
+"""How many points the application name stands above the body text."""
 
 DEVELOPER_NAME = "Dr. Sajid Muhaimin Choudhury"
 """The project's author. ChatGPT and Claude Code assisted with development;
@@ -77,14 +88,11 @@ class AboutDialog(QDialog):
         self.setModal(True)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(6)
+        scale_layout(layout, spacing=6)
 
         name_label = QLabel(APPLICATION_NAME)
         name_label.setObjectName("aboutApplicationName")
-        name_font = name_label.font()
-        name_font.setPointSize(name_font.pointSize() + 8)
-        name_font.setBold(True)
-        name_label.setFont(name_font)
+        set_relative_font(name_label, ABOUT_TITLE_DELTA, weight=FontWeight.BOLD)
         layout.addWidget(name_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         version_label = QLabel(f"Version {__version__}  ·  {RELEASE_CHANNEL.value}")
@@ -93,10 +101,10 @@ class AboutDialog(QDialog):
         layout.addWidget(version_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         if IS_PRERELEASE:
-            layout.addSpacing(8)
+            add_scaled_spacing(layout, 8)
             layout.addWidget(self._build_prerelease_notice())
 
-        layout.addSpacing(10)
+        add_scaled_spacing(layout, 10)
 
         tagline_label = QLabel(TAGLINE)
         tagline_label.setObjectName("aboutTagline")
@@ -104,7 +112,7 @@ class AboutDialog(QDialog):
         tagline_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(tagline_label)
 
-        layout.addSpacing(10)
+        add_scaled_spacing(layout, 10)
 
         attribution_label = QLabel(
             f"Developed by<br><b>{DEVELOPER_NAME}</b><br>"
@@ -116,7 +124,7 @@ class AboutDialog(QDialog):
         attribution_label.setWordWrap(True)
         layout.addWidget(attribution_label)
 
-        layout.addSpacing(10)
+        add_scaled_spacing(layout, 10)
 
         licence_label = QLabel(
             f"© {COPYRIGHT_YEAR} {DEVELOPER_NAME}<br>"
@@ -128,12 +136,12 @@ class AboutDialog(QDialog):
         licence_label.setWordWrap(True)
         layout.addWidget(licence_label)
 
-        layout.addSpacing(14)
+        add_scaled_spacing(layout, 14)
         layout.addLayout(self._build_link_row())
-        layout.addSpacing(6)
+        add_scaled_spacing(layout, 6)
         layout.addWidget(self._build_button_box())
 
-        self.setMinimumWidth(360)
+        scale_widget(self, minimum_width=360)
 
     def _build_prerelease_notice(self) -> QLabel:
         """The release-maturity warning, shown only on a prerelease build.
@@ -151,12 +159,13 @@ class AboutDialog(QDialog):
         notice.setObjectName("aboutPrereleaseNotice")
         notice.setWordWrap(True)
         notice.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        scale = current_scale()
         notice.setStyleSheet(
             f"color: {Color.TEXT_PRIMARY};"
             f"background: {Color.PRIMARY_SOFT};"
-            f"border: 1px solid {Color.PRIMARY};"
-            "border-radius: 6px;"
-            "padding: 8px;"
+            f"border: {scale.stroke(1)}px solid {Color.PRIMARY};"
+            f"border-radius: {scale.px(6)}px;"
+            f"padding: {scale.px(8)}px;"
         )
         return notice
 
@@ -210,14 +219,20 @@ class LicenseViewerDialog(QDialog):
     def __init__(self, license_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"{LICENSE_NAME} License")
-        self.resize(560, 480)
+        resize_scaled(self, 560, 480)
 
         layout = QVBoxLayout(self)
 
         text_view = QPlainTextEdit()
         text_view.setObjectName("licenseText")
         text_view.setReadOnly(True)
-        text_view.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        # The platform's monospace font at its own size, times the interface
+        # zoom: the licence is a fixed-width document, so it keeps its own
+        # family and size relationship rather than the UI font's.
+        fixed = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        if fixed.pointSizeF() > 0:
+            fixed.setPointSizeF(fixed.pointSizeF() * current_scale().factor)
+        text_view.setFont(fixed)
         text_view.setPlainText(license_path.read_text(encoding="utf-8"))
         layout.addWidget(text_view)
 

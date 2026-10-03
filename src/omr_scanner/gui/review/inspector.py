@@ -54,6 +54,7 @@ from omr_scanner.gui.review.lanes import bounds_of, build_lanes
 from omr_scanner.gui.review.worker import SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
 from omr_scanner.gui.theme import Color, Spacing
+from omr_scanner.gui.ui_scale import scale_layout
 from omr_scanner.services import (
     ConflictFilter,
     field_shape,
@@ -122,7 +123,7 @@ class ScriptInspector(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.XS)
+        scale_layout(layout, spacing=Spacing.XS)
 
         self.title_label = QLabel("")
         self.title_label.setObjectName("inspectorTitleLabel")
@@ -161,8 +162,7 @@ class ScriptInspector(QWidget):
         holder = QWidget()
         grid = QGridLayout(holder)
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(Spacing.SM)
-        grid.setVerticalSpacing(Spacing.XXS)
+        scale_layout(grid, horizontal_spacing=Spacing.SM, vertical_spacing=Spacing.XXS)
         for row, (kind, name) in enumerate(
             ((FieldKind.IDENTIFIER, "Identifier"), (FieldKind.SET_CODE, "SetCode"))
         ):

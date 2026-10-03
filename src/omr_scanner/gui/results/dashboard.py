@@ -72,7 +72,8 @@ from omr_scanner.gui.results.charts import (
     QuestionChart,
     format_value,
 )
-from omr_scanner.gui.theme import ChartColor, Color, Radius, Spacing
+from omr_scanner.gui.theme import ChartColor, Color, FontWeight, Radius, Spacing, Stroke, UiScale
+from omr_scanner.gui.ui_scale import current_scale, scale_layout, set_relative_font
 from omr_scanner.services import result_analytics as ra
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -87,6 +88,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _LOGGER = logging.getLogger(__name__)
 
 NO_RESULTS_TEXT = "No scored results are available yet."
+
+KPI_VALUE_DELTA = 4
+"""How many points a KPI's value stands above the body text."""
+
+_FITTED_ROWS_PROPERTY = "omrFittedRows"
+"""Dynamic property on a table sized by :func:`_fit_rows`: ``[rows, cap]``."""
 
 TOOLTIPS: dict[str, str] = {
     "count": "Scored scripts in this scope: one per candidate, after duplicates, "
@@ -211,15 +218,15 @@ class _ReflowRow(QWidget):
         self._breakpoint = breakpoint
         self._layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(Spacing.CARD_GAP)
+        scale_layout(self._layout, spacing=Spacing.CARD_GAP)
         for index, widget in enumerate(widgets):
             self._layout.addWidget(widget, stretch[index] if index < len(stretch) else 1)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        """Stack below the breakpoint."""
+        """Stack below the breakpoint, measured at the interface zoom."""
         wanted = (
             QBoxLayout.Direction.LeftToRight
-            if event.size().width() >= self._breakpoint
+            if event.size().width() >= current_scale().px(self._breakpoint)
             else QBoxLayout.Direction.TopToBottom
         )
         if self._layout.direction() != wanted:
@@ -236,18 +243,16 @@ class _KpiCard(QFrame):
         self.setProperty("kpi", key)
         self.setToolTip(TOOLTIPS.get(key, ""))
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(Spacing.MD, Spacing.SM, Spacing.MD, Spacing.SM)
-        layout.setSpacing(Spacing.XXS)
+        scale_layout(
+            layout,
+            margins=(Spacing.MD, Spacing.SM, Spacing.MD, Spacing.SM),
+            spacing=Spacing.XXS,
+        )
         self.caption = QLabel(caption)
         self.caption.setObjectName("dashboardKpiCaption")
         self.value = QLabel("-")
         self.value.setObjectName(f"dashboardKpi_{key}")
-        font = self.value.font()
-        size = font.pointSizeF()
-        if size > 0:
-            font.setPointSizeF(size + 4)
-        font.setBold(True)
-        self.value.setFont(font)
+        set_relative_font(self.value, KPI_VALUE_DELTA, weight=FontWeight.BOLD)
         self.value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.caption)
         layout.addWidget(self.value)
@@ -265,8 +270,7 @@ class _KpiGrid(QWidget):
         self._columns = 0
         self._grid = QGridLayout(self)
         self._grid.setContentsMargins(0, 0, 0, 0)
-        self._grid.setHorizontalSpacing(Spacing.SM)
-        self._grid.setVerticalSpacing(Spacing.SM)
+        scale_layout(self._grid, horizontal_spacing=Spacing.SM, vertical_spacing=Spacing.SM)
         self._arrange(len(self._cards))
 
     def _arrange(self, columns: int) -> None:
@@ -283,7 +287,8 @@ class _KpiGrid(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         """Re-flow the cards for the new width."""
         width = event.size().width()
-        fits = max(2, min(len(self._cards), width // self.MIN_CARD_WIDTH))
+        card_width = current_scale().px(self.MIN_CARD_WIDTH)
+        fits = max(2, min(len(self._cards), width // card_width))
         # Prefer an even split: 8 cards as 8, 4x2 or 2x4, never 5+3.
         for columns in (8, 4, 2):
             if columns <= fits:
@@ -314,7 +319,10 @@ def _fit_rows(table: QTableWidget, rows: int, *, cap: int = 12) -> None:
     header = table.horizontalHeader().sizeHint().height()
     row = table.verticalHeader().defaultSectionSize()
     shown = max(1, min(rows, cap))
-    table.setFixedHeight(header + row * shown + 2 * table.frameWidth() + 2)
+    table.setFixedHeight(header + row * shown + 2 * table.frameWidth() + current_scale().px(2))
+    # Remembered so an interface zoom change can re-fit the table to rows of
+    # the new height - see `ResultsDashboard.apply_ui_scale`.
+    table.setProperty(_FITTED_ROWS_PROPERTY, [rows, cap])
 
 
 def _pct(value: float | None) -> str:
@@ -358,6 +366,32 @@ class ResultsDashboard(QWidget):
         ("iqr", f"Q1 {ra.RANGE_DASH} Q3"),
     )
 
+    def _apply_dashboard_style(self, scale: UiScale) -> None:
+        self.setStyleSheet(
+            f"""
+            QFrame#dashboardKpiCard {{
+                background: {Color.SURFACE};
+                border: {scale.stroke(Stroke.BORDER)}px solid {Color.BORDER};
+                border-radius: {scale.px(Radius.MD)}px;
+            }}
+            QLabel#dashboardKpiCaption {{ color: {Color.TEXT_SECONDARY}; }}
+            QLabel[role="note"] {{ color: {Color.TEXT_SECONDARY}; }}
+            """
+        )
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Restyle the KPI cards and re-fit every row-sized table.
+
+        A table sized to "exactly five rows" was sized to five rows of the old
+        height; at a new zoom it is re-fitted to the same number of rows of
+        the new height, so it neither clips nor leaves a gap.
+        """
+        self._apply_dashboard_style(scale)
+        for table in self.findChildren(QTableWidget):
+            fitted = table.property(_FITTED_ROWS_PROPERTY)
+            if isinstance(fitted, list) and len(fitted) == 2:
+                _fit_rows(table, int(fitted[0]), cap=int(fitted[1]))
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("resultsDashboard")
@@ -373,17 +407,7 @@ class ResultsDashboard(QWidget):
         self._scope_key: str | None = ra.OVERALL
         self._question: int | None = None
 
-        self.setStyleSheet(
-            f"""
-            QFrame#dashboardKpiCard {{
-                background: {Color.SURFACE};
-                border: 1px solid {Color.BORDER};
-                border-radius: {Radius.MD}px;
-            }}
-            QLabel#dashboardKpiCaption {{ color: {Color.TEXT_SECONDARY}; }}
-            QLabel[role="note"] {{ color: {Color.TEXT_SECONDARY}; }}
-            """
-        )
+        self._apply_dashboard_style(current_scale())
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -399,8 +423,11 @@ class ResultsDashboard(QWidget):
         content.setObjectName("dashboardContent")
         content.setMinimumWidth(560)
         self.content_layout = QVBoxLayout(content)
-        self.content_layout.setContentsMargins(Spacing.MD, Spacing.SM, Spacing.MD, Spacing.LG)
-        self.content_layout.setSpacing(Spacing.CARD_GAP)
+        scale_layout(
+            self.content_layout,
+            margins=(Spacing.MD, Spacing.SM, Spacing.MD, Spacing.LG),
+            spacing=Spacing.CARD_GAP,
+        )
         self.scroll_area.setWidget(content)
         outer.addWidget(self.scroll_area, 1)
 
@@ -416,7 +443,7 @@ class ResultsDashboard(QWidget):
         self.figures.setObjectName("dashboardFigures")
         figures = QVBoxLayout(self.figures)
         figures.setContentsMargins(0, 0, 0, 0)
-        figures.setSpacing(Spacing.CARD_GAP)
+        scale_layout(figures, spacing=Spacing.CARD_GAP)
         self.kpi_cards = {key: _KpiCard(key, caption) for key, caption in self.KPIS}
         self.kpi_grid = _KpiGrid(list(self.kpi_cards.values()))
         figures.addWidget(self.kpi_grid)
@@ -437,7 +464,7 @@ class ResultsDashboard(QWidget):
         bar = QWidget()
         bar.setObjectName("dashboardHeader")
         layout = QVBoxLayout(bar)
-        layout.setContentsMargins(Spacing.MD, Spacing.SM, Spacing.MD, Spacing.XS)
+        scale_layout(layout, margins=(Spacing.MD, Spacing.SM, Spacing.MD, Spacing.XS))
         row = QHBoxLayout()
         caption = QLabel("Analysis:")
         caption.setObjectName("dashboardScopeCaption")
@@ -521,7 +548,7 @@ class ResultsDashboard(QWidget):
         self.questions_box.setObjectName("dashboardQuestions")
         layout = QVBoxLayout(self.questions_box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Spacing.CARD_GAP)
+        scale_layout(layout, spacing=Spacing.CARD_GAP)
 
         self.question_note = QLabel("")
         self.question_note.setObjectName("dashboardQuestionNote")
@@ -532,7 +559,7 @@ class ResultsDashboard(QWidget):
         self.question_panels = QWidget()
         panels = QVBoxLayout(self.question_panels)
         panels.setContentsMargins(0, 0, 0, 0)
-        panels.setSpacing(Spacing.CARD_GAP)
+        scale_layout(panels, spacing=Spacing.CARD_GAP)
 
         correct_box = QGroupBox("Question-wise % correct")
         correct_box.setObjectName("dashboardCorrectBox")

@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner.gui.attendance.worker import RosterReadResult, RosterReadWorker
+from omr_scanner.gui.ui_scale import resize_scaled, scale_widget
 from omr_scanner.services.candidate_import import (
     CandidateImportError,
     ColumnMapping,
@@ -71,7 +72,7 @@ class RosterImportDialog(QDialog):
         self.setObjectName("rosterImportDialog")
         self.setWindowTitle("Import Candidate List")
         self.setModal(True)
-        self.resize(900, 640)
+        resize_scaled(self, 900, 640)
 
         self._path = path
         self._worker: RosterReadWorker | None = None
@@ -124,7 +125,7 @@ class RosterImportDialog(QDialog):
         layout.addWidget(self.sheet_label)
         self.sheet_combo = QComboBox()
         self.sheet_combo.setObjectName("rosterSheetCombo")
-        self.sheet_combo.setMinimumWidth(220)
+        scale_widget(self.sheet_combo, minimum_width=220)
         self.sheet_combo.currentIndexChanged.connect(self._on_sheet_changed)
         layout.addWidget(self.sheet_combo)
         return box

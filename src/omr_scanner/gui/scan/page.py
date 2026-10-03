@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -81,7 +81,12 @@ from omr_scanner.gui.scan.table_model import (
     ScanTableModel,
 )
 from omr_scanner.gui.scan.worker import BatchWorker, PreviewWorker
-from omr_scanner.gui.theme import TEMPLATE_DESIGNER_STYLESHEET
+from omr_scanner.gui.ui_scale import (
+    add_scaled_spacing,
+    scale_layout,
+    scale_widget,
+    set_scaled_stylesheet,
+)
 from omr_scanner.services import (
     BatchIdentity,
     BatchOptions,
@@ -300,7 +305,7 @@ class ScanPage(WorkflowPage):
     def __init__(self, spec: WorkflowPageSpec, parent: QWidget | None = None) -> None:
         super().__init__(spec, parent, expand=True, show_summary=False, compact=True)
         self.setObjectName("scanPage")
-        self.setStyleSheet(TEMPLATE_DESIGNER_STYLESHEET)
+        set_scaled_stylesheet(self, "template_designer")
 
         self.state = ScanPageState()
         self._session: ProjectSession | None = None
@@ -404,8 +409,7 @@ class ScanPage(WorkflowPage):
         panel = QWidget()
         panel.setObjectName("scanControlPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 6, 0)
-        layout.setSpacing(8)
+        scale_layout(layout, margins=(0, 0, 6, 0), spacing=8)
 
         # -- Template --------------------------------------------------
         template_box = QGroupBox("Template")
@@ -509,7 +513,7 @@ class ScanPage(WorkflowPage):
             "File > Settings > Processing."
         )
         process_layout.addWidget(self.workers_label)
-        process_layout.addSpacing(4)
+        add_scaled_spacing(process_layout, 4)
 
         self.process_all_button = QPushButton(load_icon("scan-line"), "Process All")
         self.process_all_button.setObjectName("processAllButton")
@@ -562,7 +566,7 @@ class ScanPage(WorkflowPage):
         # A visible gap between the action stack and the status text below it,
         # wider than the buttons' own spacing - so the two read as separate
         # groups rather than one more item in the button list.
-        process_layout.addSpacing(6)
+        add_scaled_spacing(process_layout, 6)
 
         self.conflict_label = QLabel("")
         self.conflict_label.setObjectName("batchConflictLabel")
@@ -621,7 +625,7 @@ class ScanPage(WorkflowPage):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMaximumWidth(CONTROL_PANEL_WIDTH + 60)
+        scale_widget(scroll, maximum_width=CONTROL_PANEL_WIDTH + 60)
         return scroll
 
     def _build_benchmark_banner(self) -> QWidget:
@@ -636,7 +640,7 @@ class ScanPage(WorkflowPage):
         banner.setObjectName("benchmarkBanner")
         banner.setVisible(False)
         layout = QHBoxLayout(banner)
-        layout.setContentsMargins(8, 4, 8, 4)
+        scale_layout(layout, margins=(8, 4, 8, 4))
 
         self.benchmark_label = QLabel("")
         self.benchmark_label.setObjectName("benchmarkBannerLabel")
@@ -674,8 +678,7 @@ class ScanPage(WorkflowPage):
         panel = QWidget()
         panel.setObjectName("batchProgressPanel")
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 2, 0, 0)
-        layout.setSpacing(2)
+        scale_layout(layout, margins=(0, 2, 0, 0), spacing=2)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("progressBar")
@@ -723,7 +726,7 @@ class ScanPage(WorkflowPage):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        scale_layout(layout, spacing=4)
 
         layout.addWidget(self._build_preview_toolbar())
 
@@ -779,7 +782,7 @@ class ScanPage(WorkflowPage):
         table_column = QWidget()
         table_layout = QVBoxLayout(table_column)
         table_layout.setContentsMargins(0, 0, 0, 0)
-        table_layout.setSpacing(2)
+        scale_layout(table_layout, spacing=2)
         table_layout.addWidget(filter_row)
         table_layout.addWidget(self.scan_table, stretch=1)
 
@@ -800,7 +803,7 @@ class ScanPage(WorkflowPage):
         """Build the zoom/overlay toolbar above the preview."""
         toolbar = QToolBar("Preview")
         toolbar.setObjectName("scanPreviewToolbar")
-        toolbar.setIconSize(QSize(TOOLBAR_ICON_SIZE_PX, TOOLBAR_ICON_SIZE_PX))
+        scale_widget(toolbar, icon_size=TOOLBAR_ICON_SIZE_PX)
         toolbar.setMovable(False)
 
         self.previous_action = QAction(load_icon("undo-2"), "Previous", self)
@@ -872,10 +875,9 @@ class ScanPage(WorkflowPage):
         """Build the right-hand recognised-values panel."""
         panel = QWidget()
         panel.setObjectName("scanResultsPanel")
-        panel.setMaximumWidth(RESULTS_PANEL_WIDTH + 120)
+        scale_widget(panel, maximum_width=RESULTS_PANEL_WIDTH + 120)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(6, 0, 0, 0)
-        layout.setSpacing(6)
+        scale_layout(layout, margins=(6, 0, 0, 0), spacing=6)
 
         heading = QLabel("Recognised values")
         heading_font = heading.font()
@@ -900,7 +902,7 @@ class ScanPage(WorkflowPage):
         self.fields_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch
         )
-        self.fields_table.setMaximumHeight(140)
+        scale_widget(self.fields_table, maximum_height=140)
         layout.addWidget(self.fields_table)
 
         self.answers_table = QTableWidget(0, 3)

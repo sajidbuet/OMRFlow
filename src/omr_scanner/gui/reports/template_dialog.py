@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.gui.ui_scale import resize_scaled
 from omr_scanner.services.report_template import (
     ReportColumnMapping,
     ReportTemplateError,
@@ -47,7 +48,7 @@ class TemplateMappingDialog(QDialog):
         self.setObjectName("templateMappingDialog")
         self.setWindowTitle(f"Result Template for Set {set_code}")
         self.setModal(True)
-        self.resize(760, 560)
+        resize_scaled(self, 760, 560)
 
         self._path = path
         self.preview: TemplatePreview | None = None

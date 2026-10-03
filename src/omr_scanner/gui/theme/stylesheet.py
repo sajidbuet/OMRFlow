@@ -17,7 +17,15 @@ What does NOT belong here:
       :mod:`.tokens`.
     * Per-widget geometry. A stylesheet that sets fixed heights fights Qt's
       layout system and breaks under Windows text scaling; sizes here are
-      confined to paddings, radii and border widths, all of which Qt scales.
+      confined to paddings, minimum heights, radii and border widths.
+
+Why every sheet takes a :class:`~omr_scanner.gui.theme.scale.UiScale`:
+    The operator's interface zoom has to reach the paddings and bar widths
+    as well as the text, or a 150% interface is 150% text crammed into 100%
+    controls. Each sheet is therefore a function of the scale, composed from
+    the canonical tokens on every call; the ``*_STYLESHEET`` constants are the
+    same functions evaluated at 100%, kept for the callers and tests that
+    only ever wanted the canonical design.
 
 Why one global sheet rather than per-widget styling:
     `QMessageBox`, `QFileDialog` and `QInputDialog` are created by Qt or by
@@ -36,8 +44,10 @@ Why button variants are a dynamic property:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final
 
+from omr_scanner.gui.theme.scale import UiScale
 from omr_scanner.gui.theme.tokens import (
     Color,
     FontWeight,
@@ -68,15 +78,24 @@ line edit's `padding-right` reserves, so the two cannot disagree and let the
 editor cover the arrows again."""
 
 
-def application_stylesheet() -> str:
+def application_stylesheet(scale: UiScale = UiScale.IDENTITY) -> str:
     """Return the global stylesheet, applied to the `QApplication`.
+
+    Args:
+        scale: The interface zoom. Every padding, minimum height, radius,
+            border and bar thickness below is passed through it; colours are
+            not. The default is the canonical design, and at 100% the output
+            is exactly what this function returned before zoom existed.
 
     Returns:
         A Qt stylesheet covering the application shell, the common controls
         and the container widgets. Composed on each call rather than stored as
         a module constant so that a test can assert it reflects the tokens
-        rather than a stale copy of them.
+        rather than a stale copy of them - and so that it can be recomposed
+        for a new zoom without anything remembering the previous one.
     """
+    px = scale.px
+    st = scale.stroke
     return f"""
 /* ---------------------------------------------------------------- Base */
 QWidget {{
@@ -89,8 +108,8 @@ QMainWindow, QDialog {{
 
 QMainWindow::separator {{
     background: {Color.BORDER};
-    width: {Stroke.HAIRLINE}px;
-    height: {Stroke.HAIRLINE}px;
+    width: {st(Stroke.HAIRLINE)}px;
+    height: {st(Stroke.HAIRLINE)}px;
 }}
 
 QLabel {{
@@ -104,9 +123,9 @@ QLabel:disabled, QCheckBox:disabled, QRadioButton:disabled, QGroupBox:disabled {
 QToolTip {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER_STRONG};
-    border-radius: {Radius.SM}px;
-    padding: {Spacing.XS}px {Spacing.SM}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER_STRONG};
+    border-radius: {px(Radius.SM)}px;
+    padding: {px(Spacing.XS)}px {px(Spacing.SM)}px;
 }}
 
 /* -------------------------------------------------- Application shell */
@@ -115,18 +134,18 @@ QToolTip {{
    is behind it - without it the shell bleeds into a light desktop. */
 #appCentralWidget {{
     background: {Color.SURFACE_SUNKEN};
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER_STRONG};
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER_STRONG};
 }}
 
 #appChrome {{
     background: {Color.SURFACE};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
 }}
 
 #appMenuButton {{
     background: transparent;
-    border: {Stroke.BORDER}px solid transparent;
-    border-radius: {Radius.MD}px;
+    border: {st(Stroke.BORDER)}px solid transparent;
+    border-radius: {px(Radius.MD)}px;
 }}
 
 #appMenuButton:hover {{
@@ -138,7 +157,7 @@ QToolTip {{
 }}
 
 #appMenuButton:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
 }}
 
 #appMenuButton::menu-indicator {{
@@ -148,8 +167,8 @@ QToolTip {{
 
 QToolButton[chromeControl="true"] {{
     background: transparent;
-    border: {Stroke.BORDER}px solid transparent;
-    border-radius: {Radius.SM}px;
+    border: {st(Stroke.BORDER)}px solid transparent;
+    border-radius: {px(Radius.SM)}px;
     padding: 0px;
 }}
 
@@ -162,7 +181,7 @@ QToolButton[chromeControl="true"]:pressed {{
 }}
 
 QToolButton[chromeControl="true"]:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
 }}
 
 QToolButton[chromeControl="true"]:disabled {{
@@ -180,7 +199,7 @@ QToolButton[chromeControl="true"]:disabled {{
 
 #appFooter {{
     background: {Color.SURFACE_MUTED};
-    border-top: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-top: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
 }}
 
 #appFooterVersion {{
@@ -197,7 +216,7 @@ QToolButton[chromeControl="true"]:disabled {{
 
 QStatusBar {{
     background: {Color.SURFACE_MUTED};
-    border-top: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-top: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
     color: {Color.TEXT_SECONDARY};
 }}
 
@@ -222,14 +241,14 @@ QStatusBar::item {{
 /* ------------------------------------------------------------- Cards */
 QFrame[card="true"] {{
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER};
-    border-radius: {Radius.LG}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER};
+    border-radius: {px(Radius.LG)}px;
 }}
 
 QFrame[card="sunken"] {{
     background: {Color.SURFACE_SUNKEN};
-    border: {Stroke.BORDER}px dashed {Color.BORDER_DASHED};
-    border-radius: {Radius.LG}px;
+    border: {st(Stroke.BORDER)}px dashed {Color.BORDER_DASHED};
+    border-radius: {px(Radius.LG)}px;
 }}
 
 #cardTitle {{
@@ -248,10 +267,10 @@ QFrame[card="sunken"] {{
 QPushButton {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER_STRONG};
-    border-radius: {Radius.MD}px;
-    padding: {_CONTROL_V_PADDING}px {_CONTROL_H_PADDING}px;
-    min-height: {_CONTROL_MIN_HEIGHT}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER_STRONG};
+    border-radius: {px(Radius.MD)}px;
+    padding: {px(_CONTROL_V_PADDING)}px {px(_CONTROL_H_PADDING)}px;
+    min-height: {px(_CONTROL_MIN_HEIGHT)}px;
 }}
 
 QPushButton:hover {{
@@ -263,7 +282,7 @@ QPushButton:pressed {{
 }}
 
 QPushButton:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
 }}
 
 QPushButton:disabled {{
@@ -279,7 +298,7 @@ QPushButton:default {{
 QPushButton[{VARIANT_PROPERTY}="{VARIANT_PRIMARY}"] {{
     color: {Color.TEXT_ON_PRIMARY};
     background: {Color.PRIMARY};
-    border: {Stroke.BORDER}px solid {Color.PRIMARY};
+    border: {st(Stroke.BORDER)}px solid {Color.PRIMARY};
 }}
 
 QPushButton[{VARIANT_PROPERTY}="{VARIANT_PRIMARY}"]:hover {{
@@ -293,7 +312,7 @@ QPushButton[{VARIANT_PROPERTY}="{VARIANT_PRIMARY}"]:pressed {{
 }}
 
 QPushButton[{VARIANT_PROPERTY}="{VARIANT_PRIMARY}"]:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.TEXT_ON_PRIMARY};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.TEXT_ON_PRIMARY};
 }}
 
 QPushButton[{VARIANT_PROPERTY}="{VARIANT_PRIMARY}"]:disabled {{
@@ -305,7 +324,7 @@ QPushButton[{VARIANT_PROPERTY}="{VARIANT_PRIMARY}"]:disabled {{
 QPushButton[{VARIANT_PROPERTY}="{VARIANT_DESTRUCTIVE}"] {{
     color: {Color.DESTRUCTIVE};
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.DESTRUCTIVE};
+    border: {st(Stroke.BORDER)}px solid {Color.DESTRUCTIVE};
 }}
 
 QPushButton[{VARIANT_PROPERTY}="{VARIANT_DESTRUCTIVE}"]:hover {{
@@ -322,9 +341,9 @@ QPushButton[{VARIANT_PROPERTY}="{VARIANT_DESTRUCTIVE}"]:disabled {{
 QToolButton {{
     color: {Color.TEXT_PRIMARY};
     background: transparent;
-    border: {Stroke.BORDER}px solid transparent;
-    border-radius: {Radius.MD}px;
-    padding: {Spacing.XS}px {Spacing.SM}px;
+    border: {st(Stroke.BORDER)}px solid transparent;
+    border-radius: {px(Radius.MD)}px;
+    padding: {px(Spacing.XS)}px {px(Spacing.SM)}px;
 }}
 
 QToolButton:hover {{
@@ -341,7 +360,7 @@ QToolButton:checked {{
 }}
 
 QToolButton:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
 }}
 
 QToolButton:disabled {{
@@ -352,17 +371,17 @@ QToolButton:disabled {{
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER_STRONG};
-    border-radius: {Radius.MD}px;
-    padding: {_CONTROL_V_PADDING}px {Spacing.SM}px;
-    min-height: {_CONTROL_MIN_HEIGHT}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER_STRONG};
+    border-radius: {px(Radius.MD)}px;
+    padding: {px(_CONTROL_V_PADDING)}px {px(Spacing.SM)}px;
+    min-height: {px(_CONTROL_MIN_HEIGHT)}px;
     selection-background-color: {Color.PRIMARY};
     selection-color: {Color.TEXT_ON_PRIMARY};
 }}
 
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus,
 QDoubleSpinBox:focus, QComboBox:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
 }}
 
 QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled,
@@ -374,7 +393,7 @@ QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
 
 QLineEdit[invalid="true"], QSpinBox[invalid="true"],
 QDoubleSpinBox[invalid="true"], QComboBox[invalid="true"] {{
-    border: {Stroke.FOCUS_RING}px solid {Color.DESTRUCTIVE};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.DESTRUCTIVE};
 }}
 
 /* Spin boxes: the buttons need explicit geometry, or the editor covers them.
@@ -391,12 +410,12 @@ QDoubleSpinBox[invalid="true"], QComboBox[invalid="true"] {{
    border box fixes the hit-testing rather than the appearance. Qt's own
    auto-repeat, keyboard stepping and text entry are untouched. */
 QAbstractSpinBox {{
-    padding-right: {_SPIN_BUTTON_WIDTH + Spacing.XS}px;
+    padding-right: {px(_SPIN_BUTTON_WIDTH + Spacing.XS)}px;
 }}
 
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
     subcontrol-origin: border;
-    width: {_SPIN_BUTTON_WIDTH}px;
+    width: {px(_SPIN_BUTTON_WIDTH)}px;
     border: none;
     border-radius: 0px;
     background: transparent;
@@ -404,12 +423,12 @@ QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
 
 QAbstractSpinBox::up-button {{
     subcontrol-position: top right;
-    margin: {Stroke.BORDER}px {Stroke.BORDER}px 0px 0px;
+    margin: {st(Stroke.BORDER)}px {st(Stroke.BORDER)}px 0px 0px;
 }}
 
 QAbstractSpinBox::down-button {{
     subcontrol-position: bottom right;
-    margin: 0px {Stroke.BORDER}px {Stroke.BORDER}px 0px;
+    margin: 0px {st(Stroke.BORDER)}px {st(Stroke.BORDER)}px 0px;
 }}
 
 QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover {{
@@ -423,8 +442,8 @@ QAbstractSpinBox::up-button:pressed, QAbstractSpinBox::down-button:pressed {{
 /* `width`/`height` rather than an image: Qt draws its own arrow primitive at
    this size, so the control needs no bundled asset and follows the palette. */
 QAbstractSpinBox::up-arrow, QAbstractSpinBox::down-arrow {{
-    width: {Spacing.SM}px;
-    height: {Spacing.SM}px;
+    width: {px(Spacing.SM)}px;
+    height: {px(Spacing.SM)}px;
 }}
 
 QAbstractSpinBox::up-arrow:disabled, QAbstractSpinBox::up-arrow:off,
@@ -434,12 +453,12 @@ QAbstractSpinBox::down-arrow:disabled, QAbstractSpinBox::down-arrow:off {{
 
 QComboBox::drop-down {{
     border: none;
-    width: {Spacing.XL}px;
+    width: {px(Spacing.XL)}px;
 }}
 
 QComboBox QAbstractItemView {{
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER_STRONG};
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER_STRONG};
     selection-background-color: {Color.PRIMARY};
     selection-color: {Color.TEXT_ON_PRIMARY};
     outline: none;
@@ -447,7 +466,7 @@ QComboBox QAbstractItemView {{
 
 QCheckBox, QRadioButton {{
     background: transparent;
-    spacing: {Spacing.SM}px;
+    spacing: {px(Spacing.SM)}px;
 }}
 
 QCheckBox:focus, QRadioButton:focus {{
@@ -457,18 +476,18 @@ QCheckBox:focus, QRadioButton:focus {{
 /* ------------------------------------------------------- Group boxes */
 QGroupBox {{
     background: transparent;
-    border: {Stroke.BORDER}px solid {Color.BORDER};
-    border-radius: {Radius.LG}px;
-    margin-top: {Spacing.MD}px;
-    padding: {Spacing.MD}px {Spacing.MD}px {Spacing.SM}px {Spacing.MD}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER};
+    border-radius: {px(Radius.LG)}px;
+    margin-top: {px(Spacing.MD)}px;
+    padding: {px(Spacing.MD)}px {px(Spacing.MD)}px {px(Spacing.SM)}px {px(Spacing.MD)}px;
     font-weight: 600;
 }}
 
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: {Spacing.MD}px;
-    padding: 0px {Spacing.XS}px;
+    left: {px(Spacing.MD)}px;
+    padding: 0px {px(Spacing.XS)}px;
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE_SUNKEN};
 }}
@@ -478,9 +497,9 @@ QHeaderView::section {{
     color: {Color.TEXT_SECONDARY};
     background: {Color.SURFACE_MUTED};
     border: none;
-    border-right: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    padding: {Spacing.XS}px {Spacing.SM}px;
+    border-right: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    padding: {px(Spacing.XS)}px {px(Spacing.SM)}px;
     font-weight: 600;
 }}
 
@@ -491,8 +510,8 @@ QHeaderView::section:last {{
 QTableView, QTableWidget, QTreeView, QListView, QListWidget {{
     background: {Color.SURFACE};
     alternate-background-color: {Color.SURFACE_SUNKEN};
-    border: {Stroke.BORDER}px solid {Color.BORDER};
-    border-radius: {Radius.MD}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER};
+    border-radius: {px(Radius.MD)}px;
     gridline-color: {Color.BORDER};
     selection-background-color: {Color.PRIMARY};
     selection-color: {Color.TEXT_ON_PRIMARY};
@@ -500,7 +519,7 @@ QTableView, QTableWidget, QTreeView, QListView, QListWidget {{
 }}
 
 QTableView::item, QTreeView::item, QListView::item, QListWidget::item {{
-    padding: {Spacing.XS}px {Spacing.SM}px;
+    padding: {px(Spacing.XS)}px {px(Spacing.SM)}px;
 }}
 
 QTableView::item:hover, QTreeView::item:hover, QListWidget::item:hover {{
@@ -520,26 +539,26 @@ QTableCornerButton::section {{
 /* -------------------------------------------------------------- Tabs */
 QTabWidget::pane {{
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER};
-    border-radius: {Radius.MD}px;
-    top: -{Stroke.HAIRLINE}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER};
+    border-radius: {px(Radius.MD)}px;
+    top: -{st(Stroke.HAIRLINE)}px;
 }}
 
 QTabBar::tab {{
     color: {Color.TEXT_SECONDARY};
     background: {Color.SURFACE_SUNKEN};
-    border: {Stroke.BORDER}px solid {Color.BORDER};
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER};
     border-bottom: none;
-    border-top-left-radius: {Radius.MD}px;
-    border-top-right-radius: {Radius.MD}px;
-    padding: {_CONTROL_V_PADDING}px {Spacing.MD}px;
-    margin-right: {Spacing.XXS}px;
+    border-top-left-radius: {px(Radius.MD)}px;
+    border-top-right-radius: {px(Radius.MD)}px;
+    padding: {px(_CONTROL_V_PADDING)}px {px(Spacing.MD)}px;
+    margin-right: {px(Spacing.XXS)}px;
 }}
 
 QTabBar::tab:selected {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE};
-    border-bottom: {Stroke.ACCENT_RULE}px solid {Color.PRIMARY};
+    border-bottom: {st(Stroke.ACCENT_RULE)}px solid {Color.PRIMARY};
     font-weight: 600;
 }}
 
@@ -552,42 +571,42 @@ QTabBar::tab:disabled {{
 }}
 
 QTabBar::tab:focus {{
-    border: {Stroke.FOCUS_RING}px solid {Color.FOCUS};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.FOCUS};
 }}
 
 /* ---------------------------------------------------- Progress bars */
 QProgressBar {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE_MUTED};
-    border: {Stroke.BORDER}px solid {Color.BORDER};
-    border-radius: {Radius.SM}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER};
+    border-radius: {px(Radius.SM)}px;
     text-align: center;
-    min-height: {Spacing.LG}px;
+    min-height: {px(Spacing.LG)}px;
 }}
 
 QProgressBar::chunk {{
     background: {Color.PRIMARY};
-    border-radius: {Radius.SM - 1}px;
+    border-radius: {max(px(Radius.SM) - 1, 0)}px;
 }}
 
 /* ------------------------------------------------------- Scroll bars */
 QScrollBar:vertical {{
     background: transparent;
-    width: {Spacing.MD}px;
+    width: {px(Spacing.MD)}px;
     margin: 0px;
 }}
 
 QScrollBar:horizontal {{
     background: transparent;
-    height: {Spacing.MD}px;
+    height: {px(Spacing.MD)}px;
     margin: 0px;
 }}
 
 QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{
     background: {Color.BORDER_STRONG};
-    border-radius: {Radius.SM}px;
-    min-height: {Spacing.XL}px;
-    min-width: {Spacing.XL}px;
+    border-radius: {px(Radius.SM)}px;
+    min-height: {px(Spacing.XL)}px;
+    min-width: {px(Spacing.XL)}px;
 }}
 
 QScrollBar::handle:hover {{
@@ -606,29 +625,29 @@ QScrollBar::add-page, QScrollBar::sub-page {{
 /* ------------------------------------------------------------- Menus */
 QMenuBar {{
     background: {Color.SURFACE};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.BORDER};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
 }}
 
 QMenuBar::item {{
-    padding: {Spacing.XS}px {Spacing.MD}px;
+    padding: {px(Spacing.XS)}px {px(Spacing.MD)}px;
     background: transparent;
 }}
 
 QMenuBar::item:selected {{
     background: {Color.SURFACE_HOVER};
-    border-radius: {Radius.SM}px;
+    border-radius: {px(Radius.SM)}px;
 }}
 
 QMenu {{
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid {Color.BORDER_STRONG};
-    border-radius: {Radius.MD}px;
-    padding: {Spacing.XS}px;
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER_STRONG};
+    border-radius: {px(Radius.MD)}px;
+    padding: {px(Spacing.XS)}px;
 }}
 
 QMenu::item {{
-    padding: {Spacing.SM}px {Spacing.XL}px {Spacing.SM}px {Spacing.MD}px;
-    border-radius: {Radius.SM}px;
+    padding: {px(Spacing.SM)}px {px(Spacing.XL)}px {px(Spacing.SM)}px {px(Spacing.MD)}px;
+    border-radius: {px(Radius.SM)}px;
 }}
 
 QMenu::item:selected {{
@@ -641,13 +660,13 @@ QMenu::item:disabled {{
 }}
 
 QMenu::separator {{
-    height: {Stroke.HAIRLINE}px;
+    height: {st(Stroke.HAIRLINE)}px;
     background: {Color.BORDER};
-    margin: {Spacing.XS}px {Spacing.SM}px;
+    margin: {px(Spacing.XS)}px {px(Spacing.SM)}px;
 }}
 
 QMenu::right-arrow {{
-    width: {Spacing.MD}px;
+    width: {px(Spacing.MD)}px;
 }}
 
 /* -------------------------------------------------------- Separators */
@@ -660,34 +679,38 @@ QSplitter::handle {{
 }}
 
 QSplitter::handle:horizontal {{
-    width: {Stroke.HAIRLINE}px;
+    width: {st(Stroke.HAIRLINE)}px;
 }}
 
 QSplitter::handle:vertical {{
-    height: {Stroke.HAIRLINE}px;
+    height: {st(Stroke.HAIRLINE)}px;
 }}
 """
 
 
-TEMPLATE_DESIGNER_STYLESHEET: Final = f"""
+def template_designer_stylesheet(scale: UiScale = UiScale.IDENTITY) -> str:
+    """The editor pages' toolbar sheet at ``scale`` - see the constant below."""
+    px = scale.px
+    st = scale.stroke
+    return f"""
 QToolBar {{
     background: {Color.SURFACE_MUTED};
     border: none;
-    spacing: {Spacing.XXS}px;
-    padding: {Spacing.XXS}px;
+    spacing: {px(Spacing.XXS)}px;
+    padding: {px(Spacing.XXS)}px;
 }}
 
 QToolButton {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.SURFACE};
-    border: {Stroke.BORDER}px solid transparent;
-    border-radius: {Radius.SM}px;
-    padding: {Spacing.XS}px {Spacing.SM}px;
+    border: {st(Stroke.BORDER)}px solid transparent;
+    border-radius: {px(Radius.SM)}px;
+    padding: {px(Spacing.XS)}px {px(Spacing.SM)}px;
 }}
 
 QToolButton:hover {{
     background: {Color.SURFACE_HOVER};
-    border: {Stroke.BORDER}px solid {Color.BORDER_STRONG};
+    border: {st(Stroke.BORDER)}px solid {Color.BORDER_STRONG};
 }}
 
 QToolButton:pressed {{
@@ -696,19 +719,19 @@ QToolButton:pressed {{
 
 QToolButton:checked {{
     background: {Color.PRIMARY_SOFT};
-    border: {Stroke.BORDER}px solid {Color.PRIMARY};
+    border: {st(Stroke.BORDER)}px solid {Color.PRIMARY};
 }}
 
 QToolButton:disabled {{
     color: {Color.TEXT_DISABLED};
     background: {Color.SURFACE_DISABLED};
-    border: {Stroke.BORDER}px solid transparent;
+    border: {st(Stroke.BORDER)}px solid transparent;
 }}
 
 QToolBar::separator {{
     background: {Color.BORDER_STRONG};
-    width: {Stroke.HAIRLINE}px;
-    margin: {Spacing.XS}px {Spacing.XS}px;
+    width: {st(Stroke.HAIRLINE)}px;
+    margin: {px(Spacing.XS)}px {px(Spacing.XS)}px;
 }}
 
 QPushButton {{
@@ -723,6 +746,9 @@ QLabel:disabled {{
     color: {Color.TEXT_DISABLED};
 }}
 """
+
+
+TEMPLATE_DESIGNER_STYLESHEET: Final = template_designer_stylesheet()
 """Applied to the editor pages only (template designer, calibration, scan,
 resolve), each by its own ``setStyleSheet(...)`` call, so no other page's
 controls change appearance.
@@ -750,10 +776,14 @@ CANDIDATE_MACHINE: Final = "machine"
 CANDIDATE_CHOSEN: Final = "chosen"
 """The reviewer has picked this symbol but has not committed it."""
 
-RESOLVE_STAGE_STYLESHEET: Final = f"""
+def resolve_stage_stylesheet(scale: UiScale = UiScale.IDENTITY) -> str:
+    """The Resolve stage's own rules at ``scale`` - see the constant below."""
+    px = scale.px
+    st = scale.stroke
+    return f"""
 QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_MACHINE}"] {{
     background: {Color.ATTENTION_SOFT};
-    border: {Stroke.BORDER}px solid {Color.ATTENTION};
+    border: {st(Stroke.BORDER)}px solid {Color.ATTENTION};
     font-weight: {FontWeight.SEMIBOLD};
 }}
 
@@ -764,7 +794,7 @@ QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_MACHINE}"]:hover {{
 QPushButton[{CANDIDATE_STATE_PROPERTY}="{CANDIDATE_CHOSEN}"] {{
     color: {Color.TEXT_ON_PRIMARY};
     background: {Color.PRIMARY};
-    border: {Stroke.FOCUS_RING}px solid {Color.PRIMARY_PRESSED};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.PRIMARY_PRESSED};
     font-weight: {FontWeight.BOLD};
 }}
 
@@ -780,24 +810,27 @@ QLabel#resolveSectionHeading {{
 QLabel#resolveOperatorBadge {{
     color: {Color.TEXT_SECONDARY};
     background: {Color.SURFACE_MUTED};
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    border-radius: {Radius.SM}px;
-    padding: 1px {Spacing.SM}px;
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    border-radius: {px(Radius.SM)}px;
+    padding: {px(1)}px {px(Spacing.SM)}px;
 }}
 
 QFrame#conflictProvenanceStrip {{
     background: {Color.SURFACE_SUNKEN};
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    border-radius: {Radius.SM}px;
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    border-radius: {px(Radius.SM)}px;
 }}
 
 QTableWidget#conflictQueueTable::item:selected {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.PRIMARY_SOFT};
-    border-top: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border-top: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
 }}
 """
+
+
+RESOLVE_STAGE_STYLESHEET: Final = resolve_stage_stylesheet()
 """Appended to :data:`TEMPLATE_DESIGNER_STYLESHEET` by the Resolve stage.
 
 Only the things that stage invents: the three states a value button can be in,
@@ -811,7 +844,11 @@ the brand, the selection, and a warning all at once. Here it is the accent tint
 with accent rules above and below, so the selection reads as a selection and
 red is left to mean something."""
 
-ATTENDANCE_STAGE_STYLESHEET: Final = f"""
+def attendance_stage_stylesheet(scale: UiScale = UiScale.IDENTITY) -> str:
+    """The Attendance stage's own rules at ``scale`` - see the constant below."""
+    px = scale.px
+    st = scale.stroke
+    return f"""
 QLabel#attendanceSectionHeading {{
     color: {Color.TEXT_TERTIARY};
     font-weight: {FontWeight.SEMIBOLD};
@@ -819,25 +856,28 @@ QLabel#attendanceSectionHeading {{
 
 QPushButton#attendanceCountChip {{
     text-align: left;
-    padding: 2px {Spacing.SM}px;
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    border-radius: {Radius.SM}px;
+    padding: {px(2)}px {px(Spacing.SM)}px;
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    border-radius: {px(Radius.SM)}px;
     background: {Color.SURFACE};
 }}
 
 QPushButton#attendanceCountChip:checked {{
     background: {Color.PRIMARY_SOFT};
-    border: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
 }}
 
 QTableWidget#reconciliationTable::item:selected,
 QTableWidget#setAttendanceTable::item:selected {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.PRIMARY_SOFT};
-    border-top: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border-top: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
 }}
 """
+
+
+ATTENDANCE_STAGE_STYLESHEET: Final = attendance_stage_stylesheet()
 """Set on the Attendance stage.
 
 The section headings that replace a group box around every block, the count
@@ -849,7 +889,11 @@ ANSWER_KEY_STATE_PROPERTY: Final = "keyState"
 """Dynamic property on an Answer Key set tile / status label naming its state:
 ``verified``, ``draft``, ``missing``, ``stale``, ``unsaved`` or ``invalid``."""
 
-ANSWER_KEY_STAGE_STYLESHEET: Final = f"""
+def answer_key_stage_stylesheet(scale: UiScale = UiScale.IDENTITY) -> str:
+    """The Answer Key stage's own rules at ``scale`` - see the constant below."""
+    px = scale.px
+    st = scale.stroke
+    return f"""
 QLabel#answerKeySectionHeading {{
     color: {Color.TEXT_TERTIARY};
     font-weight: {FontWeight.SEMIBOLD};
@@ -857,15 +901,15 @@ QLabel#answerKeySectionHeading {{
 
 QFrame#answerKeySetsBar, QFrame#answerKeySetBox, QFrame#answerKeyActionBar {{
     background: {Color.SURFACE};
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    border-radius: {Radius.MD}px;
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    border-radius: {px(Radius.MD)}px;
 }}
 
 QToolButton#answerKeySetTile {{
     text-align: left;
-    padding: 2px {Spacing.SM}px;
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER};
-    border-radius: {Radius.SM}px;
+    padding: {px(2)}px {px(Spacing.SM)}px;
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER};
+    border-radius: {px(Radius.SM)}px;
     background: {Color.SURFACE};
     color: {Color.TEXT_PRIMARY};
 }}
@@ -876,7 +920,7 @@ QToolButton#answerKeySetTile:hover {{
 
 QToolButton#answerKeySetTile:checked {{
     background: {Color.PRIMARY_SOFT};
-    border: {Stroke.FOCUS_RING}px solid {Color.PRIMARY};
+    border: {st(Stroke.FOCUS_RING)}px solid {Color.PRIMARY};
 }}
 
 QToolButton#answerKeySetTile[{ANSWER_KEY_STATE_PROPERTY}="verified"],
@@ -902,9 +946,9 @@ QLabel#answerKeyStatusLabel[{ANSWER_KEY_STATE_PROPERTY}="invalid"] {{
 
 QLabel#answerKeyStatusLabel {{
     font-weight: {FontWeight.SEMIBOLD};
-    padding: {Spacing.XXS}px {Spacing.SM}px;
-    border: {Stroke.HAIRLINE}px solid {Color.BORDER_STRONG};
-    border-radius: {Radius.SM}px;
+    padding: {px(Spacing.XXS)}px {px(Spacing.SM)}px;
+    border: {st(Stroke.HAIRLINE)}px solid {Color.BORDER_STRONG};
+    border-radius: {px(Radius.SM)}px;
     background: {Color.SURFACE_MUTED};
 }}
 
@@ -916,16 +960,35 @@ QTableWidget#answerKeyTable::item:selected,
 QTableWidget#solutionSheetTable::item:selected {{
     color: {Color.TEXT_PRIMARY};
     background: {Color.PRIMARY_SOFT};
-    border-top: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
-    border-bottom: {Stroke.HAIRLINE}px solid {Color.PRIMARY};
+    border-top: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
+    border-bottom: {st(Stroke.HAIRLINE)}px solid {Color.PRIMARY};
 }}
 """
+
+
+ANSWER_KEY_STAGE_STYLESHEET: Final = answer_key_stage_stylesheet()
 """Set on the Answer Key stage and its solution-sheet review dialog.
 
 Set tiles and the status label take their colour from the key's state - and
 always carry the state in words and a glyph as well, so colour is never the
 only carrier. The selected-row narrowing is the one the Attendance and
 Resolve stages already use."""
+
+
+SCALED_STYLESHEETS: Final[dict[str, Callable[[UiScale], str]]] = {
+    "template_designer": template_designer_stylesheet,
+    "resolve_stage": resolve_stage_stylesheet,
+    "attendance_stage": attendance_stage_stylesheet,
+    "answer_key_stage": answer_key_stage_stylesheet,
+}
+"""The page-scoped sheets, by name, for a widget that sets one of them.
+
+A widget that styles itself with one of these declares it through
+:func:`omr_scanner.gui.ui_scale.set_scaled_stylesheet` instead of calling
+``setStyleSheet`` with the constant, so that an interface zoom change can
+recompose the sheet at the new scale. Keyed by name rather than storing the
+function on the widget, because a Qt dynamic property survives the Python
+wrapper being recreated and a function reference would not."""
 
 
 __all__ = [
@@ -936,9 +999,14 @@ __all__ = [
     "CANDIDATE_MACHINE",
     "CANDIDATE_STATE_PROPERTY",
     "RESOLVE_STAGE_STYLESHEET",
+    "SCALED_STYLESHEETS",
     "TEMPLATE_DESIGNER_STYLESHEET",
     "VARIANT_DESTRUCTIVE",
     "VARIANT_PRIMARY",
     "VARIANT_PROPERTY",
+    "answer_key_stage_stylesheet",
     "application_stylesheet",
+    "attendance_stage_stylesheet",
+    "resolve_stage_stylesheet",
+    "template_designer_stylesheet",
 ]

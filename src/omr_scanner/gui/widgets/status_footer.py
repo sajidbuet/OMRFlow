@@ -52,7 +52,7 @@ from __future__ import annotations
 from enum import Enum
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QResizeEvent
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QResizeEvent
 from PySide6.QtWidgets import (
     QBoxLayout,
     QHBoxLayout,
@@ -63,7 +63,8 @@ from PySide6.QtWidgets import (
 )
 
 from omr_scanner import APPLICATION_NAME, LICENSE_NAME, __version__
-from omr_scanner.gui.theme import Color, FontSize, Footer
+from omr_scanner.gui.theme import Color, FontSize, Footer, UiScale
+from omr_scanner.gui.ui_scale import current_scale, set_relative_font
 
 NO_PROJECT_TEXT = "No project open"
 """What the footer says with no project open.
@@ -135,14 +136,18 @@ class _StatusDot(QWidget):
 
     A text bullet would change size, weight and baseline with the UI font;
     this is exactly :data:`Footer.STATUS_DOT_SIZE` across at every font and
-    every display scale.
+    every display scale, times the interface zoom.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("appFooterStatusDot")
-        self.setFixedSize(Footer.STATUS_DOT_SIZE, Footer.STATUS_DOT_SIZE)
+        self.apply_ui_scale(current_scale())
         self._colour = QColor(Color.STATUS_READY)
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        side = scale.px(Footer.STATUS_DOT_SIZE)
+        self.setFixedSize(side, side)
 
     def set_colour(self, colour: str) -> None:
         self._colour = QColor(colour)
@@ -259,6 +264,7 @@ class StatusFooter(QWidget):
 
         self._status = AppStatus.READY
         self._tier: FooterTier | None = None
+        self._scale = current_scale()
 
         self.version_label = self._small_label(
             f"{APPLICATION_NAME} v{__version__}", "appFooterVersion"
@@ -284,18 +290,14 @@ class StatusFooter(QWidget):
         self.status_label = self._small_label(self._status.value, "appFooterStatus")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(
-            Footer.H_PADDING, Footer.V_PADDING, Footer.H_PADDING, Footer.V_PADDING
-        )
-        outer.setSpacing(Footer.V_PADDING)
+        self._outer = outer
         self._primary = QHBoxLayout()
         self._primary.setContentsMargins(0, 0, 0, 0)
-        self._primary.setSpacing(Footer.SEPARATOR_MARGIN)
         self._secondary = QHBoxLayout()
         self._secondary.setContentsMargins(0, 0, 0, 0)
-        self._secondary.setSpacing(Footer.SEPARATOR_MARGIN)
         outer.addLayout(self._primary)
         outer.addLayout(self._secondary)
+        self._apply_spacing()
 
         self.set_project_title(None)
         self._apply_tier(FooterTier.FULL)
@@ -304,20 +306,42 @@ class StatusFooter(QWidget):
     def _small_label(self, text: str, object_name: str) -> QLabel:
         label = QLabel(text, self)
         label.setObjectName(object_name)
-        label.setFont(self._small_font(label))
+        set_relative_font(label, FontSize.FOOTER)
         return label
 
     def _eliding_label(self, object_name: str) -> _ElidingLabel:
         label = _ElidingLabel(object_name, self)
-        label.setFont(self._small_font(label))
+        set_relative_font(label, FontSize.FOOTER)
         return label
 
-    def _small_font(self, label: QLabel) -> QFont:
-        font = QFont(label.font())
-        font.setPointSizeF(
-            max(font.pointSizeF() + FontSize.FOOTER, FontSize.MIN_POINT_SIZE)
+    # ------------------------------------------------------------------
+    # Interface zoom
+    # ------------------------------------------------------------------
+    def _apply_spacing(self) -> None:
+        px = self._scale.px
+        self._outer.setContentsMargins(
+            px(Footer.H_PADDING), px(Footer.V_PADDING), px(Footer.H_PADDING), px(Footer.V_PADDING)
         )
-        return font
+        self._outer.setSpacing(px(Footer.V_PADDING))
+        self._primary.setSpacing(px(Footer.SEPARATOR_MARGIN))
+        self._secondary.setSpacing(px(Footer.SEPARATOR_MARGIN))
+
+    def apply_ui_scale(self, scale: UiScale) -> None:
+        """Re-measure every tier at the new zoom, and re-pick one.
+
+        The labels' fonts have already been rescaled by the time this runs,
+        so the widths the tiers are decided from are the widths the text will
+        actually take.
+        """
+        if scale == self._scale:
+            return
+        self._scale = scale
+        self.status_dot.apply_ui_scale(scale)
+        self._apply_spacing()
+        self._tier = None
+        self._apply_tier(self.tier_for_width(self.width()) if self.width() > 0 else FooterTier.FULL)
+        self.project_label.set_full_text(self.project_label.full_text)
+        self.updateGeometry()
 
     # ------------------------------------------------------------------
     # The open project
@@ -380,11 +404,12 @@ class StatusFooter(QWidget):
         return self._tier
 
     def _status_group_width(self) -> int:
+        px = self._scale.px
         return (
             self.status_separator.sizeHint().width()
-            + Footer.SEPARATOR_MARGIN
+            + px(Footer.SEPARATOR_MARGIN)
             + self.status_dot.width()
-            + Footer.STATUS_DOT_GAP
+            + px(Footer.STATUS_DOT_GAP)
             + self.status_label.sizeHint().width()
         )
 
@@ -400,24 +425,26 @@ class StatusFooter(QWidget):
         used when the first has already overflowed - it never decides the
         tier.
         """
+        px = self._scale.px
+        gap = px(Footer.SEPARATOR_MARGIN)
         width = (
-            2 * Footer.H_PADDING
+            2 * px(Footer.H_PADDING)
             + self.version_label.sizeHint().width()
-            + Footer.SEPARATOR_MARGIN
+            + gap
             + self.project_separator.sizeHint().width()
-            + Footer.SEPARATOR_MARGIN
+            + gap
             + self.project_label.minimumSizeHint().width()
-            + Footer.SEPARATOR_MARGIN
+            + gap
             + self._status_group_width()
         )
         if tier in (FooterTier.NO_CREDIT, FooterTier.STACKED):
             return width
-        width += self.credit_label.sizeHint().width() + Footer.SEPARATOR_MARGIN
+        width += self.credit_label.sizeHint().width() + gap
         if tier is FooterTier.FULL:
             width += (
                 self.licence_separator.sizeHint().width()
                 + self.licence_label.sizeHint().width()
-                + 2 * Footer.SEPARATOR_MARGIN
+                + 2 * gap
             )
         return width
 
@@ -453,10 +480,13 @@ class StatusFooter(QWidget):
         if tier is FooterTier.FULL:
             self._primary.addWidget(self.licence_separator)
             self._primary.addWidget(self.licence_label)
+        dot_gap = max(
+            self._scale.px(Footer.STATUS_DOT_GAP) - self._scale.px(Footer.SEPARATOR_MARGIN), 0
+        )
         self._primary.addWidget(self.status_separator)
-        self._primary.addSpacing(max(Footer.STATUS_DOT_GAP - Footer.SEPARATOR_MARGIN, 0))
+        self._primary.addSpacing(dot_gap)
         self._primary.addWidget(self.status_dot)
-        self._primary.addSpacing(max(Footer.STATUS_DOT_GAP - Footer.SEPARATOR_MARGIN, 0))
+        self._primary.addSpacing(dot_gap)
         self._primary.addWidget(self.status_label)
 
         if tier is FooterTier.STACKED:
@@ -473,7 +503,7 @@ class StatusFooter(QWidget):
 
     def sizeHint(self) -> QSize:
         """Room for everything on one row."""
-        return QSize(self._width_for(FooterTier.FULL), Footer.HEIGHT)
+        return QSize(self._width_for(FooterTier.FULL), self._scale.px(Footer.HEIGHT))
 
     def minimumSizeHint(self) -> QSize:
         """Only the version, the project and the status are mandatory.
@@ -482,10 +512,12 @@ class StatusFooter(QWidget):
         for that or the second row is clipped exactly when it is needed.
         """
         rows = 2 if self._tier is FooterTier.STACKED else 1
-        row_height = max(self.version_label.sizeHint().height(), Footer.STATUS_DOT_SIZE)
+        row_height = max(
+            self.version_label.sizeHint().height(), self._scale.px(Footer.STATUS_DOT_SIZE)
+        )
         return QSize(
             self._width_for(FooterTier.STACKED),
-            rows * row_height + (rows + 1) * Footer.V_PADDING,
+            rows * row_height + (rows + 1) * self._scale.px(Footer.V_PADDING),
         )
 
 

@@ -33,7 +33,7 @@ Why the summary can be turned off:
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter
+from PySide6.QtGui import QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -52,6 +52,7 @@ from omr_scanner.gui.theme import (
     Spacing,
     Stroke,
 )
+from omr_scanner.gui.ui_scale import scale_layout, scale_widget, set_relative_font
 
 
 class _PageIcon(QWidget):
@@ -60,22 +61,20 @@ class _PageIcon(QWidget):
     def __init__(self, icon_name: str, extent: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("pageHeaderIcon")
-        self.setFixedSize(extent, extent)
+        scale_widget(self, fixed_width=extent, fixed_height=extent)
         self._icon = load_icon(icon_name)
-        self._extent = extent
 
     def paintEvent(self, _event: object) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         ratio = self.devicePixelRatioF()
-        pixmap = self._icon.pixmap(
-            QSize(self._extent, self._extent) * ratio, ratio, QIcon.Mode.Normal
-        )
+        extent = self.width()
+        pixmap = self._icon.pixmap(QSize(extent, extent) * ratio, ratio, QIcon.Mode.Normal)
         tint = QPainter(pixmap)
         tint.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
         tint.fillRect(pixmap.rect(), QColor(Color.PRIMARY))
         tint.end()
-        painter.drawPixmap(0, 0, self._extent, self._extent, pixmap)
+        painter.drawPixmap(0, 0, extent, extent, pixmap)
         painter.end()
 
 
@@ -110,25 +109,22 @@ class PageHeader(QWidget):
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(Spacing.SM)
+        scale_layout(outer, spacing=Spacing.SM)
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(Spacing.MD)
+        scale_layout(row, spacing=Spacing.MD)
 
         self.icon = _PageIcon(icon_name, IconSize.PAGE_HEADER, self)
         row.addWidget(self.icon, alignment=Qt.AlignmentFlag.AlignTop)
 
         text_column = QVBoxLayout()
         text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(Spacing.XXS)
+        scale_layout(text_column, spacing=Spacing.XXS)
 
         self.title_label = QLabel(title, self)
         self.title_label.setObjectName("pageTitle")
-        title_font = QFont(self.title_label.font())
-        title_font.setPointSizeF(title_font.pointSizeF() + FontSize.PAGE_TITLE)
-        title_font.setWeight(QFont.Weight(FontWeight.BOLD))
-        self.title_label.setFont(title_font)
+        set_relative_font(self.title_label, FontSize.PAGE_TITLE, weight=FontWeight.BOLD)
         text_column.addWidget(self.title_label)
 
         self.summary_label: QLabel | None = None
@@ -147,7 +143,7 @@ class PageHeader(QWidget):
         self.rule = QFrame(self)
         self.rule.setObjectName("pageHeaderRule")
         self.rule.setFrameShape(QFrame.Shape.NoFrame)
-        self.rule.setFixedHeight(Stroke.HAIRLINE)
+        scale_widget(self.rule, fixed_height=Stroke.HAIRLINE)
         outer.addWidget(self.rule)
 
 

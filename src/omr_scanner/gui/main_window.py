@@ -8,8 +8,13 @@ Responsibilities:
     * Assemble the shell: one chrome row, the stacked pages, the status
       footer and the status bar. Three bands, and the first of them is also
       the title bar.
-    * Own the File/Tools/Help action hierarchy, and hand it to the chrome
-      row's menu button.
+    * Own the File/View/Tools/Help action hierarchy, and hand it to the
+      chrome row's menu button.
+    * Own the interface zoom *commands* (``View > Zoom +``, ``Zoom -``,
+      ``Zoom 100%``) and their persistence. The scaling itself is
+      :class:`~omr_scanner.gui.ui_scale.UiScaleManager`'s; the window decides
+      the percentage, saves it, and keeps the menu and the chrome row's
+      buttons agreeing about what is available.
     * Own the *window*: it is frameless, so minimising, maximising, restoring,
       closing, moving and resizing are this class's responsibility rather than
       the platform's - see "Why the window is frameless" below.
@@ -32,6 +37,14 @@ Testability:
     and :meth:`create_project_at` / :meth:`open_project_at` /
     :meth:`close_project` contain the behaviour. GUI tests drive the second
     group, so no test has to interact with a native file dialog.
+
+Why the interface zoom has no keyboard shortcut:
+    Ctrl++, Ctrl+- and Ctrl+0 already zoom the Template Designer's sheet,
+    and the other stages have their own image zoom. Binding the same keys to
+    the interface would make one keystroke mean two different things
+    depending on focus. The View actions therefore carry no shortcut, and the
+    two kinds of zoom stay separate concepts: the interface zoom never changes
+    a canvas's transform, and a canvas zoom never changes the interface.
 
 Why the menu bar is hidden rather than removed:
     The reference design replaces the permanent File / Tools / Help row with
@@ -91,13 +104,21 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from omr_scanner import APPLICATION_NAME, __version__
-from omr_scanner.config import AppConfig, ProcessingSettings, load_app_config, save_app_config
+from omr_scanner.config import (
+    MAX_UI_ZOOM_PERCENT,
+    MIN_UI_ZOOM_PERCENT,
+    UI_ZOOM_STEP_PERCENT,
+    AppConfig,
+    ProcessingSettings,
+    load_app_config,
+    save_app_config,
+)
+from omr_scanner.config.app_config import DEFAULT_UI_ZOOM_PERCENT
 from omr_scanner.domain.scan_lifecycle import PurgeMode, PurgeOutcome, format_bytes
 from omr_scanner.errors import ConfigurationError, OMRScannerError
 from omr_scanner.gui.about_dialog import DEVELOPER_NAME, AboutDialog
@@ -107,6 +128,7 @@ from omr_scanner.gui.branding import application_icon
 from omr_scanner.gui.calibration.page import CalibrationPage
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.health_dialog import ProjectHealthDialog
+from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages import WORKFLOW_PAGES, PlaceholderPage, ProjectPage
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.project_config_dialog import ProjectConfigDialog
@@ -118,9 +140,11 @@ from omr_scanner.gui.scan.page import ScanPage
 from omr_scanner.gui.settings_dialog import SettingsDialog
 from omr_scanner.gui.template_designer.page import TemplateDesignerPage
 from omr_scanner.gui.theme import Chrome
+from omr_scanner.gui.ui_scale import UiScaleManager
 from omr_scanner.gui.widgets import (
     AppChrome,
     AppStatus,
+    PageStack,
     StatusFooter,
     WorkflowRibbon,
 )
@@ -249,6 +273,11 @@ class MainWindow(QMainWindow):
         self._pages: dict[str, WorkflowPage] = {}
         self._frameless = frameless
         self._resize_edges = Qt.Edge(0)
+        # Before any widget exists, so the window is built at the operator's
+        # saved zoom rather than built at 100% and then rescaled.
+        self._ui_scale = UiScaleManager.ensure()
+        if self._ui_scale is not None:
+            self._ui_scale.set_percent(self._config.ui_zoom_percent)
 
         self.setWindowTitle(window_title())
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
@@ -308,6 +337,7 @@ class MainWindow(QMainWindow):
         self.chrome.previous_requested.connect(self.go_to_previous_stage)
         self.chrome.next_requested.connect(self.go_to_next_stage)
         self.chrome.density_changed.connect(self._on_ribbon_density_changed)
+        self.chrome.density_changed.connect(lambda _level: self._sync_density_actions())
         self.chrome.minimise_requested.connect(self.showMinimized)
         self.chrome.maximise_toggled.connect(self.toggle_maximised)
         self.chrome.close_requested.connect(self._request_exit)
@@ -332,9 +362,15 @@ class MainWindow(QMainWindow):
         """
         return self.chrome.ribbon
 
-    def _build_pages(self) -> QStackedWidget:
-        """Create the stacked workflow pages and wire their signals."""
-        self.stack = QStackedWidget()
+    def _build_pages(self) -> PageStack:
+        """Create the stacked workflow pages and wire their signals.
+
+        A :class:`~omr_scanner.gui.widgets.page_stack.PageStack` rather than
+        a bare `QStackedWidget`, so that a page which needs more room than the
+        window has - a wide stage at a large interface zoom on a small display
+        - scrolls instead of overlapping its own controls.
+        """
+        self.stack = PageStack()
 
         for spec in WORKFLOW_PAGES:
             page: WorkflowPage
@@ -479,7 +515,7 @@ class MainWindow(QMainWindow):
         QDesktopServices.openUrl(QUrl(url))
 
     def _build_menus(self) -> None:
-        """Create the File, Tools and Help menus, and hand them to the header.
+        """Create the File, View, Tools and Help menus, and hand them to the header.
 
         The menus are built on ``menuBar()`` exactly as before - same actions,
         same order, same nesting, same shortcuts - and the bar is then hidden.
@@ -533,6 +569,8 @@ class MainWindow(QMainWindow):
         self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
         self.exit_action.triggered.connect(self._request_exit)
         file_menu.addAction(self.exit_action)
+
+        view_menu = self._build_view_menu()
 
         tools_menu = self.menuBar().addMenu("&Tools")
 
@@ -600,7 +638,145 @@ class MainWindow(QMainWindow):
         self.about_action.triggered.connect(self._show_about)
         help_menu.addAction(self.about_action)
 
-        self._install_application_menu(file_menu, tools_menu, help_menu)
+        self._install_application_menu(file_menu, view_menu, tools_menu, help_menu)
+        self.chrome.bind_zoom_actions(self.zoom_out_action, self.zoom_in_action)
+        self._sync_zoom_actions()
+        self._sync_density_actions()
+
+    def _build_view_menu(self) -> QMenu:
+        """``View``: the interface zoom, and the workflow ribbon's density.
+
+        The three zoom actions are the *only* zoom commands: the chrome row's
+        ``-``/``+`` buttons are bound to the first two rather than wired to
+        their own handlers, so the row and the menu run the same code and are
+        enabled and disabled together. None has a shortcut - see the module
+        docstring for why Ctrl++/Ctrl+-/Ctrl+0 stay with the sheet canvas.
+
+        The density pair used to be the chrome row's ``-``/``+``. It still
+        does what it did - more or less room per workflow step, persisted as
+        before - and it lives here now because the row's ``-``/``+`` became
+        the interface zoom.
+        """
+        view_menu = self.menuBar().addMenu("&View")
+
+        self.zoom_in_action = QAction(load_icon("zoom-in"), "Zoom +", self)
+        self.zoom_in_action.setObjectName("zoomInAction")
+        self.zoom_in_action.triggered.connect(self.zoom_in_interface)
+        view_menu.addAction(self.zoom_in_action)
+
+        self.zoom_out_action = QAction(load_icon("zoom-out"), "Zoom -", self)
+        self.zoom_out_action.setObjectName("zoomOutAction")
+        self.zoom_out_action.triggered.connect(self.zoom_out_interface)
+        view_menu.addAction(self.zoom_out_action)
+
+        self.zoom_reset_action = QAction("Zoom 100%", self)
+        self.zoom_reset_action.setObjectName("zoomResetAction")
+        self.zoom_reset_action.triggered.connect(self.reset_interface_zoom)
+        view_menu.addAction(self.zoom_reset_action)
+
+        view_menu.addSeparator()
+
+        density_menu = view_menu.addMenu("Ribbon &Density")
+        density_menu.setObjectName("ribbonDensityMenu")
+        self.density_compact_action = QAction(load_icon("minus"), "More &Compact", self)
+        self.density_compact_action.setObjectName("ribbonDensityCompactAction")
+        self.density_compact_action.setStatusTip(
+            "Give each workflow step less room; the rest of the interface is unchanged"
+        )
+        self.density_compact_action.triggered.connect(
+            lambda _checked=False: self.ribbon.set_density(self.ribbon.density - 1)
+        )
+        density_menu.addAction(self.density_compact_action)
+
+        self.density_roomier_action = QAction(load_icon("plus"), "&Roomier", self)
+        self.density_roomier_action.setObjectName("ribbonDensityRoomierAction")
+        self.density_roomier_action.setStatusTip(
+            "Give each workflow step more room; the rest of the interface is unchanged"
+        )
+        self.density_roomier_action.triggered.connect(
+            lambda _checked=False: self.ribbon.set_density(self.ribbon.density + 1)
+        )
+        density_menu.addAction(self.density_roomier_action)
+        return view_menu
+
+    # ------------------------------------------------------------------
+    # Interface zoom
+    # ------------------------------------------------------------------
+    @property
+    def interface_zoom(self) -> int:
+        """The interface zoom this window is configured for, in percent."""
+        return self._config.ui_zoom_percent
+
+    def zoom_in_interface(self) -> bool:
+        """``View > Zoom +`` and the chrome row's ``+``: one step larger."""
+        return self.set_interface_zoom(self._config.ui_zoom_percent + UI_ZOOM_STEP_PERCENT)
+
+    def zoom_out_interface(self) -> bool:
+        """``View > Zoom -`` and the chrome row's ``-``: one step smaller."""
+        return self.set_interface_zoom(self._config.ui_zoom_percent - UI_ZOOM_STEP_PERCENT)
+
+    def reset_interface_zoom(self) -> bool:
+        """``View > Zoom 100%``: back to the canonical interface."""
+        return self.set_interface_zoom(DEFAULT_UI_ZOOM_PERCENT)
+
+    def set_interface_zoom(self, percent: int) -> bool:
+        """Zoom the whole interface to ``percent``, clamped, and remember it.
+
+        Args:
+            percent: The requested zoom.
+
+        Returns:
+            Whether the zoom changed. ``False`` at a limit, which the
+            disabled actions normally prevent from being asked at all.
+
+        A display preference and nothing more: it is saved to the per-user
+        configuration through :meth:`apply_config` - never to the project -
+        and it reruns no recognition, scoring or reconciliation, reopens
+        nothing and rebuilds no widget. The page, the selection, any unsaved
+        template edit and every sheet's own zoom are exactly as they were.
+        """
+        updated = self._config.with_ui_zoom_percent(percent)
+        if updated.ui_zoom_percent == self._config.ui_zoom_percent:
+            self._sync_zoom_actions()
+            return False
+        self.apply_config(updated)
+        self.statusBar().showMessage(
+            f"Interface zoom: {updated.ui_zoom_percent}%", STATUS_MESSAGE_MS
+        )
+        return True
+
+    def _apply_interface_zoom(self) -> None:
+        if self._ui_scale is not None:
+            self._ui_scale.set_percent(self._config.ui_zoom_percent)
+        self._sync_zoom_actions()
+
+    def _sync_zoom_actions(self) -> None:
+        """Enable exactly the zoom commands that would change something.
+
+        ``Zoom 100%`` is disabled at 100% for the same reason ``Zoom +`` is at
+        the maximum: a command that would do nothing should not look as if it
+        would do something. The chrome row's buttons follow automatically,
+        because they are bound to these same actions.
+        """
+        percent = self._config.ui_zoom_percent
+        self.zoom_in_action.setEnabled(percent < MAX_UI_ZOOM_PERCENT)
+        self.zoom_out_action.setEnabled(percent > MIN_UI_ZOOM_PERCENT)
+        self.zoom_reset_action.setEnabled(percent != DEFAULT_UI_ZOOM_PERCENT)
+        for action, verb in (
+            (self.zoom_in_action, "Increase"),
+            (self.zoom_out_action, "Decrease"),
+        ):
+            tip = f"{verb} interface zoom (currently {percent}%)"
+            action.setToolTip(tip)
+            action.setStatusTip(tip)
+        self.zoom_reset_action.setStatusTip(
+            f"Restore the interface to 100% (currently {percent}%)"
+        )
+
+    def _sync_density_actions(self) -> None:
+        """Disable whichever density command would now do nothing."""
+        self.density_compact_action.setEnabled(self.ribbon.can_decrease_density())
+        self.density_roomier_action.setEnabled(self.ribbon.can_increase_density())
 
     def _install_application_menu(self, *menus: QMenu) -> None:
         """Move the menu bar behind the header's menu button.
@@ -1628,6 +1804,7 @@ class MainWindow(QMainWindow):
 
     def _broadcast_config_change(self) -> None:
         """Push settings that pages act on down to the pages that act on them."""
+        self._apply_interface_zoom()
         scan_page = self._scan_page()
         if scan_page is not None:
             scan_page.set_processing_settings(self._config.processing)

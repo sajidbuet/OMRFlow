@@ -12,7 +12,7 @@ Scope:
     C     Minimise, maximise, restore, close, and Alt+F4.
     D     Resizing from the edges and corners.
     E     The previous/next workflow buttons.
-    F     The density controls, and what they persist.
+    F     Ribbon density (now under View) and the chrome's zoom buttons.
     G     The logo: aspect ratio, vector rendering, drag handle.
     ===== ==========================================================
 
@@ -101,8 +101,8 @@ class TestARowContents:
         for attribute in (
             "menu_button",
             "logo",
-            "density_out_button",
-            "density_in_button",
+            "zoom_out_button",
+            "zoom_in_button",
             "previous_button",
             "ribbon",
             "next_button",
@@ -118,8 +118,8 @@ class TestARowContents:
         positions = [
             chrome.menu_button.x(),
             chrome.logo.x(),
-            chrome.density_out_button.x(),
-            chrome.density_in_button.x(),
+            chrome.zoom_out_button.x(),
+            chrome.zoom_in_button.x(),
             chrome.previous_button.x(),
             chrome.ribbon.x(),
             chrome.next_button.x(),
@@ -155,7 +155,7 @@ class TestARowContents:
         for widget in (
             chrome.menu_button,
             chrome.logo,
-            chrome.density_out_button,
+            chrome.zoom_out_button,
             chrome.previous_button,
             chrome.ribbon,
             chrome.next_button,
@@ -199,8 +199,8 @@ class TestBDragAreas:
         "control",
         [
             "menu_button",
-            "density_out_button",
-            "density_in_button",
+            "zoom_out_button",
+            "zoom_in_button",
             "previous_button",
             "next_button",
             "minimise_button",
@@ -254,11 +254,11 @@ class TestBDragAreas:
     def test_double_clicking_a_control_does_not_toggle_maximise(
         self, window: MainWindow
     ):
-        """Pressing ``+`` twice quickly must increase the density twice."""
+        """Pressing ``+`` twice quickly must zoom in twice, not maximise."""
         chrome = window.chrome
         received: list[bool] = []
         chrome.maximise_toggled.connect(lambda: received.append(True))
-        QTest.mouseDClick(chrome.density_in_button, Qt.MouseButton.LeftButton)
+        QTest.mouseDClick(chrome.zoom_in_button, Qt.MouseButton.LeftButton)
         assert received == []
 
 
@@ -514,24 +514,31 @@ class TestEPreviousNext:
 
 
 # ----------------------------------------------------------------------
-# F - density controls
+# F - ribbon density (View menu) and the chrome's zoom buttons
 # ----------------------------------------------------------------------
 class TestFDensityControls:
-    def test_the_buttons_change_the_ribbons_density(self, window: MainWindow):
+    """The density adjustment moved from the chrome row to ``View``.
+
+    The row's ``-``/``+`` became the interface zoom; what they used to do is
+    unchanged and reachable from ``View > Ribbon Density``. Zoom behaviour
+    itself is covered by ``tests/gui/test_ui_zoom.py``.
+    """
+
+    def test_the_view_menu_changes_the_ribbons_density(self, window: MainWindow):
         start = window.ribbon.density
-        QTest.mouseClick(window.chrome.density_in_button, Qt.MouseButton.LeftButton)
+        window.density_roomier_action.trigger()
         assert window.ribbon.density == start + 1
-        QTest.mouseClick(window.chrome.density_out_button, Qt.MouseButton.LeftButton)
+        window.density_compact_action.trigger()
         assert window.ribbon.density == start
 
-    def test_the_buttons_disable_at_the_limits(self, window: MainWindow):
+    def test_the_density_commands_disable_at_the_limits(self, window: MainWindow):
         window.ribbon.set_density(Density.MINIMUM)
-        assert window.chrome.density_out_button.isEnabled() is False
-        assert window.chrome.density_in_button.isEnabled() is True
+        assert window.density_compact_action.isEnabled() is False
+        assert window.density_roomier_action.isEnabled() is True
 
         window.ribbon.set_density(Density.MAXIMUM)
-        assert window.chrome.density_in_button.isEnabled() is False
-        assert window.chrome.density_out_button.isEnabled() is True
+        assert window.density_roomier_action.isEnabled() is False
+        assert window.density_compact_action.isEnabled() is True
 
     def test_the_density_is_persisted_to_the_application_configuration(
         self, qtbot, tmp_path: Path
@@ -557,7 +564,7 @@ class TestFDensityControls:
         assert second.ribbon.density == Density.MAXIMUM
 
     def test_the_density_does_not_scale_the_page_below(self, window: MainWindow):
-        """It is not a zoom control, and the tooltip says so."""
+        """Density is the ribbon's own padding, not a zoom."""
         page = window._pages["reports"]
         before_font = page.font().pointSizeF()
         before_width = page.width()
@@ -565,16 +572,32 @@ class TestFDensityControls:
         QApplication.processEvents()
         assert page.font().pointSizeF() == before_font
         assert page.width() == before_width
-        assert "not scale the page" in window.chrome.density_in_button.toolTip()
+        assert window.interface_zoom == 100
 
-    def test_the_density_buttons_are_named_and_keyboard_reachable(
+    def test_the_density_does_not_change_the_interface_zoom(self, window: MainWindow):
+        window.density_roomier_action.trigger()
+        assert window.interface_zoom == 100
+        assert window.zoom_reset_action.isEnabled() is False
+
+    def test_the_chrome_minus_and_plus_are_the_interface_zoom(self, window: MainWindow):
+        """The row's ``-``/``+`` are bound to ``View > Zoom -``/``Zoom +``."""
+        chrome = window.chrome
+        assert chrome.zoom_out_button.defaultAction() is window.zoom_out_action
+        assert chrome.zoom_in_button.defaultAction() is window.zoom_in_action
+        density = window.ribbon.density
+        QTest.mouseClick(chrome.zoom_in_button, Qt.MouseButton.LeftButton)
+        assert window.interface_zoom == 110
+        assert window.ribbon.density == density
+
+    def test_the_zoom_buttons_are_named_and_keyboard_reachable(
         self, window: MainWindow
     ):
         for button in (
-            window.chrome.density_out_button,
-            window.chrome.density_in_button,
+            window.chrome.zoom_out_button,
+            window.chrome.zoom_in_button,
         ):
             assert button.accessibleName()
+            assert "interface zoom" in button.accessibleName()
             assert button.focusPolicy() != Qt.FocusPolicy.NoFocus
 
     def test_a_stored_density_outside_the_range_is_clamped_not_rejected(self):

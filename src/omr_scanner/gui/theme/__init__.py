@@ -8,7 +8,10 @@ Layout:
     * :mod:`.tokens` - the data: colours, spacing, radii, type sizes and the
       metrics of the shell components. No Qt import, so the scale is testable
       without a display.
-    * :mod:`.stylesheet` - the Qt stylesheets built from those tokens.
+    * :mod:`.scale` - :class:`UiScale`, the interface zoom as a value, and the
+      one set of rounding rules for applying it to a token. Also Qt-free.
+    * :mod:`.stylesheet` - the Qt stylesheets built from those tokens, each a
+      function of the scale.
 
 Why this is a package and not the single module it used to be:
     The module that lived here did one job - give the editor toolbars legible
@@ -23,6 +26,7 @@ Why this is a package and not the single module it used to be:
 
 from __future__ import annotations
 
+from omr_scanner.gui.theme.scale import UiScale
 from omr_scanner.gui.theme.stylesheet import (
     ANSWER_KEY_STAGE_STYLESHEET,
     ATTENDANCE_STAGE_STYLESHEET,
@@ -30,6 +34,7 @@ from omr_scanner.gui.theme.stylesheet import (
     CANDIDATE_MACHINE,
     CANDIDATE_STATE_PROPERTY,
     RESOLVE_STAGE_STYLESHEET,
+    SCALED_STYLESHEETS,
     TEMPLATE_DESIGNER_STYLESHEET,
     VARIANT_DESTRUCTIVE,
     VARIANT_PRIMARY,
@@ -61,6 +66,7 @@ __all__ = [
     "CANDIDATE_MACHINE",
     "CANDIDATE_STATE_PROPERTY",
     "RESOLVE_STAGE_STYLESHEET",
+    "SCALED_STYLESHEETS",
     "TEMPLATE_DESIGNER_STYLESHEET",
     "VARIANT_DESTRUCTIVE",
     "VARIANT_PRIMARY",
@@ -80,5 +86,6 @@ __all__ = [
     "Radius",
     "Spacing",
     "Stroke",
+    "UiScale",
     "application_stylesheet",
 ]

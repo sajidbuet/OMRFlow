@@ -54,7 +54,8 @@ from omr_scanner.gui.scan.preview import (
     LaneState,
     ScanPreviewView,
 )
-from omr_scanner.gui.theme import ANSWER_KEY_STAGE_STYLESHEET, VARIANT_PRIMARY, VARIANT_PROPERTY
+from omr_scanner.gui.theme import VARIANT_PRIMARY, VARIANT_PROPERTY
+from omr_scanner.gui.ui_scale import current_scale, resize_scaled, set_floor, set_scaled_stylesheet
 from omr_scanner.gui.widgets.status_chips import StatusChipStrip
 from omr_scanner.services import group_cells
 from omr_scanner.services.answer_key import ReadingKind, SetCodeCheck
@@ -88,7 +89,7 @@ class SolutionSheetDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("solutionSheetDialog")
         self.setWindowTitle(f"Review Solution Sheet - {reading.path.name}")
-        self.setStyleSheet(ANSWER_KEY_STAGE_STYLESHEET)
+        set_scaled_stylesheet(self, "answer_key_stage")
         self.reading = reading
         self.template = template
         plan = reading.scanned.plan
@@ -128,7 +129,7 @@ class SolutionSheetDialog(QDialog):
         self._fill_table()
         self._refresh()
         self._framed = False
-        self.resize(1180, 720)
+        resize_scaled(self, 1180, 720)
 
     def showEvent(self, event: QShowEvent) -> None:
         """Open on something worth looking at, once.
@@ -184,7 +185,7 @@ class SolutionSheetDialog(QDialog):
     def _build_review(self) -> QWidget:
         """Status, the set decision, and the question table."""
         panel = QWidget()
-        panel.setMinimumWidth(380)
+        set_floor(panel, minimum_width=380)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -275,14 +276,14 @@ class SolutionSheetDialog(QDialog):
             chooser.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
             # Rows as tall as the chooser, so one row's combo never spills over
             # the next row's text.
-            height = chooser.sizeHint().height() + 4
+            height = chooser.sizeHint().height() + current_scale().px(4)
             self.table.setRowHeight(row, max(self.table.rowHeight(row), height))
             chooser.currentIndexChanged.connect(
                 lambda _index, n=number, box=chooser: self._on_chosen(n, str(box.currentData()))
             )
             self.table.setCellWidget(row, 3, chooser)
-            widest = max(widest, chooser.sizeHint().width() + 8)
-        self.table.setColumnWidth(3, max(widest, 110))
+            widest = max(widest, chooser.sizeHint().width() + current_scale().px(8))
+        self.table.setColumnWidth(3, max(widest, current_scale().px(110)))
         needs_review = any(
             item.kind is not ReadingKind.CLEAR or item.low_confidence
             for item in self.reading.scanned.readings

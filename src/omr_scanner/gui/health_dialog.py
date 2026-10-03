@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.gui.ui_scale import resize_scaled
 from omr_scanner.services import project_backup, project_health
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -101,7 +102,7 @@ class ProjectHealthDialog(QDialog):
         self.setObjectName("projectHealthDialog")
         self.setWindowTitle("Project Health & Recovery")
         self.setModal(True)
-        self.resize(560, 520)
+        resize_scaled(self, 560, 520)
 
         self._database = database
         self._project_root = project_root

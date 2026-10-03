@@ -70,6 +70,7 @@ from omr_scanner.gui.stress_qualification_dialog import (
     launch_detached,
     orchestrator_pid,
 )
+from omr_scanner.gui.ui_scale import resize_scaled
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -408,7 +409,7 @@ class StressQualificationMonitor(QDialog):
         # Deliberately not modal: an eight-hour campaign must not lock the
         # operator out of the rest of the application while it runs.
         self.setModal(False)
-        self.resize(820, 700)
+        resize_scaled(self, 820, 700)
 
         self._output_dir = output_dir
         self._launcher = launcher

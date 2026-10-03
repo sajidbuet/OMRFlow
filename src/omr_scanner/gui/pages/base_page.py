@@ -39,6 +39,7 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from omr_scanner.gui.pages.catalog import WorkflowPageSpec
 from omr_scanner.gui.theme import Spacing
+from omr_scanner.gui.ui_scale import scale_layout
 from omr_scanner.gui.widgets.page_header import PageHeader
 from omr_scanner.services import ProjectSession
 
@@ -107,8 +108,7 @@ class WorkflowPage(QWidget):
         spacing = COMPACT_SPACING_PX if compact else CONTENT_SPACING_PX
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(margin, margin, margin, margin)
-        layout.setSpacing(spacing)
+        scale_layout(layout, margins=(margin, margin, margin, margin), spacing=spacing)
 
         self.header: PageHeader | None = None
         if show_header:
@@ -125,7 +125,7 @@ class WorkflowPage(QWidget):
         self.summary_widget = self.header.summary_label if self.header else None
 
         self.body = QVBoxLayout()
-        self.body.setSpacing(CONTENT_SPACING_PX)
+        scale_layout(self.body, spacing=CONTENT_SPACING_PX)
         if expand:
             layout.addLayout(self.body, 1)
         else:

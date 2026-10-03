@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from omr_scanner.gui.ui_scale import resize_scaled
 from omr_scanner.reporting.excel import LayoutSettings
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -44,7 +45,7 @@ class ReportLayoutDialog(QDialog):
         self.setObjectName("reportLayoutDialog")
         self.setWindowTitle("Report Layout Settings")
         self.setModal(True)
-        self.resize(560, 560)
+        resize_scaled(self, 560, 560)
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()

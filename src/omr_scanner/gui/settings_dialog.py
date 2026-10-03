@@ -52,6 +52,7 @@ from omr_scanner.config.processing import (
     ProcessingSettings,
     detected_cpu_count,
 )
+from omr_scanner.gui.ui_scale import scale_layout
 
 MODE_LABELS: tuple[tuple[ProcessingMode, str], ...] = (
     (ProcessingMode.AUTOMATIC, "Automatic"),
@@ -108,7 +109,7 @@ class SettingsDialog(QDialog):
         self._diagnostics_dir: Path | None = config.processing.diagnostics_dir
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        scale_layout(layout, spacing=10)
         layout.addWidget(self._build_processing_group())
         layout.addWidget(self._build_advanced_group())
         layout.addWidget(self._build_diagnostics_group())

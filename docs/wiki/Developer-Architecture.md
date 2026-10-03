@@ -61,6 +61,15 @@ no Qt; each shell component decides its own layout from its own width. See the
 *application shell* section of `docs/ARCHITECTURE.md`, which also records the
 one thing framelessness costs.
 
+The interface zoom (`View > Zoom`, 80-200 %) scales the whole shell live:
+`gui/ui_scale.py`'s `UiScaleManager` scales the application font from the
+platform's own 100% font, recomposes the stylesheets from the 100% tokens,
+scales Qt's default metrics through a proxy style, and re-applies geometry
+that widgets declared at 100% with `scale_widget` / `scale_layout` /
+`set_relative_font`. The tokens themselves never change. Sheet and image zoom
+in the stages is a separate mechanism and is never touched. See *Interface
+zoom* in `docs/ARCHITECTURE.md`.
+
 ## Key decisions, recorded
 
 Architecture decision records live in

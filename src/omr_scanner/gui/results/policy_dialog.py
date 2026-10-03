@@ -40,6 +40,7 @@ from omr_scanner.domain.scoring import (
     format_mark,
     parse_mark,
 )
+from omr_scanner.gui.ui_scale import resize_scaled
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     pass
@@ -63,7 +64,7 @@ class ScoringPolicyDialog(QDialog):
         self.setObjectName("scoringPolicyDialog")
         self.setWindowTitle("Scoring Configuration")
         self.setModal(True)
-        self.resize(560, 620)
+        resize_scaled(self, 560, 620)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_marks_box())
