@@ -189,6 +189,7 @@ def pending_decisions(
     """The session's waiting files, oldest arrival first, one page at a time."""
     if not quality_decisions.has_quality_schema(database):
         return ()
+    policy = quality_decisions.pinned_policy(database, scan_session_id)
     with database.session() as session:
         rows = session.execute(
             select(IntakeFile, IntakeSource.label, ScanSession.state)
@@ -200,7 +201,6 @@ def pending_decisions(
             .offset(max(0, offset))
             .limit(max(0, limit))
         ).all()
-        policy = quality_decisions.pinned_policy(database, scan_session_id)
         found: list[PendingFile] = []
         for row, label, session_state in rows:
             state = IntakeState(row.state)

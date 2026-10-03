@@ -90,6 +90,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.orm import Session
 
     from omr_scanner.database.engine import ProjectDatabase
+    from omr_scanner.services.session_population import SheetsOfSession
 
 RATE_WINDOW_SECONDS = 300.0
 """Per-source processing rate is measured over the last five minutes."""
@@ -304,25 +305,41 @@ def _classify_groups(
     return sheets
 
 
+def _linked_sheets(database: ProjectDatabase, scan_session_id: str) -> SheetsOfSession | None:
+    """Sheets in an explicit rescan lineage (few), classified by the canonical bounded path.
+
+    Run **before** the snapshot's read transaction: it uses its own
+    connection, and a second connection must never wait inside that
+    transaction (with a writer committing, the two would deadlock until the
+    busy timeout - found by the phase 7 contention test).
+    """
+    from omr_scanner.services import session_population
+
+    with database.session() as session:
+        links = session.execute(
+            select(ScanRejection.scan_id, ScanRejection.replacement_scan_id).where(
+                ScanRejection.replacement_scan_id.is_not(None)
+            )
+        ).all()
+    lineage = lineage_roots({int(new): int(old) for old, new in links if new is not None})
+    linked = set(lineage.root_of) | set(lineage.cycles)
+    if not linked:
+        return None
+    return session_population.sheets_of_session(database, scan_session_id, linked)
+
+
 def _classify_linked(
-    database: ProjectDatabase,
     run: _Run,
-    scan_session_id: str,
-    linked: set[int],
+    classified: SheetsOfSession | None,
     sheets: _Sheets,
     with_quality: bool,
 ) -> int:
-    """Classify sheets in an explicit rescan lineage (few) with the canonical bounded path.
+    """Add the lineage sheets' flags (read in the snapshot's transaction) to ``sheets``.
 
     Returns how many of them were adopted from another session (rescans read
     there whose lineage counts here).
     """
-    from omr_scanner.services import session_population
-
-    if not linked:
-        return 0
-    classified = session_population.sheets_of_session(database, scan_session_id, linked)
-    if not classified.dispositions:
+    if classified is None or not classified.dispositions:
         return 0
     lifecycle, conflict, suggestion, retry, unresolved, resolved = _flag_columns()
     del lifecycle
@@ -371,13 +388,15 @@ def take_snapshot(
     (each call uses its own connection and one short read transaction).
     """
     moment = now or utc_now()
+    # Everything that needs its own connection happens first: inside the read
+    # transaction below, only that transaction's connection is used.
     with_quality = quality_decisions.has_quality_schema(database)
+    with_intake = intake_service.has_intake_schema(database)
     controls = session_controls.get_controls(database, scan_session_id)
-    sources = [
-        source
-        for source in intake_service.list_sources(database)
-        if source.attached_session_id == scan_session_id
-    ]
+    all_sources = intake_service.list_sources(database)
+    sources = [item for item in all_sources if item.attached_session_id == scan_session_id]
+    classified = _linked_sheets(database, scan_session_id)
+    linked = set(classified.dispositions) if classified is not None else set()
     with database.session() as session:
         # One read transaction: every count below describes the same instant.
         session.connection().exec_driver_sql("BEGIN")
@@ -401,13 +420,6 @@ def take_snapshot(
                 )
             )
         }
-        links = run.all(
-            select(ScanRejection.scan_id, ScanRejection.replacement_scan_id).where(
-                ScanRejection.replacement_scan_id.is_not(None)
-            )
-        )
-        lineage = lineage_roots({int(new): int(old) for old, new in links if new is not None})
-        linked = set(lineage.root_of) | set(lineage.cycles)
         sheets = _classify_groups(
             run, scan_session_id, batches, superseded, linked, with_quality
         )
@@ -428,12 +440,10 @@ def take_snapshot(
             )
             .where(IntakeFile.scan_session_id == scan_session_id)
             .group_by(IntakeFile.source_id, IntakeFile.state, IntakeFile.batch_scan_id.is_not(None))
-        ) if intake_service.has_intake_schema(database) else []
+        ) if with_intake else []
         recent = _recent_by_source(run, batches, moment - timedelta(seconds=rate_window_seconds))
         alarms = _alarm_samples(run, batches, alarm_policy.window)
-        adopted = _classify_linked(
-            database, run, scan_session_id, linked, sheets, with_quality
-        )
+        adopted = _classify_linked(run, classified, sheets, with_quality)
         query_count = run.count + 1  # + BEGIN
 
     # --- the ledger side of the partition ------------------------------------
@@ -481,7 +491,7 @@ def take_snapshot(
     known = {source.source_id for source in sources}
     extra = [
         source
-        for source in intake_service.list_sources(database)
+        for source in all_sources
         if source.source_id not in known
         and (source.source_id in per_source_ledger or source.source_id in registered_by_source)
     ]
