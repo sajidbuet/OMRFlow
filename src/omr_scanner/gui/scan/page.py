@@ -108,6 +108,7 @@ from omr_scanner.services import (
     check_compatibility,
     collect_scan_files,
     completed_results,
+    coordinator,
     count_conflicts,
     export_scan_results,
     failed_scans,
@@ -312,6 +313,7 @@ class ScanPage(WorkflowPage):
         self._operator = ""
         """Who is working - recorded on scan-session and batch lifecycle events."""
         self._worker: BatchWorker | None = None
+        self._coordinator_lease: coordinator.CoordinatorLease | None = None
         self._announced_processing = False
         """Last value :attr:`processing_changed` reported - see
         ``_announce_processing``."""
@@ -2115,6 +2117,19 @@ class ScanPage(WorkflowPage):
         recorder: BatchRecorder | None = None
         database = self.database
         if batch_id is not None and database is not None:
+            # One coordinator per project (0.1.1 revised phase 7): this run
+            # claims sheets, so it must not overlap the continuous engine.
+            try:
+                self._coordinator_lease = coordinator.acquire(
+                    database,
+                    coordinator.CoordinatorKind.FINITE_SCAN,
+                    owner=self,
+                    label=f"Scan stage batch {batch_id[:8]}",
+                )
+            except coordinator.CoordinatorBusyError as busy:
+                self._reset_progress_panel()
+                self.progress_label.setText(busy.user_message)
+                return False
             try:
                 mark_queued(database, batch_id, paths)
                 set_batch_status(database, batch_id, BatchStatus.RUNNING)
@@ -2158,7 +2173,11 @@ class ScanPage(WorkflowPage):
         worker.finished_report.connect(self._on_batch_finished)
         worker.failed.connect(self._on_batch_failed)
         self._worker = worker
-        worker.start()
+        try:
+            worker.start()
+        except BaseException:
+            self._release_coordinator()
+            raise
         # The timer takes over from here. Deliberately not refreshed inline:
         # "Preparing batch..." should survive until the first tick, which is
         # roughly how long a worker pool takes to start.
@@ -2336,10 +2355,15 @@ class ScanPage(WorkflowPage):
         batch_id = self.state.batch_id
         if hooks is not None:
             hooks.run_recognised(batch_id)
-        self._generate_conflicts(report)
-        if hooks is not None:
-            hooks.review_state_completed(batch_id)
-        self._settle_batch_state(report)
+        try:
+            self._generate_conflicts(report)
+            if hooks is not None:
+                hooks.review_state_completed(batch_id)
+            self._settle_batch_state(report)
+        finally:
+            # Settled (or failed trying): the project is free for the next
+            # coordinator only now, after the batch has left `running`.
+            self._release_coordinator()
         if snapshot is not None:
             self._last_snapshot = snapshot
         self._render_completion(report, self._last_snapshot)
@@ -2571,6 +2595,7 @@ class ScanPage(WorkflowPage):
         """
         self._refresh_timer.stop()
         self._worker = None
+        self._release_coordinator()
         self.progress_label.setText("Unable to start batch processing.")
         self.progress_timing_label.setText(message)
         self.cancel_button.setText("Cancel Processing")
@@ -3352,6 +3377,7 @@ class ScanPage(WorkflowPage):
             # Settled here; a `finished_report` still queued must not settle
             # it a second time (see `_on_batch_finished`).
             self._worker = None
+            self._release_coordinator()
         if self._preview_worker is not None and self._preview_worker.isRunning():
             self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
 
@@ -3359,6 +3385,13 @@ class ScanPage(WorkflowPage):
         """Stop any running worker before the page disappears."""
         self.shutdown_batch()
         super().closeEvent(event)  # type: ignore[arg-type]
+
+    def _release_coordinator(self) -> None:
+        """Give the project's coordinator lease back (idempotent; revised phase 7)."""
+        lease = self._coordinator_lease
+        self._coordinator_lease = None
+        if lease is not None:
+            lease.release()
 
 
 def _clock_time(epoch_seconds: float) -> str:
