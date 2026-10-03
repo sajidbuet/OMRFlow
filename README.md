@@ -242,8 +242,25 @@ ten revised phases.
   deterministic fault injection, real process kills, 1/25/50/75/99 % restart
   series and a 3,000-file endurance run on local disks; **not** network-share,
   real-scanner or power-loss validated; not production qualified.
-- **Pending:** phases 7–10 - quality/rescan/session controls, operational GUI,
-  automated qualification, SMB / installed build / release gate.
+- **Implemented, tests passing, on branch `feat/0.1.1-phase7-quality-session-controls`
+  (not merged):** phase 7, quality / rescan / session controls (migration 17) -
+  still **headless**. A scan-quality decision layer reads each sheet's stored
+  evidence (did it decode, did it register, what did the page-geometry check
+  find) as *accept*, *accept with warning*, *rescan required* or *retry
+  processing*; its mapping is an **unvalidated default**, versioned,
+  fingerprinted and pinned per scan session. *Rescan required* is only a
+  **suggestion** - a named operator confirms it through the existing Reject &
+  Rescan or dismisses it; nothing is rejected or replaced automatically. Rescans
+  arriving at another scanner are suggested as replacements. Pause / finish /
+  cancel intent survives restarts; the finite Scan stage and the engine can no
+  longer process one project at once; duplicate Student IDs appear within one
+  commit; a bounded session snapshot defines *caught up*; *Finish scan session*
+  reconciles every source and lists every blocker. Tested with real process
+  kills at every new durable transition and a 341-sheet three-scanner synthetic
+  scenario; **not** network-share, real-scanner or power-loss validated; not
+  production qualified.
+- **Pending:** phases 8–10 - operational GUI, automated qualification, SMB /
+  installed build / release gate.
 
 | `0.1.1` revised phase | Implemented | Automated tests | Synthetically validated | Real-scan validated | Network-share validated | Production qualified |
 |---|---|---|---|---|---|---|
@@ -253,7 +270,7 @@ ten revised phases.
 | 4 — Session-level effective results | ✅ merged (`fd063f8`; migration 15) | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression against `main` | ✅ synthetic only | ❌ | n/a | ❌ |
 | 5 — Intake sources + ledger | ✅ merged (`59ba8df`; migration 16; headless) | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer and engine process kills, and a 2,400-arrival seeded soak | 🟠 local temporary-directory and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
 | 6 — Continuous-processing engine | ✅ merged (`141d703`; no migration; headless) | ✅ passing, incl. a deterministic kill-boundary matrix, real process kills at six boundaries, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
-| 7 — Quality / rescan / session controls | ⚪ pending | — | — | — | — | — |
+| 7 — Quality / rescan / session controls | ✅ implemented on a branch, not merged (migration 17; headless) | ✅ passing, incl. real process kills at every new durable transition, concurrent operator / snapshot contention and a schema-16 upgrade fixture | 🟠 a 341-sheet three-scanner scenario on a fake filesystem - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 8 — Operational GUI | ⚪ pending | — | — | — | — | — |
 | 9 — Automated qualification | ⚪ pending | — | — | — | — | — |
 | 10 — SMB / installed build / Alpha release gate | ⚪ pending | — | — | — | — | — |

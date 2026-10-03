@@ -202,6 +202,27 @@ same Student ID on two different **sets' papers** is a duplicate is an
 examination-office decision: *File > Project Configuration > Sets* offers
 "Check duplicate Student IDs within each set only" (off by default).
 
+### While sheets keep arriving (revised phase 7)
+
+Under the continuous engine, each commit group's duplicate-ID groups are
+re-derived **right after the commit** - the same bounded pass
+(`sync_duplicate_identifiers_for`), for the identifiers those sheets hold - so a
+sheet read now that repeats a Student ID read hours ago, in another unit or at
+another scanner, is in the queue within one commit instead of when its whole
+unit (up to 200 sheets) finishes. It is a separate short transaction after the
+work unit: a crash in between leaves the unit `running`, and recovery completes
+its batch-scope pass from stored results - the sheet is never read again - and
+the session snapshot does not report *caught up* while a unit is still
+`running`. Human-touched duplicate records are never withdrawn or rewritten by
+a later pass, exactly as before; there is no second conflict system. The
+finite Scan stage still runs its batch-scope pass when the run ends.
+
+A sheet whose scan-quality decision is a **suggested rescan**
+([scan_quality.md](scan_quality.md#the-decision-layer-above-the-evidence-011-revised-phase-7))
+already has its evidence conflict here (`registration_failed`,
+`image_unreadable` or `scan_quality`): resolving that conflict is an answer to
+the suggestion (the sheet is kept), and rejecting the sheet answers both.
+
 ## 4. The reviewer's workflow
 
 1. Process a batch on the **Scan** stage. Conflicts are detected automatically

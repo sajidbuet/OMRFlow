@@ -7,12 +7,25 @@ What OMRFlow promises about opening a project written by a different version.
 | | Current source (`0.1.1` development line, unreleased) |
 |---|---|
 | **Project format version** — the shape of `project.json` | **3** |
-| **Database schema version** — the shape of `database.sqlite` | **16** (`main` since the phase 5 merge `59ba8df`; revised phase 6 adds no migration) |
+| **Database schema version** — the shape of `database.sqlite` | **16** on `main` (since the phase 5 merge `59ba8df`; revised phase 6 adds no migration); **17** on the revised phase 7 branch `feat/0.1.1-phase7-quality-session-controls` (not merged) |
 
 (This table previously read format 2 / schema 9, which no longer matched the
 code; corrected 2026-10-01 from `project_format_version` in a project written
 by current code and `SCHEMA_VERSION` in `database/migrations.py`. It then read
 14 after phase 4 had moved `main` to 15; corrected 2026-10-02.)
+
+## Schema 17 — quality decisions and operator controls (`0.1.1` line, revised phase 7, branch)
+
+Migration 17 adds one table (`scan_quality_decision`) and five columns: the
+scan session's pinned scan-quality policy and its pause / stop intent, and a
+per-source intake pause. It **writes no row and reinterprets nothing**: every
+existing session reads "processing running, intake on, no quality policy
+pinned yet" - exactly how an upgraded project behaved before. Quality decisions
+for sheets read before the upgrade are derived from their stored results the
+first time they are needed. A backup of the database is taken first. A
+schema-17 project is refused by any earlier build with the usual "created with
+a newer version of OMRFlow" message. Tested from a schema-16 project written by
+the schema-16 build (`tests/fixtures/schema16`).
 
 Both appear in the diagnostic bundle (**Application menu → Tools → Create
 Diagnostic Bundle…**). The schema a build *expects* is recorded as
