@@ -75,6 +75,10 @@ def result(
 
 CLEAN = assessment()
 FAILED_NOT_EVALUATED = ScanQualityAssessment(evaluated=False)
+FAILED_AS_RECORDED = assessment(issue(Code.GEOMETRY_NOT_VERIFIED, Status.UNUSABLE), evaluated=False)
+"""What recognition really stores for a page that never registered (measured on a
+blank page and on folded / clipped sheets): an UNUSABLE, not-verified assessment
+that is a by-product of the failure, not a second finding."""
 
 # (case id, stored result, decision, reasons, suggested rejection)
 ROWS = [
@@ -101,6 +105,42 @@ ROWS = [
         D.RESCAN_REQUIRED,
         (R.REGISTRATION_FAILED,),
         RejectionReason.REGISTRATION,
+    ),
+    (
+        "registration_failure_as_recorded",
+        result(
+            RecognitionOutcome.REGISTRATION_FAILED,
+            registration=RegistrationStatus.FAILED,
+            codes=(StatusCode.MARKER_NOT_FOUND.value, StatusCode.SCAN_QUALITY_UNUSABLE.value),
+            quality=FAILED_AS_RECORDED,
+        ),
+        D.RESCAN_REQUIRED,
+        (R.REGISTRATION_FAILED,),
+        RejectionReason.REGISTRATION,
+    ),
+    (
+        "decode_failure_as_recorded",
+        result(
+            RecognitionOutcome.ERROR,
+            registration=RegistrationStatus.FAILED,
+            codes=(StatusCode.IMAGE_LOAD_ERROR.value, StatusCode.SCAN_QUALITY_UNUSABLE.value),
+            quality=FAILED_AS_RECORDED,
+        ),
+        D.RESCAN_REQUIRED,
+        (R.IMAGE_NOT_DECODED,),
+        RejectionReason.POOR_QUALITY,
+    ),
+    (
+        "processing_error_as_recorded",
+        result(
+            RecognitionOutcome.ERROR,
+            registration=RegistrationStatus.FAILED,
+            codes=(StatusCode.PROCESSING_ERROR.value, StatusCode.SCAN_QUALITY_UNUSABLE.value),
+            quality=FAILED_AS_RECORDED,
+        ),
+        D.RETRY_PROCESSING,
+        (R.PROCESSING_ERROR,),
+        None,
     ),
     (
         "unusable_fold",

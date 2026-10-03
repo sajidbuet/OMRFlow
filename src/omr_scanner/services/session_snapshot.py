@@ -528,8 +528,12 @@ def take_snapshot(
         if item.kind == SourceKind.WATCHED.value and item.source_id in known
     ]
     disabled = tuple(item.label for item in watched if not item.enabled)
+    # A paused source is not listed by intake, so its last listing may be old
+    # or absent: paused is never reported as unreachable.
     unreachable = tuple(
-        item.label for item in watched if item.enabled and not item.reachable
+        item.label
+        for item in watched
+        if item.enabled and not item.intake_paused and not item.reachable
     )
     activity = _activity(
         state=str(state or ""),

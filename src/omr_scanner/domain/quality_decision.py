@@ -196,14 +196,18 @@ class QualityEvidence:
             found.add(QualityReason.REGISTRATION_FAILED)
         failed = self.decode_failed or self.processing_error or self.registration_failed
         status = self.quality_status
-        if status == ScanQualityStatus.UNUSABLE.value:
-            found.add(QualityReason.QUALITY_UNUSABLE)
-        elif status == ScanQualityStatus.REVIEW.value:
-            found.add(QualityReason.QUALITY_REVIEW)
-        elif status not in ("", ScanQualityStatus.PASS.value):
-            found.add(QualityReason.UNKNOWN_EVIDENCE)
-        if ScanQualityIssueCode.GEOMETRY_NOT_VERIFIED.value in self.issue_codes:
-            found.add(QualityReason.GEOMETRY_NOT_VERIFIED)
+        if not failed:
+            # A page that never registered carries a geometry assessment only
+            # as a by-product of the failure (recognition records it as not
+            # verifiable): the failure is the evidence, not a second finding.
+            if status == ScanQualityStatus.UNUSABLE.value:
+                found.add(QualityReason.QUALITY_UNUSABLE)
+            elif status == ScanQualityStatus.REVIEW.value:
+                found.add(QualityReason.QUALITY_REVIEW)
+            elif status not in ("", ScanQualityStatus.PASS.value):
+                found.add(QualityReason.UNKNOWN_EVIDENCE)
+            if ScanQualityIssueCode.GEOMETRY_NOT_VERIFIED.value in self.issue_codes:
+                found.add(QualityReason.GEOMETRY_NOT_VERIFIED)
         if self.alignment_warning and not failed:
             found.add(QualityReason.ALIGNMENT_WARNING)
         if (

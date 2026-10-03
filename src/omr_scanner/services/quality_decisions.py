@@ -53,6 +53,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, exists, func, not_, select
+from sqlalchemy.orm import aliased
 
 from omr_scanner.database.models import (
     AuditEvent,
@@ -436,25 +437,32 @@ def outstanding_clause(scan_id_column: Any) -> Any:
     Superseded batches and other dispositions are the effective-set service's
     to decide; callers combine this clause with it.
     """
+    # Aliases, so the clause can sit inside a query that already selects from
+    # these tables without being correlated to that query's rows.
+    conflict = aliased(ReviewConflict)
+    rejection = aliased(ScanRejection)
+    decision = aliased(ScanQualityDecision)
     answered_in_resolve = (
-        exists()
-        .where(ReviewConflict.scan_id == scan_id_column)
-        .where(ReviewConflict.conflict_type.in_(EVIDENCE_CONFLICTS))
-        .where(ReviewConflict.state == ConflictState.RESOLVED.value)
+        select(conflict.conflict_id)
+        .where(conflict.scan_id == scan_id_column)
+        .where(conflict.conflict_type.in_(EVIDENCE_CONFLICTS))
+        .where(conflict.state == ConflictState.RESOLVED.value)
+        .exists()
     )
     not_active = (
-        exists()
-        .where(ScanRejection.scan_id == scan_id_column)
-        .where(ScanRejection.state != LifecycleState.ACTIVE.value)
+        select(rejection.scan_id)
+        .where(rejection.scan_id == scan_id_column)
+        .where(rejection.state != LifecycleState.ACTIVE.value)
+        .exists()
     )
-    return and_(
-        exists()
-        .where(ScanQualityDecision.scan_id == scan_id_column)
-        .where(ScanQualityDecision.decision == QualityDecision.RESCAN_REQUIRED.value)
-        .where(ScanQualityDecision.dismissed_at.is_(None)),
-        not_(not_active),
-        not_(answered_in_resolve),
+    suggested = (
+        select(decision.scan_id)
+        .where(decision.scan_id == scan_id_column)
+        .where(decision.decision == QualityDecision.RESCAN_REQUIRED.value)
+        .where(decision.dismissed_at.is_(None))
+        .exists()
     )
+    return and_(suggested, not_(not_active), not_(answered_in_resolve))
 
 
 def _live_batches(session: Session, scan_session_id: str) -> list[str]:

@@ -2105,31 +2105,39 @@ class ScanPage(WorkflowPage):
         # one.
         self._show_preparing(len(paths))
 
+        database = self.database
+        if database is not None:
+            # One coordinator per project (0.1.1 revised phase 7): this run
+            # registers and claims sheets, so it must not overlap the
+            # continuous engine. Taken before anything is written, so a
+            # refused run leaves no trace.
+            try:
+                self._coordinator_lease = coordinator.acquire(
+                    database,
+                    coordinator.CoordinatorKind.FINITE_SCAN,
+                    owner=self,
+                    label="Scan stage batch run",
+                )
+            except coordinator.CoordinatorBusyError as busy:
+                self._reset_progress_panel()
+                self.progress_label.setText(busy.user_message)
+                return False
+
         # Register (or reuse) the durable batch before a single sheet is read,
         # so that a crash one second into the run still leaves a resumable
         # record of what was supposed to happen.
         try:
             batch_id = self._ensure_batch(paths)
         except _RunRefusedError as refused:
+            self._release_coordinator()
             self._reset_progress_panel()
             self.progress_label.setText(refused.reason)
             return False
+        except BaseException:
+            self._release_coordinator()
+            raise
         recorder: BatchRecorder | None = None
-        database = self.database
         if batch_id is not None and database is not None:
-            # One coordinator per project (0.1.1 revised phase 7): this run
-            # claims sheets, so it must not overlap the continuous engine.
-            try:
-                self._coordinator_lease = coordinator.acquire(
-                    database,
-                    coordinator.CoordinatorKind.FINITE_SCAN,
-                    owner=self,
-                    label=f"Scan stage batch {batch_id[:8]}",
-                )
-            except coordinator.CoordinatorBusyError as busy:
-                self._reset_progress_panel()
-                self.progress_label.setText(busy.user_message)
-                return False
             try:
                 mark_queued(database, batch_id, paths)
                 set_batch_status(database, batch_id, BatchStatus.RUNNING)
