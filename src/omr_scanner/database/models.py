@@ -353,6 +353,30 @@ class ScanSession(Base):
     reconciliation and result rows are keyed by. ``NULL`` until it first holds
     downstream state. Never derived from batch history once set - see ADR-0007."""
 
+    # --- Quality policy and operator controls (migration 17, revised phase 7) ---
+    # Deferred, like the columns above, so a schema-16 project opened read-only
+    # still reads every session.
+    quality_policy_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default="", deferred=True
+    )
+    """The scan-quality policy the session **pinned** when it first evaluated a
+    sheet (:class:`~omr_scanner.domain.quality_decision.QualityPolicy` JSON);
+    empty until then. Never replaced by a later application default."""
+    quality_policy_fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="", server_default="", deferred=True
+    )
+    intake_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", deferred=True
+    )
+    """Operator intent: no source of this session is reconciled or registered.
+    Survives restart (ARCHITECTURE_NOTES §14.3)."""
+    processing_intent: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="running", server_default="running", deferred=True
+    )
+    """Operator intent for recognition: ``running``, ``paused`` or ``stopped``
+    (:class:`~omr_scanner.domain.session_controls.ProcessingIntent`). A restart
+    resumes processing only when this says ``running``."""
+
     def __repr__(self) -> str:
         """Return a debugging representation naming the session and its state."""
         return f"ScanSession(id={self.scan_session_id!r}, state={self.state!r})"
@@ -1681,6 +1705,13 @@ class IntakeSource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    intake_paused: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0", deferred=True
+    )
+    """Operator intent (migration 17, revised phase 7): this source is neither
+    reconciled nor registered from until resumed. Paused is not unreachable:
+    reachability keeps describing the last listing. Deferred, so a schema-16
+    project opened read-only still lists its sources."""
 
     def __repr__(self) -> str:
         """Return a debugging representation naming the source."""
@@ -1844,3 +1875,52 @@ class IntakeFile(Base):
             f"IntakeFile(id={self.intake_file_id}, path={self.relative_path!r}, "
             f"state={self.state!r})"
         )
+
+
+# ----------------------------------------------------------------------
+# 0.1.1 revised phase 7: scan-quality decisions (migration 17)
+# ----------------------------------------------------------------------
+class ScanQualityDecision(Base):
+    """What the session's pinned quality policy decided about one read sheet.
+
+    Machine state derived from the sheet's stored evidence
+    (:mod:`omr_scanner.services.quality_decisions`), written in the **same
+    transaction** as the sheet's result (the durable work unit) and rewritten
+    when the sheet is read again. It records the policy fingerprint that
+    produced it, so an interpretation is always inspectable later.
+
+    A ``rescan_required`` row is a **suggestion**: it never changes whether the
+    sheet counts. Only an operator's confirmation, through
+    :func:`~omr_scanner.services.scan_lifecycle.reject_scan`, does that. An
+    operator may instead *dismiss* the suggestion (kept here, history in
+    ``audit_event``).
+    """
+
+    __tablename__ = "scan_quality_decision"
+    __table_args__ = (Index("ix_scan_quality_decision_batch", "batch_id", "decision"),)
+
+    scan_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("batch_scan.scan_id", ondelete="CASCADE"), primary_key=True
+    )
+    batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("scan_batch.batch_id", ondelete="CASCADE"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(30), nullable=False)
+    """:class:`~omr_scanner.domain.quality_decision.QualityDecision` value."""
+    reasons: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    """Comma-separated :class:`~omr_scanner.domain.quality_decision.QualityReason` values."""
+    issue_codes: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    areas: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    suggested_reason: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    """For ``rescan_required``: the suggested rejection reason."""
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    policy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    """When an operator declined the suggested rescan (kept the sheet)."""
+    dismissed_by: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    dismiss_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    def __repr__(self) -> str:
+        """Return a debugging representation naming the scan and its decision."""
+        return f"ScanQualityDecision(scan_id={self.scan_id}, decision={self.decision!r})"
