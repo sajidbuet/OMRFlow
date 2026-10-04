@@ -271,6 +271,27 @@ outlives sessions and is attached to one at a time.
 | `last_attempt_at` / `last_reconciled_at` | Last listing attempt; last **successful** reconciliation (also: when every settled, present row was last seen) |
 | `last_file_seen_at` / `last_file_seen_path` | The newest admissible file a pass discovered |
 | `created_at` / `created_by` / `updated_at` | Bookkeeping; configuration changes are also `audit_event` rows (`entity_type = intake_source`) |
+| `intake_paused` | *Migration 17 (revised phase 7), deferred.* Operator intent: the source is not listed or registered from. Paused is **not** unreachable. Changes are `audit_event` rows (`entity_type = session_control`, `source_paused` / `source_resumed`) |
+
+### ScanQualityDecision - *implemented (0.1.1 revised phase 7)*
+
+Table `scan_quality_decision`; [scan_quality.md](scan_quality.md), ADR-0010.
+One row per **read** sheet: what the session's pinned quality policy decided
+from the sheet's stored evidence. Written by `batch_store.record_results` in
+the sheet's own work-unit transaction; rewritten when the sheet is read again
+(a changed decision clears a dismissal). Machine state - never changes whether
+the sheet counts.
+
+| Field | Purpose |
+|---|---|
+| `scan_id` | PK, FK `batch_scan` (`CASCADE`) |
+| `batch_id` | FK `scan_batch` (`CASCADE`); index `ix_scan_quality_decision_batch (batch_id, decision)` |
+| `decision` | `accept`, `accept_with_warning`, `rescan_required`, `retry_processing` |
+| `reasons` / `issue_codes` / `areas` | Comma-separated reason codes; the geometry issues and page areas behind them (provenance) |
+| `suggested_reason` | For `rescan_required`: the suggested existing `RejectionReason` |
+| `policy_version` / `policy_fingerprint` | The policy that decided |
+| `evaluated_at` | When |
+| `dismissed_at` / `dismissed_by` / `dismiss_note` | An operator declined the suggested rescan (also an `audit_event`, `entity_type = scan_quality`, `quality_dismissed`) |
 
 ### IntakeSourceAttachment - *implemented (0.1.1 revised phase 5)*
 
@@ -355,6 +376,8 @@ project opened read-only still reads). Nothing was rebuilt or copied.
 | `generated_report.scan_session_id` | The session an output was generated from (`NULL`: written before migration 15, or a batch with no session) |
 | `generated_report.is_final` | A Final Export (from a CLOSED session), not a preview |
 | `generated_report.session_closed_at` | The `closed_at` of the close a final output came from; it is current only while the session is closed by that same close |
+| `scan_session.quality_policy_json` / `quality_policy_fingerprint` | *Migration 17 (revised phase 7), deferred.* The scan-quality policy the session pinned when it first decided a sheet, and its SHA-256 fingerprint; empty until then; never replaced (ADR-0010) |
+| `scan_session.intake_paused` / `processing_intent` | *Migration 17, deferred.* Operator intent: intake paused for every source of the session; recognition `running` / `paused` / `stopped`. A restart resumes recognition only when the stored intent is `running`. Changes are `audit_event` rows (`entity_type = session_control`) |
 
 Indexes: `ix_batch_scan_identifier (identifier_value)`,
 `ix_batch_scan_content (content_sha256)`,
@@ -839,6 +862,27 @@ when the standing command is a machine `withdrawn` - and is not undoable. Phase 
 | `scan_session`, `batch_supersession`; `scan_batch.scan_session_id` / `sealed_at` / `sealed_by` / `role` | Scan sessions, finite-batch membership, batch roles and first-class batch supersession. | Scan sessions, 0.1.1 phase 2 (migration 14) |
 | `scan_session.downstream_batch_id`; `generated_report.scan_session_id` / `is_final` / `session_closed_at` | A session's recorded downstream store; final outputs' scope. | Session scope, 0.1.1 phase 4 (migration 15) |
 | `intake_source`, `intake_source_attachment`, `intake_file`; `batch_scan.intake_file_id` / `registered_at`; `scan_batch.source_id` | Intake sources, their session attachments and the intake ledger; provenance links from scans and batches. | Intake, 0.1.1 revised phase 5 (migration 16) |
+| `scan_quality_decision`; `scan_session.quality_policy_json` / `quality_policy_fingerprint` / `intake_paused` / `processing_intent`; `intake_source.intake_paused` | Per-sheet scan-quality decisions; the session's pinned quality policy and persisted pause / stop intent; per-source intake pause. | Quality and controls, 0.1.1 revised phase 7 (migration 17) |
+
+### Schema version 17 (quality decisions and operator controls, 0.1.1 revised phase 7)
+
+`_migration_017_quality_and_controls` creates `scan_quality_decision` and adds
+`scan_session.quality_policy_json` (TEXT, default `''`),
+`scan_session.quality_policy_fingerprint` (VARCHAR(64), default `''`),
+`scan_session.intake_paused` (BOOLEAN, default 0),
+`scan_session.processing_intent` (VARCHAR(20), default `'running'`) and
+`intake_source.intake_paused` (BOOLEAN, default 0), each guarded by
+`PRAGMA table_info`. **Structure only, nothing reinterpreted**: every existing
+session reads "running, intake on, no policy pinned yet" - what an upgraded
+project did before. Decisions for sheets read before the upgrade are derived
+from their stored results on first use (`quality_decisions.evaluate_stored`,
+run by the engine's restart sequence and by *Finish scan session*), never by
+the migration. The pre-migration backup runs first
+(`backup_*_before-migration-16-to-17.sqlite3`). New model columns are
+**deferred**, so a schema-16 project opened read-only still reads every session
+and source. Why a migration was needed (not a derivation): ADR-0010 §1. Upgrade
+tests run from a schema-16 project written by the schema-16 build
+(`tests/fixtures/schema16`, `main` at `e8200b4`).
 
 ### Schema version 16 (intake sources and ledger, 0.1.1 revised phase 5)
 

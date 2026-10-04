@@ -497,6 +497,14 @@ class ReplacementCandidate:
             sheet's. Said on screen so the operator knows where it came from -
             never used as evidence either way.
         read_at: When it was read, when known.
+        source_id: The intake source (scanner) it arrived from, when known
+            (0.1.1 revised phase 7). Provenance - a rescan from another
+            scanner is as valid as one from the same scanner.
+        source_label: That source's name.
+        arrived_at: When it was registered (arrival), when known.
+        arrived_after_rejection: Whether it arrived after the rejected sheet
+            was rejected - a rescan normally does. ``None`` when either time
+            is unknown. Ranks suggestions; never decides anything.
     """
 
     scan_id: int
@@ -508,6 +516,10 @@ class ReplacementCandidate:
     batch_label: str = ""
     other_batch: bool = False
     read_at: datetime | None = None
+    source_id: str | None = None
+    source_label: str = ""
+    arrived_at: datetime | None = None
+    arrived_after_rejection: bool | None = None
 
     @property
     def evidence(self) -> str:
@@ -518,6 +530,18 @@ class ReplacementCandidate:
         if self.set_code_agrees is False:
             return f"{base}; set code differs ({self.set_code or 'unread'})"
         return f"{base}; set code not compared"
+
+    @property
+    def provenance(self) -> str:
+        """Where and when it arrived, in an operator's words (revised phase 7)."""
+        parts: list[str] = []
+        if self.source_label:
+            parts.append(f"from {self.source_label}")
+        if self.arrived_after_rejection is True:
+            parts.append("arrived after the rejection")
+        elif self.arrived_after_rejection is False:
+            parts.append("arrived before the rejection")
+        return "; ".join(parts)
 
 
 @dataclass(frozen=True, slots=True)

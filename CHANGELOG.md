@@ -98,6 +98,51 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   `sqlite3` already applied implicitly) on every connection.
 - **Project Health** reports a sheet claimed for processing in a batch that is
   not running, and a watched file registered as more than one scan.
+- **Quality decisions, rescan suggestions, persisted controls and session
+  closure** (revised phase 7, roadmap E second part; branch
+  `feat/0.1.1-phase7-quality-session-controls`, not merged; headless; ADR-0010).
+  - A pure, versioned, fingerprinted scan-quality decision layer maps stored
+    evidence to *accept* / *accept with warning* / *rescan required* / *retry
+    processing* (a software fault is never a paper fault). The default policy
+    is labelled **UNVALIDATED DEFAULT**; each scan session pins the policy it
+    first used; each read sheet's decision is stored in its own work-unit
+    transaction with the policy fingerprint. *Rescan required* is only ever a
+    **suggestion**: a named operator confirms it through the existing
+    `reject_scan`, or dismisses it (audited). No new recognition threshold.
+  - Rescan suggestions for a scan session match any of its batches and any
+    intake source, ranked by set code, arrival after the rejection, and
+    recency; confirmation stays the operator's.
+  - Intake (per session and per source) and recognition (running / paused /
+    stopped) intent is persisted and audited; a restart resumes recognition
+    only when the stored intent is running. *Finish current and stop* and
+    *Cancel queued work* (named operator) are distinct engine policies.
+  - **One processing coordinator per project**: the finite Scan stage and the
+    continuous engine take a process-local lease; the second gets a typed
+    `CoordinatorBusyError`. A refused *Process All* writes nothing.
+  - Cross-sheet duplicate Student IDs reach Resolve within one commit (a
+    bounded pass after each commit group); a kill in between is completed by
+    recovery from stored results.
+  - Held, unreadable and unsupported intake files can be released, retried or
+    dismissed by a named operator (audited).
+  - A bounded, immutable **session snapshot** (11 statements; partitioning
+    counts, three progress lines, *caught up* with source reachability,
+    per-source state, a registration-failure rate alarm) and **Finish scan
+    session** (final reconciliation, every blocker as a typed code, audited
+    close; named, audited reopen).
+  - **One closure policy.** Reports' one-step *Close session and generate
+    final export* and the Scan stage's *Close scan session* close through
+    *Finish scan session* (`gui/session_close.py`), not the older Phase C
+    checks - found by pre-merge review and fixed before merge. Held files,
+    unanswered suggested rescans, unreachable sources and another coordinator
+    now refuse those closes too; outstanding rescans / deferred sheets still
+    close only by the named operator's audited acceptance. Reports still checks
+    first that the chosen sets can be exported at all.
+  - Documentation: OMRFlow keeps SQLite's rollback journal (not WAL); a phase 7
+    handoff note and the wiki's project-format page that said otherwise were
+    corrected. No journal-mode change.
+  - **Migration 17 (schema 17)**: `scan_quality_decision`; the session's pinned
+    policy and intent; per-source pause. Additive; tested from a schema-16
+    project written by the schema-16 build.
 
 ### Fixed (`0.1.1` line)
 

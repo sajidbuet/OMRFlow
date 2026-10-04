@@ -165,6 +165,50 @@ does because it re-decides already-measured pixels.
   migration was needed and projects written before the feature load unchanged,
   with `scan_quality` absent meaning "never checked".
 
+## The decision layer above the evidence (0.1.1 revised phase 7)
+
+Everything above *measures*. A separate, pure layer
+(`omr_scanner/domain/quality_decision.py`) *interprets* what was measured -
+together with whether the image decoded and whether the page registered - as
+one decision per read sheet, with reason codes:
+
+| Evidence | Decision |
+|---|---|
+| The image does not decode | `RESCAN_REQUIRED` (suggests *poor quality*) |
+| Registration failed | `RESCAN_REQUIRED` (suggests *registration*) - and a per-source **rate** alarm on the session snapshot, because a wrong template fails every sheet |
+| Verdict `UNUSABLE` | `RESCAN_REQUIRED` (reason from the issue: *clipped*, *folded*, *registration*, *id_unreadable*, else *poor quality*) |
+| Verdict `REVIEW` | `ACCEPT_WITH_WARNING` - the `scan_quality` conflict above remains where a human looks |
+| `GEOMETRY_NOT_VERIFIED` | `ACCEPT_WITH_WARNING` |
+| Processing error, a dead worker, a template the engine could not apply | `RETRY_PROCESSING` - neither: a software fault is not a paper fault, and never suggests a rescan |
+| A quality status this build does not know | `ACCEPT_WITH_WARNING` |
+| Alignment warning; assessment that could not run | recorded, not escalated |
+
+A page that never registered carries an assessment only as a by-product of the
+failure (recognition records it as not verifiable); the decision layer reports
+the failure, not a second geometry finding.
+
+* **No new threshold.** `ScanQualityThresholds` stay the evidence thresholds;
+  the layer maps their verdicts.
+* **Versioned, fingerprinted, pinned.** The policy is data (version, rules, an
+  ordered rejection-reason precedence) with a SHA-256 fingerprint of its
+  canonical JSON. A scan session pins the policy it first evaluates with
+  (`scan_session.quality_policy_json`, migration 17); a later change of the
+  application default never re-interprets a session already scanning. Every
+  stored decision (`scan_quality_decision`) records the fingerprint that
+  produced it, and is written **in the sheet's own work-unit transaction**.
+* **UNVALIDATED DEFAULT.** The mapping is the engineering starting point of
+  `ARCHITECTURE_NOTES.md` §12. It has not been calibrated against real
+  rejected and rescanned examination scripts; the policy carries
+  `validated = false` and says so in its stored note.
+* **A suggestion, never a rejection.** `RESCAN_REQUIRED` changes nothing about
+  whether the sheet counts. A named operator answers it: confirms it
+  (`quality_decisions.confirm_suggestion` - exactly the existing
+  `reject_scan`, one transaction with its audit event), dismisses it (audited;
+  the sheet is kept as read), or resolves the sheet's own evidence conflict in
+  Resolve (the same question). Undoing a confirmed rejection makes the
+  suggestion outstanding again. See
+  [ADR-0010](decisions/ADR-0010-quality-decisions-and-session-controls.md).
+
 ## Known limitations
 
 * A lattice whose features nearly touch along one axis carries little

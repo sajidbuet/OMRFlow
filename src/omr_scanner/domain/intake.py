@@ -210,6 +210,26 @@ TRANSITIONS: dict[IntakeState, frozenset[IntakeState]] = {
 """
 
 
+OPERATOR_TRANSITIONS: dict[IntakeState, frozenset[IntakeState]] = {
+    IntakeState.HELD: frozenset({IntakeState.READY, IntakeState.IGNORED}),
+    IntakeState.UNREADABLE: frozenset({IntakeState.STABILIZING, IntakeState.IGNORED}),
+    IntakeState.UNSUPPORTED: frozenset({IntakeState.IGNORED}),
+}
+"""Exits from states that wait for a **named operator's decision** (revised phase 7).
+
+Kept apart from :data:`TRANSITIONS` on purpose: no reconciliation, recovery or
+registration may ever take these steps - only
+:func:`omr_scanner.services.intake_decisions.decide_file`, one audited
+transaction per decision:
+
+* ``held -> ready``: *release* into an open session (re-verified before it is
+  registered);
+* ``unreadable -> stabilizing``: *retry* - observe and read afresh;
+* ``held / unreadable / unsupported -> ignored``: *dismiss* - keep the record,
+  never register it.
+"""
+
+
 class IntakeTransitionError(ValueError):
     """A ledger transition outside :data:`TRANSITIONS` was attempted."""
 
@@ -236,6 +256,14 @@ def require_transition(current: IntakeState | None, target: IntakeState) -> None
     if target not in TRANSITIONS[current]:
         raise IntakeTransitionError(
             f"intake transition {current.value} -> {target.value} is not allowed"
+        )
+
+
+def require_operator_transition(current: IntakeState, target: IntakeState) -> None:
+    """Refuse an operator decision :data:`OPERATOR_TRANSITIONS` does not allow."""
+    if target not in OPERATOR_TRANSITIONS.get(current, frozenset()):
+        raise IntakeTransitionError(
+            f"an operator cannot move an intake row from {current.value} to {target.value}"
         )
 
 
@@ -274,6 +302,15 @@ class IntakeReason(StrEnum):
     SESSION_CLOSED = "session_closed"
     # --- vanished --------------------------------------------------------------
     DISAPPEARED = "disappeared"
+    # --- operator decisions (revised phase 7) ----------------------------------
+    OPERATOR_RELEASED = "operator_released"
+    """A held file an operator released into an open session: re-verified,
+    then registered like any ready file."""
+    OPERATOR_RETRY = "operator_retry"
+    """An unreadable file an operator asked to be observed and read again."""
+    OPERATOR_DISMISSED = "operator_dismissed"
+    """A held, unreadable or unsupported file an operator decided not to
+    process. Kept as a record (``ignored``), never registered."""
 
 
 IGNORE_REASONS: frozenset[IntakeReason] = frozenset(
@@ -576,6 +613,7 @@ __all__ = [
     "MANUAL_POLICY",
     "MANUAL_SOURCE_LABEL",
     "NETWORK_POLICY",
+    "OPERATOR_TRANSITIONS",
     "SOURCE_ENTITY",
     "TEMPORARY_SUFFIXES",
     "TERMINAL_STATES",
@@ -597,5 +635,6 @@ __all__ = [
     "is_hidden_folder",
     "is_network_path",
     "is_temporary_name",
+    "require_operator_transition",
     "require_transition",
 ]

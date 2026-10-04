@@ -1,0 +1,19 @@
+{
+  "written_by_version": "0.1.1-alpha.0",
+  "written_by_commit": "e8200b4",
+  "schema_version": 16,
+  "written_at": "2026-10-03T18:43:22+00:00",
+  "projects": [
+    "continuous"
+  ],
+  "open_session": "c941f5751d2d45108f6342efd7a1733f",
+  "closed_session": "4b243969360a475f9dfabbb6819e47e1",
+  "batch": "c9247ca106ff4996bf16e20a7145266c",
+  "source": "15da525241fc4b11a44d297f84a2afe2",
+  "held_intake_file": 1,
+  "sheets": {
+    "clean": "clean.png",
+    "unregistered": "unregistered.png",
+    "folded": "folded.png"
+  }
+}

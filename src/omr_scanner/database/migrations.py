@@ -80,6 +80,7 @@ from omr_scanner.database.models import (
     ReportTemplateAssociation,
     ReviewConflict,
     ScanBatch,
+    ScanQualityDecision,
     ScanRejection,
     ScanSession,
     SchemaMigration,
@@ -751,6 +752,49 @@ def _migration_016_intake(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+QUALITY_CONTROL_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("scan_session", "quality_policy_json", "TEXT NOT NULL DEFAULT ''"),
+    ("scan_session", "quality_policy_fingerprint", "VARCHAR(64) NOT NULL DEFAULT ''"),
+    ("scan_session", "intake_paused", "BOOLEAN NOT NULL DEFAULT 0"),
+    ("scan_session", "processing_intent", "VARCHAR(20) NOT NULL DEFAULT 'running'"),
+    ("intake_source", "intake_paused", "BOOLEAN NOT NULL DEFAULT 0"),
+)
+
+
+def _migration_017_quality_and_controls(connection: Connection) -> None:
+    """Persist scan-quality decisions and operator controls (0.1.1 revised phase 7).
+
+    Structure only:
+
+    * ``scan_quality_decision`` - one row per read sheet: the decision the
+      session's pinned quality policy reached from the sheet's stored evidence,
+      the policy fingerprint, and an operator's dismissal of a suggested
+      rescan. Needed because the scan-quality verdict otherwise exists only
+      inside ``batch_scan.result_json``: a session snapshot polled every
+      second could not count suggested rescans without parsing every stored
+      result.
+    * ``scan_session.quality_policy_json`` / ``quality_policy_fingerprint`` -
+      the pinned policy (empty until the session first evaluates a sheet).
+    * ``scan_session.intake_paused`` / ``processing_intent`` and
+      ``intake_source.intake_paused`` - the operator's pause / stop intent,
+      which must survive a restart (it was in memory in revised phase 6).
+
+    **No row is written and nothing is reinterpreted**: every existing session
+    reads "running, intake on, no policy pinned yet", which is exactly what an
+    upgraded project did before. Decisions for sheets read before the upgrade
+    are derived from their stored results on first use, never by the migration.
+    """
+    Base.metadata.create_all(
+        connection, tables=[Base.metadata.tables[ScanQualityDecision.__tablename__]]
+    )
+    for table, name, ddl in QUALITY_CONTROL_COLUMNS:
+        existing = {
+            row[1] for row in connection.execute(text(f"PRAGMA table_info({table})")).all()
+        }
+        if name not in existing:
+            connection.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         version=1,
@@ -861,6 +905,14 @@ MIGRATIONS: tuple[Migration, ...] = (
             "intake link and registration time per sheet; source per batch"
         ),
         apply=_migration_016_intake,
+    ),
+    Migration(
+        version=17,
+        description=(
+            "Quality and controls: per-sheet scan-quality decisions; the session's "
+            "pinned quality policy and pause / stop intent; per-source intake pause"
+        ),
+        apply=_migration_017_quality_and_controls,
     ),
 )
 

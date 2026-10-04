@@ -38,7 +38,8 @@ report-template bindings.
 automatically when an older project is opened; a newer schema is refused. See
 [Upgrade Compatibility](Upgrade-Compatibility).
 
-SQLite is used in WAL mode with foreign keys enforced.
+SQLite is used in its default rollback-journal mode (not WAL - see ADR-0002)
+with foreign keys enforced.
 
 > The full table-by-table description is
 > **[`docs/DATA_MODEL.md`](https://github.com/sajidbuet/OMRFlow/blob/main/docs/DATA_MODEL.md)**.

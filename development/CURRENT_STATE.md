@@ -40,6 +40,30 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
+### Quality decisions, rescan suggestions, persisted controls and session closure (`0.1.1` revised phase 7 / roadmap E second part, 2026-10-04 — implemented; automated tests passing; branch `feat/0.1.1-phase7-quality-session-controls`, not merged; migration 17, schema 17; headless)
+
+- **What exists:** `domain/quality_decision.py` + `services/quality_decisions.py`
+  (versioned, fingerprinted policy - **UNVALIDATED DEFAULT** - pinned per
+  session; per-sheet decisions in the work unit; suggested rescans confirmed
+  through `reject_scan` or dismissed, never automatic);
+  `scan_lifecycle.session_possible_rescans` (session-scoped, source / arrival
+  ranked); `domain/`/`services/session_controls.py` (persisted intake,
+  per-source and processing intent); `services/coordinator.py` (one processing
+  coordinator per project, used by the engine and the finite Scan stage);
+  `services/intake_decisions.py` (held / unreadable / unsupported decisions);
+  `domain/`/`services/session_snapshot.py` (bounded snapshot, partition, three
+  progress lines, caught-up, per-source, rate alarm);
+  `domain/`/`services/session_finish.py` (typed blockers, audited close and
+  reopen); engine: lease, persisted intent, incremental duplicate pass,
+  `finish_current_and_stop`, `cancel_queued_and_stop`, `finish_session`.
+  `gui/session_close.py`: Reports' *Close session and generate final export*
+  and Scan's *Close scan session* close through `finish_scan_session` - the
+  one closure policy (pre-merge correction; no production caller of
+  `close_scan_session` remains outside it). SQLite stays in rollback-journal
+  mode (not WAL). ADR-0010; handoff `development/releases/0.1.1-alpha.0/PHASE_G_HANDOFF.md`.
+- **Not:** a GUI for any of it (phase 8); network-share, real-scanner or
+  power-loss validation; calibrated quality defaults; the phase 9 campaign.
+
 ### Continuous-processing engine (`0.1.1` revised phase 6 / roadmap E first part, 2026-10-02 — implemented; automated tests passing; merged to `main` as `141d703`; no migration, schema 16; headless)
 
 - **What exists:** `domain/processing.py` (engine states, `EngineLimits`,

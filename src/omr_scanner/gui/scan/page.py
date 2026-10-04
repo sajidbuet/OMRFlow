@@ -70,6 +70,7 @@ from omr_scanner.config.processing import ProcessingSettings, detected_cpu_count
 from omr_scanner.domain.review import ReviewCounts
 from omr_scanner.domain.scan_sessions import BatchMembership, BatchRole, ScanSessionState
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.gui import session_close
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
@@ -108,6 +109,7 @@ from omr_scanner.services import (
     check_compatibility,
     collect_scan_files,
     completed_results,
+    coordinator,
     count_conflicts,
     export_scan_results,
     failed_scans,
@@ -138,6 +140,7 @@ from omr_scanner.services.scan_sessions import ScanSessionError, TemplatePinErro
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable, Sequence
 
+    from omr_scanner.domain.session_finish import FinishOutcome
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.evaluation.benchmark import BenchmarkReport
     from omr_scanner.evaluation.session import BenchmarkComparison, BenchmarkSession
@@ -312,6 +315,7 @@ class ScanPage(WorkflowPage):
         self._operator = ""
         """Who is working - recorded on scan-session and batch lifecycle events."""
         self._worker: BatchWorker | None = None
+        self._coordinator_lease: coordinator.CoordinatorLease | None = None
         self._announced_processing = False
         """Last value :attr:`processing_changed` reported - see
         ``_announce_processing``."""
@@ -1099,32 +1103,56 @@ class ScanPage(WorkflowPage):
         return True
 
     def close_active_scan_session(self, *, acknowledge_incomplete: bool = False) -> bool:
-        """Close the active scan session, sealing its batches. No dialog.
+        """Close the active scan session, sealing its batches. A dialog only if refused.
 
-        The closure checks run in the service (0.1.1 phase 4): unread sheets
-        or unresolved conflicts refuse; outstanding rescans and deferred sheets
-        refuse unless ``acknowledge_incomplete``.
+        Closes through *Finish scan session*
+        (:mod:`omr_scanner.gui.session_close`), the one closure policy: final
+        reconciliation of the session's sources and every blocker. Outstanding
+        rescans, unmatched replacements and deferred sheets refuse unless
+        ``acknowledge_incomplete`` - the named operator's audited acceptance.
         """
-        database, current = self.database, self.active_scan_session()
-        if database is None or current is None:
+        outcome = self._finish_active_session(accept_incomplete=acknowledge_incomplete)
+        if outcome is None:
             return False
+        if not outcome.closed:
+            self.show_close_blockers(session_close.refusal_messages(outcome))
+            return False
+        self._after_session_closed()
+        return True
+
+    def _finish_active_session(self, *, accept_incomplete: bool) -> FinishOutcome | None:
+        """Run the finish policy on the active session; ``None`` when it could not run."""
+        project, current = self._session, self.active_scan_session()
+        if project is None or current is None:
+            return None
         if self._worker is not None and self._worker.isRunning():
-            return False
+            return None
         try:
-            scan_sessions.close_scan_session(
-                database,
+            return session_close.finish(
+                project,
                 current.scan_session_id,
-                closed_by=self._operator,
-                acknowledge_incomplete=acknowledge_incomplete,
+                operator=self._operator,
+                accept_incomplete=accept_incomplete,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Close scan session")
-            return False
+            return None
+
+    def _after_session_closed(self) -> None:
         self._refresh_batch_state_label()
         self._refresh_session_label()
         self._refresh_controls()
         self.active_session_changed.emit()
-        return True
+
+    def show_close_blockers(self, blockers: list[str]) -> None:
+        """List why the active session was not closed; nothing was changed."""
+        current = self.active_scan_session()
+        name = current.name if current is not None else ""
+        QMessageBox.information(
+            self,
+            "Scan session cannot be closed yet",
+            f"'{name}' was not closed:\n\n" + "\n".join(f"• {item}" for item in blockers),
+        )
 
     def reopen_active_scan_session(self) -> bool:
         """Reopen the active scan session. No dialog."""
@@ -1223,41 +1251,36 @@ class ScanPage(WorkflowPage):
         current = self.active_scan_session()
         if current is None:
             return
-        database = self.database
-        blockers = (
-            scan_sessions.closure_blockers(database, current.scan_session_id)
-            if database is not None
-            else ()
-        )
-        hard = [item.message for item in blockers if not item.acknowledgeable]
-        if hard:
-            QMessageBox.information(
-                self,
-                "Scan session cannot be closed yet",
-                f"'{current.name}' was not closed:\n\n"
-                + "\n".join(f"• {item.message}" for item in blockers),
-            )
-            return
-        soft = [item.message for item in blockers if item.acknowledgeable]
-        text = (
-            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
-            "batches until it is reopened."
-        )
-        if soft:
-            text += (
-                "\n\nIts results are incomplete:\n"
-                + "\n".join(f"• {item}" for item in soft)
-                + "\n\nClosing accepts that, recorded against your name."
-            )
         answer = QMessageBox.question(
             self,
             "Close scan session",
-            text,
+            f"Close '{current.name}'? Its sources get a final check, its batches are "
+            "sealed and it accepts no new batches until it is reopened.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        outcome = self._finish_active_session(accept_incomplete=False)
+        if outcome is None:
+            return
+        if outcome.closed:
+            self._after_session_closed()
+            return
+        if not outcome.blockers or not all(item.acknowledgeable for item in outcome.blockers):
+            self.show_close_blockers(session_close.refusal_messages(outcome))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Results are incomplete",
+            f"'{current.name}' can only be closed with incomplete results:\n"
+            + "\n".join(f"• {item}" for item in session_close.blocker_messages(outcome.blockers))
+            + "\n\nClosing accepts that, recorded against your name.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self.close_active_scan_session(acknowledge_incomplete=bool(soft))
+            self.close_active_scan_session(acknowledge_incomplete=True)
 
     def _prompt_reopen_scan_session(self) -> None:
         current = self.active_scan_session()
@@ -2103,17 +2126,38 @@ class ScanPage(WorkflowPage):
         # one.
         self._show_preparing(len(paths))
 
+        database = self.database
+        if database is not None:
+            # One coordinator per project (0.1.1 revised phase 7): this run
+            # registers and claims sheets, so it must not overlap the
+            # continuous engine. Taken before anything is written, so a
+            # refused run leaves no trace.
+            try:
+                self._coordinator_lease = coordinator.acquire(
+                    database,
+                    coordinator.CoordinatorKind.FINITE_SCAN,
+                    owner=self,
+                    label="Scan stage batch run",
+                )
+            except coordinator.CoordinatorBusyError as busy:
+                self._reset_progress_panel()
+                self.progress_label.setText(busy.user_message)
+                return False
+
         # Register (or reuse) the durable batch before a single sheet is read,
         # so that a crash one second into the run still leaves a resumable
         # record of what was supposed to happen.
         try:
             batch_id = self._ensure_batch(paths)
         except _RunRefusedError as refused:
+            self._release_coordinator()
             self._reset_progress_panel()
             self.progress_label.setText(refused.reason)
             return False
+        except BaseException:
+            self._release_coordinator()
+            raise
         recorder: BatchRecorder | None = None
-        database = self.database
         if batch_id is not None and database is not None:
             try:
                 mark_queued(database, batch_id, paths)
@@ -2158,7 +2202,11 @@ class ScanPage(WorkflowPage):
         worker.finished_report.connect(self._on_batch_finished)
         worker.failed.connect(self._on_batch_failed)
         self._worker = worker
-        worker.start()
+        try:
+            worker.start()
+        except BaseException:
+            self._release_coordinator()
+            raise
         # The timer takes over from here. Deliberately not refreshed inline:
         # "Preparing batch..." should survive until the first tick, which is
         # roughly how long a worker pool takes to start.
@@ -2336,10 +2384,15 @@ class ScanPage(WorkflowPage):
         batch_id = self.state.batch_id
         if hooks is not None:
             hooks.run_recognised(batch_id)
-        self._generate_conflicts(report)
-        if hooks is not None:
-            hooks.review_state_completed(batch_id)
-        self._settle_batch_state(report)
+        try:
+            self._generate_conflicts(report)
+            if hooks is not None:
+                hooks.review_state_completed(batch_id)
+            self._settle_batch_state(report)
+        finally:
+            # Settled (or failed trying): the project is free for the next
+            # coordinator only now, after the batch has left `running`.
+            self._release_coordinator()
         if snapshot is not None:
             self._last_snapshot = snapshot
         self._render_completion(report, self._last_snapshot)
@@ -2571,6 +2624,7 @@ class ScanPage(WorkflowPage):
         """
         self._refresh_timer.stop()
         self._worker = None
+        self._release_coordinator()
         self.progress_label.setText("Unable to start batch processing.")
         self.progress_timing_label.setText(message)
         self.cancel_button.setText("Cancel Processing")
@@ -3352,6 +3406,7 @@ class ScanPage(WorkflowPage):
             # Settled here; a `finished_report` still queued must not settle
             # it a second time (see `_on_batch_finished`).
             self._worker = None
+            self._release_coordinator()
         if self._preview_worker is not None and self._preview_worker.isRunning():
             self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
 
@@ -3359,6 +3414,13 @@ class ScanPage(WorkflowPage):
         """Stop any running worker before the page disappears."""
         self.shutdown_batch()
         super().closeEvent(event)  # type: ignore[arg-type]
+
+    def _release_coordinator(self) -> None:
+        """Give the project's coordinator lease back (idempotent; revised phase 7)."""
+        lease = self._coordinator_lease
+        self._coordinator_lease = None
+        if lease is not None:
+            lease.release()
 
 
 def _clock_time(epoch_seconds: float) -> str:

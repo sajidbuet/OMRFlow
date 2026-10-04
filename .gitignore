@@ -51,8 +51,10 @@ desktop.ini
 !tests/fixtures/schema13/*/database.sqlite
 # ... the schema-14 ones (tests/fixtures/schema14/make_schema14_projects.py) ...
 !tests/fixtures/schema14/*/database.sqlite
-# ... and the schema-15 ones (tests/fixtures/schema15/make_schema15_projects.py).
+# ... the schema-15 ones (tests/fixtures/schema15/make_schema15_projects.py) ...
 !tests/fixtures/schema15/*/database.sqlite
+# ... and the schema-16 one (tests/fixtures/schema16/make_schema16_projects.py).
+!tests/fixtures/schema16/*/database.sqlite
 *.log
 /projects/
 # Both spellings deliberately. Git on Windows matches these case-insensitively,

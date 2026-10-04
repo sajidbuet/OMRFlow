@@ -564,6 +564,10 @@ def record_results(
     """
     if not outcomes:
         return 0
+    from omr_scanner.services import quality_decisions
+
+    # Asked before the transaction opens: the answer may need a read of its own.
+    record_quality = template is not None and quality_decisions.stores_decisions(database)
     moment = _now()
     by_path = {str(item.source_path): item for item in outcomes}
     with database.session() as session:
@@ -583,6 +587,7 @@ def record_results(
             from omr_scanner.services import review_store
 
             session.flush()
+            decided: dict[int, ScanResult] = {}
             for row in rows:
                 outcome = by_path.get(row.source_path)
                 if outcome is None:
@@ -595,6 +600,11 @@ def record_results(
                     template=template,
                     policy=policy,
                 )
+                decided[row.scan_id] = outcome.result
+            # 0.1.1 revised phase 7: the sheet's scan-quality decision is part
+            # of the same work unit, so a committed sheet always has one.
+            if record_quality:
+                quality_decisions.record_decisions_in_session(session, batch_id, decided)
         session.execute(
             update(ScanBatch)
             .where(ScanBatch.batch_id == batch_id)

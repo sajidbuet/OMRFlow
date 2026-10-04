@@ -243,6 +243,40 @@ Rules that apply to every section:
 > E8 finish-session validation and held-file decisions. Details:
 > `PHASE_F_HANDOFF.md`.
 
+> **Evidence for the second part of E (revised phase 7), on branch
+> `feat/0.1.1-phase7-quality-session-controls` (2026-10-04, automated tests on
+> local disks; not network-share, real-scanner or power-loss validated; the
+> quality defaults are unvalidated).** E3 `tests/unit/test_quality_decision.py`
+> (every policy row incl. the shapes recognition really stores, multiple and
+> unknown evidence, version, fingerprint stability and sensitivity, no new
+> threshold), `test_quality_rescan` (decisions in the work unit, nothing
+> rejected, pinned policy survives a default change, confirmation = `reject_scan`,
+> dismissal audited, Resolve's evidence decision answers it),
+> `test_quality_migration` (schema-16 fixture); E4 `test_session_snapshot`
+> (partition checked against an independent total and the effective-set service
+> in every snapshot, three progress lines, recognition falling on arrivals,
+> caught-up vs unreachable / paused / disabled / stale, per-source counts and
+> rate alarm, fixed statement count, read-only), `test_snapshot_scale` (10,000
+> rows); E7 `test_persisted_controls` (pause lets in-flight sheets finish and be
+> recorded, survives restart; finish-current and cancel-queued distinct, nothing
+> left claimed), `test_phase7_kills` (real kills: pause persisted, running
+> resumes); E8 `test_session_finish` (every blocker together and each alone,
+> acknowledged incomplete results audited, close sealed and audited, later
+> arrivals held, reopen named and stale outputs, re-close re-validates),
+> `test_phase7_kills` (kill inside close / reopen: never half-done),
+> `tests/gui/test_final_export_finish_policy.py` (§3's "the same checks run in
+> the one-step Close session and generate final export": Reports and the Scan
+> stage close only through `finish_scan_session` - held file, suggested rescan,
+> unreachable source, queued work and another coordinator refuse; incomplete
+> results only by named acceptance; a clean finite session still closes and
+> exports - added after pre-merge review found the Reports path bypassing it). E9 extended:
+> real kills inside the quality work unit, between a commit and its duplicate
+> pass, inside rejection and replacement confirmation. Phase F carry-forwards:
+> `test_incremental_duplicate_sync`, `test_coordinator_ownership`,
+> `test_scan_coordinator_gui`, `test_phase7_recovery`. Scenario:
+> `test_phase7_scenario` (341 real synthetic sheets, three scanners). Details:
+> `PHASE_G_HANDOFF.md`.
+
 ### F — Operational GUI
 
 - F1. With one implicit single-batch session, the Scan stage is the

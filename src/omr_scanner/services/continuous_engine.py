@@ -46,11 +46,24 @@ Ownership (who writes):
     and ``claimed_only=True``, the phase 3 work unit. Only after that commit
     returns is the sheet counted, acknowledged or reported (:class:`EngineHooks`
     ``committed`` fires first, so a kill between the two is testable).
+    The work unit also records the sheet's scan-quality decision (revised
+    phase 7, :mod:`~omr_scanner.services.quality_decisions`).
     Batch-scope review state (re-imports, duplicate Student IDs across the
     session, undefined set codes) depends on other sheets and is completed by
     :func:`~omr_scanner.services.scan_recovery.complete_batch_review_state`
     when a unit finishes, **before** the batch leaves ``running`` - and by
-    recovery if a kill lands first (ADR-0006, unchanged).
+    recovery if a kill lands first (ADR-0006, unchanged). Since revised phase
+    7 the session-wide duplicate Student-ID groups of each committed group are
+    also re-derived right after its commit (bounded), so a cross-unit
+    duplicate reaches Resolve within one commit rather than at unit end.
+
+Operator intent (revised phase 7):
+    Pause / stop intent and intake pauses are persisted
+    (:mod:`~omr_scanner.services.session_controls`) and read every step;
+    :meth:`ContinuousEngine.finish_current_and_stop` and
+    :meth:`ContinuousEngine.cancel_queued_and_stop` are the two operator stop
+    policies. :meth:`ContinuousEngine.start` takes the project's coordinator
+    lease (:mod:`~omr_scanner.services.coordinator`) first.
 
 Never resubmitted:
     Only ``pending`` / ``cancelled`` rows are claimed, by compare-and-set into
@@ -80,8 +93,18 @@ from omr_scanner.domain.processing import (
     UnitPolicy,
     plan_units,
 )
+from omr_scanner.domain.session_controls import ProcessingIntent, SessionControls
+from omr_scanner.domain.session_finish import FinishOutcome, IncompleteAcceptance
 from omr_scanner.errors import OMRScannerError
-from omr_scanner.services import batch_store, scan_recovery, scan_sessions
+from omr_scanner.services import (
+    batch_store,
+    coordinator,
+    quality_decisions,
+    review_store,
+    scan_recovery,
+    scan_sessions,
+    session_controls,
+)
 from omr_scanner.services import intake as intake_service
 from omr_scanner.services.batch_processor import ProcessedScan
 
@@ -155,6 +178,14 @@ class EngineHooks:
     def committed(self, batch_id: str, claims: Sequence[Claim]) -> None:
         """The work-unit transaction committed; not yet acknowledged in memory."""
 
+    def syncing_duplicates(self, batch_id: str, claims: Sequence[Claim]) -> None:
+        """Committed and acknowledged; the bounded cross-sheet duplicate pass is next.
+
+        A kill here leaves committed sheets whose session-wide duplicate
+        conflicts may not exist yet - in a unit that is still ``running``,
+        which recovery completes (revised phase 7).
+        """
+
     def released(self, claims: Sequence[Claim]) -> None:
         """Claims returned to ``pending`` (committed)."""
 
@@ -167,10 +198,21 @@ class EngineHooks:
 
 @dataclass(frozen=True, slots=True)
 class StartupReport:
-    """What the restart sequence did."""
+    """What the restart sequence did.
+
+    Attributes:
+        scan_recovery: Stale claims returned, interrupted units completed.
+        intake_recovery: The intake ledger's restart repair.
+        decisions_backfilled: Read sheets that had no scan-quality decision yet
+            (read before migration 17) and were decided from stored results.
+        controls: The operator intent restored from the database - processing
+            is resumed only when it says ``running``.
+    """
 
     scan_recovery: scan_recovery.RecoveryReport
     intake_recovery: intake_service.RecoveryReport | None = None
+    decisions_backfilled: int = 0
+    controls: SessionControls | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,13 +258,19 @@ class EngineStatus:
         units_registered: Units this engine registered since it started.
         sheets_submitted: Sheets handed to the recogniser since it started.
         sheets_committed: Sheets committed since it started.
-        intake_paused / scheduling_paused: The stop primitives' flags.
+        intake_paused / scheduling_paused: Whether intake / claiming is
+            paused - by the in-memory stop primitives **or** by the persisted
+            operator intent (revised phase 7).
         skipped_batches: ``(batch id, reason)`` the engine will not process
             (another template, another engine version, superseded, running
             elsewhere).
         last_error: The most recent failure message, or ``""``.
         caught_up: Running, nothing in flight, nothing claimable, no ready
-            intake and no unit awaiting finalisation.
+            intake and no unit awaiting finalisation - this engine's view
+            only. The session-level "Caught up - watching for new scans",
+            with source reachability, is
+            :func:`omr_scanner.services.session_snapshot.take_snapshot`.
+        processing_intent: The persisted recognition intent.
     """
 
     state: EngineState
@@ -245,6 +293,7 @@ class EngineStatus:
     skipped_batches: tuple[tuple[str, str], ...]
     last_error: str
     caught_up: bool
+    processing_intent: ProcessingIntent = ProcessingIntent.RUNNING
 
 
 @dataclass
@@ -376,10 +425,18 @@ class ContinuousEngine:
         started_by: Recorded on every unit it registers and seals.
         template_path: Recorded in the units' identity, as the Scan stage does.
 
-    One engine per project, used from one thread. It must not run while the
-    finite Scan stage is running a batch of the same project: both are
-    coordinators, and this one's recovery returns every stale claim in the
-    project to ``pending`` (phase 8 integrates the two).
+    One engine per project, used from one thread. Since revised phase 7 that is
+    **enforced**: :meth:`start` takes the project's coordinator lease
+    (:mod:`omr_scanner.services.coordinator`) *before* its recovery touches a
+    claim, so it is refused - :class:`~omr_scanner.services.coordinator.CoordinatorBusyError`
+    - while the finite Scan stage (or another engine) processes the project,
+    and the finite Scan stage is refused while this engine holds it.
+
+    Operator intent is persisted (:mod:`omr_scanner.services.session_controls`)
+    and read on every step: a paused or stopped session claims nothing new,
+    a paused session's or source's intake is neither reconciled nor
+    registered, and a restart resumes recognition only when the stored intent
+    is ``running``.
     """
 
     def __init__(
@@ -423,6 +480,8 @@ class ContinuousEngine:
         self._last_poll: dict[str, datetime] = {}
         self._last_error = ""
         self._counters = _Counters()
+        self._lease: coordinator.CoordinatorLease | None = None
+        self._abandoned = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -450,15 +509,25 @@ class ContinuousEngine:
     def start(self) -> StartupReport:
         """Run the restart sequence and begin. Idempotent per process start.
 
+        0. Take the project's **coordinator lease** - before anything touches
+           a claim. Refused (:class:`~omr_scanner.services.coordinator.CoordinatorBusyError`,
+           nothing changed, the engine stays ``new``) while another
+           coordinator processes the project.
         1. Scan recovery: every stale ``queued``/``processing`` claim returns
            to ``pending`` (retryable, never failed or completed); every unit a
            kill left ``running`` has its review state completed from stored
-           results and leaves ``running`` (``interrupted`` while work
+           results - including the cross-sheet duplicate pass a kill may have
+           cut short - and leaves ``running`` (``interrupted`` while work
            remains). No session, batch or supersession is created - the work
            resumes in the same session and the same batches.
-        2. Intake recovery: built by ``intake_factory`` (unsettled rows
+        2. Scan-quality decisions for read sheets that have none (read before
+           migration 17), from stored results - no image is read.
+        3. Intake recovery: built by ``intake_factory`` (unsettled rows
            re-observed, ready rows re-verified, unfinished duplicate links
            completed, interrupted copies removed).
+        4. The persisted operator intent is read back: processing resumes
+           only if it says ``running``; a paused or stopped session stays so,
+           and paused intake stays paused (it is re-read on every step).
 
         Calling it again on the result changes nothing.
         """
@@ -467,24 +536,177 @@ class ContinuousEngine:
                 f"engine already {self._state.value}",
                 user_message="The processing engine has already been started.",
             )
-        recovered = scan_recovery.recover_on_open(self._database, templates=[self._template])
-        intake_report: intake_service.RecoveryReport | None = None
-        if self._intake_factory is not None:
-            self._intake = self._intake_factory()
-            intake_report = self._intake.last_recovery
+        lease = coordinator.acquire(
+            self._database,
+            coordinator.CoordinatorKind.CONTINUOUS_ENGINE,
+            owner=self,
+            label=f"continuous engine for session {self._session_id[:8]}",
+        )
+        try:
+            recovered = scan_recovery.recover_on_open(self._database, templates=[self._template])
+            backfilled = quality_decisions.evaluate_stored(self._database, self._session_id)
+            intake_report: intake_service.RecoveryReport | None = None
+            if self._intake_factory is not None:
+                self._intake = self._intake_factory()
+                intake_report = self._intake.last_recovery
+            controls = session_controls.get_controls(self._database, self._session_id)
+        except BaseException:
+            lease.release()
+            raise
+        self._lease = lease
         self._state = EngineState.RUNNING
         _LOGGER.info(
             "Continuous engine started for session %s: %d interrupted unit(s) recovered, "
-            "%d claim(s) returned to pending%s",
+            "%d claim(s) returned to pending, %d decision(s) backfilled, processing %s, "
+            "intake %s%s",
             self._session_id[:8],
             recovered.interrupted_batches,
             recovered.scans_returned,
+            backfilled,
+            controls.processing.value,
+            "paused" if controls.intake_paused else "on",
             f", intake {intake_report}" if intake_report is not None else "",
         )
-        return StartupReport(scan_recovery=recovered, intake_recovery=intake_report)
+        return StartupReport(
+            scan_recovery=recovered,
+            intake_recovery=intake_report,
+            decisions_backfilled=backfilled,
+            controls=controls,
+        )
+
+    def _abandon(self) -> None:
+        """An exception escaped a coordinator method: stop trusting this engine.
+
+        What a crash would leave: claims stay ``processing`` and units stay
+        ``running`` for the next coordinator's recovery. The lease is given
+        up (that next coordinator must be able to start) and the recogniser is
+        closed (a dead coordinator's workers die with it).
+        """
+        if self._state is EngineState.STOPPED:
+            return
+        self._state = EngineState.FAULTED
+        self._abandoned = True
+        if self._lease is not None:
+            self._lease.release()
+        try:
+            self._recogniser.close()
+        except Exception:  # pragma: no cover - best effort on the way down
+            _LOGGER.exception("Closing the recogniser of an abandoned engine failed")
+        _LOGGER.warning(
+            "Continuous engine for session %s abandoned after an error; %d claim(s) left "
+            "for recovery",
+            self._session_id[:8],
+            len(self._in_flight),
+        )
 
     # ------------------------------------------------------------------
-    # Stop primitives (mechanics only; operator policy is phase 7)
+    # Persisted operator intent (revised phase 7)
+    # ------------------------------------------------------------------
+    def controls(self) -> SessionControls:
+        """The session's persisted operator intent, as stored now."""
+        return session_controls.get_controls(self._database, self._session_id)
+
+    def finish_current_and_stop(
+        self, *, actor: str = "", reason: str = "", timeout: float | None = None
+    ) -> EngineStatus:
+        """*Finish current and stop* - the default safe stop (ARCHITECTURE_NOTES §14.3).
+
+        1. The intent ``stopped`` is **persisted first**, so a crash from here
+           on comes back stopped, never resumed.
+        2. Nothing new is claimed or registered.
+        3. **Current** work finishes and is committed: every sheet this engine
+           has already claimed and handed to the recogniser - queued in the
+           bounded pool or inside a worker, at most
+           :attr:`~omr_scanner.domain.processing.EngineLimits.max_in_flight` -
+           and every result read and awaiting the writer. Unlike
+           :meth:`cancel_queued_and_stop`, sheets queued in the pool are *not*
+           withdrawn: they are already the engine's current work.
+        4. Units this engine touched have their batch-scope review state
+           completed and leave ``running``; the rest of a unit stays
+           ``pending`` - durable and resumed only by an operator.
+        5. The engine shuts down. Afterwards no row is left ``processing``
+           (unless the writer itself is failing - ``faulted``). If
+           ``timeout`` runs out first, what has not returned is released to
+           ``pending`` (never lost, never counted).
+        """
+        session_controls.request_finish_current(
+            self._database, self._session_id, actor=actor, reason=reason
+        )
+        self._intake_paused = True
+        self._scheduling_paused = True
+        drained = self._drain(timeout)
+        return self.shutdown(drain=drained, timeout=0.0)
+
+    def cancel_queued_and_stop(
+        self, *, actor: str, reason: str = "", timeout: float | None = None
+    ) -> EngineStatus:
+        """*Cancel queued work* - the explicit, deliberate stop, for a named operator.
+
+        Distinct from :meth:`finish_current_and_stop`: sheets submitted but not
+        yet started are **withdrawn** and their claims released at once.
+        Sheets already inside a worker cannot be interrupted; they finish and
+        are recorded. Committed work is never touched. The intent ``stopped``
+        (action ``queue_cancelled``) is persisted first; a restart does not
+        resume.
+
+        Raises:
+            omr_scanner.services.review_store.ReviewError: No operator named.
+        """
+        session_controls.record_cancel_queued(
+            self._database, self._session_id, actor=actor, reason=reason
+        )
+        self._intake_paused = True
+        self._scheduling_paused = True
+        if self._state is EngineState.RUNNING:
+            self.cancel_queued()
+        drained = self._drain(timeout)
+        return self.shutdown(drain=drained, timeout=0.0)
+
+    def finish_session(
+        self,
+        *,
+        closed_by: str,
+        acknowledge: IncompleteAcceptance | None = None,
+        reason: str = "",
+    ) -> FinishOutcome:
+        """*Finish scan session* from the coordinator itself (it holds the lease).
+
+        Runs :func:`omr_scanner.services.session_finish.finish_scan_session`
+        with this engine's intake service, so the final reconciliation of
+        every source is done by the one writer of the intake ledger. Sheets
+        this engine still has in flight are reported as blockers - finish
+        current work first. The engine keeps running afterwards; a closed
+        session registers nothing new (late files are held).
+        """
+        from omr_scanner.services import session_finish
+
+        try:
+            return session_finish.finish_scan_session(
+                self._database,
+                self._session_id,
+                closed_by=closed_by,
+                intake=self._intake,
+                acknowledge=acknowledge,
+                reason=reason,
+                coordinated=self._state is EngineState.RUNNING,
+            )
+        except OMRScannerError:
+            raise  # a refusal (no operator named, no such session): nothing changed
+        except BaseException:
+            self._abandon()
+            raise
+
+    def _drain(self, timeout: float | None) -> bool:
+        """Step until nothing claimed by this engine is in flight. ``False`` on timeout."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self._in_flight and self._state is EngineState.RUNNING:
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            self.step(wait=0.2)
+        return not self._in_flight
+
+    # ------------------------------------------------------------------
+    # Stop primitives (mechanics; the operator policies above use them)
     # ------------------------------------------------------------------
     def pause_intake(self) -> None:
         """Stop reconciling sources and registering units. Nothing is lost."""
@@ -535,8 +757,18 @@ class ContinuousEngine:
         if self._state is EngineState.NEW:
             self._recogniser.close()
             self._state = EngineState.STOPPED
-        if self._state is EngineState.STOPPED:
+        if self._state is EngineState.STOPPED or self._abandoned:
             return self.status()
+        try:
+            return self._shutdown(drain=drain, timeout=timeout)
+        finally:
+            # The project is free for the next coordinator once this engine
+            # has settled - stopped cleanly, or faulted with its claims left
+            # for that coordinator's recovery.
+            if self._lease is not None:
+                self._lease.release()  # idempotent; an abandoned engine already did
+
+    def _shutdown(self, *, drain: bool, timeout: float | None) -> EngineStatus:
         self._intake_paused = True
         self._scheduling_paused = True
         if self._state is not EngineState.FAULTED:
@@ -590,6 +822,17 @@ class ContinuousEngine:
         """
         if self._intake is None or self._intake_paused or self._state is not EngineState.RUNNING:
             return ()
+        try:
+            return self._poll_intake(force=force)
+        except BaseException:
+            self._abandon()
+            raise
+
+    def _poll_intake(self, *, force: bool) -> tuple[intake_service.ReconcileReport, ...]:
+        assert self._intake is not None
+        controls = self.controls()
+        if controls.intake_paused:
+            return ()
         now = self._clock()
         reports: list[intake_service.ReconcileReport] = []
         for source in intake_service.list_sources(self._database):
@@ -597,7 +840,11 @@ class ContinuousEngine:
                 source.kind is not SourceKind.WATCHED
                 or not source.enabled
                 or source.attached_session_id != self._session_id
+                or not controls.intake_allowed(source.source_id)
             ):
+                # A paused source is not listed at all: its reachability
+                # stays what the last listing found, its files keep their
+                # states, and nothing on its disk is lost (revised phase 7).
                 continue
             last = self._last_poll.get(source.source_id)
             if (
@@ -626,11 +873,23 @@ class ContinuousEngine:
         """
         if self._intake is None or self._intake_paused or self._state is not EngineState.RUNNING:
             return ()
+        try:
+            return self._form_units()
+        except BaseException:
+            self._abandon()
+            raise
+
+    def _form_units(self) -> tuple[str, ...]:
+        assert self._intake is not None
+        controls = self.controls()
+        if controls.intake_paused:
+            return ()
         candidates = [
             UnitCandidate(
                 item.source_id, item.oldest_ready_at, item.oldest_intake_file_id, item.count
             )
             for item in self._intake.ready_sources(scan_session_id=self._session_id)
+            if controls.intake_allowed(item.source_id)
         ]
         planned = plan_units(
             candidates,
@@ -695,6 +954,13 @@ class ContinuousEngine:
         """
         if self._state not in (EngineState.RUNNING, EngineState.STOPPING):
             return StepReport()
+        try:
+            return self._step(wait=wait)
+        except BaseException:
+            self._abandon()
+            raise
+
+    def _step(self, *, wait: float) -> StepReport:
         recognised = released = 0
         outstanding = len(self._in_flight) - len(self._buffer)
         done = self._recogniser.poll(wait if outstanding > 0 else 0.0)
@@ -723,6 +989,7 @@ class ContinuousEngine:
             self._state is EngineState.RUNNING
             and not self._scheduling_paused
             and self._recogniser.accepting
+            and self.controls().processing_allowed
         ):
             claimed = self._claim_and_submit()
         return StepReport(
@@ -747,9 +1014,18 @@ class ContinuousEngine:
             self.form_units()
             report = self.step(wait=wait)
             steps += 1
-            if report.idle and not self._in_flight and not self._claimable_remaining():
+            if (
+                report.idle
+                and not self._in_flight
+                and (not self._may_claim() or not self._claimable_remaining())
+            ):
+                # Nothing more will happen without new files - or, while the
+                # operator has paused or stopped processing, without a resume.
                 break
         return steps
+
+    def _may_claim(self) -> bool:
+        return not self._scheduling_paused and self.controls().processing_allowed
 
     def run(
         self,
@@ -959,7 +1235,35 @@ class ContinuousEngine:
                 )
             self._counters.committed += applied
             committed += applied
+            self._sync_duplicates(batch_id, claims)
         return committed
+
+    def _sync_duplicates(self, batch_id: str, claims: Sequence[Claim]) -> None:
+        """Make the session-wide duplicate Student-ID state current for just-committed sheets.
+
+        Revised phase 7: incremental, per commit group, instead of only when a
+        whole unit (up to 200 sheets) finishes - so a duplicate between a sheet
+        read now and one read hours ago in another unit or from another source
+        is in Resolve's queue within one commit. **Bounded**: only the
+        identifier groups these sheets belong to (or are leaving) are
+        re-derived (:func:`~omr_scanner.services.review_store.sync_duplicate_identifiers_for`,
+        the one duplicate system - human-touched decisions are kept).
+
+        Its own short transaction, after the work unit committed. The gap is
+        recoverable by construction: the unit is still ``running`` until its
+        batch-scope pass has run, so a kill in between leaves exactly what
+        :func:`~omr_scanner.services.scan_recovery.recover_on_open` completes -
+        from stored results, without reading any sheet again. A failure here
+        is logged and left to that same unit-end pass.
+        """
+        self._hooks.syncing_duplicates(batch_id, claims)
+        try:
+            review_store.sync_duplicate_identifiers_for(
+                self._database, [claim.scan_id for claim in claims]
+            )
+        except OMRScannerError as exc:
+            self._last_error = f"Duplicate check after a commit failed: {exc}"
+            _LOGGER.exception("Incremental duplicate sync for unit %s failed", batch_id[:8])
 
     def _finalise(self, *, force: bool) -> tuple[str, ...]:
         """Let each finished unit this engine touched leave ``running``.
@@ -1039,6 +1343,7 @@ class ContinuousEngine:
         def count(*statuses: ScanJobStatus) -> int:
             return sum(counts.get(item.value, 0) for item in statuses)
 
+        controls = self.controls()
         caught_up = (
             self._state is EngineState.RUNNING
             and not self._in_flight
@@ -1062,11 +1367,12 @@ class ContinuousEngine:
             units_registered=self._counters.units_registered,
             sheets_submitted=self._counters.submitted,
             sheets_committed=self._counters.committed,
-            intake_paused=self._intake_paused,
-            scheduling_paused=self._scheduling_paused,
+            intake_paused=self._intake_paused or controls.intake_paused,
+            scheduling_paused=self._scheduling_paused or not controls.processing_allowed,
             skipped_batches=tuple(sorted(self._skipped.items())),
             last_error=self._last_error,
             caught_up=caught_up,
+            processing_intent=controls.processing,
         )
 
 

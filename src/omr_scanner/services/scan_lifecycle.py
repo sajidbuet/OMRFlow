@@ -1468,12 +1468,65 @@ def _project_ineligible(session: Session) -> frozenset[int]:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Origin:
+    """Where and when a scan arrived (0.1.1 revised phase 7) - provenance only."""
+
+    source_id: str | None
+    source_label: str
+    arrived_at: datetime | None
+
+
+def _utc(moment: datetime | None) -> datetime | None:
+    if moment is None or moment.tzinfo is not None:
+        return moment
+    return moment.replace(tzinfo=UTC)
+
+
+def _origins(
+    database: ProjectDatabase, session: Session, scans: Sequence[BatchScan]
+) -> dict[int, _Origin]:
+    """Source and arrival time of each scan: one grouped read, schema 16+ only.
+
+    Arrival is the intake registration time when intake registered the file,
+    else the time its batch was created (a manual import). Older read-only
+    projects have neither column and get no provenance - never an error.
+    """
+    from omr_scanner.database.models import IntakeSource
+    from omr_scanner.services import intake
+
+    if not scans or not intake.has_intake_schema(database):
+        return {}
+    ids = sorted({scan.scan_id for scan in scans})
+    rows = session.execute(
+        select(
+            BatchScan.scan_id,
+            BatchScan.registered_at,
+            ScanBatch.created_at,
+            ScanBatch.source_id,
+            IntakeSource.label,
+        )
+        .join(ScanBatch, ScanBatch.batch_id == BatchScan.batch_id)
+        .outerjoin(IntakeSource, IntakeSource.source_id == ScanBatch.source_id)
+        .where(BatchScan.scan_id.in_(ids))
+    ).all()
+    return {
+        int(scan_id): _Origin(
+            source_id=str(source) if source else None,
+            source_label=str(label or ""),
+            arrived_at=_utc(registered or created),
+        )
+        for scan_id, registered, created, source, label in rows
+    }
+
+
 def _candidate(
     case: RescanCase,
     scan: BatchScan,
     readings: _ProjectReadings,
     *,
     wanted_set: str = "",
+    origin: _Origin | None = None,
 ) -> ReplacementCandidate:
     """Describe one scan as a possible replacement for ``case``."""
     read = readings.identifiers.get(scan.scan_id)
@@ -1484,6 +1537,8 @@ def _candidate(
         if not (wanted_set and code_value)
         else set_identity.same_set(code_value, wanted_set)
     )
+    arrived = origin.arrived_at if origin is not None else None
+    rejected = _utc(case.rejected_at)
     return ReplacementCandidate(
         scan_id=scan.scan_id,
         source_name=scan.filename or "",
@@ -1494,7 +1549,23 @@ def _candidate(
         batch_label=readings.batch_labels.get(scan.batch_id, scan.batch_id[:8]),
         other_batch=scan.batch_id != case.batch_id,
         read_at=scan.finished_at,
+        source_id=origin.source_id if origin is not None else None,
+        source_label=origin.source_label if origin is not None else "",
+        arrived_at=arrived,
+        arrived_after_rejection=(
+            None if arrived is None or rejected is None else arrived >= rejected
+        ),
     )
+
+
+def _rank(item: ReplacementCandidate) -> tuple[bool, bool, int]:
+    """Suggestion order: agreeing set code, then arrived after the rejection, then newest.
+
+    A rescan arrives after the sheet it replaces was rejected - from whichever
+    scanner. Ranking only: every candidate is still offered, and none is
+    linked without an operator's confirmation.
+    """
+    return (item.set_code_agrees is not True, item.arrived_after_rejection is False, -item.scan_id)
 
 
 def _refusable(
@@ -1555,17 +1626,83 @@ def possible_rescans(
             if wanted
             else []
         )
+        origins = _origins(database, session, scans)
         found: dict[int, tuple[ReplacementCandidate, ...]] = {}
         for scan_id, case in cases.items():
             rows = [
-                _candidate(case, scan, readings, wanted_set=case.set_code)
+                _candidate(
+                    case, scan, readings, wanted_set=case.set_code,
+                    origin=origins.get(scan.scan_id),
+                )
                 for scan in scans
                 if not _refusable(case, scan, ineligible=ineligible, taken=taken)
                 and readings.identifiers[scan.scan_id].value == case.identity
             ]
-            # Agreeing set code first, then the newest scan - a rescan arrives
-            # after the sheet it replaces.
-            rows.sort(key=lambda item: (item.set_code_agrees is not True, -item.scan_id))
+            # Agreeing set code first, then one that arrived after the
+            # rejection, then the newest scan - a rescan arrives after the
+            # sheet it replaces, from any scanner (revised phase 7: arrival
+            # provenance from the intake source).
+            rows.sort(key=_rank)
+            found[scan_id] = tuple(rows)
+        return found
+
+
+def session_possible_rescans(
+    database: ProjectDatabase, scan_session_id: str
+) -> dict[int, tuple[ReplacementCandidate, ...]]:
+    """Every outstanding rescan case of a **scan session**, with its likely rescans.
+
+    The session counterpart of :func:`possible_rescans` (0.1.1 revised phase
+    7): cases are the session's sheets awaiting a rescan; candidates are the
+    session's own read, active sheets with the same effective Student ID -
+    from **any** batch and **any** intake source of the session (a sheet
+    rejected at Scanner A and rescanned at Scanner C is suggested), because
+    :func:`confirm_replacement` refuses a link across sessions. Effective
+    identifiers are read for the session's batches only, never the project's.
+    Ranked by :func:`_rank`. A suggestion is never a link: confirming stays an
+    operator's action.
+    """
+    from omr_scanner.services import session_population
+
+    population = session_population.session_population(database, scan_session_id)
+    cases = {
+        scan_id: case
+        for scan_id, case in session_cases(database, population).items()
+        if case.is_outstanding
+    }
+    identities = {case.identity for case in cases.values() if case.identity}
+    if not identities:
+        return dict.fromkeys(cases, ())
+    readings = _project_readings(database, population.batches_holding(population.effective))
+    wanted = {
+        scan_id
+        for scan_id, read in readings.identifiers.items()
+        if scan_id in population.effective and not read.unresolved and read.value in identities
+    }
+    with database.session() as session:
+        taken = _replacement_ids(session)
+        ineligible = _project_ineligible(session)
+        scans = (
+            session.scalars(
+                select(BatchScan).where(BatchScan.scan_id.in_(sorted(wanted)))
+                .order_by(BatchScan.scan_id)
+            ).all()
+            if wanted
+            else []
+        )
+        origins = _origins(database, session, scans)
+        found: dict[int, tuple[ReplacementCandidate, ...]] = {}
+        for scan_id, case in cases.items():
+            rows = [
+                _candidate(
+                    case, scan, readings, wanted_set=case.set_code,
+                    origin=origins.get(scan.scan_id),
+                )
+                for scan in scans
+                if not _refusable(case, scan, ineligible=ineligible, taken=taken)
+                and readings.identifiers[scan.scan_id].value == case.identity
+            ]
+            rows.sort(key=_rank)
             found[scan_id] = tuple(rows)
         return found
 
@@ -2285,9 +2422,11 @@ def adopted_replacements(database: ProjectDatabase, batch_id: str) -> dict[int, 
     where its candidate's attendance, marks and report live - wherever it was
     itself read. Reconciliation and scoring of ``batch_id`` include these.
     """
+    # ``BatchScan.scan_id`` (never null) rather than ``replacement_scan_id``
+    # (nullable): the inner join makes them equal on every row returned.
     with database.session() as session:
         rows = session.execute(
-            select(ScanRejection.replacement_scan_id, ScanRejection.scan_id)
+            select(BatchScan.scan_id, ScanRejection.scan_id)
             .join(BatchScan, BatchScan.scan_id == ScanRejection.replacement_scan_id)
             .where(ScanRejection.batch_id == batch_id)
             .where(ScanRejection.state == LifecycleState.SUPERSEDED_BY_REPLACEMENT.value)
@@ -2304,9 +2443,11 @@ def counted_elsewhere(database: ProjectDatabase, batch_id: str) -> dict[int, str
 
     Their own batch's reconciliation leaves them out, so a rescan counts once.
     """
+    # ``BatchScan.scan_id`` (never null) rather than ``replacement_scan_id``
+    # (nullable): the inner join makes them equal on every row returned.
     with database.session() as session:
         rows = session.execute(
-            select(ScanRejection.replacement_scan_id, ScanRejection.batch_id)
+            select(BatchScan.scan_id, ScanRejection.batch_id)
             .join(BatchScan, BatchScan.scan_id == ScanRejection.replacement_scan_id)
             .where(ScanRejection.state == LifecycleState.SUPERSEDED_BY_REPLACEMENT.value)
             .where(BatchScan.batch_id == batch_id)
@@ -2949,6 +3090,7 @@ __all__ = [
     "removed_images",
     "replacement_candidates",
     "restore_scan",
+    "session_possible_rescans",
     "sheet_facts",
     "state_of",
     "sync_reimports",

@@ -768,9 +768,10 @@ ContinuousEngine.step():  claim_scans (pending -> processing, batch running; one
 - **Bounds.** `max_in_flight` claimed-and-uncommitted sheets bound the futures,
   the results and the writer backlog together; the backlog of pending work
   lives in the database.
-- **Restart.** `start()` = `scan_recovery.recover_on_open` then intake recovery;
-  the same session and batches resume. Never run it beside a finite Scan stage
-  run of the same project (both are coordinators; phase 8 integrates them).
+- **Restart.** `start()` = coordinator lease, `scan_recovery.recover_on_open`,
+  quality-decision backfill, intake recovery, persisted intent read back; the
+  same session and batches resume, and recognition resumes only if the stored
+  intent is `running` (revised phase 7, below).
 - **Finite path untouched.** *Add Folder -> Process All* still runs
   `BatchWorker` -> `process_batch` -> `BatchRecorder`; the engine reuses its
   pieces (`record_results`, `complete_batch_review_state`, `finalise_batch`,
@@ -778,6 +779,47 @@ ContinuousEngine.step():  claim_scans (pending -> processing, batch running; one
   them.
 - **Health.** `project_health._processing_issues`: a claim outside a running
   batch; a watched file registered as two scans.
+
+## Quality decisions, operator controls and session closure (0.1.1 revised phase 7)
+
+See [ADR-0010](decisions/ADR-0010-quality-decisions-and-session-controls.md),
+[scan_quality.md](scan_quality.md), [rescan.md](rescan.md) and
+[intake.md](intake.md#operator-controls-revised-phase-7). Headless; phase 8
+puts the GUI on it.
+
+```text
+record_results (work unit):  result row + its conflicts + its quality decision   (one txn)
+ContinuousEngine.step:       ... commit -> bounded duplicate pass for that group
+                             claim only if controls().processing_allowed
+start():                     coordinator lease -> recover_on_open -> evaluate_stored
+                             -> intake recovery -> persisted intent
+take_snapshot():             11 grouped statements in one read transaction
+finish_scan_session():       final reconciliation -> every blocker, or close_scan_session
+```
+
+| Module | Layer | Owns |
+|---|---|---|
+| `domain/quality_decision.py` | pure | Evidence -> decision + reasons; the versioned, fingerprinted `QualityPolicy` (`DEFAULT_POLICY`, **unvalidated**) |
+| `services/quality_decisions.py` | service | Evidence from a stored result; the session's pinned policy; per-sheet decisions in the work unit; backfill; suggestions (one predicate), confirm (= `reject_scan`) and dismiss |
+| `domain/session_controls.py`, `services/session_controls.py` | pure / service | Persisted intake / per-source / processing intent, audited |
+| `services/coordinator.py` | service | One processing coordinator per project: a process-local lease, typed `CoordinatorBusyError` |
+| `services/intake_decisions.py` | service | Held / unreadable / unsupported files: paged list with provenance; release / retry / dismiss, audited |
+| `domain/session_snapshot.py`, `services/session_snapshot.py` | pure / service | The immutable session snapshot: partition, three progress lines, activity (caught up), per-source state, registration-failure rate alarm |
+| `domain/session_finish.py`, `services/session_finish.py` | pure / service | *Finish scan session*: typed blockers, audited close and reopen |
+| `scan_lifecycle.session_possible_rescans` | service | Session-scoped, provenance-ranked rescan suggestions |
+
+- **Suggestion, never decision.** No code path rejects, supersedes or replaces
+  a scan without a named operator; a quality decision row never changes the
+  effective set (`session_population` alone decides it).
+- **One coordinator.** The finite Scan stage takes the lease in
+  `ScanPage._start_batch` before it registers or claims anything and releases
+  it once the batch has left `running`; the engine from `start()` to
+  `shutdown()` (or when an exception escapes it - `faulted`, claims left for
+  recovery). Process-local: the project lock already excludes a second process.
+- **No nested connection inside a read transaction.** The snapshot holds one
+  explicit read transaction for consistency; everything needing its own
+  connection runs before it. (A nested read waited on a committing writer that
+  waited on the snapshot - a deadlock found by the contention test.)
 
 ## The Calibration workflow (Phase 4)
 

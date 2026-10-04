@@ -62,7 +62,8 @@ Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
 | 4 — Session-level effective results (migration 15) | ✅ merged into `main` (`fd063f8`) | ✅ passing, incl. a 3-batch / 100+-script acceptance scenario, generated-cohort ground truth and a golden one-batch regression | ✅ synthetic only | ❌ not performed | ❌ not performed | ❌ not performed |
 | 5 — Intake sources + ledger (migration 16; headless) | ✅ merged into `main` (`59ba8df`) | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer / engine process kills and a 2,400-arrival soak | 🟠 local temp-directory soak only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
 | 6 — Continuous-processing engine (no migration; headless) | ✅ merged into `main` (`141d703`) | ✅ passing, incl. a kill-boundary matrix, real process kills, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
-| 7–10 — Quality/session controls, operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
+| 7 — Quality / rescan / session controls (migration 17; headless) | ✅ implemented on branch `feat/0.1.1-phase7-quality-session-controls` (not merged) | ✅ passing, incl. real process kills at every new durable transition, a 341-sheet three-scanner scenario, concurrent operator/snapshot contention and a schema-16 upgrade fixture | 🟠 local and fake-filesystem scenarios only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
+| 8–10 — Operational GUI, automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
 
 Since revised phase 4, a scan session with several batches is added up: every
 downstream stage reads the session's one effective sheet set
@@ -74,7 +75,15 @@ Revised phase 6 adds the **headless** continuous-processing engine - finite
 sealed units per source, durable claims, one coordinator writing, crash-safe
 restart in the same session and batches
 ([ADR-0009](../decisions/ADR-0009-continuous-engine-single-writer.md)); watched
-folders are still not scanned for an operator (the GUI is phase 8).
+folders are still not scanned for an operator (the GUI is phase 8). Revised
+phase 7 (branch, not merged) adds the operator semantics underneath that GUI,
+still **headless**: a versioned, fingerprinted scan-quality decision layer
+(an **unvalidated default**) whose rescans are only ever *suggested* to the
+existing Reject & Rescan flow; provenance-ranked rescan suggestions across
+scanners; persisted pause / finish / cancel intent; one processing coordinator
+per project; cross-sheet duplicates within one commit; a bounded session
+snapshot with *caught up* defined; and *Finish scan session* with a complete
+blocker list ([ADR-0010](../decisions/ADR-0010-quality-decisions-and-session-controls.md)).
 
 **Architecture:** `Project → ScanSession → one or more finite ScanBatch
 objects → sheets`. A *scan batch* stays a finite, auditable processing and

@@ -59,10 +59,14 @@ class EngineState(StrEnum):
     """Shut down cleanly: nothing claimed by this engine remains ``processing``."""
 
     FAULTED = "faulted"
-    """The writer kept failing; the engine stopped claiming. Claimed sheets
-    were left ``processing`` on purpose - the next start returns them to
-    ``pending`` (recovery), because a writer that cannot commit results cannot
-    be trusted to release claims either."""
+    """The engine can no longer be trusted to write; it stopped claiming.
+    Claimed sheets were left ``processing`` on purpose - the next start returns
+    them to ``pending`` (recovery). Two causes: the writer kept failing (a
+    writer that cannot commit results cannot be trusted to release claims
+    either), or - since revised phase 7 - an exception escaped one of the
+    engine's coordinator methods, after which its in-memory view is unknown:
+    it does nothing more and gives up its coordinator lease, leaving exactly
+    what a crash would leave."""
 
 
 @dataclass(frozen=True, slots=True)

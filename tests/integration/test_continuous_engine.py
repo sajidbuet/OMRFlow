@@ -162,6 +162,14 @@ class TestMultiSourceScenario:
         assert status.sheets_committed == 6 and status.in_flight == 0
         with pytest.raises(Exception, match="already"):
             engine.start()
+        # Revised phase 7: one coordinator per project. A second engine is
+        # refused while this one is running (this test used to start one
+        # beside it - the overlap PHASE_F_HANDOFF §26 listed as unguarded).
+        from omr_scanner.services.coordinator import CoordinatorBusyError
+
+        with pytest.raises(CoordinatorBusyError):
+            rig.new_engine()
+        engine.shutdown()
         # A second engine's recovery over a finished session changes nothing.
         snapshot = durable_view(rig.database, rig.session_id)
         rig.new_engine()

@@ -91,7 +91,7 @@ def facts(database) -> dict[str, object]:
 
 def test_the_fixtures_really_are_schema_15_from_the_previous_build():
     assert PROVENANCE["schema_version"] == 15
-    assert SCHEMA_VERSION == 16
+    assert SCHEMA_VERSION >= 16  # 17 since revised phase 7 (additive)
     for name in PROVENANCE["projects"]:
         with sqlite3.connect(FIXTURES / name / "database.sqlite") as connection:
             version = connection.execute("SELECT max(version) FROM schema_migration").fetchone()
@@ -119,8 +119,8 @@ def test_upgrade_is_backed_up_and_reinterprets_nothing(name, tmp_path):
         before_results = results(session.database) if name == "finite" else None
     with open_project(root) as session:
         database = session.database
-        assert database.schema_version == 16
-        backups = sorted((root / "backups").glob("*before-migration-15-to-16*"))
+        assert database.schema_version == SCHEMA_VERSION
+        backups = sorted((root / "backups").glob(f"*before-migration-15-to-{SCHEMA_VERSION}*"))
         assert backups, "the pre-migration backup must run before migration 16"
         with sqlite3.connect(next(p for p in backups if p.suffix == ".sqlite3")) as backup:
             assert backup.execute("SELECT max(version) FROM schema_migration").fetchone() == (15,)
