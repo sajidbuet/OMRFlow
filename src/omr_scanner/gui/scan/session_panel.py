@@ -334,7 +334,17 @@ class SessionPanel(QFrame):
         )
         layout.addLayout(self._build_status_row())
         layout.addLayout(self._build_actions_row())
-        layout.addWidget(self._build_progress())
+        # The three progress lines are built when a session is first shown
+        # (:meth:`_ensure_progress`): a finite Scan stage, which never shows
+        # one, keeps exactly the progress indicators it always had - one bar
+        # for the batch, none per sheet or per mode it is not in.
+        self._progress_host = QWidget()
+        self._progress_host.setObjectName("sessionProgressHost")
+        host_layout = QVBoxLayout(self._progress_host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        self.progress_bars: dict[str, QProgressBar] = {}
+        self.progress_labels: dict[str, QLabel] = {}
+        layout.addWidget(self._progress_host)
 
         details = QWidget()
         details_layout = QVBoxLayout(details)
@@ -479,14 +489,20 @@ class SessionPanel(QFrame):
         row.addWidget(self.reopen_session_button)
         return row
 
+    def _ensure_progress(self) -> None:
+        """Build the three progress lines once, the first time a session is shown."""
+        if self.progress_bars:
+            return
+        layout = self._progress_host.layout()
+        assert layout is not None
+        layout.addWidget(self._build_progress())
+
     def _build_progress(self) -> QWidget:
         box = QWidget()
         box.setObjectName("sessionProgressBox")
         grid = QGridLayout(box)
         grid.setContentsMargins(0, 0, 0, 0)
         scale_layout(grid, horizontal_spacing=Spacing.SM, vertical_spacing=Spacing.XXS)
-        self.progress_bars: dict[str, QProgressBar] = {}
-        self.progress_labels: dict[str, QLabel] = {}
         titles = {
             "recognition": (
                 "Recognition",
@@ -621,6 +637,7 @@ class SessionPanel(QFrame):
 
     def show_view(self, view: SessionView) -> None:
         """Show one session view. Every value comes from it; nothing is kept beyond it."""
+        self._ensure_progress()
         self.view = view
         snapshot = view.snapshot
         name = view.session.name if view.session is not None else "(scan session)"

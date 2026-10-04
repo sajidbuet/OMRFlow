@@ -55,6 +55,9 @@ class TestFiniteModeIsUnchanged:
         assert page.list_stack.currentIndex() == 0  # the batch list, as before
         assert page.session_mode.poller.watching == ""
         assert page.session_mode.poller._thread is None  # no polling thread at all
+        # No session progress lines either: the finite stage keeps its one bar
+        # (test_batch_progress_gui counts them; it caught this in the phase 8 gate).
+        assert page.session_panel.progress_bars == {}
         assert not page.session_mode.running
         # The Session menu offers the way in, without requiring it.
         assert page.configure_sources_action.isEnabled()
