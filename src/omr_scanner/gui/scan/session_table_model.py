@@ -27,15 +27,19 @@ Selection survives a refresh:
 
 from __future__ import annotations
 
+import contextlib
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
+    QObject,
     QPersistentModelIndex,
     Qt,
+    QThread,
     Signal,
+    Slot,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -251,16 +255,66 @@ class SessionSheetModel(QAbstractTableModel):
         )
 
 
+class _PageWorker(QObject):
+    """Lives in the list's thread: one page (count + rows) per request."""
+
+    loaded = Signal(int, int, int, object, float, object)
+    failed = Signal(int, str)
+
+    @Slot(object, str, object, int, int, int)
+    def load(
+        self,
+        database: object,
+        scan_session_id: str,
+        query: object,
+        offset: int,
+        limit: int,
+        generation: int,
+    ) -> None:
+        started = time.perf_counter()
+        try:
+            # The filter menus' options are read here too: nothing in a
+            # refresh touches the database on the GUI thread.
+            options = (
+                session_sheets.session_sources(database, scan_session_id),  # type: ignore[arg-type]
+                session_sheets.session_batches(database, scan_session_id),  # type: ignore[arg-type]
+            )
+            total = session_sheets.count_sheets(
+                database, scan_session_id, query  # type: ignore[arg-type]
+            )
+            if offset >= total and total:
+                offset = max(0, (total - 1) // limit * limit)
+            rows = session_sheets.list_sheets(
+                database,  # type: ignore[arg-type]
+                scan_session_id,
+                query,  # type: ignore[arg-type]
+                offset=offset,
+                limit=limit,
+            )
+        except OMRScannerError as exc:
+            self.failed.emit(generation, exc.user_message or str(exc))
+            return
+        except Exception as exc:  # a list that cannot be read must not kill the thread
+            self.failed.emit(generation, str(exc) or type(exc).__name__)
+            return
+        self.loaded.emit(
+            generation, total, offset, rows, (time.perf_counter() - started) * 1000.0, options
+        )
+
+
 class SessionSheetList(QWidget):
     """Filters, paging and the session sheet table.
 
     Signals:
         sheet_selected: the selected :class:`SheetRow` (or ``None``).
+        page_loaded: a requested page is on screen (tests and scripts wait on it).
         failed: a message when the list could not be read (shown, never raised).
     """
 
     sheet_selected = Signal(object)
+    page_loaded = Signal()
     failed = Signal(str)
+    _request = Signal(object, str, object, int, int, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -271,10 +325,15 @@ class SessionSheetList(QWidget):
         self._total = 0
         self._sort = SheetSort.ARRIVAL
         self._descending = True
-        self._batch_count = -1
+        self._options: tuple[object, ...] = ((), ())
+        self._busy = False
+        self._owed = False
+        self._generation = 0
+        self._thread: QThread | None = None
+        self._worker: _PageWorker | None = None
         self.page_size = session_sheets.PAGE_SIZE
         self.last_query_ms = 0.0
-        """How long the last page (count + rows) took - responsiveness evidence."""
+        """How long the last page (count + rows) took, in the worker - evidence."""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -386,11 +445,17 @@ class SessionSheetList(QWidget):
         return self._total
 
     def set_session(self, database: ProjectDatabase | None, scan_session_id: str) -> None:
-        """List ``scan_session_id`` (``""``: nothing). Filters reset to *all*."""
+        """List ``scan_session_id`` (``""``: nothing). Filters reset to *all*.
+
+        Leaving a database (another project, or none) first stops the worker
+        thread, waiting for any read in progress.
+        """
+        if database is not self._database:
+            self.shutdown()
+        self._generation += 1
         self._database = database
         self._session_id = scan_session_id if database is not None else ""
         self._offset = 0
-        self._batch_count = -1
         for combo in (
             self.status_combo, self.quality_combo, self.conflict_combo, self.rescan_combo
         ):
@@ -398,25 +463,32 @@ class SessionSheetList(QWidget):
             combo.setCurrentIndex(0)
             combo.blockSignals(False)
         self.search_edit.clear()
-        self._fill_options()
+        self._fill_options((), ())
         self.refresh()
 
-    def _fill_options(self) -> None:
-        database, session_id = self._database, self._session_id
-        sources = (
-            session_sheets.session_sources(database, session_id)
-            if database is not None and session_id
-            else ()
+    @staticmethod
+    def _options_key(
+        sources: tuple[object, ...], batches: tuple[object, ...]
+    ) -> tuple[object, ...]:
+        return (
+            tuple((item.source_id, item.label) for item in sources),  # type: ignore[attr-defined]
+            tuple((item.batch_id, item.label) for item in batches),  # type: ignore[attr-defined]
         )
-        batches = (
-            session_sheets.session_batches(database, session_id)
-            if database is not None and session_id
-            else ()
-        )
-        self._batch_count = len(batches)
+
+    def _fill_options(self, sources: tuple[object, ...], batches: tuple[object, ...]) -> None:
+        """Rebuild the source and batch menus (keeping a choice still offered)."""
+        self._options = self._options_key(sources, batches)
         for combo, first_label, options in (
-            (self.source_combo, "All sources", [(item.label, item.source_id) for item in sources]),
-            (self.batch_combo, "All batches", [(item.label, item.batch_id) for item in batches]),
+            (
+                self.source_combo,
+                "All sources",
+                [(item.label, item.source_id) for item in sources],  # type: ignore[attr-defined]
+            ),
+            (
+                self.batch_combo,
+                "All batches",
+                [(item.label, item.batch_id) for item in batches],  # type: ignore[attr-defined]
+            ),
         ):
             current = combo.currentData()
             combo.blockSignals(True)
@@ -431,11 +503,14 @@ class SessionSheetList(QWidget):
     def query(self) -> SheetQuery:
         """The query the controls describe."""
         batch = str(self.batch_combo.currentData() or "")
+        # Qt returns a StrEnum stored as item data as a plain str: rebuilt here.
         return SheetQuery(
-            status=self.status_combo.currentData() or StatusFilter.ALL,
-            quality=self.quality_combo.currentData() or QualityFilter.ALL,
-            conflict=self.conflict_combo.currentData() or ConflictStateFilter.ALL,
-            rescan=self.rescan_combo.currentData() or RescanFilter.ALL,
+            status=StatusFilter(self.status_combo.currentData() or StatusFilter.ALL),
+            quality=QualityFilter(self.quality_combo.currentData() or QualityFilter.ALL),
+            conflict=ConflictStateFilter(
+                self.conflict_combo.currentData() or ConflictStateFilter.ALL
+            ),
+            rescan=RescanFilter(self.rescan_combo.currentData() or RescanFilter.ALL),
             source_id=str(self.source_combo.currentData() or ""),
             batch_ids=(batch,) if batch else (),
             search=self.search_edit.text().strip(),
@@ -444,12 +519,22 @@ class SessionSheetList(QWidget):
         )
 
     # ------------------------------------------------------------------
-    # Reading
+    # Reading - off the GUI thread
     # ------------------------------------------------------------------
+    @property
+    def busy(self) -> bool:
+        """Whether a page read is in progress."""
+        return self._busy
+
     def refresh(self, *, keep_page: bool = True) -> bool:
-        """Re-read the current page (and the count). Keeps the selected sheet by id."""
+        """Ask for the current page (and its count) again. Returns at once.
+
+        The read runs in the list's worker thread; :attr:`page_loaded` says
+        when the table shows it. One read at a time: asking while one runs
+        owes exactly one more, made with whatever the controls say then.
+        Keeps the selected sheet by id.
+        """
         database, session_id = self._database, self._session_id
-        selected = self.selected_scan_id()
         if database is None or not session_id:
             self._total = 0
             self.model.set_rows(())
@@ -457,31 +542,15 @@ class SessionSheetList(QWidget):
             return False
         if not keep_page:
             self._offset = 0
-        started = time.perf_counter()
-        try:
-            batches = len(session_sheets.session_batches(database, session_id))
-            if batches != self._batch_count:
-                self._fill_options()
-            query = self.query()
-            self._total = session_sheets.count_sheets(database, session_id, query)
-            if self._offset >= self._total and self._total:
-                self._offset = max(0, (self._total - 1) // self.page_size * self.page_size)
-            rows = session_sheets.list_sheets(
-                database, session_id, query, offset=self._offset, limit=self.page_size
-            )
-        except OMRScannerError as exc:
-            self.failed.emit(exc.user_message or str(exc))
-            return False
-        except Exception as exc:  # a list that cannot be read must not crash the page
-            self.failed.emit(str(exc))
-            return False
-        self.last_query_ms = (time.perf_counter() - started) * 1000.0
-        self.table.blockSignals(True)
-        self.model.set_rows(rows)
-        self.table.blockSignals(False)
-        if selected is not None:
-            self.select_scan(selected, emit=False)
-        self._refresh_paging()
+        if self._busy:
+            self._owed = True
+            return True
+        self._ensure_thread()
+        self._busy = True
+        self._generation += 1
+        self._request.emit(
+            database, session_id, self.query(), self._offset, self.page_size, self._generation
+        )
         return True
 
     def next_page(self) -> bool:
@@ -505,6 +574,72 @@ class SessionSheetList(QWidget):
         self._sort = sort
         self._descending = descending
         self.refresh(keep_page=False)
+
+    def _on_loaded(
+        self, generation: int, total: int, offset: int, rows: object, ms: float, options: object
+    ) -> None:
+        self._busy = False
+        if generation == self._generation and self._session_id:
+            sources, batches = cast("tuple[tuple[object, ...], tuple[object, ...]]", options)
+            if self._options_key(sources, batches) != self._options:
+                self._fill_options(sources, batches)
+            selected = self.selected_scan_id()
+            self._total = total
+            self._offset = offset
+            self.last_query_ms = ms
+            self.table.selectionModel().blockSignals(True)
+            try:
+                self.model.set_rows(rows)  # type: ignore[arg-type]
+                if selected is not None:
+                    row = self.model.row_of(selected)
+                    if row >= 0:
+                        self.table.selectRow(row)
+            finally:
+                self.table.selectionModel().blockSignals(False)
+            self._refresh_paging()
+            self.page_loaded.emit()
+        if self._owed:
+            self._owed = False
+            self.refresh()
+
+    def _on_load_failed(self, generation: int, message: str) -> None:
+        self._busy = False
+        if generation == self._generation:
+            self.failed.emit(message)
+        if self._owed:
+            self._owed = False
+            self.refresh()
+
+    def _ensure_thread(self) -> None:
+        if self._thread is not None:
+            return
+        thread = QThread(self)
+        thread.setObjectName("sessionSheetListThread")
+        worker = _PageWorker()
+        worker.moveToThread(thread)
+        self._request.connect(worker.load)
+        worker.loaded.connect(self._on_loaded)
+        worker.failed.connect(self._on_load_failed)
+        thread.finished.connect(worker.deleteLater)
+        thread.start()
+        self._thread = thread
+        self._worker = worker
+
+    def shutdown(self) -> None:
+        """Stop the worker thread, waiting for a read in progress - before the database closes."""
+        self._generation += 1
+        self._owed = False
+        thread, worker = self._thread, self._worker
+        if worker is not None:
+            with contextlib.suppress(RuntimeError, TypeError):  # already disconnected
+                self._request.disconnect(worker.load)
+        if thread is not None:
+            thread.quit()
+            thread.wait()
+            thread.deleteLater()
+        self._thread = None
+        self._worker = None
+        self._busy = False
 
     def _refresh_paging(self) -> None:
         if not self._total:

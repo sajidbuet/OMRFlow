@@ -363,6 +363,7 @@ class SessionModeController(QObject):
         open; its persisted intent is left as it was.
         """
         self.poller.stop()
+        self.sheet_list.shutdown()
         if not self.runner.shutdown():
             _LOGGER.error("The continuous engine did not stop in time during shutdown")
         thread = self._finish_thread
