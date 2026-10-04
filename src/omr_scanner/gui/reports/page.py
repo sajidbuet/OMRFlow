@@ -545,9 +545,17 @@ class ReportsPage(WorkflowPage):
         if database is not None and self.state.batch_id is not None:
             scope = report_store.session_scope(database, self.state.batch_id)
             if scope.provisional:
+                stale = ""
+                if scope.scan_session_id is not None:
+                    info = scan_sessions.get_scan_session(database, scope.scan_session_id)
+                    if info is not None and info.final_outputs_stale_since is not None:
+                        # Reopened (revised phase 8): the per-set Final Export
+                        # column says which outputs are stale.
+                        stale = " It was reopened: final exports made while closed are stale."
                 scope_text = (
                     f"<br><span style='color:#8a5a00'><b>Provisional</b> - scan session "
-                    f"'{html.escape(scope.name)}' is open; Final Export closes it first.</span>"
+                    f"'{html.escape(scope.name)}' is open; Final Export closes it first."
+                    f"{stale}</span>"
                 )
             elif scope.scan_session_id is not None:
                 scope_text = f"<br>Scan session '{html.escape(scope.name)}' · closed"

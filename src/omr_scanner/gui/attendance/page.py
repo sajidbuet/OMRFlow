@@ -133,6 +133,7 @@ from omr_scanner.gui.ui_scale import current_scale, scale_layout, set_scaled_sty
 from omr_scanner.services import (
     load_template,
     reconciliation_store,
+    report_store,
     resolve_active_template,
     scan_lifecycle,
     scan_sessions,
@@ -1209,8 +1210,18 @@ class AttendancePage(WorkflowPage):
             and batch_id is not None
             and len(session_population.population(database, batch_id).batch_ids) > 1
         )
+        context = ""
+        if database is not None and batch_id:
+            # Which examination's session this is, and whether its results are
+            # still provisional (0.1.1 revised phase 8).
+            owner = report_store.session_scope(database, batch_id)
+            if owner.scan_session_id is not None:
+                state = "open - provisional" if owner.provisional else "closed"
+                context = f" · scan session <b>{html.escape(owner.name)}</b> ({state})"
         self.batch_label.setText(
-            ("Scan session" if multi else f"Batch: <b>{batch_id[:8]}</b>") if batch_id else ""
+            (("Scan session" if multi else f"Batch: <b>{batch_id[:8]}</b>") + context)
+            if batch_id
+            else ""
         )
         self.batch_label.setToolTip(scope)
 
