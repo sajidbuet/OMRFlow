@@ -2422,9 +2422,11 @@ def adopted_replacements(database: ProjectDatabase, batch_id: str) -> dict[int, 
     where its candidate's attendance, marks and report live - wherever it was
     itself read. Reconciliation and scoring of ``batch_id`` include these.
     """
+    # ``BatchScan.scan_id`` (never null) rather than ``replacement_scan_id``
+    # (nullable): the inner join makes them equal on every row returned.
     with database.session() as session:
         rows = session.execute(
-            select(ScanRejection.replacement_scan_id, ScanRejection.scan_id)
+            select(BatchScan.scan_id, ScanRejection.scan_id)
             .join(BatchScan, BatchScan.scan_id == ScanRejection.replacement_scan_id)
             .where(ScanRejection.batch_id == batch_id)
             .where(ScanRejection.state == LifecycleState.SUPERSEDED_BY_REPLACEMENT.value)
@@ -2441,9 +2443,11 @@ def counted_elsewhere(database: ProjectDatabase, batch_id: str) -> dict[int, str
 
     Their own batch's reconciliation leaves them out, so a rescan counts once.
     """
+    # ``BatchScan.scan_id`` (never null) rather than ``replacement_scan_id``
+    # (nullable): the inner join makes them equal on every row returned.
     with database.session() as session:
         rows = session.execute(
-            select(ScanRejection.replacement_scan_id, ScanRejection.batch_id)
+            select(BatchScan.scan_id, ScanRejection.batch_id)
             .join(BatchScan, BatchScan.scan_id == ScanRejection.replacement_scan_id)
             .where(ScanRejection.state == LifecycleState.SUPERSEDED_BY_REPLACEMENT.value)
             .where(BatchScan.batch_id == batch_id)

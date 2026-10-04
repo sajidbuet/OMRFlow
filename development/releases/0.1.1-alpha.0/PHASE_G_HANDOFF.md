@@ -484,7 +484,8 @@ gate reports 2 errors in `services/scan_lifecycle.py` (lines 2433, 2452:
 main checkout (222 files) with a fresh `--cache-dir` and either environment's
 mypy (2.3.1 / 2.4.0). The "mypy clean" results recorded in §14 for the
 baseline and `80ee036` were therefore most likely produced from a warm cache
-(not verified). Not fixed in this pass (pre-existing, outside its scope).
+(not verified). Not fixed in that pass (pre-existing, outside its scope);
+fixed afterwards in `e8d49a1` - §14c.
 
 ## 14b. Post-correction validation (tip `69b5e8d`, 2026-10-04)
 
@@ -496,7 +497,7 @@ SQLAlchemy 2.1.3, pytest 9.1.1, PySide6 6.11.2).
 | Targeted (finish policy, Reports / close-and-export, Scan session, reject-rescan GUI, coordinator GUI, `test_session_finish`, `test_coordinator_ownership`, phase 7 recovery and scenario, quality / rescan, reject-and-rescan, reports, quality-decision and rescan rules) | **302 passed** (22 min 05 s) |
 | Canonical `pytest-ruff-mypy.ps1`, log `Scratch\Log\2026-10-04_104600` - pytest | **7,020 passed, 27 skipped, 7 deselected, 0 failed** (1 h 48 min 19 s) |
 | ruff `check src tests tools scripts` | All checks passed |
-| mypy `src` (233 files) | **2 errors**, both pre-existing in `scan_lifecycle.py` (§14a) - none in phase 7 or correction code |
+| mypy `src` (233 files) | **2 errors**, both pre-existing in `scan_lifecycle.py` (§14a) - none in phase 7 or correction code; fixed in §14c |
 | Stress `-m stress` | **7 passed** (14 min 47 s) |
 
 * +13 passed vs `80ee036`: the 11 new tests, plus 2 fewer skips in this
@@ -511,6 +512,44 @@ SQLAlchemy 2.1.3, pytest 9.1.1, PySide6 6.11.2).
   a terminating PowerShell error. A harness artefact, not a test failure or a
   native crash; that attempt also caught a ruff line-length error in the new
   test (fixed in `69b5e8d`).
+
+## 14c. Inherited mypy errors fixed (`e8d49a1`)
+
+The two errors were inherited from pre-phase-7 `main` (lines from `cf9b05b`,
+2026-09-29; the same code is on `origin/main` at `scan_lifecycle.py`
+2296 / 2315) and surfaced only because the final gate ran mypy with a fresh
+cache. Exact diagnostics (mypy 2.4.0, fresh `--cache-dir`, at `d0d1949`):
+
+```text
+src\omr_scanner\services\scan_lifecycle.py:2433: error: Argument 1 to "int" has
+incompatible type "int | None"; expected
+"str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc"  [arg-type]
+src\omr_scanner\services\scan_lifecycle.py:2452: error: Argument 1 to "int" has
+incompatible type "int | None"; expected
+"str | Buffer | SupportsInt | SupportsIndex | SupportsTrunc"  [arg-type]
+```
+
+Fix: `adopted_replacements` and `counted_elsewhere` selected the nullable
+`ScanRejection.replacement_scan_id` (`Mapped[int | None]`); they now select
+`BatchScan.scan_id` (`Mapped[int]`, primary key). Both queries already
+inner-join `batch_scan ON batch_scan.scan_id = scan_rejection.replacement_scan_id`,
+so the two columns are equal on every returned row; the compiled FROM / JOIN /
+WHERE is identical before and after (checked), only the first selected column
+changes, and rows are unpacked by position. No `cast`, no `type: ignore`, no
+configuration change; runtime behaviour unchanged, so the 7/7 stress result
+(§14b) stands without a rerun.
+
+Validation at `e8d49a1`:
+
+| Check | Result |
+|---|---|
+| Focused lifecycle tests (`test_reject_and_rescan`, `_followup`, `test_set_scoped_reconciliation`, `test_multi_set_workflow`, `test_reject_rescan_rules`, `test_session_population`, `test_quality_rescan`) | **173 passed** |
+| mypy `src`, fresh cache | **Success: no issues found in 233 source files** |
+| Canonical `pytest-ruff-mypy.ps1` (project `.mypy_cache` deleted first), log `Scratch\Log\2026-10-04_132453` | **OVERALL PASS**: pytest **7,020 passed, 27 skipped, 7 deselected, 0 failed** (1 h 52 min); ruff all checks passed; mypy no issues (233 files); git state unchanged |
+| Stress | 7/7 passed at `69b5e8d` (§14b), retained |
+
+The handoff text in this section was added to the fix commit after that gate
+run; the source code it validated is identical.
 
 ## 15. Known limitations
 
