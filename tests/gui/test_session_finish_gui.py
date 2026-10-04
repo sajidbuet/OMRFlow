@@ -198,6 +198,7 @@ class TestFinishThroughThePolicy:
             and rig.view().snapshot.activity is SessionActivity.CLOSED  # type: ignore[union-attr]
         )
         assert page.session_panel.lifecycle_label.text() == "CLOSED"
+        assert page.session_panel.activity_label.text() == ""  # not "CLOSED Closed"
         assert page.session_panel.reopen_session_button.isVisibleTo(page.session_panel)
         assert not page.session_panel.finish_session_button.isVisibleTo(page.session_panel)
 

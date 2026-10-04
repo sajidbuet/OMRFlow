@@ -261,6 +261,13 @@ def warning_lines(view: SessionView, *, extra: tuple[str, ...] = ()) -> list[str
 def engine_text(engine_state: str, status: object | None, *, session_open: bool) -> str:
     """Whether this window's continuous engine is running, and what it holds."""
     if not session_open:
+        # A closed session reads nothing; the engine still lists the sources so
+        # that a late file is held for a decision rather than missed.
+        if engine_state == ENGINE_RUNNING:
+            return (
+                "Still watching the sources in this window: a file that arrives now is "
+                "held for a decision on Resolve, not read"
+            )
         return ""
     if engine_state == ENGINE_STARTING:
         return "Starting continuous scanning..."
@@ -435,7 +442,8 @@ class SessionPanel(QFrame):
         self.stop_button.setToolTip("Finish current work and stop, or cancel queued work")
         row.addWidget(self.stop_button)
 
-        row.addWidget(_separator())
+        self._actions_separator = _separator()
+        row.addWidget(self._actions_separator)
 
         # -- Intake ---------------------------------------------------
         self.intake_button = QPushButton("Pause Intake")
@@ -602,6 +610,7 @@ class SessionPanel(QFrame):
             self._engine_status = status
         if state == ENGINE_IDLE:
             self._engine_status = None
+        self._render_activity()
         self._render_state_line()
         self.refresh_controls()
 
@@ -623,15 +632,7 @@ class SessionPanel(QFrame):
         self.lifecycle_label.setStyleSheet(
             f"color: {Color.TEXT_SECONDARY if closed else Color.STATUS_READY}; font-weight: 600;"
         )
-        activity = activity_text(view)
-        colour = {
-            SessionActivity.CAUGHT_UP: Color.STATUS_READY,
-            SessionActivity.PROCESSING: Color.STATUS_BUSY,
-            SessionActivity.WAITING_FOR_SOURCE: Color.STATUS_ERROR,
-        }.get(snapshot.activity, Color.TEXT_PRIMARY)
-        self.activity_label.setText(activity)
-        self.activity_label.setStyleSheet(f"color: {colour}; font-weight: 600;")
-        self.activity_label.setAccessibleName(f"Session activity: {activity}")
+        self._render_activity()
         for line, progress in (
             ("recognition", snapshot.recognition),
             ("conflicts", snapshot.conflicts),
@@ -653,10 +654,34 @@ class SessionPanel(QFrame):
         self._render_sources(view)
         self.refresh_controls()
 
+    def _render_activity(self) -> None:
+        """The snapshot's activity word - qualified when no engine here is doing it."""
+        view = self.view
+        if view is None:
+            return
+        snapshot = view.snapshot
+        activity = activity_text(view)
+        colour = {
+            SessionActivity.CAUGHT_UP: Color.STATUS_READY,
+            SessionActivity.PROCESSING: Color.STATUS_BUSY,
+            SessionActivity.WAITING_FOR_SOURCE: Color.STATUS_ERROR,
+        }.get(snapshot.activity, Color.TEXT_PRIMARY)
+        if snapshot.activity is SessionActivity.PROCESSING and self._engine_state == ENGINE_IDLE:
+            # Work is outstanding, but nothing in this window is reading it
+            # (after reopening an interrupted session, say): never imply motion.
+            activity += " (not running in this window)"
+            colour = Color.TEXT_PRIMARY
+        # "CLOSED Closed" says one thing twice: the lifecycle word is enough.
+        shown = "" if activity.casefold() == lifecycle_text(view).casefold() else activity
+        self.activity_label.setText(shown)
+        self.activity_label.setStyleSheet(f"color: {colour}; font-weight: 600;")
+        self.activity_label.setAccessibleName(f"Session activity: {activity}")
+
     def _render_state_line(self) -> None:
         view = self.view
         if view is None:
             self.state_line_label.setText("")
+            self.state_line_label.setVisible(False)
             return
         snapshot = view.snapshot
         session_open = snapshot.session_state != "closed"
@@ -665,6 +690,7 @@ class SessionPanel(QFrame):
         if engine:
             parts.append(engine)
         self.state_line_label.setText(" · ".join(parts))
+        self.state_line_label.setVisible(bool(parts))
 
     def _render_warnings(self) -> None:
         view = self.view
@@ -818,6 +844,7 @@ class SessionPanel(QFrame):
         )
         self.intake_button.setVisible(session_open)
         self.intake_button.setEnabled(writable and session_open)
+        self._actions_separator.setVisible(session_open)
         self.add_source_button.setVisible(session_open)
         self.add_source_button.setEnabled(writable and session_open)
         self.finish_session_button.setVisible(session_open)

@@ -334,7 +334,9 @@ class SheetProvenance:
 
     def describe(self) -> str:
         """One line: ``Scanner A · Batch 3 · original.png · arrived 10:42``."""
-        parts = [part for part in (self.source_label, self.batch_label) if part]
+        # A session batch's label already names its scanner; say it once.
+        batch = self.batch_label.replace(f" · {self.source_label}", "", 1)
+        parts = [part for part in (self.source_label, batch) if part]
         parts.append(self.original_name or self.stored_name)
         if self.arrived_at is not None:
             parts.append(f"arrived {self.arrived_at.astimezone():%H:%M}")

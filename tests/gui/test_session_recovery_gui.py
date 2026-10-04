@@ -112,6 +112,8 @@ def test_a_real_kill_then_reopen_shows_committed_counts_before_start(qtbot, tmp_
         f"{done_before:,} / "
     )
     assert "not running in this window" in scan.session_panel.state_line_label.text()
+    # Work is outstanding, yet nothing reads it: the headline never implies motion.
+    assert scan.session_panel.activity_label.text() == "Processing (not running in this window)"
     assert "Processing: running" in scan.session_panel.state_line_label.text()
     # The same session and batches: recovery creates neither.
     assert structure(root) == shape_before
