@@ -32,7 +32,7 @@ from omr_scanner.gui.scan.session_panel import (
     progress_text,
     secondary_counts_text,
 )
-from omr_scanner.services import coordinator, scan_sessions
+from omr_scanner.services import coordinator, save_template, scan_sessions, set_active_template
 
 pytestmark = pytest.mark.gui
 
@@ -173,6 +173,11 @@ class TestWindowIntegration:
         from tests.engine_rig import readable_sheets
 
         pair = readable_sheets(20)
+        # The project's own template, as a real project has it.
+        template_file = rig.project.project.layout.templates_dir / "rig.omrt"
+        template_file.parent.mkdir(parents=True, exist_ok=True)
+        save_template(rig.template, template_file)
+        set_active_template(rig.project, template_file)
         window = MainWindow(config=AppConfig(), config_path=tmp_path / "config.json")
         qtbot.addWidget(window)
         window.apply_reviewer_name(OPERATOR)
@@ -223,6 +228,15 @@ class TestWindowIntegration:
         # Navigable across batches: its related sheet is the other scanner's.
         assert any(item.related_scan_ids for item in duplicates)
         assert resolve.current_conflict() is not None
+        # Anchored by the snapshot, not handed a batch by Scan: the project's
+        # template still re-reads the sheet, so its evidence is shown (a defect
+        # found in the phase 8 screenshots - Resolve stayed blank).
+        assert resolve.state.template is not None
+        deadline = time.monotonic() + 60
+        while resolve.state.bundle is None and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(0.02)
+        assert resolve.state.bundle is not None
         window._settle_background_work()
 
 

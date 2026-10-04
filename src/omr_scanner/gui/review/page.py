@@ -168,12 +168,14 @@ from omr_scanner.services import (
     last_resolved_sheet,
     list_conflicts,
     load_summary,
+    load_template,
     map_canonical_to_source,
     project_sets,
     provenance_for,
     provenance_for_scan,
     quality_decisions,
     reopen,
+    resolve_active_template,
     review_store,
     scan_lifecycle,
     scan_sessions,
@@ -708,6 +710,9 @@ class ResolvePage(WorkflowPage):
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("reviewSummaryLabel")
         self.summary_label.setTextFormat(Qt.TextFormat.RichText)
+        # A live session adds suggested-rescan and waiting-file counts: wrap
+        # rather than clip them in a narrow queue column (revised phase 8).
+        self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
 
         self.summary_breakdown = QLabel("")
@@ -743,18 +748,27 @@ class ResolvePage(WorkflowPage):
 
         # Where the sheet on screen came from (revised phase 8): scanner,
         # batch, the operator's own file name, arrival - so a duplicate across
-        # two scanners reads as two sheets from two places, not two ids.
+        # two scanners reads as two sheets from two places, not two ids. It sits
+        # beside the evidence tabs, so the decision panel loses no height.
         self.provenance_context_label = QLabel("")
         self.provenance_context_label.setObjectName("sheetProvenanceLabel")
-        self.provenance_context_label.setWordWrap(True)
-        self.provenance_context_label.setStyleSheet(f"color: {Color.TEXT_SECONDARY};")
+        self.provenance_context_label.setStyleSheet(
+            f"color: {Color.TEXT_SECONDARY}; padding-right: 6px;"
+        )
+        self.provenance_context_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.provenance_context_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         self.provenance_context_label.setVisible(False)
-        layout.addWidget(self.provenance_context_label)
+        self._provenance_names = ("", "")  # (stored copy, arrived as)
 
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.setObjectName("resolveWorkspaceSplitter")
         self.workspace_splitter.setChildrenCollapsible(False)
         views = self._build_views()
+        self.view_tabs.setCornerWidget(self.provenance_context_label, Qt.Corner.TopRightCorner)
         set_floor(views, minimum_height=PREVIEW_MIN_HEIGHT)
         # The conflict decision panel, or - for a Rejected / Rescan case - the
         # case panel, in the same place and at the same size.
@@ -1535,6 +1549,19 @@ class ResolvePage(WorkflowPage):
         _LOGGER.info("Review page opened batch %s", batch_id)
         return True
 
+    def _project_template(self) -> OmrTemplate | None:
+        """The open project's active template, or ``None`` (none set, or unreadable)."""
+        project = self.state.session
+        if project is None:
+            return None
+        active = resolve_active_template(project.project)
+        if active is None:
+            return None
+        try:
+            return load_template(active)
+        except OMRScannerError:
+            return None  # the Template stage reports the file; Resolve shows no images
+
     def load_session(self, scan_session_id: str, template: OmrTemplate | None = None) -> bool:
         """Show a scan session's queues (revised phase 8).
 
@@ -1550,11 +1577,15 @@ class ResolvePage(WorkflowPage):
             item for item in session_sheets.session_batches(database, scan_session_id)
             if not item.superseded
         ]
+        # Anchored by a live session rather than by Scan handing over a batch,
+        # no template comes with the call: the project's own one re-reads the
+        # sheets (the project-template rule), or no evidence could be shown.
+        template = template or self.state.template or self._project_template()
         if batches:
-            return self.load_batch(batches[0].batch_id, template or self.state.template)
+            return self.load_batch(batches[0].batch_id, template)
         self.state.batch_id = None
         self.state.scan_session_id = scan_session_id
-        self.state.template = template or self.state.template
+        self.state.template = template
         self._fill_batch_filter()
         self._fill_source_filter()
         self._refresh_batch_label()
@@ -1624,7 +1655,12 @@ class ResolvePage(WorkflowPage):
         context = self._session_context_html(info)
         if multi:
             # A session of several batches is reviewed as one population.
-            self.batch_label.setText(f"{context}<b>Scan session</b><br>{population_text}")
+            # The context line already names the session; without it, say so.
+            self.batch_label.setText(
+                f"{context}{population_text}"
+                if context
+                else f"<b>Scan session</b><br>{population_text}"
+            )
             return
         if summary is _UNREAD:
             summary = load_summary(database, batch_id)
@@ -4487,7 +4523,7 @@ class ResolvePage(WorkflowPage):
             self.original_view.set_overlay_visible(zones=False, bubbles=False, empty=False)
             self.original_view.fit_to_window()
             self.original_note.setText(
-                f"{bundle.path.name}, exactly as it arrived (never modified)."
+                f"{self._arrival_name(bundle.path)}, exactly as it arrived (never modified)."
             )
         else:
             reason = bundle.error or "The image could not be decoded."
@@ -4623,11 +4659,14 @@ class ResolvePage(WorkflowPage):
             else None
         )
         if found is None:
+            self._provenance_names = ("", "")
             self.provenance_context_label.setVisible(False)
             return
+        self._provenance_names = (found.stored_name, found.original_name)
         self.provenance_context_label.setText(found.describe())
+        # The corner may clip a long line; the tooltip always has all of it.
         self.provenance_context_label.setToolTip(
-            f"Batch {found.batch_id[:8]}"
+            f"{found.describe()}\nBatch {found.batch_id[:8]}"
             + (
                 f" · stored as {found.stored_name}"
                 if found.stored_name and found.stored_name != found.original_name
@@ -4635,6 +4674,11 @@ class ResolvePage(WorkflowPage):
             )
         )
         self.provenance_context_label.setVisible(True)
+
+    def _arrival_name(self, path: Path) -> str:
+        """The file name an image arrived with - not its content-addressed copy's."""
+        stored, original = self._provenance_names
+        return original if original and path.name == stored else path.name
 
     # ------------------------------------------------------------------
     # Suggested rescans (revised phase 8)
@@ -4820,7 +4864,7 @@ class ResolvePage(WorkflowPage):
             self.original_view.set_overlay_visible(zones=False, bubbles=False, empty=False)
             self.original_view.fit_to_window()
             self.original_note.setText(
-                f"{bundle.path.name}, exactly as it arrived (never modified)."
+                f"{self._arrival_name(bundle.path)}, exactly as it arrived (never modified)."
             )
         else:
             reason = bundle.error or "The original scan could not be decoded."
