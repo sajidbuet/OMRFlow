@@ -146,7 +146,9 @@ def stop_engine(rig: EngineRig) -> None:
     rig.engine = None
 
 
-def refused(qtbot, rig: EngineRig, finishes: list[FinishOutcome]) -> tuple[Dialogs, set[BlockerCode]]:
+def refused(
+    qtbot, rig: EngineRig, finishes: list[FinishOutcome]
+) -> tuple[Dialogs, set[BlockerCode]]:
     page = reports_page(qtbot, rig)
     dialogs = Dialogs(page, accept_incomplete=True)
     assert page._ensure_closed_for_final([]) is None
