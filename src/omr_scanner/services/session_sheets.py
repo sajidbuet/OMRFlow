@@ -29,6 +29,8 @@ Original file names:
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -467,11 +469,55 @@ def _original_name(with_intake: bool) -> Any:
     return func.coalesce(func.nullif(IntakeFile.file_name, ""), BatchScan.filename)
 
 
+def _needs(query: SheetQuery, *, with_intake: bool, sorting: bool) -> frozenset[str]:
+    """The tables a query must join - only those, so a plain page reads ``batch_scan`` alone."""
+    needs: set[str] = set()
+    if query.source_id:
+        needs.add("batch")
+    if query.rescan in (RescanFilter.REJECTED, RescanFilter.REPLACED, RescanFilter.ACTIVE):
+        needs.add("rejection")
+    if query.quality not in (QualityFilter.ALL, QualityFilter.SUGGESTED):
+        needs.add("quality")
+    if query.search.strip() and with_intake:
+        needs.add("intake")
+    if sorting:
+        if query.sort is SheetSort.SOURCE:
+            needs |= {"batch", "source"}
+        elif query.sort is SheetSort.BATCH:
+            needs.add("batch")
+        elif query.sort is SheetSort.FILE_NAME and with_intake:
+            needs.add("intake")
+        elif query.sort is SheetSort.QUALITY:
+            needs.add("quality")
+    return frozenset(needs)
+
+
+def _join(
+    statement: Any, needs: frozenset[str], *, with_intake: bool, with_quality: bool
+) -> Any:
+    """Add exactly the joins ``needs`` names (every one on a key or unique column)."""
+    if "batch" in needs or "source" in needs:
+        statement = statement.join(ScanBatch, ScanBatch.batch_id == BatchScan.batch_id)
+    if "rejection" in needs:
+        statement = statement.outerjoin(ScanRejection, ScanRejection.scan_id == BatchScan.scan_id)
+    if "intake" in needs and with_intake:
+        statement = statement.outerjoin(
+            IntakeFile, IntakeFile.intake_file_id == BatchScan.intake_file_id
+        )
+    if "source" in needs and with_intake:
+        statement = statement.outerjoin(IntakeSource, IntakeSource.source_id == ScanBatch.source_id)
+    if "quality" in needs and with_quality:
+        statement = statement.outerjoin(
+            ScanQualityDecision, ScanQualityDecision.scan_id == BatchScan.scan_id
+        )
+    return statement
+
+
 def _apply_filters(
     statement: Any, query: SheetQuery, batches: list[str], *, with_intake: bool,
     with_quality: bool,
 ) -> Any:
-    """``statement`` (FROM ``batch_scan`` with the joins already added) narrowed by ``query``."""
+    """``statement`` (FROM ``batch_scan`` with :func:`_join`'s joins) narrowed by ``query``."""
     wanted = [item for item in batches if not query.batch_ids or item in query.batch_ids]
     statement = statement.where(BatchScan.batch_id.in_(wanted))
     if query.status is not StatusFilter.ALL:
@@ -522,21 +568,6 @@ def _apply_filters(
     return statement
 
 
-def _joined(statement: Any, *, with_intake: bool, with_quality: bool) -> Any:
-    statement = statement.join(ScanBatch, ScanBatch.batch_id == BatchScan.batch_id).outerjoin(
-        ScanRejection, ScanRejection.scan_id == BatchScan.scan_id
-    )
-    if with_intake:
-        statement = statement.outerjoin(
-            IntakeFile, IntakeFile.intake_file_id == BatchScan.intake_file_id
-        ).outerjoin(IntakeSource, IntakeSource.source_id == ScanBatch.source_id)
-    if with_quality:
-        statement = statement.outerjoin(
-            ScanQualityDecision, ScanQualityDecision.scan_id == BatchScan.scan_id
-        )
-    return statement
-
-
 def _session_batch_ids(database: ProjectDatabase, scan_session_id: str) -> list[str]:
     with database.session() as session:
         return [
@@ -550,15 +581,20 @@ def _session_batch_ids(database: ProjectDatabase, scan_session_id: str) -> list[
 def count_sheets(
     database: ProjectDatabase, scan_session_id: str, query: SheetQuery | None = None
 ) -> int:
-    """How many of the session's sheets ``query`` lists. One count statement."""
+    """How many of the session's sheets ``query`` lists. One count statement.
+
+    Joins only what a filter needs: an unfiltered count is an index-only scan
+    of ``batch_scan``'s ``(batch_id, status)`` index.
+    """
     wanted = query or SheetQuery()
     batches = _session_batch_ids(database, scan_session_id)
     if not batches:
         return 0
     with_intake = intake_service.has_intake_schema(database)
     with_quality = quality_decisions.has_quality_schema(database)
-    statement = _joined(
+    statement = _join(
         select(func.count()).select_from(BatchScan),
+        _needs(wanted, with_intake=with_intake, sorting=False),
         with_intake=with_intake,
         with_quality=with_quality,
     )
@@ -601,7 +637,13 @@ def list_sheets(
     offset: int = 0,
     limit: int = PAGE_SIZE,
 ) -> tuple[SheetRow, ...]:
-    """One page of the session's sheets, filtered and sorted in SQL. Bounded by ``limit``."""
+    """One page of the session's sheets, filtered and sorted in SQL. Bounded by ``limit``.
+
+    Two statements: the page's sheet ids (joining only what the filters and
+    the sort need), then those few sheets' details - so the per-row columns
+    (conflicts, suggestion, replacement) are computed for one page, never for
+    the session.
+    """
     wanted = query or SheetQuery()
     batches = session_batches(database, scan_session_id)
     if not batches:
@@ -609,75 +651,154 @@ def list_sheets(
     label_of = {item.batch_id: item.label for item in batches}
     with_intake = intake_service.has_intake_schema(database)
     with_quality = quality_decisions.has_quality_schema(database)
-    columns: list[Any] = [
-        BatchScan.scan_id,
-        BatchScan.batch_id,
-        ScanBatch.source_id,
-        IntakeSource.label if with_intake else literal(""),
-        _original_name(with_intake),
-        BatchScan.filename,
-        BatchScan.source_path,
-        BatchScan.status,
-        BatchScan.outcome,
-        BatchScan.identifier_value,
-        BatchScan.set_code_value,
-        ScanQualityDecision.decision if with_quality else literal(""),
-        (
-            quality_decisions.outstanding_clause(BatchScan.scan_id)
-            if with_quality
-            else literal(False)
-        ),
-        _unresolved_count(),
-        func.coalesce(ScanRejection.state, literal(LifecycleState.ACTIVE.value)),
-        _is_replacement(),
-        func.coalesce(BatchScan.registered_at, IntakeFile.first_seen_at)
-        if with_intake
-        else BatchScan.registered_at,
-        BatchScan.finished_at,
-    ]
-    statement = _joined(
-        select(*columns).select_from(BatchScan),
+    page = _join(
+        select(BatchScan.scan_id).select_from(BatchScan),
+        _needs(wanted, with_intake=with_intake, sorting=True),
         with_intake=with_intake,
         with_quality=with_quality,
     )
-    statement = _apply_filters(
-        statement,
+    page = _apply_filters(
+        page,
         wanted,
         [item.batch_id for item in batches],
         with_intake=with_intake,
         with_quality=with_quality,
     )
-    statement = (
-        statement.order_by(*_order(wanted, with_intake=with_intake, with_quality=with_quality))
+    page = (
+        page.order_by(*_order(wanted, with_intake=with_intake, with_quality=with_quality))
         .offset(max(0, offset))
         .limit(max(0, limit))
     )
     with database.session() as session:
-        rows = session.execute(statement).all()
-    return tuple(
-        SheetRow(
-            scan_id=int(row[0]),
-            batch_id=str(row[1]),
-            batch_label=label_of.get(str(row[1]), str(row[1])[:8]),
-            source_id=str(row[2]) if row[2] else None,
-            source_label=str(row[3] or ""),
-            original_name=str(row[4] or ""),
-            stored_name=str(row[5] or ""),
-            source_path=str(row[6] or ""),
-            status=str(row[7] or ""),
-            outcome=str(row[8] or ""),
-            student_id=str(row[9] or ""),
-            set_code=str(row[10] or ""),
-            quality=str(row[11] or ""),
-            suggestion_outstanding=bool(row[12]),
-            unresolved_conflicts=int(row[13] or 0),
-            lifecycle=str(row[14] or LifecycleState.ACTIVE.value),
-            is_replacement=bool(row[15]),
-            arrived_at=_aware(row[16]),
-            read_at=_aware(row[17]),
-        )
-        for row in rows
+        ids = [int(item) for item in session.scalars(page).all()]
+        if not ids:
+            return ()
+        everything = frozenset({"batch", "rejection", "intake", "source", "quality"})
+        columns: list[Any] = [
+            BatchScan.scan_id,
+            BatchScan.batch_id,
+            ScanBatch.source_id,
+            IntakeSource.label if with_intake else literal(""),
+            _original_name(with_intake),
+            BatchScan.filename,
+            BatchScan.source_path,
+            BatchScan.status,
+            BatchScan.outcome,
+            BatchScan.identifier_value,
+            BatchScan.set_code_value,
+            ScanQualityDecision.decision if with_quality else literal(""),
+            (
+                quality_decisions.outstanding_clause(BatchScan.scan_id)
+                if with_quality
+                else literal(False)
+            ),
+            _unresolved_count(),
+            func.coalesce(ScanRejection.state, literal(LifecycleState.ACTIVE.value)),
+            _is_replacement(),
+            func.coalesce(BatchScan.registered_at, IntakeFile.first_seen_at)
+            if with_intake
+            else BatchScan.registered_at,
+            BatchScan.finished_at,
+        ]
+        details = _join(
+            select(*columns).select_from(BatchScan),
+            everything,
+            with_intake=with_intake,
+            with_quality=with_quality,
+        ).where(BatchScan.scan_id.in_(ids))
+        found = {int(row[0]): row for row in session.execute(details).all()}
+    return tuple(_row(found[scan_id], label_of) for scan_id in ids if scan_id in found)
+
+
+def _row(row: Any, label_of: dict[str, str]) -> SheetRow:
+    return SheetRow(
+        scan_id=int(row[0]),
+        batch_id=str(row[1]),
+        batch_label=label_of.get(str(row[1]), str(row[1])[:8]),
+        source_id=str(row[2]) if row[2] else None,
+        source_label=str(row[3] or ""),
+        original_name=str(row[4] or ""),
+        stored_name=str(row[5] or ""),
+        source_path=str(row[6] or ""),
+        status=str(row[7] or ""),
+        outcome=str(row[8] or ""),
+        student_id=str(row[9] or ""),
+        set_code=str(row[10] or ""),
+        quality=str(row[11] or ""),
+        suggestion_outstanding=bool(row[12]),
+        unresolved_conflicts=int(row[13] or 0),
+        lifecycle=str(row[14] or LifecycleState.ACTIVE.value),
+        is_replacement=bool(row[15]),
+        arrived_at=_aware(row[16]),
+        read_at=_aware(row[17]),
     )
+
+
+def original_names(
+    database: ProjectDatabase, scan_ids: Iterable[int], *, intake_only: bool = False
+) -> dict[int, str]:
+    """``scan_id -> the operator's original file name`` for the given sheets.
+
+    For a watched source's sheet this is the intake ledger's name, not the
+    project copy's content-addressed one; a sheet that did not come through
+    intake keeps its stored name - or, with ``intake_only``, is left out.
+    Unknown ids are left out. One query per 900 ids (SQLite's bound-parameter
+    limit).
+    """
+    wanted = sorted({int(item) for item in scan_ids})
+    if not wanted:
+        return {}
+    with_intake = intake_service.has_intake_schema(database)
+    if intake_only and not with_intake:
+        return {}
+    statement = select(BatchScan.scan_id, _original_name(with_intake)).select_from(BatchScan)
+    if intake_only:
+        statement = statement.join(
+            IntakeFile, IntakeFile.intake_file_id == BatchScan.intake_file_id
+        ).where(IntakeFile.file_name != "")
+    elif with_intake:
+        statement = statement.outerjoin(
+            IntakeFile, IntakeFile.intake_file_id == BatchScan.intake_file_id
+        )
+    found: dict[int, str] = {}
+    with database.session() as session:
+        for start in range(0, len(wanted), 900):
+            chunk = wanted[start:start + 900]
+            for scan_id, name in session.execute(
+                statement.where(BatchScan.scan_id.in_(chunk))
+            ).all():
+                found[int(scan_id)] = str(name or "")
+    return found
+
+
+def with_original_names[Named](
+    database: ProjectDatabase, items: Sequence[Named], *fields: tuple[str, str]
+) -> list[Named]:
+    """``items`` with each watched-source sheet's name shown as it arrived.
+
+    Each ``(id_attribute, name_attribute)`` pair names a scan id and the
+    display name beside it on the (frozen dataclass) items; a name is
+    replaced only for a sheet that came through intake, so a finite batch's
+    rows are returned unchanged. One batched lookup for all the items.
+    """
+    ids = {
+        scan_id
+        for item in items
+        for id_attribute, _ in fields
+        if isinstance(scan_id := getattr(item, id_attribute), int) and scan_id > 0
+    }
+    names = original_names(database, ids, intake_only=True)
+    if not names:
+        return list(items)
+    shown: list[Named] = []
+    for item in items:
+        changes = {
+            name_attribute: names[scan_id]
+            for id_attribute, name_attribute in fields
+            if (scan_id := getattr(item, id_attribute)) in names
+        }
+        shown.append(dataclasses.replace(item, **changes) if changes else item)  # type: ignore[type-var]
+    return shown
 
 
 # ----------------------------------------------------------------------
@@ -743,7 +864,9 @@ __all__ = [
     "batches_of_source",
     "count_sheets",
     "list_sheets",
+    "original_names",
     "session_batches",
     "session_sources",
     "sheet_provenance",
+    "with_original_names",
 ]

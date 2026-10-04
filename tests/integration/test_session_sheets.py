@@ -8,6 +8,8 @@ engine rig (fake disk, real recognition).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 from tests.engine_rig import EngineRig, readable_sheets
 from tests.integration.test_session_finish import BIG, settle
@@ -26,12 +28,20 @@ from omr_scanner.services.session_sheets import (
     batches_of_source,
     count_sheets,
     list_sheets,
+    original_names,
     session_batches,
     session_sources,
     sheet_provenance,
+    with_original_names,
 )
 
 SHEETS = readable_sheets(12)
+
+
+@dataclass(frozen=True, slots=True)
+class ConflictRecordLike:
+    scan_id: int
+    scan_name: str
 
 
 @pytest.fixture
@@ -67,6 +77,18 @@ class TestListing:
         assert {item.source_label for item in batches} == {"Scanner a", "Scanner b"}
         assert {item.source_id for item in session_sources(rig.database, rig.session_id)} == {a, b}
 
+    def test_display_names_are_the_names_the_sheets_arrived_with(self, rig):
+        two_sources(rig)
+        rows = list_sheets(rig.database, rig.session_id, limit=100)
+        names = original_names(rig.database, [row.scan_id for row in rows])
+        assert names == {row.scan_id: row.original_name for row in rows}
+        records = [ConflictRecordLike(row.scan_id, row.stored_name) for row in rows]
+        records.append(ConflictRecordLike(10**9, "unknown.png"))  # not a sheet: unchanged
+        shown = with_original_names(rig.database, records, ("scan_id", "scan_name"))
+        assert [item.scan_name for item in shown] == [row.original_name for row in rows] + [
+            "unknown.png"
+        ]
+
     def test_pages_are_bounded_and_disjoint(self, rig):
         two_sources(rig)
         first = list_sheets(rig.database, rig.session_id, limit=3)
@@ -94,7 +116,8 @@ class TestListing:
         ):
             rows = list_sheets(database, session_id, query, limit=100)
             assert len(rows) == count_sheets(database, session_id, query), query
-        assert {row.source_id for row in list_sheets(database, session_id, SheetQuery(source_id=a))} == {a}
+        from_a = list_sheets(database, session_id, SheetQuery(source_id=a))
+        assert {row.source_id for row in from_a} == {a}
         assert count_sheets(database, session_id, SheetQuery(source_id=a)) == 4
         assert count_sheets(database, session_id, SheetQuery(status=StatusFilter.NOT_READ)) == 0
         suggested = list_sheets(database, session_id, SheetQuery(quality=QualityFilter.SUGGESTED))
