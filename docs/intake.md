@@ -311,6 +311,31 @@ the session open or closed, never half-closed. After it, files for the session
 are held. *Reopen* is named and audited and stales final outputs; closing
 again runs every check again.
 
+## In the application (revised phase 8)
+
+The operational GUI renders and drives everything above; it decides nothing
+itself (`PHASE_H_HANDOFF.md`):
+
+* **Sources** are added, renamed, enabled/disabled, paused/resumed and removed
+  from a session on the Scan stage's session panel (*Session → Add Scanner
+  Source...* turns session mode on). The folder can be typed or pasted - a UNC
+  path that cannot be listed right now is kept and shown *Unreachable*.
+  *Remove from Session* ends the source's attachment (audited); its ledger
+  rows, sheets and history stay.
+* **Controls** are the buttons of the panel, each one service call
+  (`session_controls`, or a command to the engine's own thread for *Finish
+  Current and Stop* / *Cancel Queued Work*). Captions follow the stored
+  intent - they are re-read from the snapshot, never flipped by the click.
+* **The snapshot** is polled once a second in a worker thread (one read at a
+  time, at most one owed); the panel shows its activity label, partition
+  counts, the three progress lines and per-source state.
+* **Files waiting for an operator** are Resolve's *Files awaiting decision*
+  view: exactly the options of `intake_decisions.OPTIONS`, a named reviewer,
+  and *Release* disabled while the file's session is closed (reopen it first).
+* **Finish scan session** is the panel's *Finish Scan Session...*: the
+  read-only blocker preview, then the attempt (final reconciliation) through
+  `finish_scan_session` - in the engine's thread while it runs.
+
 ## Manual intake
 
 *Add Folder -> Process All*: the Scan stage creates its batch exactly as before;

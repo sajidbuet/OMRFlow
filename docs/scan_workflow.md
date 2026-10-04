@@ -722,6 +722,75 @@ Decision record: `docs/decisions/ADR-0005-scan-sessions-and-finite-batches.md`.
 - A **processing manifest** (what the batch was run with) is stored at the end
   of every run and whenever a batch is sealed.
 
+## 12c. Continuous scanning: session mode (0.1.1 revised phase 8)
+
+> **Status:** implemented, automated GUI tests and a local scripted run only.
+> Not used in a scanning room, not tested on a network share or a real
+> scanner. See `development/releases/0.1.1-alpha.0/PHASE_H_HANDOFF.md`.
+
+**Nothing changes for a finite examination.** *Add Scan(s) / Add Folder →
+Process All / Selected → Resume / Retry → Export CSV* is the workflow it was;
+session mode never appears unless a scanner source is added.
+
+**Turning it on.** *Session → Add Scanner Source...* adds a scanner's output
+folder - a local folder, or a network path typed or pasted (`\\pc\scans`; an
+unreachable share is kept and shown as *Unreachable* until it can be listed) -
+to the active scan session (one is created first only if none exists). The
+Scan stage then shows the **session panel** above the workspace:
+
+* **Status line** - *Session: <name>*, **OPEN** / **CLOSED** (*OPEN ·
+  REOPENED* after a reopen), and what the session is doing, in the session
+  snapshot's own words: *Processing*, *Caught up - watching for new scans*,
+  *Waiting for Scanner B (unreachable since 10:42)*, *Processing paused*,
+  *Intake paused*, *Checking scanner sources*. When work is outstanding but
+  no engine in this window is reading it (after reopening an interrupted
+  project, say) it reads *Processing (not running in this window)*. **Caught
+  up is not complete**: it means nothing is waiting right now; only *Finish
+  Scan Session* closes a session. A closed session that this window still
+  watches says so: a file that arrives is held for a decision on Resolve,
+  not read.
+* **Three progress lines, never one percentage** - *Recognition* (read of
+  discovered - it can fall when files arrive), *Conflicts* (resolved of
+  required), *Rescans* (replaced of needed). No combined figure exists.
+* **Counts** - Discovered, Stabilizing, Waiting (ready + queued), Being read,
+  Accepted, Conflict, Rescan required; the other buckets (Duplicate,
+  Superseded, Held, Unreadable, Deferred, Excluded, Counted in another session,
+  Vanished) only when not zero.
+* **Warnings** - a high registration-failure rate at one scanner (*check
+  scanner alignment and template selection* - an uncalibrated warning, not a
+  diagnosis), suggested rescans and files waiting for a decision, stale final
+  exports after a reopen, an engine message.
+* **Sources** (folded by default) - per scanner: status (*Watching*,
+  *Paused*, *Unreachable since …*, *Disabled*, *Checking*), received, read,
+  accepted, conflict, rescan, duplicate, last check and rate; *Edit...*,
+  *Enable/Disable*, *Pause/Resume Source*, *Remove from Session...* (stops
+  future intake; nothing already delivered is removed).
+
+**The list.** In session mode the list under the preview is the whole scan
+session, one page of 200 at a time, filtered and sorted in the database
+(status, source, batch, quality, conflict, rescan, search by Student ID or the
+**original** file name). *List: This batch* returns to the batch list.
+
+**Actions**, grouped:
+
+| Group | Action | What it does |
+|---|---|---|
+| Processing | *Start Continuous Scan* | Starts the engine in this window (a worker thread). Refused, with the reason, while a *Process All* runs - one coordinator per project |
+| | *Pause Processing* / *Resume Processing* | Saved intent. Pause claims nothing new; sheets already being read finish and are saved. Resume starts the engine if it is not running |
+| | *Stop → Finish Current and Stop* | The normal safe stop: no new work, current work finishes and is saved |
+| | *Stop → Cancel Queued Work...* | Asks first. Queued sheets return to Pending; running ones finish and are saved; nothing is deleted. Needs your operator name |
+| Intake | *Pause Intake* / *Resume Intake* | Stops looking for and registering new files; registered sheets are still read unless processing is paused too |
+| | *Add Source...* | As above |
+| Session | *Finish Scan Session...* | Lists what would block it, then - on *Finish Scan Session* - gives every source a final check and closes only if nothing blocks. Every blocker is listed, grouped, with *Go to ...* buttons. Only outstanding rescans, unmatched replacements and deferred sheets may be accepted as incomplete results, by a named operator |
+| | *Reopen Session...* | Named and audited; results become provisional, final exports made while closed become stale |
+
+**Leaving.** Closing the project or OMRFlow stops scanning safely (current
+work finishes and is saved) and leaves the session **open** - exiting is not
+finishing the examination. Reopening the project shows the session as the
+database has it - counts, pause settings, source reachability - before
+anything is started; *Start Continuous Scan* continues in the same session
+and batches.
+
 ---
 
 ## 13. Troubleshooting

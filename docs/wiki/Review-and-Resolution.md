@@ -209,6 +209,33 @@ selected is not kept, and neither is **Redo** after a restart.
 This was tested by killing a real OMRFlow process after several corrections
 (0.1.1 phase 3); it has not yet been used by an examination office.
 
+## Reviewing while scanning continues (in development)
+
+During continuous scanning (see [Scanning](Scanning#several-scanners-at-once-session-mode))
+the queue updates by itself as sheets arrive - at most every two seconds, and
+never while you are choosing a value, editing a field or typing: the refresh
+waits, and the conflict you are on stays selected. Filters by **batch** and
+**scanner** narrow the queue; above the image each sheet says which scanner,
+batch and original file it came from and when it arrived.
+
+Two more views:
+
+- **Suggested rescans** - sheets the quality policy thinks should be scanned
+  again (folded, blank, misaligned). The policy is an *unvalidated default*:
+  nothing is rejected until you choose *Confirm Rescan Required…*; *Dismiss
+  Suggestion…* keeps the sheet. Both need your reviewer name.
+- **Files awaiting decision** - files a scanner wrote that could not be read,
+  are not a supported image, or arrived after the session was finished. The
+  actions offered are exactly the ones allowed for that file (retry, dismiss,
+  release); a file for a finished session can be released only after the
+  session is reopened.
+
+In *Rejected / Rescan*, a rescan that arrived at **another scanner** is offered
+as a possible replacement, ranked, with where and when it arrived - a
+suggestion, never a certainty; *Use as replacement* confirms it and *Remove
+replacement link…* undoes it. Tested by automated GUI tests and scripted runs
+only; not yet used by an operator.
+
 ## The audit trail
 
 Every decision is appended, never overwritten: what the machine read, what

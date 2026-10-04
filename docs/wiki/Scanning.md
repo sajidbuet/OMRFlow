@@ -44,6 +44,40 @@ batch, its saved results and what is still pending - before you press
 anything; **Resume Batch** reads only what is left. See
 [Recovery After Interrupted Processing](Recovery-After-Interrupted-Processing).
 
+## Several scanners at once: session mode
+
+> In development (`0.1.1`, branch `feat/0.1.1-phase8-operational-gui`, not
+> released). Tested by automated GUI tests and scripted local runs only - not
+> yet used in a scanning room, on a network share or with a real scanner.
+
+Nothing above changes for a single, finite set of scans. When several scanners
+feed one examination, **Session → Add Scanner Source…** adds a scanner's
+output folder (a local folder or a typed / pasted network path such as
+`\\scan-pc-2\out`) to the scan session, and the Scan stage shows the
+**session panel**:
+
+- what the session is doing - *Processing*, *Caught up - watching for new
+  scans*, *Waiting for Scanner B (unreachable since 10:42)*, *Processing
+  paused*, *Intake paused*. **Caught up does not mean finished**: the session
+  stays open until you choose *Finish Scan Session*;
+- three progress lines - *Recognition*, *Conflicts*, *Rescans* - never one
+  percentage; recognition can go *down* when new sheets arrive;
+- live counts, warnings (for example a scanner whose sheets mostly fail to
+  align - check its alignment and template; an uncalibrated warning, not a
+  diagnosis), and a folded **Sources** table with each scanner's state;
+- **Start Continuous Scan**, **Pause / Resume Processing**, **Stop → Finish
+  Current and Stop** (the normal safe stop) or **Cancel Queued Work…**,
+  **Pause / Resume Intake**, **Finish Scan Session…** (lists everything that
+  still blocks closing, with *Go to …* buttons) and **Reopen Session…**.
+
+The list under the preview becomes the whole session, a page at a time, with
+filters by status, scanner, batch, quality, conflict and rescan state. Sheets
+are named by the file name they arrived with.
+
+Closing OMRFlow while scanning stops safely and leaves the session **open**;
+reopening the project shows exactly where it stopped before anything starts.
+Details: `docs/scan_workflow.md` §12c.
+
 ## Duplicate and changed scans
 
 OMRFlow hashes each imported image's contents. It can therefore tell you

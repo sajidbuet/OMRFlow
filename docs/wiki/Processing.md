@@ -91,6 +91,18 @@ queue read the **whole session** — every batch — counting each sheet once:
 a rescan replaces its original only when you confirm it, and another session
 is never mixed in. Details: `docs/scan_workflow.md` §12b.
 
+### Continuous scanning (in development)
+
+With scanner sources added (see [Scanning](Scanning#several-scanners-at-once-session-mode)),
+*Start Continuous Scan* reads new files as the scanners write them, in small
+sealed batches of one scanner each, while you keep working - including on
+Resolve. Pausing processing lets sheets already being read finish and be
+saved; *Finish Current and Stop* is the normal way to stop; *Cancel Queued
+Work* returns waiting sheets to pending and deletes nothing. Only one thing
+processes a project at a time: *Process All* is refused, with the reason,
+while continuous scanning runs, and the other way round. Tested by automated
+GUI tests and a scripted local run only; not yet used by an operator.
+
 ## Reading the outcome
 
 The table shows each sheet's original file, roll number, set, status and
