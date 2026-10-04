@@ -263,7 +263,13 @@ Rules that apply to every section:
 > resumes); E8 `test_session_finish` (every blocker together and each alone,
 > acknowledged incomplete results audited, close sealed and audited, later
 > arrivals held, reopen named and stale outputs, re-close re-validates),
-> `test_phase7_kills` (kill inside close / reopen: never half-done). E9 extended:
+> `test_phase7_kills` (kill inside close / reopen: never half-done),
+> `tests/gui/test_final_export_finish_policy.py` (§3's "the same checks run in
+> the one-step Close session and generate final export": Reports and the Scan
+> stage close only through `finish_scan_session` - held file, suggested rescan,
+> unreachable source, queued work and another coordinator refuse; incomplete
+> results only by named acceptance; a clean finite session still closes and
+> exports - added after pre-merge review found the Reports path bypassing it). E9 extended:
 > real kills inside the quality work unit, between a commit and its duplicate
 > pass, inside rejection and replacement confirmation. Phase F carry-forwards:
 > `test_incremental_duplicate_sync`, `test_coordinator_ownership`,

@@ -13,6 +13,7 @@
 | Real-scanner validation | **Not performed** |
 | Power-loss validation | **Not performed** (process kills only) |
 | Production qualification | **Not performed** |
+| Verdict (after the pre-merge correction pass, §14a) | **COMPLETE WITH NON-BLOCKING LIMITATIONS** (§15). Before that pass the Reports close path bypassed the finish policy - a phase 7 integration blocker, fixed before merge |
 
 ## 1. Git state
 
@@ -26,7 +27,12 @@
   `5a3429e` engine integration, `68c864b` migration fixture + tests, `f1ccadb`
   / `516428b` tests, `3973564` snapshot deadlock fix + recovery / contention
   tests, `9fd3168` crash kills, `888e60c` scenario, `c426146` snapshot
-  performance, then the documentation commit(s). Tip: see the final report.
+  performance, then the documentation commit(s) ending at `94241e0`.
+* Pre-merge correction pass (§14a), worktree
+  `D:\Sajid\OneDrive - BUET\Coding-Projects\OMRflow-phase7`: `7f69c13`
+  *fix: route final export through session finish policy*, `d64a623` *docs:
+  correct rollback-journal contention notes*, `69b5e8d` (test line wrap), then
+  this documentation commit. Tip: see the final report.
 * Pushed to `origin` as a branch (the phase workflow: phase branches are
   pushed, merged only on the owner's instruction). **Not merged** into `main`;
   nothing tagged or released.
@@ -352,6 +358,11 @@ duplicate 3, excluded 0, deferred 0, counted_elsewhere 0}
   the snapshot opened a second connection inside its read transaction - fixed
   in `3973564`; the rule is now "no other connection inside a read
   transaction" in the snapshot, `record_results` and `pending_decisions`.)
+  Re-run at the post-correction tip (`69b5e8d`, 2026-10-04, while no other
+  test ran): 462 operator actions, median 27.8 ms, worst 233.3 ms; 147
+  snapshots, median 113.6 ms, worst 451.3 ms; no `database is locked`.
+  `test_snapshot_scale` at the same tip: 53 ms at 10,200 rows, 11 statements.
+  The spread between runs is this machine's load, not a code change.
 * **Journal mode (corrected before merge).** OMRFlow keeps SQLite's default
   **rollback journal**; it does not use WAL (`database/engine.py`, ADR-0002 -
   unchanged by phase 7). An earlier version of this handoff said "the writer is
@@ -405,6 +416,101 @@ with the main checkout's `.venv`, log `Scratch\Log\2026-10-04_022249`):
   and a `-to-16` backup name; now `>= 16`, `schema_version == SCHEMA_VERSION`
   and `-to-{SCHEMA_VERSION}`, so the schema-15 -> current upgrade it tests
   still runs in full.
+
+## 14a. Pre-merge corrections (review of `94241e0`)
+
+**Defect found and fixed before merge - alternate close path.** A pre-merge
+review found that Reports' one-step *Close session and generate final export*
+(`ReportsPage._ensure_closed_for_final`) still decided closure with
+`scan_sessions.closure_blockers` and closed with `close_scan_session`
+directly - the Phase C checks only. It bypassed the final source
+reconciliation and the phase 7 blockers (held / unreadable / unsupported files,
+unanswered suggested rescans, unreachable sources, stabilising / ready files,
+coordinator ownership, unmatched replacements), so the application had two
+definitions of "may this session close". The Scan stage's *Close scan session*
+(`ScanPage.close_active_scan_session` / `_prompt_close_scan_session`) had the
+same bypass. Recorded here as a phase 7 integration blocker, not phase 8 GUI
+work.
+
+Fix (`7f69c13`): both GUI paths now close through `finish_scan_session` via
+the new `gui/session_close.py`, which decides nothing - it builds the intake
+service the final reconciliation needs (`IntakeService(..., recover=False)`)
+and renders the typed `FinishBlocker`s as the sentences the existing dialogs
+list. The dialogs and workflow are unchanged. Reports first answers its own
+question, *can these sets' final reports be generated?* (set blockers and
+non-acknowledgeable readiness issues), and if not, closes nothing and lists
+those together with the session's blockers from `finish_blockers` (the
+read-only preview of the same policy). Otherwise it calls
+`finish_scan_session`; when every blocker is acknowledgeable (outstanding
+rescan, unmatched replacement, deferred) it asks the existing *Close and export
+incomplete results* question and, on acceptance, calls it again with an
+`IncompleteAcceptance` naming the operator (audited in the close event). No
+operator name -> nothing closed. No force path. No production code calls
+`close_scan_session` directly any more.
+
+Tests: `tests/gui/test_final_export_finish_policy.py`, 11 cases, all passing.
+A spy wraps (does not replace) `session_finish.finish_scan_session`, so each
+test runs the real service and asserts the page went through it:
+
+| Case | Result |
+|---|---|
+| Held (unreadable) file awaiting decision - Phase C checks alone find nothing | refused, `files_awaiting_decision`, session open |
+| Unanswered suggested rescan | refused, `rescan_suggested` listed, open |
+| Enabled source unreachable at final reconciliation - Phase C checks find nothing | refused, `source_unreachable` naming the source, open |
+| Queued work with the engine still holding the lease; then engine stopped | refused `processing_active`; then refused `sheets_queued` / `sheets_processing`, open |
+| Outstanding rescan, operator cancels the incomplete-results question | open; one finish call |
+| Outstanding rescan, named acceptance | closed; `accepted == [rescan_outstanding]`; audit: reviewer, "incomplete results accepted", reason |
+| No operator name | nothing closed; *Scan session not closed* warning |
+| Clean continuous session | closed by one finish call; source reconciled |
+| Finite workflow: one step closes and exports | closed through the service; final export *current* |
+| A set that cannot export | service not called; set blocker and session blockers listed; open |
+| Scan stage *Close scan session* with a held file | refused through the same policy, open |
+
+Against the unfixed `ReportsPage` 9 of the 10 Reports cases fail (the tenth
+checks the report-side pre-check, which the old code also had). The existing
+`test_close_and_export_gui.py`, `test_reports_page.py` and
+`test_scan_session_gui.py` pass unchanged.
+
+**Documentation correction (`d64a623`).** §13 said the snapshot's read
+transaction does not block the writer "in WAL mode". OMRFlow uses SQLite's
+rollback journal, not WAL (`database/engine.py`, ADR-0002, unchanged); §13 now
+says so and what bounds the contention. `docs/wiki/Project-Format.md` (older
+than phase 7) also claimed WAL; corrected.
+
+**Finding - mypy is not clean with a fresh cache.** The post-fix canonical
+gate reports 2 errors in `services/scan_lifecycle.py` (lines 2433, 2452:
+`int()` of a `Mapped[int | None]` column). Those lines date from `cf9b05b`
+(2026-09-29) and are untouched by phase 7; the same 2 errors appear on the
+main checkout (222 files) with a fresh `--cache-dir` and either environment's
+mypy (2.3.1 / 2.4.0). The "mypy clean" results recorded in §14 for the
+baseline and `80ee036` were therefore most likely produced from a warm cache
+(not verified). Not fixed in this pass (pre-existing, outside its scope).
+
+## 14b. Post-correction validation (tip `69b5e8d`, 2026-10-04)
+
+Worktree `OMRflow-phase7` with its own `.venv` (mypy 2.4.0, ruff 0.16.10,
+SQLAlchemy 2.1.3, pytest 9.1.1, PySide6 6.11.2).
+
+| Check | Result |
+|---|---|
+| Targeted (finish policy, Reports / close-and-export, Scan session, reject-rescan GUI, coordinator GUI, `test_session_finish`, `test_coordinator_ownership`, phase 7 recovery and scenario, quality / rescan, reject-and-rescan, reports, quality-decision and rescan rules) | **302 passed** (22 min 05 s) |
+| Canonical `pytest-ruff-mypy.ps1`, log `Scratch\Log\2026-10-04_104600` - pytest | **7,020 passed, 27 skipped, 7 deselected, 0 failed** (1 h 48 min 19 s) |
+| ruff `check src tests tools scripts` | All checks passed |
+| mypy `src` (233 files) | **2 errors**, both pre-existing in `scan_lifecycle.py` (§14a) - none in phase 7 or correction code |
+| Stress `-m stress` | **7 passed** (14 min 47 s) |
+
+* +13 passed vs `80ee036`: the 11 new tests, plus 2 fewer skips in this
+  environment (27 vs 29). Not investigated further.
+* **Native crash `0xC0000409` did not recur** in this full run. It remains
+  unexplained; nothing in this pass addresses it and it is not claimed fixed.
+  Evidence so far: one abort in run `2026-10-04_013209`; full runs
+  `2026-10-04_022249` and `2026-10-04_104600` and the isolated GUI runs passed.
+* An earlier attempt at this gate (`2026-10-04_095853`) stopped at about 31 %:
+  it was launched under Windows PowerShell 5.1 with all output redirected
+  (`*>`), which turned an OpenCV stderr warning (`PngDecoder::read_chunk`) into
+  a terminating PowerShell error. A harness artefact, not a test failure or a
+  native crash; that attempt also caught a ruff line-length error in the new
+  test (fixed in `69b5e8d`).
 
 ## 15. Known limitations
 

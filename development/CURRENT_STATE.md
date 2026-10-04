@@ -56,7 +56,11 @@ Update this file at the end of every phase.
   `domain/`/`services/session_finish.py` (typed blockers, audited close and
   reopen); engine: lease, persisted intent, incremental duplicate pass,
   `finish_current_and_stop`, `cancel_queued_and_stop`, `finish_session`.
-  ADR-0010; handoff `development/releases/0.1.1-alpha.0/PHASE_G_HANDOFF.md`.
+  `gui/session_close.py`: Reports' *Close session and generate final export*
+  and Scan's *Close scan session* close through `finish_scan_session` - the
+  one closure policy (pre-merge correction; no production caller of
+  `close_scan_session` remains outside it). SQLite stays in rollback-journal
+  mode (not WAL). ADR-0010; handoff `development/releases/0.1.1-alpha.0/PHASE_G_HANDOFF.md`.
 - **Not:** a GUI for any of it (phase 8); network-share, real-scanner or
   power-loss validation; calibrated quality defaults; the phase 9 campaign.
 

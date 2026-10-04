@@ -129,6 +129,17 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
     per-source state, a registration-failure rate alarm) and **Finish scan
     session** (final reconciliation, every blocker as a typed code, audited
     close; named, audited reopen).
+  - **One closure policy.** Reports' one-step *Close session and generate
+    final export* and the Scan stage's *Close scan session* close through
+    *Finish scan session* (`gui/session_close.py`), not the older Phase C
+    checks - found by pre-merge review and fixed before merge. Held files,
+    unanswered suggested rescans, unreachable sources and another coordinator
+    now refuse those closes too; outstanding rescans / deferred sheets still
+    close only by the named operator's audited acceptance. Reports still checks
+    first that the chosen sets can be exported at all.
+  - Documentation: OMRFlow keeps SQLite's rollback journal (not WAL); a phase 7
+    handoff note and the wiki's project-format page that said otherwise were
+    corrected. No journal-mode change.
   - **Migration 17 (schema 17)**: `scan_quality_decision`; the session's pinned
     policy and intent; per-source pause. Additive; tested from a schema-16
     project written by the schema-16 build.
