@@ -268,9 +268,20 @@ results*. No `force`, no quiet-period close. `rescan_suggested` co-occurs with
 `unresolved_conflicts` when the suggestion's evidence conflict is open
 (resolving it answers both). **Reopen** (`reopen_session`): named, audited, one
 transaction; outputs generated while closed read stale; held files stay held
-until released; closing again re-runs every check. `close_scan_session` keeps
-exactly its Phase C checks (the finite *Close session and generate final
-export* path is unchanged - §15).
+until released; closing again re-runs every check.
+
+**One closure policy.** `finish_scan_session` is the only definition of
+whether a session may become `closed`. Every operational close goes through
+it: the engine's `finish_session`, Reports' one-step *Close session and
+generate final export*, and the Scan stage's *Close scan session* (both GUI
+paths via `gui/session_close.py`, which only supplies the intake service for
+the final reconciliation and renders the typed blockers as the existing
+dialogs' sentences). `close_scan_session` is the commit primitive underneath;
+its Phase C re-check is a last line inside the transaction, not a second
+policy, and no production code calls it directly any more. Reports still asks
+its own, separate question first - *can these sets' final reports be
+generated?* (template, set blockers) - so that it never closes a session for
+an export that could not run; it does not re-derive any closure blocker (§14a).
 
 ## 11. Crash / restart evidence
 
@@ -341,8 +352,19 @@ duplicate 3, excluded 0, deferred 0, counted_elsewhere 0}
   the snapshot opened a second connection inside its read transaction - fixed
   in `3973564`; the rule is now "no other connection inside a read
   transaction" in the snapshot, `record_results` and `pending_decisions`.)
-* The snapshot holds a SQLite read transaction for its duration (tens to
-  ~150 ms at 100k rows); the writer is not blocked in WAL mode.
+* **Journal mode (corrected before merge).** OMRFlow keeps SQLite's default
+  **rollback journal**; it does not use WAL (`database/engine.py`, ADR-0002 -
+  unchanged by phase 7). An earlier version of this handoff said "the writer is
+  not blocked in WAL mode"; that was wrong. In rollback-journal mode a read
+  transaction holds a SHARED lock, so a writer that is ready to commit waits
+  (up to `busy_timeout`, 5,000 ms) until open readers finish: the snapshot's
+  read transaction *can* briefly contend with the engine's or an operator's
+  commit. What bounds that contention: the snapshot runs a fixed number of
+  queries (11, independent of size) and its measured duration is tens of ms to
+  ~150 ms at 100k rows (benchmark above). The contention test above observed no
+  `database is locked` and the operator / snapshot latencies listed. These are
+  automated measurements on this machine's local disk - **not** network-share
+  qualification, where lock latency is different and untested.
 
 ## 14. Full test results
 
@@ -390,10 +412,6 @@ with the main checkout's `.venv`, log `Scratch\Log\2026-10-04_022249`):
 * **Quality defaults unvalidated.** The mapping, the suggested reasons, the
   caught-up allowance and the registration-alarm window are starting values,
   not calibrated on real scanners or paper.
-* **Finite one-step close** (*Close session and generate final export*,
-  Reports) still uses `close_scan_session`'s Phase C checks, not
-  `finish_scan_session` - deliberate, to leave the finite workflow unchanged;
-  phase 8 should route the operator's close through `finish_scan_session`.
 * **Poison sheet:** a sheet that kills its worker every time is retried a
   bounded number of times per process start (retry counter ephemeral, §8);
   each restart repeats that bounded work. No quarantine.
