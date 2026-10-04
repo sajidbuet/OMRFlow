@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 
 from omr_scanner.domain.reporting import ReadinessIssueKind
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.gui import session_close
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.reports.layout_dialog import ReportLayoutDialog
@@ -56,6 +57,7 @@ from omr_scanner.services import (
     reconciliation_store,
     report_store,
     scan_sessions,
+    session_finish,
     session_scope,
     set_attendance,
 )
@@ -917,26 +919,72 @@ class ReportsPage(WorkflowPage):
 
         ARCHITECTURE_NOTES §8.2 / §14.3 (decided, §16 Q4): on an open session
         Final Export offers *Close session and generate final export*, which
-        runs the closure checks and either lists the blockers and closes
-        nothing, or closes the session (sealing its batches, audited) and then
-        generates from the now-authoritative state.
+        either lists the blockers and closes nothing, or closes the session
+        (sealing its batches, audited) and then generates from the
+        now-authoritative state.
+
+        Two questions, answered separately. *Can these reports be generated?*
+        is this page's own readiness check, asked first - closing for an
+        export that then could not run would leave the session closed with
+        nothing exported. *May the session close?* has one answer:
+        :func:`omr_scanner.services.session_finish.finish_scan_session` (final
+        source reconciliation and every phase 7 blocker), through
+        :mod:`omr_scanner.gui.session_close`. The page never re-derives it.
         """
-        database = self.database
-        if database is None or self.state.batch_id is None:
+        database, project = self.database, self.state.session
+        if database is None or project is None or self.state.batch_id is None:
             return None
         scope = report_store.session_scope(database, self.state.batch_id)
         if not scope.provisional or scope.scan_session_id is None:
             return "closed"
         if not self.confirm_close_and_export(scope.name):
             return None
-        blockers = scan_sessions.closure_blockers(database, scope.scan_session_id)
-        hard = [item.message for item in blockers if not item.acknowledgeable]
-        # The export itself must be able to run once the session is closed:
-        # otherwise the one step would close the session and export nothing.
-        # Each chosen set's own blocking readiness issues - other than the
-        # open session and the acknowledgeable rescans / deferrals - are
-        # blockers too.
-        for row in rows or []:
+        report_blockers = self._report_blockers(rows or [])
+        if report_blockers:
+            # Nothing is closed: list the session's own blockers too, from
+            # stored state (the read-only preview of the same policy).
+            preview = session_finish.finish_blockers(database, scope.scan_session_id)
+            self.show_closure_blockers(
+                scope.name, report_blockers + session_close.blocker_messages(preview)
+            )
+            return None
+        reason = "Close session and generate final export"
+        try:
+            outcome = session_close.finish(
+                project, scope.scan_session_id, operator=self.state.reviewer, reason=reason
+            )
+            if not outcome.closed and outcome.blockers and all(
+                item.acknowledgeable for item in outcome.blockers
+            ):
+                soft = session_close.blocker_messages(outcome.blockers)
+                if not self.confirm_incomplete_close(scope.name, soft):
+                    return None
+                outcome = session_close.finish(
+                    project,
+                    scope.scan_session_id,
+                    operator=self.state.reviewer,
+                    reason=reason,
+                    accept_incomplete=True,
+                )
+        except OMRScannerError as exc:
+            QMessageBox.warning(self, "Scan session not closed", exc.user_message or str(exc))
+            return None
+        if not outcome.closed:
+            self.show_closure_blockers(scope.name, session_close.refusal_messages(outcome))
+            return None
+        _LOGGER.info("Scan session %s closed for Final Export", scope.scan_session_id)
+        self.refresh_table()
+        return "acknowledged" if outcome.accepted else "closed"
+
+    def _report_blockers(self, rows: list[SetRow]) -> list[str]:
+        """Why the chosen sets' final export could not run even once the session closed.
+
+        Each set's own blocking readiness issues, other than the open session
+        and the acknowledgeable rescans / deferrals (those are the session's
+        question, answered by the finish policy).
+        """
+        hard: list[str] = []
+        for row in rows:
             if row.blocker:
                 hard.append(f"Set {row.set_code}: {row.blocker}")
                 continue
@@ -950,27 +998,7 @@ class ReportsPage(WorkflowPage):
                 and issue.kind is not ReadinessIssueKind.SESSION_OPEN
                 and not issue.kind.is_acknowledgeable
             )
-        if hard:
-            listed = [item.message for item in blockers if item.acknowledgeable]
-            self.show_closure_blockers(scope.name, hard + listed)
-            return None
-        soft = [item.message for item in blockers if item.acknowledgeable]
-        if soft and not self.confirm_incomplete_close(scope.name, soft):
-            return None
-        try:
-            scan_sessions.close_scan_session(
-                database,
-                scope.scan_session_id,
-                closed_by=self.state.reviewer,
-                reason="Close session and generate final export",
-                acknowledge_incomplete=bool(soft),
-            )
-        except OMRScannerError as exc:
-            QMessageBox.warning(self, "Scan session not closed", exc.user_message or str(exc))
-            return None
-        _LOGGER.info("Scan session %s closed for Final Export", scope.scan_session_id)
-        self.refresh_table()
-        return "acknowledged" if soft else "closed"
+        return hard
 
     def confirm_close_and_export(self, session_name: str) -> bool:
         """Ask whether to close the open session and generate the final export."""

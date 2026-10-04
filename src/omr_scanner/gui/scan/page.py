@@ -70,6 +70,7 @@ from omr_scanner.config.processing import ProcessingSettings, detected_cpu_count
 from omr_scanner.domain.review import ReviewCounts
 from omr_scanner.domain.scan_sessions import BatchMembership, BatchRole, ScanSessionState
 from omr_scanner.errors import OMRScannerError
+from omr_scanner.gui import session_close
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
@@ -139,6 +140,7 @@ from omr_scanner.services.scan_sessions import ScanSessionError, TemplatePinErro
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable, Sequence
 
+    from omr_scanner.domain.session_finish import FinishOutcome
     from omr_scanner.domain.template import OmrTemplate
     from omr_scanner.evaluation.benchmark import BenchmarkReport
     from omr_scanner.evaluation.session import BenchmarkComparison, BenchmarkSession
@@ -1101,32 +1103,56 @@ class ScanPage(WorkflowPage):
         return True
 
     def close_active_scan_session(self, *, acknowledge_incomplete: bool = False) -> bool:
-        """Close the active scan session, sealing its batches. No dialog.
+        """Close the active scan session, sealing its batches. A dialog only if refused.
 
-        The closure checks run in the service (0.1.1 phase 4): unread sheets
-        or unresolved conflicts refuse; outstanding rescans and deferred sheets
-        refuse unless ``acknowledge_incomplete``.
+        Closes through *Finish scan session*
+        (:mod:`omr_scanner.gui.session_close`), the one closure policy: final
+        reconciliation of the session's sources and every blocker. Outstanding
+        rescans, unmatched replacements and deferred sheets refuse unless
+        ``acknowledge_incomplete`` - the named operator's audited acceptance.
         """
-        database, current = self.database, self.active_scan_session()
-        if database is None or current is None:
+        outcome = self._finish_active_session(accept_incomplete=acknowledge_incomplete)
+        if outcome is None:
             return False
+        if not outcome.closed:
+            self.show_close_blockers(session_close.refusal_messages(outcome))
+            return False
+        self._after_session_closed()
+        return True
+
+    def _finish_active_session(self, *, accept_incomplete: bool) -> FinishOutcome | None:
+        """Run the finish policy on the active session; ``None`` when it could not run."""
+        project, current = self._session, self.active_scan_session()
+        if project is None or current is None:
+            return None
         if self._worker is not None and self._worker.isRunning():
-            return False
+            return None
         try:
-            scan_sessions.close_scan_session(
-                database,
+            return session_close.finish(
+                project,
                 current.scan_session_id,
-                closed_by=self._operator,
-                acknowledge_incomplete=acknowledge_incomplete,
+                operator=self._operator,
+                accept_incomplete=accept_incomplete,
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Close scan session")
-            return False
+            return None
+
+    def _after_session_closed(self) -> None:
         self._refresh_batch_state_label()
         self._refresh_session_label()
         self._refresh_controls()
         self.active_session_changed.emit()
-        return True
+
+    def show_close_blockers(self, blockers: list[str]) -> None:
+        """List why the active session was not closed; nothing was changed."""
+        current = self.active_scan_session()
+        name = current.name if current is not None else ""
+        QMessageBox.information(
+            self,
+            "Scan session cannot be closed yet",
+            f"'{name}' was not closed:\n\n" + "\n".join(f"• {item}" for item in blockers),
+        )
 
     def reopen_active_scan_session(self) -> bool:
         """Reopen the active scan session. No dialog."""
@@ -1225,41 +1251,36 @@ class ScanPage(WorkflowPage):
         current = self.active_scan_session()
         if current is None:
             return
-        database = self.database
-        blockers = (
-            scan_sessions.closure_blockers(database, current.scan_session_id)
-            if database is not None
-            else ()
-        )
-        hard = [item.message for item in blockers if not item.acknowledgeable]
-        if hard:
-            QMessageBox.information(
-                self,
-                "Scan session cannot be closed yet",
-                f"'{current.name}' was not closed:\n\n"
-                + "\n".join(f"• {item.message}" for item in blockers),
-            )
-            return
-        soft = [item.message for item in blockers if item.acknowledgeable]
-        text = (
-            f"Close '{current.name}'? Its batches are sealed and it accepts no new "
-            "batches until it is reopened."
-        )
-        if soft:
-            text += (
-                "\n\nIts results are incomplete:\n"
-                + "\n".join(f"• {item}" for item in soft)
-                + "\n\nClosing accepts that, recorded against your name."
-            )
         answer = QMessageBox.question(
             self,
             "Close scan session",
-            text,
+            f"Close '{current.name}'? Its sources get a final check, its batches are "
+            "sealed and it accepts no new batches until it is reopened.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        outcome = self._finish_active_session(accept_incomplete=False)
+        if outcome is None:
+            return
+        if outcome.closed:
+            self._after_session_closed()
+            return
+        if not outcome.blockers or not all(item.acknowledgeable for item in outcome.blockers):
+            self.show_close_blockers(session_close.refusal_messages(outcome))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Results are incomplete",
+            f"'{current.name}' can only be closed with incomplete results:\n"
+            + "\n".join(f"• {item}" for item in session_close.blocker_messages(outcome.blockers))
+            + "\n\nClosing accepts that, recorded against your name.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            self.close_active_scan_session(acknowledge_incomplete=bool(soft))
+            self.close_active_scan_session(acknowledge_incomplete=True)
 
     def _prompt_reopen_scan_session(self) -> None:
         current = self.active_scan_session()

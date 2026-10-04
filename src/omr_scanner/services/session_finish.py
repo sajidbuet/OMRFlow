@@ -28,10 +28,13 @@ Purpose:
        audit event - a crash leaves the session either open or closed, never
        half-closed - and that re-checks the Phase C conditions inside.
 
-The lower-level :func:`~omr_scanner.services.scan_sessions.close_scan_session`
-keeps its Phase C checks unchanged (the finite workflow's one-step *Close
-session and generate final export* still uses it); late files for a session
-closed that way are still **held**, never added.
+This is the **one** definition of whether a session may close. Every
+operational close goes through it: the continuous engine, Reports' one-step
+*Close session and generate final export* and the Scan stage's *Close scan
+session* (both via :mod:`omr_scanner.gui.session_close`). The lower-level
+:func:`~omr_scanner.services.scan_sessions.close_scan_session` is the commit
+primitive underneath - its Phase C re-check is a last line, not a second
+policy - and is called directly only by tests and fixture builders.
 """
 
 from __future__ import annotations
