@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTableView,
     QTableWidget,
     QTableWidgetItem,
@@ -75,6 +76,9 @@ from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
 from omr_scanner.gui.scan.preview import ScanPreviewView
+from omr_scanner.gui.scan.session_mode import SessionModeController
+from omr_scanner.gui.scan.session_panel import SessionPanel
+from omr_scanner.gui.scan.session_table_model import SessionSheetList
 from omr_scanner.gui.scan.table_model import (
     STATUS_COLORS,
     STATUS_LABELS,
@@ -295,6 +299,18 @@ class ScanPage(WorkflowPage):
     select by default - was switched, created, combined, closed or reopened
     (0.1.1 phase 4)."""
 
+    session_view_changed = Signal(object)
+    """A new :class:`~omr_scanner.gui.scan.session_poller.SessionView` of the
+    active session in session mode (revised phase 8) - relayed by the window to
+    Resolve, so its queues follow intake without anyone visiting Scan."""
+
+    navigate_requested = Signal(str)
+    """The finish dialog asked to go where a blocker is cleared (a
+    :mod:`~omr_scanner.gui.session_close` destination key)."""
+
+    continuous_changed = Signal(bool)
+    """This window's continuous engine started (``True``) or stopped."""
+
     processing_changed = Signal(bool)
     """Emitted when a batch starts or stops running.
 
@@ -320,6 +336,7 @@ class ScanPage(WorkflowPage):
         """Last value :attr:`processing_changed` reported - see
         ``_announce_processing``."""
         self._preview_worker: PreviewWorker | None = None
+        self._preview_workers: list[PreviewWorker] = []
         self._preview_cache: OrderedDict[Path, ScanResult] = OrderedDict()
         self._allocator = FilenameAllocator(None)
         self._suppress_selection = False
@@ -371,6 +388,15 @@ class ScanPage(WorkflowPage):
 
         self.body.addWidget(self._build_benchmark_banner())
 
+        # Session mode (0.1.1 revised phase 8): hidden unless the active scan
+        # session uses intake sources, so a finite project's Scan stage is
+        # exactly what it was.
+        self.session_panel = SessionPanel()
+        self.session_panel.setVisible(False)
+        self.body.addWidget(self.session_panel)
+        self.session_sheet_list = SessionSheetList()
+        self._session_preview_path: Path | None = None
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         # A collapsible pane lets a user drag the divider until a column's
         # controls are squeezed to nothing - the same unreadable-button defect
@@ -385,6 +411,30 @@ class ScanPage(WorkflowPage):
         splitter.setStretchFactor(2, 0)
         splitter.setSizes([CONTROL_PANEL_WIDTH, 900, RESULTS_PANEL_WIDTH])
         self.body.addWidget(splitter, stretch=1)
+
+        self.session_mode = SessionModeController(
+            self,
+            self.session_panel,
+            self.session_sheet_list,
+            template=lambda: (self.state.template, self.state.template_path),
+            processing=lambda: self.state.processing,
+        )
+        self.session_mode.mode_changed.connect(self._on_session_mode_changed)
+        self.session_mode.view_changed.connect(self.session_view_changed)
+        self.session_mode.navigate_requested.connect(self.navigate_requested)
+        self.session_mode.session_changed.connect(self._on_session_lifecycle_changed)
+        self.session_mode.running_changed.connect(self._on_continuous_running_changed)
+        self.session_sheet_list.sheet_selected.connect(self._on_session_sheet_selected)
+        self._finite_tooltips = {
+            button.objectName(): button.toolTip()
+            for button in (
+                self.process_all_button,
+                self.process_selected_button,
+                self.resume_button,
+                self.retry_failed_button,
+                self.reprocess_button,
+            )
+        }
 
         self._refresh_controls()
 
@@ -492,6 +542,14 @@ class ScanPage(WorkflowPage):
         self.switch_session_action = self.session_menu.addAction("Switch Scan Session...")
         self.switch_session_action.setObjectName("switchScanSessionAction")
         self.switch_session_action.triggered.connect(self._prompt_switch_scan_session)
+        self.session_menu.addSeparator()
+        self.configure_sources_action = self.session_menu.addAction("Add Scanner Source...")
+        self.configure_sources_action.setObjectName("addScannerSourceAction")
+        self.configure_sources_action.setToolTip(
+            "Watch a scanner folder (local or network) and scan continuously into this "
+            "session. Not needed for Add Folder -> Process All."
+        )
+        self.configure_sources_action.triggered.connect(self._prompt_configure_sources)
         self.session_menu.addSeparator()
         self.export_renamed_action = self.session_menu.addAction(
             "Export Renamed Copies of Session..."
@@ -790,9 +848,37 @@ class ScanPage(WorkflowPage):
         table_layout.addWidget(filter_row)
         table_layout.addWidget(self.scan_table, stretch=1)
 
+        # Session mode lists the whole scan session, one SQL page at a time;
+        # the batch list above stays exactly as it was for finite work. The
+        # chooser is hidden - taking no space - outside session mode.
+        lists = QWidget()
+        lists_layout = QVBoxLayout(lists)
+        lists_layout.setContentsMargins(0, 0, 0, 0)
+        scale_layout(lists_layout, spacing=2)
+        self.list_scope_row = QWidget()
+        scope_layout = QHBoxLayout(self.list_scope_row)
+        scope_layout.setContentsMargins(0, 0, 0, 0)
+        scope_layout.addWidget(QLabel("List:"))
+        self.list_scope_combo = QComboBox()
+        self.list_scope_combo.setObjectName("scanListScopeCombo")
+        self.list_scope_combo.addItems(["Whole scan session", "This batch"])
+        self.list_scope_combo.setToolTip(
+            "Every sheet of the scan session (paged), or only the batch loaded on this page"
+        )
+        self.list_scope_combo.currentIndexChanged.connect(self._on_list_scope_changed)
+        scope_layout.addWidget(self.list_scope_combo)
+        scope_layout.addStretch(1)
+        self.list_scope_row.setVisible(False)
+        lists_layout.addWidget(self.list_scope_row)
+        self.list_stack = QStackedWidget()
+        self.list_stack.setObjectName("scanListStack")
+        self.list_stack.addWidget(table_column)
+        self.list_stack.addWidget(self.session_sheet_list)
+        lists_layout.addWidget(self.list_stack, stretch=1)
+
         vertical = QSplitter(Qt.Orientation.Vertical)
         vertical.addWidget(self.preview)
-        vertical.addWidget(table_column)
+        vertical.addWidget(lists)
         vertical.setStretchFactor(0, 3)
         vertical.setStretchFactor(1, 1)
         # Stretch factors only govern how extra space is *shared out on resize*;
@@ -934,6 +1020,10 @@ class ScanPage(WorkflowPage):
         self._session = session
         self.state.batch_id = None
         self._adopt_project_template(session)
+        # Session mode follows the project's active session (revised phase 8):
+        # a session with intake sources shows its reconstructed state now,
+        # from committed rows - before anything is started.
+        self.session_mode.adopt(session)
         self._refresh_batch_state_label()
         # The project's active scan session is re-adopted (by name, below):
         # the next Process All adds a new batch to it rather than starting an
@@ -947,6 +1037,7 @@ class ScanPage(WorkflowPage):
     def set_reviewer(self, name: str) -> None:
         """Adopt the configured operator name, recorded on lifecycle events."""
         self._operator = name.strip()
+        self.session_mode.operator = self._operator
 
     def active_scan_session(self) -> scan_sessions.ScanSessionInfo | None:
         """The project's active scan session, or ``None``."""
@@ -984,6 +1075,11 @@ class ScanPage(WorkflowPage):
             current is not None and current.state is ScanSessionState.CLOSED
         )
         self.combine_session_action.setEnabled(is_open and not (current and current.virtual))
+        self.configure_sources_action.setEnabled(
+            not read_only and (current is None or is_open)
+        )
+        if self.session_mode.project is self._session:
+            self.session_mode.refresh_mode()
 
     def new_scan_session(self, name: str = "") -> bool:
         """Start a new, empty scan session and make it active. No dialog.
@@ -1155,13 +1251,17 @@ class ScanPage(WorkflowPage):
         )
 
     def reopen_active_scan_session(self) -> bool:
-        """Reopen the active scan session. No dialog."""
+        """Reopen the active scan session. No dialog.
+
+        Through the one reopen adapter (:func:`omr_scanner.gui.session_close.reopen`,
+        revised phase 8): named operator, audited, final outputs marked stale.
+        """
         database, current = self.database, self.active_scan_session()
-        if database is None or current is None:
+        if database is None or current is None or self._session is None:
             return False
         try:
-            scan_sessions.reopen_scan_session(
-                database, current.scan_session_id, reopened_by=self._operator
+            session_close.reopen(
+                self._session, current.scan_session_id, operator=self._operator
             )
         except OMRScannerError as exc:
             report_error(self, exc, context="Reopen scan session")
@@ -1248,6 +1348,11 @@ class ScanPage(WorkflowPage):
             self.rename_active_scan_session(name)
 
     def _prompt_close_scan_session(self) -> None:
+        if self.session_mode.active:
+            # Session mode's dialog lists every blocker, grouped, with a way to
+            # each - the same service either way.
+            self.session_mode._prompt_finish_session()
+            return
         current = self.active_scan_session()
         if current is None:
             return
@@ -1283,14 +1388,18 @@ class ScanPage(WorkflowPage):
             self.close_active_scan_session(acknowledge_incomplete=True)
 
     def _prompt_reopen_scan_session(self) -> None:
+        if self.session_mode.active:
+            self.session_mode._prompt_reopen_session()
+            return
         current = self.active_scan_session()
         if current is None:
             return
         answer = QMessageBox.question(
             self,
             "Reopen scan session",
-            f"Reopen '{current.name}'? Any final export generated while it was "
-            "closed becomes stale and should be regenerated.",
+            f"Reopen '{current.name}'? Its results become provisional again, and any "
+            "final export generated while it was closed becomes stale and should be "
+            "regenerated. Recorded against your operator name.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
@@ -2854,6 +2963,7 @@ class ScanPage(WorkflowPage):
         worker.ready.connect(self._on_preview_ready)
         worker.failed.connect(self._on_preview_failed)
         self._preview_worker = worker
+        self._track_preview_worker(worker)
         worker.start()
 
     def _on_preview_ready(self, result: ScanResult) -> None:
@@ -2867,6 +2977,12 @@ class ScanPage(WorkflowPage):
             and self.state.entries[row].path == result.source_path
         ):
             self._apply_preview(result)
+        elif (
+            self.list_stack.currentIndex() == 1
+            and self._session_preview_path == result.source_path
+        ):
+            self._apply_preview(result)
+            self._show_result(ProcessedScan(result=result))
         self._preview_worker = None
 
     def _on_preview_failed(self, message: str) -> None:
@@ -3339,7 +3455,36 @@ class ScanPage(WorkflowPage):
         self.export_csv_button.setEnabled(has_results and not running)
         self.previous_action.setEnabled(has_scans)
         self.next_action.setEnabled(has_scans)
+        # One coordinator per project: while this window's continuous engine
+        # runs, the finite run commands would only be refused by the lease, so
+        # they say why instead of being offered (revised phase 8).
+        continuous = self.continuous_running
+        busy_tip = (
+            "Continuous scanning is processing this project. Stop it (Stop > Finish Current "
+            "and Stop) before starting a batch run here."
+        )
+        for button in (
+            self.process_all_button,
+            self.process_selected_button,
+            self.resume_button,
+            self.retry_failed_button,
+            self.reprocess_button,
+        ):
+            if continuous:
+                button.setEnabled(False)
+                button.setToolTip(busy_tip)
+            elif button.toolTip() == busy_tip:
+                button.setToolTip(self._finite_tooltips.get(button.objectName(), ""))
+        self.session_panel.start_button.setEnabled(
+            self.session_panel.start_button.isEnabled() and not running
+        )
         self._refresh_worker_label()
+
+    @property
+    def continuous_running(self) -> bool:
+        """Whether this window's continuous engine runs (revised phase 8)."""
+        mode = getattr(self, "session_mode", None)
+        return mode is not None and mode.running
 
     # ------------------------------------------------------------------
     # Qt overrides
@@ -3409,11 +3554,128 @@ class ScanPage(WorkflowPage):
             self._release_coordinator()
         if self._preview_worker is not None and self._preview_worker.isRunning():
             self._preview_worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+        for preview in self._preview_workers:
+            if preview.isRunning():
+                preview.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+        self._preview_workers = []
+
+    def shutdown_background_work(self) -> None:
+        """Stop everything this page runs in the background, and wait - before the database closes.
+
+        The finite batch (cancel and wait, as :meth:`shutdown_batch`), then
+        session mode: snapshot polling stops, the continuous engine drains,
+        commits, releases the coordinator lease and closes its worker pool.
+        The scan session stays **open** - leaving a project or the application
+        is not finishing the examination - and its saved pause settings are
+        left exactly as they were.
+        """
+        self.shutdown_batch()
+        self.session_mode.shutdown()
 
     def closeEvent(self, event: object) -> None:
         """Stop any running worker before the page disappears."""
-        self.shutdown_batch()
+        self.shutdown_background_work()
         super().closeEvent(event)  # type: ignore[arg-type]
+
+    # ------------------------------------------------------------------
+    # Session mode (0.1.1 revised phase 8)
+    # ------------------------------------------------------------------
+    def _prompt_configure_sources(self) -> None:
+        """Session > Add Scanner Source...: the way into continuous scanning."""
+        self.session_mode._prompt_add_source()
+
+    def _on_session_mode_changed(self, active: bool) -> None:
+        """Show the session list beside the batch list only in session mode."""
+        self.list_scope_row.setVisible(active)
+        self.list_scope_combo.blockSignals(True)
+        self.list_scope_combo.setCurrentIndex(0 if active else 1)
+        self.list_scope_combo.blockSignals(False)
+        self.list_stack.setCurrentIndex(1 if active else 0)
+        if active:
+            self.session_sheet_list.refresh()
+
+    def _on_list_scope_changed(self, index: int) -> None:
+        self.list_stack.setCurrentIndex(1 if index == 0 else 0)
+        if index == 0:
+            self.session_sheet_list.refresh()
+
+    def _on_session_lifecycle_changed(self) -> None:
+        """The session closed, reopened or got sources: relabel and tell the window."""
+        self._refresh_batch_state_label()
+        self._refresh_session_label()
+        self._refresh_controls()
+        self.active_session_changed.emit()
+
+    def _on_continuous_running_changed(self, running: bool) -> None:
+        self._refresh_controls()
+        self.continuous_changed.emit(running)
+
+    def _on_session_sheet_selected(self, row: object) -> None:
+        """Show a sheet chosen in the session list: its summary and, if read, its preview.
+
+        The preview is the Scan stage's ordinary one (re-read off the GUI
+        thread by :class:`~omr_scanner.gui.scan.worker.PreviewWorker`).
+        """
+        source_path = str(getattr(row, "source_path", "") or "")
+        if row is None or not source_path:
+            self._session_preview_path = None
+            return
+        lines = [
+            f"<b>{html.escape(str(getattr(row, 'original_name', '')))}</b>",
+            html.escape(
+                " · ".join(
+                    part
+                    for part in (
+                        str(getattr(row, "source_label", "") or "Added by hand"),
+                        str(getattr(row, "batch_label", "")),
+                    )
+                    if part
+                )
+            ),
+            f"Student ID: {html.escape(str(getattr(row, 'student_id', '')) or '-')}"
+            f" · Set: {html.escape(str(getattr(row, 'set_code', '')) or '-')}",
+        ]
+        self.result_summary_label.setText("<br>".join(lines))
+        self.fields_table.setRowCount(0)
+        self.answers_table.setRowCount(0)
+        path = Path(source_path)
+        self._session_preview_path = path
+        if self.state.template is None or str(getattr(row, "status", "")) not in (
+            "completed",
+            "warning",
+            "failed",
+        ):
+            self.preview.clear()
+            self.preview_status_label.setText("Not read yet")
+            return
+        cached = self._preview_cache.get(path)
+        if cached is not None:
+            self._apply_preview(cached)
+            self._show_result(ProcessedScan(result=cached))
+            return
+        running = self._preview_worker
+        if running is not None and running.isRunning() and running.path == path:
+            return
+        self.preview_status_label.setText("Rendering preview...")
+        worker = PreviewWorker(path, self.state.template, self)
+        worker.ready.connect(self._on_preview_ready)
+        worker.failed.connect(self._on_preview_failed)
+        self._preview_worker = worker
+        self._track_preview_worker(worker)
+        worker.start()
+
+    def _track_preview_worker(self, worker: PreviewWorker) -> None:
+        """Remember every preview thread until it ends, so shutdown can wait for each.
+
+        Clicking through the session list supersedes previews quickly; a
+        superseded one is still a running ``QThread``, and one alive when the
+        page is destroyed aborts the process (the ``0xC0000409`` class of
+        crash).
+        """
+        self._preview_workers = [
+            item for item in self._preview_workers if item.isRunning()
+        ]
+        self._preview_workers.append(worker)
 
     def _release_coordinator(self) -> None:
         """Give the project's coordinator lease back (idempotent; revised phase 7)."""
