@@ -246,6 +246,14 @@ def main() -> int:
               + [("B-moved.png", displaced_id(3))])
     rig.write("C", [(f"C-{i:03d}.png", sheets[i]) for i in range(26, 38)]
               + [("C-broken.png", sheet_bytes(36)[30])])
+    # The project's own template, as the application has it (project-template
+    # rule): Resolve re-reads a conflict's sheet with it.
+    from omr_scanner.services import save_template, set_active_template
+
+    template_file = project.project.layout.templates_dir / "session_states.omrt"
+    template_file.parent.mkdir(parents=True, exist_ok=True)
+    save_template(rig.template, template_file)
+    set_active_template(project, template_file)
     scan.state.template = rig.template
     mode = scan.session_mode
     mode.engine_factory = rig.factory()
@@ -275,9 +283,10 @@ def main() -> int:
     wait(lambda: mode.view.snapshot.activity is SessionActivity.WAITING_FOR_SOURCE, rig, tick=1)
     capture.state("07_source_unreachable", "scan", sizes=("1366x768", "1100x680"))
     rig.fs.unreachable.discard(rig.root("C"))
-    # Registration failures at one scanner: blank pages.
+    # Registration failures at one scanner: blank pages - enough that at least
+    # half of its latest 20 read sheets failed (the default alarm rule).
     mode.pause_intake()
-    rig.write("B", [(f"B-blank-{i}.png", blank_page(i)) for i in range(6)])
+    rig.write("B", [(f"B-blank-{i:02d}.png", blank_page(i)) for i in range(14)])
     mode.resume_intake()
     wait(lambda: any(item.alarm is not None and item.alarm.raised
                      for item in mode.view.snapshot.sources), rig, tick=3)
@@ -292,6 +301,12 @@ def main() -> int:
     mode.resume_intake()
     wait(lambda: resolve.state.scan_session_id == rig.session_id
          and bool(resolve.state.conflicts), rig, tick=3)
+    # The selected conflict's evidence is decoded in the background.
+    try:
+        wait(lambda: resolve.state.bundle is not None, rig, timeout=60)
+    except TimeoutError:
+        print(f"  Resolve evidence not loaded (template loaded: "
+              f"{resolve.state.template is not None})")
     capture.state("09_resolve_conflicts_live", "resolve", sizes=("1366x768", "1100x680"))
     resolve.show_view("suggestions")
     settle()
