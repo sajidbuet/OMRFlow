@@ -32,7 +32,7 @@ services return and calls them for every action.
 | Baseline | `main` `9169933` (Merge feat/0.1.1-phase7-quality-session-controls) |
 | Branch | `feat/0.1.1-phase8-operational-gui` |
 | Tip | see §18 (the commit carrying this handoff) |
-| Commits | 13 code / test / tooling commits before the documentation commit (listed below) |
+| Commits | 14 code / test / tooling commits, then documentation commits (listed below) |
 | Pushed | see §18 |
 | Merged | **no** - not merged, not tagged, not released |
 | Working tree | clean after the documentation commit (generated screenshots live under the git-ignored `test-output/`) |
@@ -51,7 +51,11 @@ de6a2f6 feat(gui): live Resolve refresh off the GUI thread; original file names
 4652468 fix(gui): Resolve anchored by a live session re-reads sheets with the project template
 50463b1 fix(gui): session panel wording for closed and not-running sessions
 76f4726 chore(gui-testing): realistic capture rig and a scripted three-source production run
+474dc9c fix(gui): build the session panel's progress lines only when a session is shown
+5c7c920 docs: revised phase 8 operational GUI - handoff, status tracks, user docs
 ```
+
+(+ the final commit recording the gate results in this handoff and the README.)
 
 Baseline gate on pristine `main` `9169933` before any change (canonical
 `pytest-ruff-mypy.ps1`): **7,030 passed, 16 skipped, 1 failed**; `ruff` clean;
@@ -301,13 +305,13 @@ completes the same session (10 / 10). A persisted pause is shown after reopen
 | Snapshot at 10,200 rows (phase 7 scale fixture, now with conflicts) | ≈ 98 ms, 11 statements |
 | 10k scenario (`test_operational_gui_responsiveness`) | 10,000 metadata sheets in one session (no images, no recognition) **plus** a thread committing new arrivals throughout; the real main window drives Scan and Resolve actions (page turns, filters, view switches, decisions); a 20 ms heartbeat timer measures event-loop lateness |
 | Thresholds (asserted) | median < 30 ms, p95 < 150 ms, worst < 2,000 ms |
-| Measured (final gate run) | see §18 |
-| Measured during development | p95 fell 144 → 92 → 81 → 70 → 15 ms as reads moved off the GUI thread; worst ≈ 1.0–1.2 s |
+| Measured at the tip (alone, idle machine, 2026-10-05) | 10,000 sheets + 168 arrivals in 12 s; 19 snapshot polls; heartbeat 20 ms × 527: lateness **median 0.0 ms, p95 8.0 ms, worst 442 ms**; 28 operator actions: median 0.5 ms, worst 51.5 ms; last list read 182 ms and last live Resolve read 576 ms (both in worker threads) |
+| Measured during development (same test, often under load) | p95 fell 144 → 92 → 81 → 70 → 15 ms as reads moved off the GUI thread; worst ≈ 1.0–1.2 s |
 | Scripted production run (§17) | 1,560 samples of a 50 ms timer: median 12 ms, p95 23 ms, worst 597 ms (repeat: worst 555 ms); the driver's own 10 ms sleeps are included in these numbers |
-| 100k paging (`test_scan_paging_gui`, 100,000 metadata rows) | end to end in the worker (request → read → table): first page ≈ 394 ms, next page ≈ 77 ms, filters 64–98 ms, sort ≈ 319 ms, search ≈ 554 ms (under suite load); ceiling 2,000 ms per operation; the model holds one page |
+| 100k paging (`test_scan_paging_gui`, 100,000 metadata rows) | end to end in the worker (request → read → table), at the tip, alone: **first page 269 ms** (GUI-side peak traced allocation 1.5 MiB), next page 81 ms, status filter 70 ms, quality filter 115 ms, sort 184 ms, search 332 ms. Earlier, under suite load: first page ≈ 394 ms, sort ≈ 319 ms, search ≈ 554 ms. Ceiling 2,000 ms per operation; the model holds one page |
 | `scripts/benchmark_session_list.py` at 100k | count / page statements 30–190 ms |
 
-**The worst case (~1 s)** is not GUI work: it is SQLite rollback-journal
+**The worst case (0.4 s alone, ~1 s under load)** is not GUI work: it is SQLite rollback-journal
 locking - a GUI-thread write (an operator decision) waiting for the engine's
 writer, or a read blocked by a pending lock. The journal mode is deliberately
 not changed (no WAL). Resolve view switches at 10k take 0.5–3 s because the
@@ -383,7 +387,32 @@ navigation, a real network share, a real scanner, long sessions.
 
 ## 18. Full validation
 
-*(Filled in from the final gate run on the documented tip.)*
+All on this machine (Windows 11, Python from the main checkout's `.venv`,
+`PYTHONPATH` = the worktree's `src`), in the worktree.
+
+| Check | Result |
+|---|---|
+| Targeted (the 10 new phase 8 test files: 65 tests) | 65 passed (inside the full run below; also run in groups throughout development) |
+| `tests/gui` alone (commit `5c7c920`) | **1,984 passed, 2 skipped, 0 failed**, 1 `stress` deselected (40 min 39 s) |
+| Full pytest (canonical `pytest-ruff-mypy.ps1`, commit `5c7c920`, 2026-10-05) | **7,083 passed, 29 skipped, 0 failed**, 7 `stress` tests deselected by the default configuration (1 h 37 min) |
+| ruff (`src tests tools scripts`) | clean |
+| mypy, fresh cache (`.mypy_cache` deleted first) | clean - 242 source files |
+| Working tree changed by the run | no |
+| Native crash (`0xC0000409` or other) | none in any run this phase |
+
+The first full run (commit `76f4726`) had **1 failure**:
+`test_batch_progress_gui::TestETenThousandScans::test_the_interface_creates_no_widget_per_scan`
+found four `QProgressBar`s on a **finite** Scan page - the session panel's
+three were created even in finite mode. Fixed in `474dc9c` (built on the
+first session view; the existing test is unchanged and passes; a finite-mode
+assertion was added). Then the run above. The skips are the usual
+environment ones (real-sheet fixtures absent from the worktree, LibreOffice
+not installed, no symlink privilege, the schema-12 checkout variable unset,
+one window-manager geometry skip).
+
+Pushed: `origin/feat/0.1.1-phase8-operational-gui` (see the final commit list
+with `git log main..origin/feat/0.1.1-phase8-operational-gui`). The commit
+after `5c7c920` changes only this handoff and the README testing line.
 
 ## 19. Defects found
 
@@ -450,12 +479,36 @@ Phase 9 (automated qualification) may rely on:
 * The shutdown order and thread inventory test as the contract for "no orphan
   thread / process".
 
-Readiness: see the completion table and verdict below.
+**Phase 9 readiness: READY** - nothing in this phase blocks an automated
+qualification campaign; it needs no GUI. Two conditions that are the owner's
+decisions, not blockers: this branch is **not merged** (phase 9 should start
+from `main` after a merge decision), and the known limits in §20 (contention
+stalls, view-switch cost at 10k) are worth measuring in the campaign rather
+than assuming.
 
 ## Completion table
 
-*(Filled in with the final gate result.)*
+| Item | Status | Evidence |
+|---|---|---|
+| F1 Finite Scan unchanged | ✅ | `TestFiniteModeIsUnchanged`; every pre-existing Scan / Resolve GUI test unchanged and passing in the full run; `test_batch_progress_gui` caught and verified the progress-bar fix (§18) |
+| F2 Session-mode operations | ✅ | `test_session_controls_gui`, `test_session_finish_gui`, `test_session_scan_gui` (sources incl. UNC; start, pause/resume, finish-current, cancel-queued, intake pause, finish with blockers, reopen) |
+| F3 Three progress lines / status semantics | ✅ | `test_session_controls_gui` (caught up never *complete*), `TestWordsForValues` (recognition falls, no percentage), unreachable wording; screenshots 03–08 |
+| F4 Compact source UI | ✅ | folded by default (`test_session_scan_gui`); screenshots 03 / 07 |
+| F5 Live Resolve + Rescan | ✅ | `test_rescan_queue_gui`, `test_intake_decisions_gui`, cross-scanner duplicate reaching Resolve live with evidence; scripted run (20 conflicts, 0 hash names) |
+| F6 10k GUI responsiveness + paged list | ✅ | `test_operational_gui_responsiveness` (median 0 / p95 8 / worst 442 ms at the tip), `test_scan_paging_gui` (100k: 81–332 ms per operation, first page 269 ms) |
+| F7 High-DPI screenshots | ✅ with limitations | 16 states at 1366×768 (+ 1100×680) on native 175 %; findings in §16 (200 % zoom needs scroll for *Finish*; pre-existing Resolve decision-panel height) |
+| F8 Interrupted-session reconstruction | ✅ | `test_session_recovery_gui` (real kill → counts before Start; persisted pause shown) |
+| Global UI zoom compatibility | ✅ with limitation | zoom matrix 80–200 % (§16); 200 % at 1366×768 puts *Finish Scan Session* behind a horizontal scroll |
+| Coordinator-busy handling | ✅ | `test_session_controls_gui::...refuses_start_with_its_message` (busy signal → notice; nothing reset); finite run buttons disabled while continuous runs |
+| Finish/reopen authoritative policy | ✅ | only `session_close` / `finish_scan_session`; AST rule forbids `close_scan_session` in the GUI; `test_session_finish_gui` |
+| Native GUI stability | ✅ | no native abort in two full runs, `tests/gui` alone, the screenshot runs or the scripted production runs; thread inventory clean after switches and close |
+| Network-share qualification | Deferred | phase 10 |
+| Real scanner qualification | Deferred | not performed |
 
 ## Verdict
 
-*(Filled in with the final gate result.)*
+**COMPLETE WITH NON-BLOCKING LIMITATIONS**
+
+The operational GUI is implemented, tested and scripted-validated as the
+brief scoped it; the limitations in §20 are recorded, none blocks phase 9.
+It is **not** operator-, network-share-, scanner- or production-validated.
