@@ -653,8 +653,12 @@ class ContinuousRun:
     # ------------------------------------------------------------------
     def _pre_kill(self) -> dict[str, Any]:
         progress = self.progress()
+        unread = sum(progress.get(state, 0)
+                     for state in ("pending", "cancelled", "queued", "processing"))
+        unsettled = sum(progress.get(f"ledger:{state}", 0)
+                        for state in ("discovered", "stabilizing", "ready"))
         return {"committed": progress["committed"], "processing": progress.get("processing", 0),
-                "t": time.time()}
+                "remaining": unread + unsettled, "t": time.time()}
 
     def kill(self, kind: str, label: str, trigger: dict[str, Any]) -> KillRecord:
         """A forced kill of the coordinator (TerminateProcess), then evidence, then restart."""
@@ -973,8 +977,8 @@ class ContinuousRun:
                 self.log.write("kill_without_work_in_flight", label=label, attempt=attempt)
                 return "defer"
         elif kind == "clean_close":
-            if progress.get("processing", 0) < 1:
-                return "defer"
+            if progress.get("processing", 0) < 1 or self._pre_kill()["remaining"] < 2:
+                return "defer"  # halfway through Scan: work in flight and more to come
             self.clean_close(label, trigger)
         elif kind == "reprocess":
             return self._reprocess(label)

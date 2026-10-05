@@ -1240,8 +1240,11 @@ def crash_matrix(plan: CampaignPlan, run: Any, control: Any, index: RunIndex,
     for kill in closes:
         c1 = cases["case_01_clean_close_during_scan"]
         c1.checked += 1
-        c1.scale = f"{kill.pre['committed']} committed, {kill.pre['processing']} in flight"
-        if kill.pre["committed"] < 1 or kill.pre["processing"] < 1:
+        c1.scale = (f"{kill.pre['committed']} committed, {kill.pre.get('remaining', 0)} still "
+                    f"to read ({kill.pre['processing']} in a worker)")
+        # Halfway through Scan: committed work behind it and work still to do
+        # (unread sheets or files not yet registered) - "the rest resumable".
+        if kill.pre["committed"] < 1 or kill.pre.get("remaining", 0) < 1:
             c1.fail("the close did not land halfway through scanning")
         if kill.processing_after:
             c1.fail(f"{kill.processing_after} sheet(s) left claimed by a clean close")
