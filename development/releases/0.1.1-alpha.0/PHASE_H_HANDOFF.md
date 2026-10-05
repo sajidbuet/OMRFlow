@@ -53,9 +53,12 @@ de6a2f6 feat(gui): live Resolve refresh off the GUI thread; original file names
 76f4726 chore(gui-testing): realistic capture rig and a scripted three-source production run
 474dc9c fix(gui): build the session panel's progress lines only when a session is shown
 5c7c920 docs: revised phase 8 operational GUI - handoff, status tracks, user docs
+a637619 docs(phase8): record the final gate, tests/gui, timings, completion table and verdict
+a2fb16c fix(gui): show the scan session's context on the Answer Key stage
+427161c fix(gui): keep Resolve provenance readable with long scanner and file names
 ```
 
-(+ the final commit recording the gate results in this handoff and the README.)
+(+ the documentation commit recording the pre-merge correction, §19a.)
 
 Baseline gate on pristine `main` `9169933` before any change (canonical
 `pytest-ruff-mypy.ps1`): **7,030 passed, 16 skipped, 1 failed**; `ruff` clean;
@@ -437,6 +440,76 @@ after `5c7c920` changes only this handoff and the README testing line.
    `ResizeToContents`; undo controls recomputed per selection; GUI-thread
    reads in the list and the live apply.
 
+## 19a. Pre-merge correction (review of `a637619`, 2026-10-05)
+
+A final review found two small phase-8-owned inconsistencies; both are fixed
+on this branch (`a2fb16c`, `427161c`). Nothing else changed - no engine,
+intake, quality, lifecycle, recognition or schema change - so the phase 7
+stress suite was not rerun (its earlier evidence stands).
+
+1. **The Answer Key stage did not name the scan session.** It now shows the
+   same compact line as Resolve - *Scan session **<name>** · open · results
+   provisional*, *· closed*, *· open (reopened) · results provisional* -
+   rendered by one shared helper (`gui/session_heading.py`, which Resolve now
+   uses too) over the session the main window already selects for
+   Attendance / Results / Reports (`scan_sessions.downstream_session_id`),
+   pushed through the same `set_session` call; the page selects nothing
+   itself. **Context only**: answer keys remain project / set configuration -
+   no schema, persistence or ownership change; the line's tooltip says a key
+   applies to every session of the project. Hidden when there is no session
+   to name (no project, or nothing read yet), so a finite project that has
+   not scanned shows exactly what it did; after a scan it shows the same one
+   line the other stages show. Tests: `test_answer_key_session_gui.py` (open,
+   closed, reopened, the tooltip, project switch and close, finite with
+   nothing read, the window keeping it in step); every existing Answer Key
+   GUI test unchanged and passing (38 with the new file).
+2. **Long provenance text beside Resolve's evidence.** Measured before the
+   fix: with an 80-character file name, the plain-label corner took its whole
+   text width and the tab bar was left with **none** (the evidence tabs
+   disappeared) while the text ran past the page edge. Now:
+   * `ProvenanceLabel` asks only for the room the tabs leave
+     (`sizeHint`), needs none (`minimumSizeHint` 0), and shortens by priority
+     (`fit_provenance`): the scanner's name first, then the batch (left to the
+     tooltip), then the scanner, and only then the **original** file name -
+     in the middle, keeping its start, ending and extension - with the
+     arrival time kept. The content-addressed copy is never the name shown;
+     it appears only in the tooltip line *Stored in the project as*.
+   * The tooltip lists every fact whole, one per line (scanner, batch, file,
+     arrival, stored copy).
+   * The same long name in the Machine Observation *Sheet* row raised the
+     page's minimum width at 150 % (1,894 → 2,481 px). File names in the
+     decision, suggestion, file and rescan panels are now bounded to 32
+     characters (`gui/review/display_names.py`, middle ellipsis): a name of
+     any length takes the room of 32.
+   * A long scanner name sized the *Source* filter and truncated the *Batch*
+     filter beside it; the source filter now takes the room the row leaves
+     (each item's tooltip has the full name).
+   Tests: `test_resolve_provenance_gui.py` (1366×768 and 1100×680: the page's
+   and the tab widget's minimum unchanged by the text, tabs whole, text fits
+   its label, file ending and arrival kept, full tooltip, no hash name; the
+   priority order of `fit_provenance`; bounded panel names; the filter row).
+
+**Native evidence** (`.claude/skills/qtguitesting/scripts/capture_phase8_corrections.py`,
+this machine at 175 % Windows scaling, source *Scanner Station - Electrical
+Machines Laboratory North Wing*, file
+`2026-10-05_Final_Examination_EEE_415_Section_A_Student_1000001_rescan_02.png`;
+output in the git-ignored `test-output/gui/phase8_corrections/`):
+
+| Size / zoom | Resolve provenance shown | Tabs whole | Page minimum / horizontal scroll | Answer Key line |
+|---|---|---|---|---|
+| 1366×768, 100 % | whole file name · arrival (scanner and batch in the tooltip) | yes (319 / 319 px) | 857 px / no | shown, not clipped |
+| 1366×768, 150 % | `2026-10-05_Fin…_rescan_02.png · arrived …` | yes | 1,622 px / yes | shown, not clipped |
+| 1366×768, 200 % | as 150 % | yes | 2,158 px / yes | shown, not clipped |
+| 1100×680, 100 % | `2026-10-05_Final_Examin…t_1000001_rescan_02.png · arrived …` | yes | 857 px / no | shown, not clipped |
+| 1100×680, 150 % / 200 % | as 1366×768 | yes | 1,622 / 2,158 px / yes | shown, not clipped |
+
+At 150 % and 200 % Resolve already needs horizontal scrolling **on `main`**
+(the same page measured 2,129 / 2,834 px there, set by the decision panel);
+the corrected branch needs less (1,622 / 2,158 px with the long names). Every
+open / closed / reopened Answer Key state was captured at every size and
+zoom above, and the line was empty after the project closed. No native crash
+in any of these runs.
+
 ## 20. Known limitations
 
 * **No operator use, no network share, no real scanner, no power loss** -
@@ -450,17 +523,19 @@ after `5c7c920` changes only this handoff and the README testing line.
 * **Resolve decision panel** bottom row partly cut at 1366×768 / 175 % for a
   Student ID conflict (§16) - pre-existing, measured identical on `main`; not
   fixed here (outside this phase's scope; the splitter can be dragged).
+* **Resolve at 150 % / 200 % interface zoom** needs horizontal scrolling at
+  1366×768 and 1100×680 - pre-existing (measured on `main`); the provenance
+  then sits in the scrolled part of the page.
 * **Stability policy** (quiet period) per source is not exposed in the source
-  dialog; the service default applies.
-* **Answer Key stage header** does not name the scan session (Resolve,
-  Attendance, Results and Reports do).
+  dialog; the service default applies. To be reconsidered when phase 10
+  qualifies real SMB shares and has evidence for scanner/share stabilisation.
 * **Quality policy and registration-failure alarm** are uncalibrated defaults
   (labelled so in the GUI).
 * The 10k responsiveness and 100k paging populations are **metadata only**
   (no images, no recognition); they measure the GUI and its reads, not
   recognition throughput.
-* Provenance text beside the evidence tabs is clipped (not wrapped) when very
-  long; its tooltip has all of it.
+* Minor, observed at 1100×680 / 100 %: Resolve's *Batch* filter shows *All
+  batches of…* (its tooltip and list have the full text).
 
 ## 21. Phase 9 contract / readiness
 
@@ -496,12 +571,14 @@ than assuming.
 | F4 Compact source UI | ✅ | folded by default (`test_session_scan_gui`); screenshots 03 / 07 |
 | F5 Live Resolve + Rescan | ✅ | `test_rescan_queue_gui`, `test_intake_decisions_gui`, cross-scanner duplicate reaching Resolve live with evidence; scripted run (20 conflicts, 0 hash names) |
 | F6 10k GUI responsiveness + paged list | ✅ | `test_operational_gui_responsiveness` (median 0 / p95 8 / worst 442 ms at the tip), `test_scan_paging_gui` (100k: 81–332 ms per operation, first page 269 ms) |
-| F7 High-DPI screenshots | ✅ with limitations | 16 states at 1366×768 (+ 1100×680) on native 175 %; findings in §16 (200 % zoom needs scroll for *Finish*; pre-existing Resolve decision-panel height) |
+| F7 High-DPI screenshots | ✅ with limitations | 16 states at 1366×768 (+ 1100×680) on native 175 %; findings in §16 (200 % zoom needs scroll for *Finish*; pre-existing Resolve decision-panel height); the §19a corrections captured at both sizes, zoom 100 / 150 / 200 % |
+| Session context on every downstream stage | ✅ | Resolve, Attendance, Results, Reports and (since §19a) Answer Key; `test_answer_key_session_gui` |
+| Long provenance readable | ✅ | §19a: `test_resolve_provenance_gui`, native capture table |
 | F8 Interrupted-session reconstruction | ✅ | `test_session_recovery_gui` (real kill → counts before Start; persisted pause shown) |
 | Global UI zoom compatibility | ✅ with limitation | zoom matrix 80–200 % (§16); 200 % at 1366×768 puts *Finish Scan Session* behind a horizontal scroll |
 | Coordinator-busy handling | ✅ | `test_session_controls_gui::...refuses_start_with_its_message` (busy signal → notice; nothing reset); finite run buttons disabled while continuous runs |
 | Finish/reopen authoritative policy | ✅ | only `session_close` / `finish_scan_session`; AST rule forbids `close_scan_session` in the GUI; `test_session_finish_gui` |
-| Native GUI stability | ✅ | no native abort in two full runs, `tests/gui` alone, the screenshot runs or the scripted production runs; thread inventory clean after switches and close |
+| Native GUI stability | ✅ | no native abort in any full run, `tests/gui` alone, the screenshot runs or the scripted production runs (§18, §19a); thread inventory clean after switches and close |
 | Network-share qualification | Deferred | phase 10 |
 | Real scanner qualification | Deferred | not performed |
 
