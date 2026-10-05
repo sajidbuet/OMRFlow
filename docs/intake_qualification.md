@@ -110,7 +110,13 @@ evidence logs.
   written meanwhile back into view. A local simulation, never called SMB.
 * **Kill points are chosen from state, never from wall time**: a forced kill
   when the committed fraction reaches a planned percentage *and* the database
-  shows at least one sheet `processing`; pause points the coordinator blocks
+  shows at least two sheets `processing` (a kill whose in-flight work
+  committed in the milliseconds before termination is kept as a restart and
+  repeated, at most twice; only a kill that landed on work in flight counts
+  for its point); from 95 % on - where the last sheets finish within one
+  poll - the coordinator itself holds the state: a pause point blocks right
+  after a commit that brings the session to the target while other sheets are
+  still in a worker, and the supervisor kills it there; pause points the coordinator blocks
   at on request - right after a work-unit commit, after a commit whose
   duplicate-ID pass is still owed (the sheets' identities collide with a
   committed sheet), and after the operator's n-th decision - which it reports

@@ -883,13 +883,27 @@ class ContinuousRun:
                         pending.pop(0)
                         armed = None
                 if paused is not None and armed is not None:
-                    self.kill(armed["boundary"], armed["label"], {
+                    self.kill(armed.get("kill_kind", armed["boundary"]), armed["label"], {
                         **armed["trigger"],
                         "paused": {k: paused.get(k) for k in
-                                   ("at", "batch", "scans", "shas", "decisions")},
+                                   ("at", "batch", "scans", "shas", "decisions",
+                                    "in_flight_others")},
                     })
                     pending.pop(0)
                     armed = None
+            elif pending and self._is_tail_kill(pending[0]) and (
+                fraction * 100 >= pending[0][1] - self.TAIL_ARM_EARLY
+            ):
+                kind, percent = pending[0]
+                target = -(-percent * self.expected_total // 100)
+                self.command("arm", boundary="in_flight_commit", min_committed=target)
+                armed = {"boundary": "in_flight_commit", "kill_kind": "forced",
+                         "label": f"kill@{percent}%", "incarnation": self.incarnation,
+                         "since": time.monotonic(),
+                         "trigger": {"percent": percent, "committed": progress["committed"],
+                                     "min_committed": target,
+                                     "expected_total": self.expected_total,
+                                     "held_by": "in_flight_commit pause point"}}
             elif pending and fraction * 100 >= pending[0][1] and pending[0][0] in self.PAUSES:
                 kind, percent = pending[0]
                 args: dict[str, Any] = {"count": 2 if kind == "operator" else 1}
@@ -933,6 +947,14 @@ class ContinuousRun:
             time.sleep(self.POLL)
 
     PAUSES = ("after_commit", "syncing_duplicates", "operator")
+    TAIL_PERCENT = 95
+    """From here on a percentage kill is held by the coordinator's ``in_flight_commit``
+    pause point: near the end of a run the last sheets finish within one poll,
+    so an unpaused kill would rarely land on work in flight."""
+    TAIL_ARM_EARLY = 3
+
+    def _is_tail_kill(self, item: tuple[str, Any]) -> bool:
+        return item[0] == "kill" and int(item[1]) >= self.TAIL_PERCENT
 
     def _paused(self, armed: dict[str, Any]) -> dict[str, Any] | None:
         return next((item for item in self.events_of("paused", armed["incarnation"])

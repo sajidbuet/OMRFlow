@@ -147,6 +147,16 @@ class Coordinator:
                     armed["seen"] += 1
                     if armed["seen"] >= armed["count"]:
                         _block(coordinator.log, "after_commit", batch=batch_id, scans=ids)
+                armed = coordinator.armed.get("in_flight_commit")
+                if armed is not None:
+                    # The tail of a run: hold right after a commit that brings
+                    # the session to the target while other sheets are still in
+                    # a worker, so the kill lands on both (the engine pops this
+                    # group from its in-flight set only after this hook).
+                    others = coordinator.engine.in_flight - len(ids)
+                    if others >= 1 and coordinator._committed() >= armed["min_committed"]:
+                        _block(coordinator.log, "in_flight_commit", batch=batch_id, scans=ids,
+                               in_flight_others=others)
 
             def syncing_duplicates(self, batch_id: str, claims: Any) -> None:
                 armed = coordinator.armed.get("syncing_duplicates")
@@ -217,19 +227,22 @@ class Coordinator:
                 ).all()
             }
 
-    def _progress(self) -> float:
+    def _committed(self) -> int:
+        """Sheets of the session whose recognition is committed (the durable count)."""
         from sqlalchemy import func, select
 
         from omr_scanner.database.models import BatchScan, ScanBatch
 
         with self.database.session() as session:
-            done = session.scalar(
+            return int(session.scalar(
                 select(func.count()).select_from(BatchScan)
                 .join(ScanBatch, ScanBatch.batch_id == BatchScan.batch_id)
                 .where(ScanBatch.scan_session_id == self.session_id)
                 .where(BatchScan.status.in_(("completed", "warning", "failed")))
-            ) or 0
-        return float(done) / max(1, self.expected_total)
+            ) or 0)
+
+    def _progress(self) -> float:
+        return float(self._committed()) / max(1, self.expected_total)
 
     # ------------------------------------------------------------------
     def _operator_loop(self) -> None:
@@ -335,7 +348,8 @@ class Coordinator:
                 self.operator.on_pause = lambda n: _block(self.log, "operator", decisions=n)
             else:
                 self.armed[boundary] = {"count": int(args.get("count", 1)), "seen": 0,
-                                        "shas": list(args.get("shas", ()))}
+                                        "shas": list(args.get("shas", ())),
+                                        "min_committed": int(args.get("min_committed", 0))}
             self._answer(command, boundary=boundary)
         elif name == "disarm":
             boundary = args["boundary"]
