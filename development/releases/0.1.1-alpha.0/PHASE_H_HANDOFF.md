@@ -19,7 +19,7 @@ services return and calls them for every action.
 | Implementation | ✅ Complete for the brief's scope, with the limitations in §20 |
 | Automated tests (unit / integration) | ✅ passing (§18) |
 | GUI tests | ✅ passing - controls, finish / reopen, queues, live Resolve, shutdown order, real-kill reopen, 10,000-sheet responsiveness with arrivals, 100,000-row paging (§18) |
-| Native / scripted GUI validation | 🟠 **scripted only**: native screenshots of 16 states at 175 % Windows scaling (1366×768, 1100×680; interface zoom 80–200 %) and one scripted local three-folder run with the production worker pool (§16, §17). **No person operated the application.** |
+| Native / scripted GUI validation | 🟠 **scripted only**: native screenshots of 16 states at 175 % Windows scaling (1366×768, 1100×680; interface zoom 80–200 %) and one scripted local three-folder run with the production worker pool (§16, §17); pre-merge correction: native captures of Answer Key and Resolve provenance at 150 % (1100×680), DPR 1.395 (1366×768) and DPR 1.75 (largest window that fits), zoom 100 / 150 / 200 % (§19a). **No person operated the application.** |
 | Network share | ⚪ not performed (UNC paths are accepted and an unreachable one is shown; no SMB test) |
 | Real scanner | ⚪ not performed |
 | Power loss | ⚪ not performed |
@@ -414,6 +414,36 @@ Pushed: `origin/feat/0.1.1-phase8-operational-gui` (see the final commit list
 with `git log main..origin/feat/0.1.1-phase8-operational-gui`). The commit
 after `5c7c920` changes only this handoff and the README testing line.
 
+### 18a. Validation of the pre-merge correction (§19a), commit `f19a250`
+
+Second machine (Windows 11, display 1920×1080 at 150 %), worktree
+`OMRflow-phase8` with its own `.venv` (editable install of the worktree).
+
+| Check | Result |
+|---|---|
+| New tests | 11 Answer Key context + 14 provenance layout + 3 session-view consistency = 28, all passing |
+| Targeted (16 files: Answer Key ×4, Resolve ×3, session ×5, close / export, main window, zoom, operational rules) | 417 passed, 1 skipped, **1 failed** → the torn session view (§19a item 3), fixed; its file then 26 / 26 with the new tests |
+| `tests/gui`, run 1 (`07b121f`) | **native abort** `0xC0000409` after ≈ 45 min (§19a item 4) |
+| `tests/gui`, diagnostic rerun (`07b121f`) | same abort at the same test (48 min) |
+| `tests/gui` on unmodified `a637619`, same machine | 1,985 passed, 1 skipped, 1 deselected, 0 failed (47 min 17 s) |
+| `tests/gui`, run 3 (`3e23192`) | no abort; **2,012 passed, 1 skipped, 1 deselected, 1 failed** (42 min 30 s) → the window-position test (§19a item 5), fixed in `f19a250` |
+| **Full pytest** (canonical `pytest-ruff-mypy.ps1` under **PowerShell 7**, commit `f19a250`, 2026-10-05) | **7,113 passed, 27 skipped, 0 failed**, 7 `stress` deselected (1 h 55 min 05 s); includes all of `tests/gui` |
+| ruff | clean |
+| mypy, fresh cache (`.mypy_cache` deleted first) | clean - 244 source files |
+| Git state changed during testing (gate's own check) | False |
+| Native crash after the fixes | none (gate run and the capture runs) |
+
+A first gate attempt at `f19a250` was started with **Windows PowerShell
+5.1** (`powershell -File ...`) and stopped after 48 min 55 s: the script's
+`$ErrorActionPreference = "Stop"` turns a native command's stderr line into a
+terminating error under 5.1, so the first OpenCV warning a test prints
+(`cv::PngDecoder::read_chunk user chunk data is too large`) killed the run.
+Verified with a three-line probe (5.1 stops, PowerShell 7.6 continues). Not a
+test failure; the gate must be run with `pwsh`. The script is unchanged.
+No separate `tests/gui` run was made at `f19a250`: the gate's pytest includes
+it. The phase 7 stress suite was not rerun (no engine, intake, persistence or
+lifecycle service changed; §19a).
+
 ## 19. Defects found
 
 1. **Resolve stayed blank in a live session** (this phase, fixed before
@@ -664,12 +694,13 @@ than assuming.
 | F4 Compact source UI | ✅ | folded by default (`test_session_scan_gui`); screenshots 03 / 07 |
 | F5 Live Resolve + Rescan | ✅ | `test_rescan_queue_gui`, `test_intake_decisions_gui`, cross-scanner duplicate reaching Resolve live with evidence; scripted run (20 conflicts, 0 hash names) |
 | F6 10k GUI responsiveness + paged list | ✅ | `test_operational_gui_responsiveness` (median 0 / p95 8 / worst 442 ms at the tip), `test_scan_paging_gui` (100k: 81–332 ms per operation, first page 269 ms) |
-| F7 High-DPI screenshots | ✅ with limitations | 16 states at 1366×768 (+ 1100×680) on native 175 %; findings in §16 (200 % zoom needs scroll for *Finish*; pre-existing Resolve decision-panel height) |
+| F7 High-DPI screenshots | ✅ with limitations | 16 states at 1366×768 (+ 1100×680) on native 175 %; findings in §16 (200 % zoom needs scroll for *Finish*; pre-existing Resolve decision-panel height); correction captures §19a (no true-175 % 1366×768 window possible on the second machine's display) |
 | F8 Interrupted-session reconstruction | ✅ | `test_session_recovery_gui` (real kill → counts before Start; persisted pause shown) |
 | Global UI zoom compatibility | ✅ with limitation | zoom matrix 80–200 % (§16); 200 % at 1366×768 puts *Finish Scan Session* behind a horizontal scroll |
 | Coordinator-busy handling | ✅ | `test_session_controls_gui::...refuses_start_with_its_message` (busy signal → notice; nothing reset); finite run buttons disabled while continuous runs |
 | Finish/reopen authoritative policy | ✅ | only `session_close` / `finish_scan_session`; AST rule forbids `close_scan_session` in the GUI; `test_session_finish_gui` |
-| Native GUI stability | ✅ | no native abort in two full runs, `tests/gui` alone, the screenshot runs or the scripted production runs; thread inventory clean after switches and close |
+| Native GUI stability | ✅ | no native abort in two full runs, `tests/gui` alone, the screenshot runs or the scripted production runs; thread inventory clean after switches and close. Pre-merge correction: one `tests/gui` abort found (a pre-existing test left a `QThread` running, §19a item 4), proved and fixed; none in the final gate |
+| Pre-merge correction (§19a) | ✅ | Answer Key names the session; provenance fits and no longer squeezes the tabs; torn session view and two pre-existing test defects fixed; gate at `f19a250`: 7,113 passed, 0 failed, ruff / mypy clean (§18a) |
 | Network-share qualification | Deferred | phase 10 |
 | Real scanner qualification | Deferred | not performed |
 
@@ -680,3 +711,8 @@ than assuming.
 The operational GUI is implemented, tested and scripted-validated as the
 brief scoped it; the limitations in §20 are recorded, none blocks phase 9.
 It is **not** operator-, network-share-, scanner- or production-validated.
+
+Pre-merge correction (§19a, §18a): both review findings fixed, three further
+defects found while validating and fixed, canonical gate green at `f19a250`.
+The correction is on `wip/0.1.1-phase8-premerge-correction`; moving it onto
+`feat/0.1.1-phase8-operational-gui` and merging are the owner's decisions.
