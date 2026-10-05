@@ -1490,6 +1490,10 @@ class MainWindow(QMainWindow):
         reports = self._reports_page()
         if reports is not None:
             reports.set_session(scan_session_id)
+        answer_key_page = self._answer_key_page()
+        if answer_key_page is not None:
+            # Its heading only: keys are project / set configuration.
+            answer_key_page.set_session(scan_session_id)
         resolve = self._resolve_page()
         if resolve is not None and resolve.state.batch_id is not None:
             # A rescan read into any batch of the project - this one or a
@@ -1515,7 +1519,12 @@ class MainWindow(QMainWindow):
         scan_session_id = (
             scan_sessions.downstream_session_id(session.database) if session is not None else None
         )
-        for page in (self._attendance_page(), self._results_page(), self._reports_page()):
+        for page in (
+            self._attendance_page(),
+            self._results_page(),
+            self._reports_page(),
+            self._answer_key_page(),  # heading only; keys stay project configuration
+        ):
             if page is not None:
                 page.set_session(scan_session_id)
         resolve = self._resolve_page()

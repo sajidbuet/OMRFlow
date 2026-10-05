@@ -74,6 +74,7 @@ from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.answer_key.solution_dialog import SolutionSheetDialog
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.session_heading import read_session_heading
 from omr_scanner.gui.theme import (
     VARIANT_PRIMARY,
     VARIANT_PROPERTY,
@@ -89,7 +90,7 @@ from omr_scanner.gui.ui_scale import (
     set_floor,
     set_scaled_stylesheet,
 )
-from omr_scanner.services import project_sets, scoring_store, set_identity
+from omr_scanner.services import project_sets, scan_sessions, scoring_store, set_identity
 from omr_scanner.services.answer_key import (
     KeyDraft,
     QuestionPlan,
@@ -175,6 +176,10 @@ class AnswerKeyPageState:
     offered_codes: list[str] = field(default_factory=list)
     baseline: tuple[str, frozenset[int]] = ("", frozenset())
     """The answers and full-credit questions of what was last loaded or saved."""
+    scan_session_id: str | None = None
+    """The scan session the downstream stages work through - for the heading
+    only (revised phase 8). Keys stay project / set configuration: nothing here
+    reads or stores a key by session."""
 
 
 class _AnswerDelegate(QStyledItemDelegate):
@@ -262,6 +267,21 @@ class AnswerKeyPage(WorkflowPage):
         column = QVBoxLayout(content)
         column.setContentsMargins(0, 0, 0, 0)
         scale_layout(column, spacing=Spacing.SM)
+        # Which sitting the operator is working through - the same compact
+        # line Resolve shows (revised phase 8). Context, not ownership: keys
+        # belong to the project's sets, whatever the session.
+        self.session_label = QLabel("")
+        self.session_label.setObjectName("answerKeySessionLabel")
+        self.session_label.setTextFormat(Qt.TextFormat.RichText)
+        self.session_label.setWordWrap(True)
+        self.session_label.setStyleSheet(f"color: {Color.TEXT_SECONDARY};")
+        self.session_label.setToolTip(
+            "The scan session the Resolve, Attendance, Results and Reports stages are "
+            "working through. Answer keys belong to the project's sets, not to a session: "
+            "a key saved here applies to every session of this project."
+        )
+        self.session_label.setVisible(False)
+        column.addWidget(self.session_label)
         column.addWidget(self._build_sets_bar())
         column.addWidget(self._build_set_box())
 
@@ -584,6 +604,21 @@ class AnswerKeyPage(WorkflowPage):
         if not self.state.template_override:
             self._adopt_project_template()
         self._refresh_sets(load=changed)
+        # The session the downstream stages select on opening - the same call
+        # Results and Reports make; the window then keeps it in step.
+        self.set_session(
+            scan_sessions.downstream_session_id(session.database) if session is not None else None
+        )
+
+    def set_session(self, scan_session_id: str | None) -> None:
+        """Name the scan session being worked through (heading only; keys unaffected)."""
+        self.state.scan_session_id = scan_session_id
+        self._refresh_session_label()
+
+    def _refresh_session_label(self) -> None:
+        heading = read_session_heading(self.database, self.state.scan_session_id)
+        self.session_label.setText(heading)
+        self.session_label.setVisible(bool(heading))
 
     def refresh_project_template(self) -> None:
         """Re-read the project's template - after it was re-saved in place, say."""
