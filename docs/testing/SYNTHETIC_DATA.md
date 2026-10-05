@@ -902,6 +902,32 @@ claims a partial dataset is complete.
 The comparison key is `candidate_uid`, which is stable regardless of what
 identifier ended up marked on the scan.
 
+## Intake qualification cohort (revised phase 9)
+
+The revised phase 9 intake qualification harness
+(`omr_scanner.evaluation.intake_qualification`, documented in
+[`docs/intake_qualification.md`](../intake_qualification.md)) does not use the
+`generate_synthetic_omr` dataset layout above. It plans its own cohort in
+`intake_qualification/cohort.py` and renders it with the same `SheetBuilder`
+and distortion code:
+
+- The plan is a pure function of the campaign configuration and the template
+  (seed `20261006`, timing seed `6102026`). Every content item (script,
+  rescan, folded page, blank page), every arrival (source, per-source filename,
+  write pattern, time) and every scripted operator task is fixed by the plan,
+  and its SHA-256 digest is recorded in the manifest.
+- Rescans are rendered with a small page offset so their bytes differ from the
+  original; the renderer refuses a pool in which two different contents have
+  identical bytes. Byte duplicates are deliberate copies of an already planned
+  file, written by the same or a different writer.
+- Rendered images live only under `Scratch/Qualification/...` and are never
+  committed. The committed evidence keeps the plan digest, the manifest digest
+  and the reports, from which the cohort can be regenerated.
+- The ground truth (expected scores, ranks, statuses, conflicts and
+  replacement chains) is computed from the plan by
+  `intake_qualification/reference.py`, independently of the application's
+  scoring and reconciliation code.
+
 ## Known limitations
 
 - **The marks are still synthetic in both modes.** A real candidate's pencil is
