@@ -56,6 +56,17 @@ on the database most of the time - in rollback-journal mode a writer waits
 for readers to finish. Once a second is what the phase 7 contract measured
 and is fast enough for counts a person reads."""
 
+CONSISTENT_READ_ATTEMPTS = 3
+"""Snapshots taken at most for one view while a close / reopen races the read;
+past that the newest pair is shown and the next poll settles it."""
+
+
+def _lifecycle(info: scan_sessions.ScanSessionInfo | None) -> tuple[object, ...]:
+    """The part of a session record a snapshot's ``session_state`` must agree with."""
+    if info is None:
+        return ()
+    return (info.state, info.reopen_count, info.closed_at, info.final_outputs_stale_since)
+
 
 @dataclass(frozen=True, slots=True)
 class SessionView:
@@ -85,8 +96,19 @@ def read_session_view(
     ``now``: the snapshot's moment (the service's own clock when ``None``).
     """
     started = time.perf_counter()
-    snapshot = session_snapshot.take_snapshot(database, scan_session_id, now=now)
+    # The snapshot and the session record are separate reads. A close or
+    # reopen committed between them paired a "closed" snapshot with a
+    # reopened record (or the reverse), and the panel showed both until the
+    # next poll. So the record is read on both sides of the snapshot, and the
+    # pair is taken again if the lifecycle moved in between.
     info = scan_sessions.get_scan_session(database, scan_session_id)
+    for _attempt in range(CONSISTENT_READ_ATTEMPTS):
+        snapshot = session_snapshot.take_snapshot(database, scan_session_id, now=now)
+        after = scan_sessions.get_scan_session(database, scan_session_id)
+        moved = _lifecycle(after) != _lifecycle(info)
+        info = after
+        if not moved:
+            break
     sources = tuple(
         item
         for item in intake_service.list_sources(database)
