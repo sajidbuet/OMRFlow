@@ -937,6 +937,14 @@ class TestTheDialogFitsSmallScreens:
             seen.append(focused)
             if not dialog.scroll_area.isAncestorOf(focused):
                 continue  # A footer button: outside the scrolling form.
+            if focused is dialog.scroll_area:
+                # The scroll area itself takes Tab focus (StrongFocus) and
+                # `isAncestorOf` counts a widget as its own ancestor. It is the
+                # form's frame, not a control in it - and mapping it into its
+                # own viewport walks past the window, adding the window's
+                # screen position, so the check passed or failed with where the
+                # window manager placed the dialog.
+                continue
             assert _is_scrolled_into_view(dialog.scroll_area, focused), (
                 focused.objectName() or focused
             )
