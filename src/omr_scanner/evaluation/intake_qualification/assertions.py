@@ -472,6 +472,22 @@ def effective_contents_of(
 # ----------------------------------------------------------------------
 # The sixteen assertions
 # ----------------------------------------------------------------------
+def vanished_failures(run: Any) -> list[str]:
+    """Every ledger row the supervisor ever saw ``vanished``.
+
+    The plan never removes a file, so a stable file reported as gone - and
+    later "reappeared", i.e. discovered twice - is a discovery failure even when
+    the final ledger is right (found by the release campaign: a source lost in
+    the middle of a pass).
+    """
+    seen = getattr(run, "vanished_seen", {}) or {}
+    return [
+        f"ledger row {key} ({item.get('relative_path')}) was marked vanished "
+        f"({item.get('reason')}) although no file was removed"
+        for key, item in sorted(seen.items())
+    ]
+
+
 def a_stable_files(plan: CampaignPlan, run: Any, index: RunIndex) -> CheckResult:
     result = CheckResult("stable_files_discovered_exactly_once")
     planned = {(item.source, item.name) for item in plan.arrivals}
@@ -519,7 +535,10 @@ def a_stable_files(plan: CampaignPlan, run: Any, index: RunIndex) -> CheckResult
     for content, count in effective.items():
         if count > 1:
             result.fail(f"content {content} has {count} effective sheets")
+    for failure in vanished_failures(run):
+        result.fail(failure)
     result.evidence = {**result.evidence, "written_files": result.checked,
+                       "vanished_seen": len(getattr(run, "vanished_seen", {}) or {}),
                        "manual_source_rows": manual,
                        "ledger_rows": sum(len(v) for v in index.ledger_by_path.values()),
                        "temporary_names_ignored": sum(

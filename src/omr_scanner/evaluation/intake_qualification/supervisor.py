@@ -265,6 +265,8 @@ class RunEvidence:
     final_snapshot: Any = None
     final_population: Any = None
     original_names: dict[int, str] = field(default_factory=dict)
+    vanished_seen: dict[int, dict[str, Any]] = field(default_factory=dict)
+    """Ledger rows seen ``vanished`` at any sample - the plan never removes a file."""
     error: str = ""
     plan_mode: str = ""
 
@@ -378,8 +380,18 @@ class ContinuousRun:
                         "SELECT COUNT(*) FROM scan_batch WHERE scan_session_id = ? "
                         "AND status = 'running'", (self.evidence.session_id,),
                     ).fetchone()[0]
+                    vanished = connection.execute(
+                        "SELECT intake_file_id, source_id, relative_path, state_reason "
+                        "FROM intake_file WHERE scan_session_id = ? AND state = 'vanished'",
+                        (self.evidence.session_id,),
+                    ).fetchall() if any(state == "vanished" for state, _n in ledger) else []
                 finally:
                     connection.close()
+                for row_id, source_id, relative, reason in vanished:
+                    self.evidence.vanished_seen.setdefault(int(row_id), {
+                        "source_id": source_id, "relative_path": relative, "reason": reason,
+                        "t": time.time(), "incarnation": self.incarnation,
+                    })
                 counts = {str(k): int(v) for k, v in rows}
                 counts.update({f"ledger:{k}": int(v) for k, v in ledger})
                 counts["committed"] = sum(

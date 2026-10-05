@@ -201,6 +201,14 @@ class TestVerdict:
         assert assertions.verdict(all_passing(SECTION_5_2), self.crash(), self.endurance(),
                                   self.scale("release"), completed=False) == config.VERDICT_FAILED
 
+    def test_a_file_ever_seen_vanished_is_a_discovery_failure(self):
+        run = SimpleNamespace(vanished_seen={
+            958: {"relative_path": "000275.png", "reason": "disappeared", "t": 1.0},
+        })
+        failures = assertions.vanished_failures(run)
+        assert len(failures) == 1 and "000275.png" in failures[0]
+        assert assertions.vanished_failures(SimpleNamespace(vanished_seen={})) == []
+
     def test_only_the_reprocess_endurance_case_may_be_left_to_the_stress_suite(self):
         endurance = self.endurance()
         endurance[2] = CheckResult(endurance[2].name, checked=0).settle()

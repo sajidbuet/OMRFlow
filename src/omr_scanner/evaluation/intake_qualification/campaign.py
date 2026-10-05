@@ -271,6 +271,8 @@ def summarize_run(run: Any) -> dict[str, Any]:
             for c in run.checkpoints
         ],
         "outages": run.outages,
+        "vanished_seen": [{"intake_file_id": key, **value}
+                          for key, value in sorted(run.vanished_seen.items())],
         "reprocess": run.reprocess,
         "endgame": {key: value for key, value in run.endgame.items()
                     if key not in ("first_downstream", "second_downstream")},
