@@ -129,6 +129,7 @@ from omr_scanner.gui.review.operational import (
     suggestion_details_html,
     suggestion_issue,
 )
+from omr_scanner.gui.review.provenance_label import ProvenanceLabel
 from omr_scanner.gui.review.rescan import (
     LifecycleHistoryDialog,
     RejectScanDialog,
@@ -750,18 +751,9 @@ class ResolvePage(WorkflowPage):
         # Where the sheet on screen came from (revised phase 8): scanner,
         # batch, the operator's own file name, arrival - so a duplicate across
         # two scanners reads as two sheets from two places, not two ids. It sits
-        # beside the evidence tabs, so the decision panel loses no height.
-        self.provenance_context_label = QLabel("")
-        self.provenance_context_label.setObjectName("sheetProvenanceLabel")
-        self.provenance_context_label.setStyleSheet(
-            f"color: {Color.TEXT_SECONDARY}; padding-right: 6px;"
-        )
-        self.provenance_context_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-        )
-        self.provenance_context_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
+        # beside the evidence tabs, so the decision panel loses no height, and
+        # shortens to the room the tabs leave - never widening the page.
+        self.provenance_context_label = ProvenanceLabel()
         self.provenance_context_label.setVisible(False)
         self._provenance_names = ("", "")  # (stored copy, arrived as)
 
@@ -4645,22 +4637,11 @@ class ResolvePage(WorkflowPage):
             if database is not None and scan_id is not None
             else None
         )
-        if found is None:
-            self._provenance_names = ("", "")
-            self.provenance_context_label.setVisible(False)
-            return
-        self._provenance_names = (found.stored_name, found.original_name)
-        self.provenance_context_label.setText(found.describe())
-        # The corner may clip a long line; the tooltip always has all of it.
-        self.provenance_context_label.setToolTip(
-            f"{found.describe()}\nBatch {found.batch_id[:8]}"
-            + (
-                f" · stored as {found.stored_name}"
-                if found.stored_name and found.stored_name != found.original_name
-                else ""
-            )
+        self._provenance_names = (
+            (found.stored_name, found.original_name) if found is not None else ("", "")
         )
-        self.provenance_context_label.setVisible(True)
+        # A long line is shortened to fit; the tooltip always has all of it.
+        self.provenance_context_label.set_provenance(found)
 
     def _arrival_name(self, path: Path) -> str:
         """The file name an image arrived with - not its content-addressed copy's."""
