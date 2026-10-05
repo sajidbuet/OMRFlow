@@ -162,6 +162,38 @@ class TestListing:
         assert "Scanner b" in found.describe() and "b1.png" in found.describe()
         assert sheet_provenance(rig.database, 999_999) is None
 
+    def test_a_reprocessed_watched_sheet_keeps_the_name_it_arrived_with(self, rig):
+        """A re-read watched sheet is still named as it arrived (a revised phase 9 finding).
+
+        *Reprocess All* of a watched unit re-reads the project's content-addressed
+        copies, which the manual source records under the copy's name.
+        """
+        from omr_scanner.services import batch_store, scan_recovery, scan_sessions
+
+        a, _b = two_sources(rig)
+        database, session_id = rig.database, rig.session_id
+        [unit] = batches_of_source(database, session_id, a)
+        reprocess = scan_sessions.start_reprocess_batch(
+            database, unit, identity=batch_store.BatchIdentity.of(rig.template),
+            settings={scan_recovery.WORK_UNIT_SETTING: True}, started_by="Operator",
+        )
+        assert rig.engine is not None
+        rig.engine.shutdown()
+        rig.new_engine(unit_policy=BIG)
+        rig.run()
+        with database.session() as session:
+            reread = [row.scan_id for row in session.query(BatchScan)
+                      .filter(BatchScan.batch_id == reprocess).all()]
+        assert len(reread) == 4
+        names = original_names(database, reread, intake_only=True)
+        assert sorted(names.values()) == ["a0.png", "a1.png", "a2.png", "a3.png"]
+        found = sheet_provenance(database, reread[0])
+        assert found is not None and found.original_name in names.values()
+        assert found.original_name != found.stored_name
+        listed = {row.scan_id: row.original_name for row in list_sheets(
+            database, session_id, SheetQuery(search="a2"), limit=100)}
+        assert sorted(listed.values()) == ["a2.png", "a2.png"]  # the original and its re-read
+
     def test_an_empty_session_lists_nothing(self, rig):
         assert list_sheets(rig.database, rig.session_id) == ()
         assert count_sheets(rig.database, rig.session_id) == 0
