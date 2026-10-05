@@ -1215,6 +1215,18 @@ class IntakeService:
         )
         due = self._apply_listing(source, listing, moment, report)
         verdicts = [_verify(self._fs, item) for item in due]
+        lost = self._source_lost(source) if any(v.kind == "gone" for v in verdicts) else None
+        if lost is not None:
+            # The source went away during this pass (a share dropped, a drive
+            # or folder link removed): its files did not disappear one by one.
+            # Nothing is marked vanished; the source is unreachable until it
+            # lists again, and the next pass that lists it reads them again.
+            self._apply_verdicts(source, [v for v in verdicts if v.kind != "gone"], report)
+            self._set_reachability(source_id, lost.reachability, lost.detail, moment,
+                                   success=False)
+            report.reachability = lost.reachability
+            report.detail = lost.detail
+            return report
         self._apply_verdicts(source, verdicts, report)
         detail = (
             f"{len(listing.unlisted_folders)} sub-folder(s) could not be listed"
@@ -1224,6 +1236,19 @@ class IntakeService:
         report.detail = detail
         self._set_reachability(source_id, Reachability.ONLINE, detail, moment, success=True)
         return report
+
+    def _source_lost(self, source: SourceInfo) -> SourceListingError | None:
+        """Why the source's root no longer lists, or ``None`` while it does.
+
+        Asked only when a file read during a pass found the file gone: a file
+        deleted from a reachable source vanishes; a source that went away does
+        not take its files with it.
+        """
+        try:
+            self._fs.list_source(source.root_path, recursive=False, exclusions=source.exclusions)
+        except SourceListingError as exc:
+            return exc
+        return None
 
     def _set_reachability(
         self,
@@ -1856,6 +1881,12 @@ class IntakeService:
                     failed.append((intake_id, exc.detail))
                 continue
             ingested[intake_id] = (str(stored.path), stored.relative_path)
+        if any(kind == "gone" for _id, kind, _reason, _detail in returned) and (
+            self._source_lost(source) is not None
+        ):
+            # The source went away, not its files: they stay ready, to be
+            # registered once it is back (reconciliation records it unreachable).
+            returned = [item for item in returned if item[1] != "gone"]
 
         # --- 3. one transaction: batch, scans, ledger, seal ----------------
         batch_id: str | None = None

@@ -700,6 +700,62 @@ class TestReachability:
         assert rig.state(b, "3.jpg") is IntakeState.READY
         assert len(intake_service.ledger(rig.database, source_id=b)) == 3  # nothing duplicated
 
+    def lose_root_on_reading(self, rig, root: str, relative: str) -> dict:
+        """Make ``root`` disappear while ``relative`` is being read (a folder link removed)."""
+        entries = rig.fs.roots[root]
+        rig.fs.file(root, relative).on_read = lambda: rig.fs.roots.pop(root)
+        return entries
+
+    def test_a_source_lost_during_a_pass_is_unreachable_and_vanishes_nothing(self, rig):
+        """A source lost between a pass's listing and its reads vanishes nothing.
+
+        Found by the phase 9 campaign: files read just after their source went
+        away were marked *vanished* and the source *online*.
+        """
+        a = rig.source(ROOT_A)
+        for seed, name in enumerate(("1.jpg", "2.jpg", "3.jpg")):
+            rig.fs.write(ROOT_A, name, jpeg(seed))
+        rig.poll(a)
+        entries = self.lose_root_on_reading(rig, ROOT_A, "1.jpg")
+        report = rig.poll(a, advance=POLICY.quiet_seconds + 0.1)[0]
+        assert report.reachability is Reachability.UNREACHABLE
+        rows = [rig.row(a, name) for name in ("1.jpg", "2.jpg", "3.jpg")]
+        assert all(row.state is not IntakeState.VANISHED and row.present for row in rows), rows
+        source = intake_service.get_source(rig.database, a)
+        assert source is not None and source.reachability is Reachability.UNREACHABLE
+        rig.fs.roots[ROOT_A] = entries  # reconnected
+        rig.settle(a)
+        assert {rig.state(a, n) for n in ("1.jpg", "2.jpg", "3.jpg")} == {IntakeState.READY}
+        assert len(rig.ledger(a)) == 3
+        assert intake_service.get_source(rig.database, a).reachability is Reachability.ONLINE
+
+    def test_a_file_deleted_during_a_pass_from_a_reachable_source_still_vanishes(self, rig):
+        a = rig.source(ROOT_A)
+        rig.fs.write(ROOT_A, "1.jpg", jpeg(1))
+        rig.fs.write(ROOT_A, "2.jpg", jpeg(2))
+        rig.poll(a)
+        rig.fs.file(ROOT_A, "1.jpg").on_read = lambda: rig.fs.delete(ROOT_A, "2.jpg")
+        report = rig.poll(a, advance=POLICY.quiet_seconds + 0.1)[0]
+        assert report.reachability is Reachability.ONLINE
+        assert rig.state(a, "1.jpg") is IntakeState.READY
+        assert rig.state(a, "2.jpg") is IntakeState.VANISHED
+
+    def test_a_source_lost_while_registering_leaves_its_files_ready(self, rig):
+        a = rig.source(ROOT_A)
+        rig.fs.write(ROOT_A, "1.jpg", jpeg(1))
+        rig.fs.write(ROOT_A, "2.jpg", jpeg(2))
+        rig.settle(a)
+        entries = self.lose_root_on_reading(rig, ROOT_A, "1.jpg")
+        rig.register_all(a)  # 1.jpg was read in full before the source went away
+        assert rig.state(a, "1.jpg") is IntakeState.REGISTERED
+        row = rig.row(a, "2.jpg")
+        assert row.state is IntakeState.READY and row.present
+        rig.fs.roots[ROOT_A] = entries
+        rig.poll(a, advance=1)
+        assert rig.register_all(a).batch_id is not None
+        assert rig.state(a, "2.jpg") is IntakeState.REGISTERED
+        assert len(rig.ledger(a)) == 2
+
     def test_permission_denied_then_restored(self, rig):
         a = rig.source(ROOT_A)
         rig.fs.write(ROOT_A, "1.jpg", jpeg(1))
