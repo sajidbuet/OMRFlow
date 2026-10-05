@@ -1499,6 +1499,8 @@ class MainWindow(QMainWindow):
         answer_key = self._answer_key_page()
         if answer_key is None or session is None:
             return
+        # Its heading names the same session (context only - keys stay per set).
+        answer_key.set_session(scan_session_id)
         # The sets the batch actually contains, so an operator writing keys is
         # offered the papers that were sat rather than having to remember them.
         try:
@@ -1518,6 +1520,11 @@ class MainWindow(QMainWindow):
         for page in (self._attendance_page(), self._results_page(), self._reports_page()):
             if page is not None:
                 page.set_session(scan_session_id)
+        answer_key = self._answer_key_page()
+        if answer_key is not None:
+            # Names the session in its heading; the keys themselves stay the
+            # project's, per set (revised phase 8).
+            answer_key.set_session(scan_session_id)
         resolve = self._resolve_page()
         if resolve is not None and session is not None:
             # Its heading names the session and whether it is open, closed or

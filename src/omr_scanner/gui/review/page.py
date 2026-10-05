@@ -137,6 +137,7 @@ from omr_scanner.gui.review.rescan import (
 )
 from omr_scanner.gui.review.worker import OriginalImageWorker, SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
+from omr_scanner.gui.session_context import read_session, session_context_html
 from omr_scanner.gui.theme import (
     CANDIDATE_CHOSEN,
     CANDIDATE_MACHINE,
@@ -1614,27 +1615,13 @@ class ResolvePage(WorkflowPage):
 
         ``info``: the session as already read (a live refresh); read here otherwise.
         """
-        database = self.database
         if info is _UNREAD:
-            info = (
-                scan_sessions.get_scan_session(database, self.state.scan_session_id)
-                if database is not None and self.state.scan_session_id
-                else None
-            )
+            info = read_session(self.database, self.state.scan_session_id)
         if not isinstance(info, scan_sessions.ScanSessionInfo):
             return ""
-        if info is None or info.virtual:
-            return ""
-        if info.state is ScanSessionState.CLOSED:
-            status = "closed"
-        elif info.final_outputs_stale_since is not None:
-            status = "open (reopened) · results provisional"
-        else:
-            status = "open · results provisional"
-        return (
-            f"<span style='color:{Color.TEXT_SECONDARY};'>Scan session "
-            f"<b>{html.escape(info.name)}</b> · {status}</span><br>"
-        )
+        # The same words the Answer Key stage uses.
+        context = session_context_html(info)
+        return f"{context}<br>" if context else ""
 
     def _render_batch_label(
         self,

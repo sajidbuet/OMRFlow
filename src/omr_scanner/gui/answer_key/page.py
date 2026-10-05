@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeyEvent
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
@@ -74,6 +74,7 @@ from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.answer_key.solution_dialog import SolutionSheetDialog
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.session_context import read_session, session_context_html
 from omr_scanner.gui.theme import (
     VARIANT_PRIMARY,
     VARIANT_PROPERTY,
@@ -89,7 +90,7 @@ from omr_scanner.gui.ui_scale import (
     set_floor,
     set_scaled_stylesheet,
 )
-from omr_scanner.services import project_sets, scoring_store, set_identity
+from omr_scanner.services import project_sets, scan_sessions, scoring_store, set_identity
 from omr_scanner.services.answer_key import (
     KeyDraft,
     QuestionPlan,
@@ -175,6 +176,10 @@ class AnswerKeyPageState:
     offered_codes: list[str] = field(default_factory=list)
     baseline: tuple[str, frozenset[int]] = ("", frozenset())
     """The answers and full-credit questions of what was last loaded or saved."""
+    scan_session_id: str | None = None
+    """The scan session the workflow is going through - context only. The
+    main window hands every downstream stage the same one; answer keys stay
+    the project's, per set, whichever session is shown."""
 
 
 class _AnswerDelegate(QStyledItemDelegate):
@@ -262,6 +267,7 @@ class AnswerKeyPage(WorkflowPage):
         column = QVBoxLayout(content)
         column.setContentsMargins(0, 0, 0, 0)
         scale_layout(column, spacing=Spacing.SM)
+        column.addWidget(self._build_session_label())
         column.addWidget(self._build_sets_bar())
         column.addWidget(self._build_set_box())
 
@@ -288,6 +294,23 @@ class AnswerKeyPage(WorkflowPage):
     def _heading(text: str) -> QLabel:
         label = QLabel(text)
         label.setObjectName("answerKeySectionHeading")
+        return label
+
+    def _build_session_label(self) -> QLabel:
+        """The scan session the operator is working through - one line, or nothing."""
+        label = QLabel("")
+        label.setObjectName("answerKeySessionLabel")
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setWordWrap(True)
+        # Wraps rather than widening the page at a high interface zoom.
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        label.setToolTip(
+            "The scan session the workflow is going through. Answer keys belong "
+            "to the project's sets, not to a session: a key saved or verified "
+            "here is the one every session of the project is marked with."
+        )
+        label.setVisible(False)
+        self.session_label = label
         return label
 
     def _build_sets_bar(self) -> QWidget:
@@ -584,6 +607,27 @@ class AnswerKeyPage(WorkflowPage):
         if not self.state.template_override:
             self._adopt_project_template()
         self._refresh_sets(load=changed)
+        # The active scan session - the selection Attendance, Results and
+        # Reports start from - never "the most recently updated batch".
+        self.set_session(
+            scan_sessions.downstream_session_id(session.database) if session is not None else None
+        )
+
+    def set_session(self, scan_session_id: str | None) -> None:
+        """Show which scan session the workflow is going through (context only)."""
+        self.state.scan_session_id = scan_session_id
+        self.refresh_session_context()
+
+    def refresh_session_context(self) -> None:
+        """Re-read the shown session's name and state - after a close or reopen, say."""
+        context = session_context_html(read_session(self.database, self.state.scan_session_id))
+        self.session_label.setText(context)
+        self.session_label.setVisible(bool(context))
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """Catch up on a session closed or reopened while another stage was shown."""
+        super().showEvent(event)
+        self.refresh_session_context()
 
     def refresh_project_template(self) -> None:
         """Re-read the project's template - after it was re-saved in place, say."""
