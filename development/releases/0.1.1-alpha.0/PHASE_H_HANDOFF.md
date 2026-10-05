@@ -437,6 +437,166 @@ after `5c7c920` changes only this handoff and the README testing line.
    `ResizeToContents`; undo controls recomputed per selection; GUI-thread
    reads in the list and the live apply.
 
+## 19a. Pre-merge correction (after `a637619`)
+
+A final review found two phase-8-owned GUI inconsistencies. Both are fixed;
+validating them exposed a timing-dependent phase 8 defect (item 3) and two
+pre-existing test defects - one that aborted `tests/gui` natively (item 4),
+one that depended on the window's screen position (item 5) - all fixed.
+Nothing else was changed. Engine, intake, quality policy, lifecycle,
+recognition and schema are untouched, so the phase 7 stress suite was not
+rerun (its evidence stands).
+
+Done in a separate worktree (`OMRflow-phase8`) on a second machine with its
+own `.venv` (editable install of the worktree), display 1920×1080 at 150 %
+Windows scaling.
+
+1. **Answer Key named no scan session** (was a §20 limitation). The page now
+   shows the one-line context Resolve uses - `Scan session <name> · open ·
+   results provisional`, `· closed`, or `· open (reopened) · results
+   provisional` - from a new shared helper, `gui/session_context.py`, which
+   Resolve now uses too, so the two cannot drift apart. The session is the
+   one the main window hands every downstream stage
+   (`scan_sessions.downstream_session_id` when a project opens;
+   `set_session` when the active session changes or a batch finishes, next
+   to Attendance / Results / Reports); the page selects nothing of its own,
+   and never by latest batch or `updated_at`. It re-reads the session when
+   shown, so a close made from Reports appears. It is **context only**: the
+   label's tooltip says keys belong to the project's sets; no schema,
+   persistence or key ownership changed. Finite mode: an implicit session
+   gets the same single wrapped line (no panel, no new step); a project
+   with no session, or a batch outside any session, shows nothing.
+   Tests: `tests/gui/test_answer_key_session_context.py` (11 - open, closed,
+   reopened, close made elsewhere, no project, project close, project
+   switch, follows the window like Results, keys unchanged, implicit finite
+   session, batch outside any session).
+2. **Resolve provenance clipped - and, measured, did worse** (was a §20
+   limitation). The corner `QLabel` sized itself to its whole line; a tab
+   widget sizes its corner from the corner's size hint, so a long line
+   squeezed the evidence tabs and raised the page's minimum width. Measured
+   on `a637619`, native 150 %, 1100×680, the long values below: at 100 %
+   zoom the evidence **tab bar was 0 px wide** (hint 319); Resolve's minimum
+   width was 2,193 px at 150 % and 2,897 px at 200 %. Now
+   `gui/review/provenance_label.py` (`ProvenanceLabel`) asks for no more than
+   the room beside the tabs and has no minimum width; it shortens in a fixed
+   order - the scanner name first (to a stem), then the file name from the
+   middle (start and extension kept), then the scanner name altogether - the
+   batch and arrival time always whole; the tooltip lists every value
+   complete on its own line (`Source`, `Batch`, `Original file`, `Stored as`,
+   `Arrived`). The name shown is the arrival name; the content-addressed copy
+   appears only in the tooltip as *Stored as*. Same measurement after the
+   fix: tab bar 319 / 319 at every zoom, Resolve minimum 857 / 1,577 / 2,104 px
+   at 100 / 150 / 200 % (the remainder is other Resolve content, see §20) -
+   identical with a short or a long provenance line.
+   Tests: `tests/gui/test_resolve_provenance_gui.py` (14 - in the real
+   window at 1366×768 and 1100×680 × 100 / 150 / 200 %: inside the tab
+   widget right of the last tab, tab bar keeps its hint, evidence width > 0,
+   window and page minimum widths unchanged by a long line, shown text fits,
+   tooltip complete, stored name never shown; the shortening order; short
+   line whole; no sheet hides it). These tests configure the application
+   (stylesheet, font) as start-up does, so they measure the same fonts alone
+   and inside `tests/gui`, and assert layout invariants, not pixel values.
+
+3. **Found while validating: a torn session view** (phase 8 code, fixed).
+   The first targeted run of the correction (16 files: Answer Key, Resolve,
+   session, close / export, main window, zoom, operational rules; 419 tests)
+   gave 417 passed, 1 skipped, **1 failed**:
+   `test_session_finish_gui::TestReopen::test_reopen_is_named_audited_and_marks_final_outputs_stale`
+   - `assert 'CLOSED' == 'OPEN · REOPENED'` on the session panel's lifecycle
+   label. It passed alone (3 / 3) and touches no code changed by items 1–2.
+   Cause: `session_poller.read_session_view` took the snapshot and the
+   session record in two separate reads on the poller thread; a poll in
+   flight while the reopen committed paired a *closed* snapshot with the
+   reopened record, the panel (lifecycle from the snapshot) said *CLOSED*,
+   and the test's wait condition (`reopen_count >= 1`) was already true for
+   that torn view. Reproduced deterministically by committing the reopen -
+   and, separately, a close - exactly between the two reads (both failed
+   before the fix). Fix (`07b121f`): the record is read on both sides of the
+   snapshot and the pair is retaken (at most three snapshots) when the
+   lifecycle (state, reopen count, closed at, stale since) moved in between;
+   a quiet session costs one extra single-row read per poll. The existing
+   test is unchanged. Regression tests:
+   `tests/gui/test_session_view_consistency.py` (3). This is the GUI's read
+   adapter - engine, intake, persistence and lifecycle services are
+   unchanged - so the phase 7 stress suite was not rerun; the 10k
+   responsiveness test runs inside `tests/gui`.
+
+4. **Found while validating: a native abort in `tests/gui`** (pre-existing
+   test defect, fixed in the test). The first `tests/gui` run after items
+   1–3 died after 45 min with no summary; rerun under PowerShell with
+   `--capture=sys --no-qt-log`, `-X faulthandler` and a per-test live-`QThread`
+   report, it died at the **same position**: exit `0xC0000409`, no Qt or
+   Python message, during
+   `test_stress_qualification_gui::test_b_the_dialog_form_produces_the_request_it_shows`
+   (the file passes alone: 37 / 37). Cause: the test switches the
+   qualification dialog's mode, which re-measures the campaign by starting a
+   `PreflightWorker` `QThread` (running the fixture's must-not-run runner,
+   which raised unseen inside the thread). The dialog joins that thread only
+   in `done()`; the GUI conftest hides and deletes windows directly, so a
+   worker still running at teardown is a running `QThread` destroyed - a
+   fatal abort. Proved with a scratch copy whose runner blocks 2 s: exit
+   `0xC0000409` at teardown every time, no message. Fix (`3e23192`): the test
+   records the preflight request instead of starting a thread and asserts no
+   worker exists; the dialog is unchanged. The file dates from the phase 10
+   harness (2026-09-21; last touched 2026-10-03), not phase 8. **Honest
+   caveat**: unmodified `a637619` ran `tests/gui` cleanly on this machine
+   (1,985 passed, 1 skipped, 1 deselected, 47 min 17 s), so the race - real,
+   and now removed - surfaced only with this correction's changes in place;
+   which change shifted the timing was not determined (no new test leaves a
+   `QThread` alive - checked after every test of the three new files).
+
+5. **Found while validating: a window-position-dependent test** (pre-existing
+   test defect, fixed in the test). With item 4 fixed, `tests/gui` completed
+   with no abort: **2,012 passed, 1 skipped, 1 deselected, 1 failed** (42 min
+   30 s). The failure:
+   `test_developer_tools::TestTheDialogFitsSmallScreens::test_tabbing_never_leaves_the_focused_control_off_screen`
+   - `AssertionError: datasetScrollArea`, with the Qt warning
+   `QWidget::mapTo(): parent must be in parent hierarchy`; it passed alone
+   (3 / 3) and with its file (93 / 93). This is the "small-screen tab focus"
+   failure the README recorded as unexplained flakiness on 2026-09-30.
+   Cause: the scroll area itself is a Tab stop (`QScrollArea` defaults to
+   `StrongFocus`) and `isAncestorOf` counts a widget as its own ancestor, so
+   the test checked the container against its own viewport - a mapping
+   that walks past the window and adds the window's **screen position**.
+   Proved: the check on the scroll area is true with the dialog at (0, 0) or
+   (200, 150) and false at (250, 520). Fix (`f19a250`): the container is
+   skipped; every control inside the form is still checked, and that check
+   passes with the dialog at (250, 520).
+
+Commits: `f66888b` (Answer Key session context), `46b8308` (provenance),
+`07b121f` (session view), `3e23192` (preflight-thread test), `f19a250`
+(tab-focus test), then this documentation.
+
+Values used: source *Scanner Station - Electrical Machines Laboratory North
+Wing*; original file
+*2026-10-05_Final_Examination_EEE_415_Section_A_Student_1000001_rescan_02.png*.
+
+**Native layout evidence** (scratch scripts `capture_p8_corrections.py`,
+`measure_widths.py`; output in git-ignored `test-output/gui/p8_corrections/`).
+This display is 1280×720 logical at 150 %, so Windows/Qt clamp a window to
+the screen: a native 1366×768 window does not fit, and neither size fits at a
+true 175 %. Qt's offscreen platform has no fonts on this machine (0 families)
+and an offscreen screen configuration file aborted Qt at start-up, so neither
+was used. What was run, on the native platform with Segoe UI:
+
+| Run | Scaling | Window | Interface zoom |
+|---|---|---|---|
+| `native150` | 150 % (the machine's own) | 1100×680 | 100, 150, 200 % |
+| `native140_1366` | `QT_SCALE_FACTOR=0.93` → DPR 1.395 | 1366×768 and 1100×680 | 100, 150, 200 % |
+| `native175_max` | `QT_SCALE_FACTOR=1.1667` → DPR 1.75 | largest that fits: 917×567 at 100 % | 100, 150, 200 % |
+
+States: Answer Key with the session open, closed and reopened; Resolve with
+the long provenance. Results: the session line is one line at every size and
+zoom with the right wording in each state, and leaves the Answer Key page's
+minimum width unchanged (409 / 606 / 809 px at 100 / 150 / 200 %, the same as
+`a637619`). The provenance line fits beside the full-width tab bar
+everywhere: at 1366×768 / 100 % `Scanner… · Batch 2 ·
+2026-10-05_Final_Examination_EEE_415…tion_A_Student_1000001_rescan_02.png ·
+arrived 10:42`; at 917×567 / 175 % `Batch 2 · 2026-10…_02.png · arrived
+10:42`. No native crash in any capture run (the `tests/gui` abort is item 4). **Not done**: a native 1366×768 or
+1100×680 window at a true 175 % (the first machine's captures, §16, remain
+the 175 % evidence for the rest of the GUI).
+
 ## 20. Known limitations
 
 * **No operator use, no network share, no real scanner, no power loss** -
@@ -447,20 +607,28 @@ after `5c7c920` changes only this handoff and the README testing line.
   phase 4 design).
 * **200 % interface zoom** at 1366×768: *Finish Scan Session...* needs a
   horizontal scroll (or the Session menu).
+* **Resolve is wider than the window at 150 / 200 % interface zoom**: its
+  minimum width is 1,577 / 2,104 px (measured §19a; 2,193 / 2,897 px before
+  the provenance fix), so at 1366 or 1100 px the stages scroll horizontally.
+  The remainder is Resolve's own toolbar / decision content, not provenance -
+  not changed here.
 * **Resolve decision panel** bottom row partly cut at 1366×768 / 175 % for a
   Student ID conflict (§16) - pre-existing, measured identical on `main`; not
   fixed here (outside this phase's scope; the splitter can be dragged).
 * **Stability policy** (quiet period) per source is not exposed in the source
   dialog; the service default applies.
-* **Answer Key stage header** does not name the scan session (Resolve,
-  Attendance, Results and Reports do).
 * **Quality policy and registration-failure alarm** are uncalibrated defaults
   (labelled so in the GUI).
 * The 10k responsiveness and 100k paging populations are **metadata only**
   (no images, no recognition); they measure the GUI and its reads, not
   recognition throughput.
-* Provenance text beside the evidence tabs is clipped (not wrapped) when very
-  long; its tooltip has all of it.
+* The finite Scan stage's *Recognised values* table header is truncated at
+  1100×680 (pre-existing finite layout, §16).
+
+Fixed by the pre-merge correction (§19a), no longer limitations: the Answer
+Key stage now names the scan session; long provenance beside the evidence
+tabs is shortened to fit, with the tooltip complete, and no longer squeezes
+the tabs or widens the page.
 
 ## 21. Phase 9 contract / readiness
 
