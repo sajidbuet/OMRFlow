@@ -52,6 +52,7 @@ from omr_scanner.domain.intake import IntakeState
 from omr_scanner.domain.quality_decision import QualityReason
 from omr_scanner.domain.scan_lifecycle import RESCAN_REASONS, RejectionReason
 from omr_scanner.domain.scan_quality import ScanQualityIssueCode, issue_label
+from omr_scanner.gui.review.display_names import middle_ellipsis
 from omr_scanner.gui.theme import VARIANT_PRIMARY, VARIANT_PROPERTY, Color, Spacing
 from omr_scanner.gui.ui_scale import resize_scaled, scale_layout
 from omr_scanner.services.intake_decisions import FileDecision
@@ -140,7 +141,10 @@ def suggestion_details_html(
 ) -> str:
     """Everything recorded about one suggestion - evidence, provenance and the policy."""
     rows: list[tuple[str, str]] = [
-        ("Sheet", (provenance.original_name if provenance else "") or item.source_name),
+        (
+            "Sheet",
+            middle_ellipsis((provenance.original_name if provenance else "") or item.source_name),
+        ),
         ("Source", provenance.source_label if provenance else ""),
         ("Batch", provenance.batch_label if provenance else ""),
         ("Student ID", student_id or "(not read)"),
@@ -173,9 +177,9 @@ def suggestion_details_html(
 def file_details_html(item: PendingFile) -> str:
     """Everything recorded about one file waiting for a decision."""
     rows: list[tuple[str, str]] = [
-        ("File", item.file_name),
+        ("File", middle_ellipsis(item.file_name)),
         ("Source", item.source_label),
-        ("Where", item.relative_path),
+        ("Where", middle_ellipsis(item.relative_path)),
         ("State", file_state_text(item)),
         ("Why", item.why),
         ("Detail", item.detail),
@@ -376,7 +380,7 @@ class FilePanel(QWidget):
         else:
             self.heading.setText(
                 f"<span style='font-size:12pt;'><b>{html.escape(file_state_text(item))}</b>"
-                f"</span> &mdash; {html.escape(item.file_name)}"
+                f"</span> &mdash; {html.escape(middle_ellipsis(item.file_name))}"
             )
             self.details_label.setText(file_details_html(item))
         for decision, button in self.buttons.items():

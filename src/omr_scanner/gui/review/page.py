@@ -48,10 +48,11 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
+    QFontMetrics,
     QKeySequence,
     QResizeEvent,
     QShortcut,
@@ -107,6 +108,7 @@ from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
 from omr_scanner.gui.pages.base_page import WorkflowPage
+from omr_scanner.gui.review.display_names import middle_ellipsis
 from omr_scanner.gui.review.history_dialog import HistoryDialog
 from omr_scanner.gui.review.lanes import (
     bounds_of,
@@ -137,6 +139,7 @@ from omr_scanner.gui.review.rescan import (
 )
 from omr_scanner.gui.review.worker import OriginalImageWorker, SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
+from omr_scanner.gui.session_heading import session_heading_html
 from omr_scanner.gui.theme import (
     CANDIDATE_CHOSEN,
     CANDIDATE_MACHINE,
@@ -386,6 +389,118 @@ zero, and a reviewer who meant the digit must never get the blank."""
 FIELD_EDIT_APPLY_TEXT = "Apply"
 """The whole-field editor's commit button, when nothing it writes overrides a
 confident reading. It reads "Apply override..." when something does."""
+
+
+def provenance_tooltip(found: session_sheets.SheetProvenance) -> str:
+    """Every provenance fact whole, one per line (the corner text may be elided)."""
+    lines = []
+    if found.source_label:
+        lines.append(f"Scanner: {found.source_label}")
+    lines.append(f"Batch: {found.batch_label or found.batch_id[:8]} ({found.batch_id[:8]})")
+    lines.append(f"File: {found.original_name or found.stored_name}")
+    if found.arrived_at is not None:
+        lines.append(f"Arrived: {found.arrived_at.astimezone():%Y-%m-%d %H:%M}")
+    if found.stored_name and found.stored_name != found.original_name:
+        lines.append(f"Stored in the project as: {found.stored_name}")
+    return "\n".join(lines)
+
+
+PROVENANCE_SEPARATOR = " · "
+
+
+def fit_provenance(
+    parts: tuple[str, str, str, str], metrics: QFontMetrics, width: int
+) -> str:
+    """``scanner · batch · file · arrival`` shortened to ``width``, the file kept longest.
+
+    What an operator needs to tell two sheets apart is the file they scanned
+    and when it arrived, so those give way last: first the scanner's name is
+    shortened (never below a few letters), then the batch is left to the
+    tooltip, then the scanner too, and only then is the file name elided - in
+    the middle, keeping its ending and extension. Pure, for a test to read.
+    """
+    source, batch, file_name, arrival = parts
+    separator = PROVENANCE_SEPARATOR
+
+    def join(*items: str) -> str:
+        return separator.join(item for item in items if item)
+
+    def advance(text: str) -> int:
+        return metrics.horizontalAdvance(text)
+
+    full = join(source, batch, file_name, arrival)
+    if advance(full) <= width:
+        return full
+    for kept in (join(batch, file_name, arrival), join(file_name, arrival)):
+        room = width - advance(kept + separator)
+        if source and room >= advance(source[:6] + "…"):
+            return join(metrics.elidedText(source, Qt.TextElideMode.ElideRight, room), kept)
+    room = width - (advance(separator + arrival) if arrival else 0)
+    if file_name and room >= advance("ab…png"):
+        return join(metrics.elidedText(file_name, Qt.TextElideMode.ElideMiddle, room), arrival)
+    return metrics.elidedText(full, Qt.TextElideMode.ElideMiddle, width)
+
+
+class ProvenanceLabel(QLabel):
+    """The sheet's scanner · batch · original file · arrival, beside the evidence tabs.
+
+    A scanner's name and a file's name are the operator's, of any length. Placed
+    as the tab widget's corner, a plain label made Qt hand it its whole text
+    width: the tab bar was left with none (the evidence tabs vanished) and the
+    text ran past the page's edge. This one asks only for the room the tabs
+    leave (:meth:`sizeHint`), needs none (:meth:`minimumSizeHint`), and shows
+    what fits by :func:`fit_provenance` - the file and its arrival kept
+    longest. The full value is :attr:`full_text` and the tooltip (one fact per
+    line); nothing is wrapped into the decision panel's height.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.full_text = ""
+        self._parts: tuple[str, str, str, str] = ("", "", "", "")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_parts(self, parts: tuple[str, str, str, str]) -> None:
+        """Adopt ``(scanner, batch, file, arrival)``; show what fits now and after every resize."""
+        self._parts = parts
+        self.full_text = PROVENANCE_SEPARATOR.join(part for part in parts if part)
+        self.updateGeometry()
+        self._elide()
+
+    @property
+    def is_elided(self) -> bool:
+        """Whether what is shown is shorter than what it stands for."""
+        return self.text() != self.full_text
+
+    def _room(self) -> int:
+        """The width the tab widget can spare beside its tabs (no limit when not a corner)."""
+        tabs = self.parentWidget()
+        if not isinstance(tabs, QTabWidget):
+            return 1 << 20
+        bar = tabs.tabBar()
+        return max(0, tabs.width() - bar.sizeHint().width() - 2 * bar.height())
+
+    def sizeHint(self) -> QSize:
+        """As wide as the text, but never wider than the room beside the tabs."""
+        hint = super().sizeHint()
+        width = QFontMetrics(self.font()).horizontalAdvance(self.full_text) + 12
+        return QSize(min(width, self._room()), hint.height())
+
+    def minimumSizeHint(self) -> QSize:
+        """Nothing: a long name must never widen the page."""
+        return QSize(0, super().minimumSizeHint().height())
+
+    def _elide(self) -> None:
+        available = self.contentsRect().width() - 8
+        if available <= 0:
+            super().setText(self.full_text)
+            return
+        super().setText(fit_provenance(self._parts, QFontMetrics(self.font()), available))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Re-elide for the width just granted."""
+        super().resizeEvent(event)
+        self._elide()
 
 
 @dataclass
@@ -644,6 +759,13 @@ class ResolvePage(WorkflowPage):
             "scan session's: this narrows what is listed, nothing else."
         )
         self.source_filter.currentIndexChanged.connect(self.refresh_queue)
+        # A scanner may be named at any length: the source filter takes the room
+        # the row leaves, never its longest item's (each item's tooltip has it
+        # whole). The batch filter's items are ours and short; it keeps its size.
+        self.source_filter.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.source_filter.setMinimumContentsLength(8)
         batch_row.addWidget(self.source_filter, stretch=1)
         self.source_filter_label.setVisible(False)
         self.source_filter.setVisible(False)
@@ -750,13 +872,10 @@ class ResolvePage(WorkflowPage):
         # batch, the operator's own file name, arrival - so a duplicate across
         # two scanners reads as two sheets from two places, not two ids. It sits
         # beside the evidence tabs, so the decision panel loses no height.
-        self.provenance_context_label = QLabel("")
+        self.provenance_context_label = ProvenanceLabel()
         self.provenance_context_label.setObjectName("sheetProvenanceLabel")
         self.provenance_context_label.setStyleSheet(
             f"color: {Color.TEXT_SECONDARY}; padding-right: 6px;"
-        )
-        self.provenance_context_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
         self.provenance_context_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
@@ -1623,18 +1742,10 @@ class ResolvePage(WorkflowPage):
             )
         if not isinstance(info, scan_sessions.ScanSessionInfo):
             return ""
-        if info is None or info.virtual:
+        heading = session_heading_html(info)  # the wording Answer Key shares
+        if not heading:
             return ""
-        if info.state is ScanSessionState.CLOSED:
-            status = "closed"
-        elif info.final_outputs_stale_since is not None:
-            status = "open (reopened) · results provisional"
-        else:
-            status = "open · results provisional"
-        return (
-            f"<span style='color:{Color.TEXT_SECONDARY};'>Scan session "
-            f"<b>{html.escape(info.name)}</b> · {status}</span><br>"
-        )
+        return f"<span style='color:{Color.TEXT_SECONDARY};'>{heading}</span><br>"
 
     def _render_batch_label(
         self,
@@ -1692,6 +1803,9 @@ class ResolvePage(WorkflowPage):
         self.source_filter.addItem(ALL_SOURCES, userData="")
         for item in watched:
             self.source_filter.addItem(item.label, userData=item.source_id)
+            self.source_filter.setItemData(
+                self.source_filter.count() - 1, item.label, Qt.ItemDataRole.ToolTipRole
+            )
         index = self.source_filter.findData(current) if current else 0
         self.source_filter.setCurrentIndex(max(0, index))
         self.source_filter.blockSignals(False)
@@ -4663,16 +4777,9 @@ class ResolvePage(WorkflowPage):
             self.provenance_context_label.setVisible(False)
             return
         self._provenance_names = (found.stored_name, found.original_name)
-        self.provenance_context_label.setText(found.describe())
-        # The corner may clip a long line; the tooltip always has all of it.
-        self.provenance_context_label.setToolTip(
-            f"{found.describe()}\nBatch {found.batch_id[:8]}"
-            + (
-                f" · stored as {found.stored_name}"
-                if found.stored_name and found.stored_name != found.original_name
-                else ""
-            )
-        )
+        self.provenance_context_label.set_parts(found.parts())
+        # What the corner shows may be elided; the tooltip has every fact whole.
+        self.provenance_context_label.setToolTip(provenance_tooltip(found))
         self.provenance_context_label.setVisible(True)
 
     def _arrival_name(self, path: Path) -> str:
@@ -5301,7 +5408,10 @@ def _machine_summary_html(
     )
     if conflict.conflict_type.allows_value_correction:
         rows.append(("Detected", _describe_marks(sorted(marks))))
-    rows.append(("Sheet", conflict.scan_name or "(unknown)"))
+    # The name the sheet arrived with, of any length (a scanner may write
+    # 80 characters with no space to wrap at): shortened in the middle so it
+    # cannot widen the decision panel; the provenance tooltip has it whole.
+    rows.append(("Sheet", html.escape(middle_ellipsis(conflict.scan_name or "(unknown)"))))
     if conflict.related_scan_ids:
         rows.append(("Also on", f"{len(conflict.related_scan_ids)} other sheet(s)"))
 

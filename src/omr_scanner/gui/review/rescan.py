@@ -56,6 +56,7 @@ from omr_scanner.domain.scan_lifecycle import (
     RejectionReason,
     format_bytes,
 )
+from omr_scanner.gui.review.display_names import middle_ellipsis
 from omr_scanner.gui.theme import (
     VARIANT_DESTRUCTIVE,
     VARIANT_PRIMARY,
@@ -513,7 +514,7 @@ def state_html(case: RescanCase) -> str:
 def details_html(case: RescanCase) -> str:
     """Everything recorded about the case, in labelled lines."""
     rows = [
-        ("Original scan", case.source_name or f"scan {case.scan_id}"),
+        ("Original scan", middle_ellipsis(case.source_name or f"scan {case.scan_id}")),
         ("Student ID", case.identity or "(not known)"),
         ("Set code", case.set_code or "(not known)"),
         ("Reason", case.reason_label or "-"),
@@ -541,10 +542,11 @@ def details_html(case: RescanCase) -> str:
         rows.append(
             (
                 "Replacement",
-                f"{case.replacement_name or case.replacement_scan_id}{elsewhere} - confirmed "
+                f"{middle_ellipsis(case.replacement_name or str(case.replacement_scan_id))}"
+                f"{elsewhere} - confirmed "
                 f"{case.replaced_at:%Y-%m-%d %H:%M} by {case.replaced_by or '-'}"
                 if case.replaced_at
-                else str(case.replacement_name or case.replacement_scan_id),
+                else middle_ellipsis(str(case.replacement_name or case.replacement_scan_id)),
             )
         )
     rows.append(
@@ -739,7 +741,7 @@ class SheetPanel(QWidget):
             else "none awaiting a decision"
         )
         rows = (
-            ("Sheet", sheet.filename or f"scan {sheet.scan_id}"),
+            ("Sheet", middle_ellipsis(sheet.filename or f"scan {sheet.scan_id}")),
             ("Student ID", f"{effective_id or '(not read)'} (read as {sheet.identifier or '-'})"),
             ("Set code", f"{effective_set or '(not read)'} (read as {sheet.set_code or '-'})"),
             ("Processing", sheet.status),

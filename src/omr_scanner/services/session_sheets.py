@@ -332,15 +332,22 @@ class SheetProvenance:
     student_id: str = ""
     set_code: str = ""
 
+    def parts(self) -> tuple[str, str, str, str]:
+        """``(scanner, batch, file, arrival)`` - each ``""`` when not known.
+
+        The file is the name the sheet arrived with (the stored copy's only
+        when there is no other); a session batch's label already names its
+        scanner, so the batch part says it once.
+        """
+        batch = self.batch_label.replace(f" · {self.source_label}", "", 1)
+        arrival = (
+            f"arrived {self.arrived_at.astimezone():%H:%M}" if self.arrived_at is not None else ""
+        )
+        return (self.source_label, batch, self.original_name or self.stored_name, arrival)
+
     def describe(self) -> str:
         """One line: ``Scanner A · Batch 3 · original.png · arrived 10:42``."""
-        # A session batch's label already names its scanner; say it once.
-        batch = self.batch_label.replace(f" · {self.source_label}", "", 1)
-        parts = [part for part in (self.source_label, batch) if part]
-        parts.append(self.original_name or self.stored_name)
-        if self.arrived_at is not None:
-            parts.append(f"arrived {self.arrived_at.astimezone():%H:%M}")
-        return " · ".join(parts)
+        return " · ".join(part for part in self.parts() if part)
 
 
 def _aware(moment: datetime | None) -> datetime | None:
