@@ -297,6 +297,29 @@ Rules that apply to every section:
   resolved) before Resume is pressed, from committed rows; final outputs made
   stale by a reopen are shown as stale.
 
+> **Evidence (revised phase 8, branch `feat/0.1.1-phase8-operational-gui`, not
+> merged; GUI tests and scripted runs only - no operator, network share or real
+> scanner).** F1 `test_session_scan_gui::TestFiniteModeIsUnchanged` (no panel,
+> no list chooser, no polling thread, Process All tooltips unchanged) and the
+> unchanged pre-existing Scan / Resolve GUI suites; F2
+> `test_session_controls_gui` (incl. a coordinator-busy refusal rendered as a
+> notice), `test_session_finish_gui` (grouped blockers, acknowledgement only
+> for the three acceptable kinds, named operator, reopen named with stale
+> outputs, re-close re-validates),
+> `test_session_scan_gui` (add source incl. UNC, close / project switch while
+> scanning); F3 `test_session_controls_gui` + `test_session_scan_gui::TestWordsForValues`
+> (recognition falls, never a percentage; caught up only from the snapshot;
+> unreachable named); F4 `test_session_scan_gui` (folded by default); F5
+> `test_rescan_queue_gui`, `test_intake_decisions_gui`, the cross-scanner
+> duplicate reaching Resolve live; F6 `test_operational_gui_responsiveness`
+> (10,000 sheets with arrivals: event-loop latency measured, thresholds median
+> < 30 ms, p95 < 150 ms, worst < 2 s - the worst case is set by rollback-journal
+> waits, see the handoff), `test_scan_paging_gui` (100,000 rows, SQL-paged);
+> F7 `capture_session_states.py` (16 states, 1366×768 and 1100×680, native
+> 175 %, zoom 80–200 %); F8 `test_session_recovery_gui` (a real process kill,
+> then the counts before Start; persisted pause shown). Details:
+> `PHASE_H_HANDOFF.md`.
+
 ### G — Qualification and release
 
 See §§4–8 (and §9 for what remains before Beta).

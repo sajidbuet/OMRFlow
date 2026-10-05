@@ -99,8 +99,8 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
 - **Project Health** reports a sheet claimed for processing in a batch that is
   not running, and a watched file registered as more than one scan.
 - **Quality decisions, rescan suggestions, persisted controls and session
-  closure** (revised phase 7, roadmap E second part; branch
-  `feat/0.1.1-phase7-quality-session-controls`, not merged; headless; ADR-0010).
+  closure** (revised phase 7, roadmap E second part; merged as `9169933`;
+  headless; ADR-0010).
   - A pure, versioned, fingerprinted scan-quality decision layer maps stored
     evidence to *accept* / *accept with warning* / *rescan required* / *retry
     processing* (a software fault is never a paper fault). The default policy
@@ -143,8 +143,56 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   - **Migration 17 (schema 17)**: `scan_quality_decision`; the session's pinned
     policy and intent; per-source pause. Additive; tested from a schema-16
     project written by the schema-16 build.
+- **Operational GUI for continuous multi-source scanning** (revised phase 8,
+  roadmap F; branch `feat/0.1.1-phase8-operational-gui`, not merged; no
+  migration - schema stays 17). The GUI renders and drives the phase 7
+  services; it decides nothing itself.
+  - *Finite mode is unchanged*: a project without a scanner source never shows
+    session mode, the session list or a polling thread.
+  - *Session mode* on the Scan stage (*Session → Add Scanner Source...*): a
+    status line in the snapshot's own words (*caught up* is never *complete*),
+    three separate progress lines (recognition may fall; no combined
+    percentage), live partition counts, warnings (registration-failure rate as
+    an uncalibrated warning, suggested rescans, waiting files, stale exports),
+    a folded *Sources* table with per-source state and actions, and grouped
+    controls: *Start Continuous Scan*, *Pause/Resume Processing*, *Stop →
+    Finish Current and Stop / Cancel Queued Work...*, *Pause/Resume Intake*,
+    *Finish Scan Session...* (every blocker grouped, with *Go to ...*
+    navigation; only the three acceptable kinds may be accepted, by a named
+    operator) and *Reopen Session...*.
+  - The engine runs in a `QThread` wrapper; the snapshot is read once a second
+    in a worker (one read in flight, at most one owed); the session's sheet
+    list is SQL-paged (200 rows) with filters by status, source, batch,
+    quality, conflict and rescan state, and search by Student ID or original
+    file name - its reads run off the GUI thread.
+  - *Resolve while scanning*: queues refresh live from the relayed snapshot
+    (reads in a worker, the selection and anything being typed kept),
+    source / batch filters, provenance (scanner, batch, original file name,
+    arrival), *Suggested rescans* (confirm / dismiss by a named reviewer;
+    *UNVALIDATED DEFAULT* policy noted) and *Files awaiting decision* (exactly
+    the service's options; *Release* disabled while the session is closed).
+    Rescan candidates come from every scanner of the session, ranked, with
+    provenance; watched-source sheets are named as they arrived, never by the
+    content-addressed copy.
+  - Closing the window or the project stops scanning safely (current work
+    finishes and is saved) and leaves the session open; the question says so
+    and defaults to *Cancel*. Reopening shows the reconstructed state, and
+    the persisted pause, before anything starts.
+  - Tested by GUI tests over the engine rig (10,000-sheet responsiveness with
+    arrivals, 100,000-row paging, a real-kill recovery), native scripted
+    screenshots and a scripted local three-folder run with the production
+    worker pool. **Not used by an operator; not tested on a network share or
+    with a real scanner.**
 
 ### Fixed (`0.1.1` line)
+
+- **Resolve showed no sheet image for a live session it anchored itself to**
+  (revised phase 8, before merge): no template came with the snapshot, so the
+  sheet was never re-read; it now uses the project's template.
+- **Test fixtures:** the phase 7 snapshot-scale fixture wrote conflicts of an
+  invalid type, so its timings were measured without conflicts; a phase 7
+  real-kill test took the restarted child's pid as the largest one (Windows
+  pids are not monotonic).
 
 - **A project could not be reopened after a writer was killed mid-commit.**
   The rollback journal left behind is "hot"; the read-only probe that decides

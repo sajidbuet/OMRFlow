@@ -212,6 +212,11 @@ class SourceSnapshot:
         stabilizing / ready / held / unreadable / vanished: Its unregistered files.
         registered: Its sheets registered into the session.
         processed: Of those, read (completed, warning or failed).
+        accepted / conflict / rescan_required: Its registered sheets in those
+            partition buckets (the session's own classification, grouped by
+            source - revised phase 8).
+        duplicate: Its exact-duplicate files - registered duplicates plus
+            ledger rows linked as duplicate content.
         recent_processed: Read within the rate window.
         rate_per_minute: ``recent_processed`` per minute of the window, or
             ``None`` before anything was read.
@@ -234,6 +239,10 @@ class SourceSnapshot:
     vanished: int = 0
     registered: int = 0
     processed: int = 0
+    accepted: int = 0
+    conflict: int = 0
+    rescan_required: int = 0
+    duplicate: int = 0
     recent_processed: int = 0
     rate_per_minute: float | None = None
     alarm: RegistrationAlarm | None = None

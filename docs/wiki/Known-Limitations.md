@@ -71,6 +71,9 @@ Closing this is the whole purpose of
 | ✅ | Durable batches: an interrupted run resumes without reprocessing completed sheets |
 | ✅ | Worker processes die with the coordinator (no orphans) |
 | 🟠 | **The 100,000-sheet qualification campaign has not been run.** The harness is complete and validated at 250–2,000 sheets, including real forced kills, a real orchestrator crash and recovery. The full-scale run — roughly a day of machine time — has not been executed |
+| 🟠 | **Continuous multi-scanner scanning (in development, `0.1.1`)** — automated GUI tests and scripted local runs only. Not used by an operator; not tested on a network share, with a real scanner or through a power loss. The quality policy that suggests rescans and the registration-failure warning are uncalibrated defaults |
+| 🟠 | While continuous scanning writes heavily, a review action can pause the window for up to about a second (SQLite rollback-journal waits; measured worst ≈ 1.2 s at 10,000 sheets in tests). Switching Resolve views on a 10,000-sheet session can take 0.5–3 s |
+| 🟠 | At 200 % interface zoom on a 1366×768 window the session panel's *Finish Scan Session…* is reached by scrolling the page (or *Session → Close Session*) |
 
 ### Review and resolution
 

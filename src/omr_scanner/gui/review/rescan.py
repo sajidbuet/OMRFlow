@@ -570,6 +570,10 @@ def candidate_text(case: RescanCase, candidate: ReplacementCandidate) -> str:
     way - only the Student ID is.
     """
     where = f" · {candidate.batch_label}" if candidate.other_batch else ""
+    # Which scanner, and whether it arrived after the rejection (revised
+    # phase 8): provenance to rank by eye - never certainty, never a link.
+    if candidate.provenance:
+        where += f" · {candidate.provenance}"
     if candidate.candidate_id == case.identity and case.identity:
         return (
             f"Possible rescan: {candidate.source_name} · Student ID "
@@ -598,6 +602,11 @@ def candidate_tooltip(candidate: ReplacementCandidate) -> str:
     )
     if candidate.read_at is not None:
         lines.append(f"Read at {candidate.read_at:%Y-%m-%d %H:%M}")
+    if candidate.arrived_at is not None:
+        lines.append(f"Arrived at {candidate.arrived_at.astimezone():%Y-%m-%d %H:%M}")
+    if candidate.provenance:
+        lines.append(candidate.provenance.capitalize())
+    lines.append("A suggestion ranked by Student ID, set and arrival - not a certainty.")
     return "\n".join(lines)
 
 

@@ -164,6 +164,8 @@ class _Sheets:
     retry: int = 0
     by_batch_registered: Counter[str] = field(default_factory=Counter)
     by_batch_processed: Counter[str] = field(default_factory=Counter)
+    by_batch_bucket: Counter[tuple[str, str]] = field(default_factory=Counter)
+    """``(batch, bucket) -> sheets`` - summed per source for the source rows."""
 
     def add(
         self,
@@ -181,6 +183,7 @@ class _Sheets:
         self.dispositions[disposition] += count
         bucket = _bucket(disposition, status, conflict=conflict, suggestion=suggestion)
         self.buckets[bucket] += count
+        self.by_batch_bucket[(batch_id, bucket)] += count
         self.by_batch_registered[batch_id] += count
         if status in READ_STATUSES:
             self.by_batch_processed[batch_id] += count
@@ -590,6 +593,11 @@ def take_snapshot(
         registered_by_source[source_of.get(batch_id, "")] += count
     for batch_id, count in sheets.by_batch_processed.items():
         processed_by_source[source_of.get(batch_id, "")] += count
+    # The registered sheets' partition buckets, per source (revised phase 8):
+    # the same classification as the session totals, only grouped differently.
+    bucket_by_source: Counter[tuple[str, str]] = Counter()
+    for (batch_id, bucket), count in sheets.by_batch_bucket.items():
+        bucket_by_source[(source_of.get(batch_id, ""), bucket)] += count
     known = {source.source_id for source in sources}
     extra = [
         source
@@ -623,6 +631,11 @@ def take_snapshot(
                 vanished=counts.get("vanished", 0),
                 registered=registered_by_source.get(source.source_id, 0),
                 processed=processed,
+                accepted=bucket_by_source.get((source.source_id, "accepted"), 0),
+                conflict=bucket_by_source.get((source.source_id, "conflict"), 0),
+                rescan_required=bucket_by_source.get((source.source_id, "rescan_required"), 0),
+                duplicate=bucket_by_source.get((source.source_id, "duplicate"), 0)
+                + counts.get("duplicate", 0),
                 recent_processed=recent.get(source.source_id, 0),
                 rate_per_minute=(
                     recent.get(source.source_id, 0) / (rate_window_seconds / 60.0)

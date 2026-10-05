@@ -251,7 +251,12 @@ def test_kill_between_a_commit_and_its_duplicate_pass(tmp_path):
         BatchScan, BatchScan.batch_id == ScanBatch.batch_id).where(BatchScan.scan_id == target))
     assert status == [("running",)], "the unit records that its cross-sheet pass is owed"
     events = run_to_exit(launch(root, log, "engine", session=session_id, expect=4), timeout=300)
-    assert second not in submitted_by(events, max(item["pid"] for item in events)), (
+    # The restarted process is the one that logged the *last* "started" event.
+    # (Not the highest pid: Windows does not hand out increasing pids, and the
+    # killed child - which legitimately read this sheet - sometimes has the
+    # larger one; revised phase 8 baseline run 2026-10-04_221344.)
+    restarted = [item for item in events if item["event"] == "started"][-1]["pid"]
+    assert second not in submitted_by(events, restarted), (
         "a committed sheet must not be read again to regenerate its conflicts"
     )
     first = scan_with(root, SHEETS[17])

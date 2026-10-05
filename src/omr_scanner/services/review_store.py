@@ -2201,6 +2201,18 @@ def _walk_back_to_standing(events: Sequence[AuditEvent]) -> list[AuditEvent]:
     return standing
 
 
+def history_watermark(database: ProjectDatabase) -> int:
+    """The newest audit event's id (``0`` with none). One primary-key read.
+
+    Every human decision, undo, lifecycle action and supersession is an audit
+    event, so an unchanged watermark means :func:`last_decision` and
+    :func:`last_resolved_sheet` would answer as before - which lets a page
+    skip recomputing them on every selection change (revised phase 8).
+    """
+    with database.session() as session:
+        return int(session.scalar(select(func.max(AuditEvent.event_id))) or 0)
+
+
 def last_decision(
     database: ProjectDatabase, batch_id: str, *, session_wide: bool = False
 ) -> UndoTarget | None:

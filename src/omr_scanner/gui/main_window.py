@@ -404,6 +404,11 @@ class MainWindow(QMainWindow):
                 # the Answer Key stage asked for a template it had been given.
                 scan_page.template_changed.connect(self.broadcast_template)
                 scan_page.processing_changed.connect(self._on_processing_changed)
+                # Session mode (0.1.1 revised phase 8): its snapshots keep
+                # Resolve's queues current; its finish dialog navigates.
+                scan_page.session_view_changed.connect(self._on_session_view)
+                scan_page.navigate_requested.connect(self.navigate_to)
+                scan_page.continuous_changed.connect(self._on_processing_changed)
                 page = scan_page
             elif spec.key == "resolve":
                 resolve_page = ResolvePage(spec)
@@ -501,9 +506,46 @@ class MainWindow(QMainWindow):
 
         The only two states the application genuinely has. Nothing else sets
         this, which is why there is no third word in
-        :class:`~omr_scanner.gui.widgets.status_footer.AppStatus`.
+        :class:`~omr_scanner.gui.widgets.status_footer.AppStatus`. Either a
+        finite batch or this window's continuous engine is processing.
         """
-        self.footer.set_status(AppStatus.PROCESSING if running else AppStatus.READY)
+        page = self._scan_page()
+        busy = running or (
+            page is not None and (page.is_processing or page.continuous_running)
+        )
+        self.footer.set_status(AppStatus.PROCESSING if busy else AppStatus.READY)
+
+    def _on_session_view(self, view: object) -> None:
+        """Relay a session snapshot to Resolve, which refreshes its queues if they changed."""
+        resolve = self._resolve_page()
+        if resolve is not None:
+            resolve.on_session_view(view)
+
+    def navigate_to(self, destination: str) -> bool:
+        """Go where a finish blocker is cleared (a :mod:`~omr_scanner.gui.session_close` key)."""
+        if destination.startswith("resolve:"):
+            resolve = self._resolve_page()
+            scan_page = self._scan_page()
+            session = self._session
+            if resolve is None or session is None:
+                return False
+            active = scan_sessions.active_scan_session(session.database)
+            if active is not None and resolve.state.scan_session_id != active.scan_session_id:
+                template = scan_page.state.template if scan_page is not None else None
+                resolve.load_session(active.scan_session_id, template)
+            view = destination.split(":", 1)[1]
+            shown = self.show_page("resolve")
+            resolve.show_view(view)
+            return shown
+        if destination == "attendance":
+            return self.show_page("attendance")
+        if destination.startswith("scan:"):
+            scan_page = self._scan_page()
+            if scan_page is not None and destination == "scan:sources":
+                scan_page.session_panel.details.set_expanded(True)
+                scan_page.session_panel.sources_section.set_expanded(True)
+            return self.show_page("scan")
+        return False
 
     def _open_developer_site(self, url: str) -> None:
         """Open the developer's site in the system's default browser.
@@ -979,9 +1021,16 @@ class MainWindow(QMainWindow):
         return True
 
     def close_project(self) -> None:
-        """Close the open project, releasing its database and log handler."""
+        """Close the open project, releasing its database and log handler.
+
+        Background work stops first (0.1.1 revised phase 8): a finite batch is
+        cancelled and settled, the continuous engine drains, commits and
+        releases the coordinator lease, snapshot polling stops - and only then
+        is the database released. The scan session stays open.
+        """
         if self._session is None:
             return
+        self._settle_background_work()
         self._session.close()
         self._session = None
         self._broadcast_project_change()
@@ -1450,6 +1499,8 @@ class MainWindow(QMainWindow):
         answer_key = self._answer_key_page()
         if answer_key is None or session is None:
             return
+        # Its heading names the same session (context only - keys stay per set).
+        answer_key.set_session(scan_session_id)
         # The sets the batch actually contains, so an operator writing keys is
         # offered the papers that were sat rather than having to remember them.
         try:
@@ -1469,6 +1520,16 @@ class MainWindow(QMainWindow):
         for page in (self._attendance_page(), self._results_page(), self._reports_page()):
             if page is not None:
                 page.set_session(scan_session_id)
+        answer_key = self._answer_key_page()
+        if answer_key is not None:
+            # Names the session in its heading; the keys themselves stay the
+            # project's, per set (revised phase 8).
+            answer_key.set_session(scan_session_id)
+        resolve = self._resolve_page()
+        if resolve is not None and session is not None:
+            # Its heading names the session and whether it is open, closed or
+            # reopened (revised phase 8); the queue itself is unchanged.
+            resolve._refresh_batch_label()
 
     def reconcile_batch(self, batch_id: str) -> bool:
         """Open a batch's candidate reconciliation in the Attendance stage.
@@ -1836,6 +1897,9 @@ class MainWindow(QMainWindow):
     def _adopt_session(self, session: ProjectSession) -> None:
         """Replace the current session and refresh the whole window."""
         if self._session is not None:
+            # The previous project's engine, poller and batch stop before its
+            # database is released (revised phase 8).
+            self._settle_background_work()
             self._session.close()
         self._session = session
         # The open sequence (0.1.1 phase 3, ADR-0006). `open_project` has
@@ -2243,6 +2307,52 @@ class MainWindow(QMainWindow):
         page = self._scan_page()
         return page is not None and page.is_processing
 
+    def continuous_scan_is_running(self) -> bool:
+        """Whether this window's continuous engine is running (revised phase 8)."""
+        page = self._scan_page()
+        return page is not None and page.continuous_running
+
+    def _settle_background_work(self) -> None:
+        """Stop and wait for everything that may still touch the open project's database.
+
+        In order: the Scan stage (finite batch cancelled and settled; snapshot
+        polling stopped; the continuous engine drained, committed, its
+        coordinator lease released and its worker pool closed), then the
+        Resolve stage's sheet loaders. Nothing is closed by this - the caller
+        releases the database afterwards. The scan session stays open.
+        """
+        page = self._scan_page()
+        if page is not None:
+            page.shutdown_background_work()
+        review_page = self._resolve_page()
+        if review_page is not None:
+            review_page.shutdown()
+
+    def confirm_exit_while_scanning(self) -> bool:
+        """Ask before exiting while continuous scanning runs. Cancel is the default.
+
+        Exiting stops scanning safely and leaves the scan session **open**:
+        closing OMRFlow is not finishing the examination. Only an operator
+        closes a session, with *Finish Scan Session*.
+        """
+        box = QMessageBox(self)
+        box.setObjectName("exitWhileScanningQuestion")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Continuous scanning is running")
+        box.setText(
+            "Continuous scanning is running for this project.\n\n"
+            "Exit OMRFlow: scanning stops safely - sheets already being read finish and are "
+            "saved - and the scan session stays OPEN. Nothing is closed or finished; start "
+            "scanning again next time.\n\n"
+            "To close the examination instead, cancel and use Finish Scan Session."
+        )
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        exit_button = box.addButton("Stop Scanning and Exit", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        return box.clickedButton() is exit_button
+
     def closeEvent(self, event: QCloseEvent) -> None:
         """Stop any running batch, then close the project, then disappear.
 
@@ -2276,6 +2386,13 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             logger.info("Window closing: stopping the running batch first")
+        if (
+            event.spontaneous()
+            and self.continuous_scan_is_running()
+            and not self.confirm_exit_while_scanning()
+        ):
+            event.ignore()
+            return
         page = self._scan_page()
         if page is not None:
             # Cancel *and wait*: the pool has to be torn down and the last
@@ -2283,8 +2400,11 @@ class MainWindow(QMainWindow):
             # neither finished nor properly resumable. Called with no batch
             # running too: the page's preview worker may still be reading a
             # sheet, and a QThread alive when the process exits aborts it
-            # (0xC0000005, seen by the 0.1.1 phase 3 crash harness).
-            page.shutdown_batch()
+            # (0xC0000005, seen by the 0.1.1 phase 3 crash harness). The
+            # continuous engine (revised phase 8) drains, commits and releases
+            # the coordinator before the database closes; the scan session
+            # stays open.
+            page.shutdown_background_work()
 
         # The review page may be part-way through decoding a sheet. Same rule,
         # same reason: no thread may outlive the window, and none may still be

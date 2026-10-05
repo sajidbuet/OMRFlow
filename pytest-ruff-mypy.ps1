@@ -17,14 +17,25 @@
 #       environment.log
 #       git-status-before.log
 #       pytest.log
+#       pytest-progress.jsonl   one event per test (see tools\gate_progress.py)
 #       ruff.log
 #       mypy.log
 #       git-status-after.log
 #       summary.log
 #
 # Scratch\Log\LATEST.txt contains the path of the newest run.
+# Scratch\Log\pytest-durations.json keeps per-test durations across runs,
+# for the time estimate.
 #
 # The script continues through all checks even if one fails.
+#
+# Progress is shown while it runs, refreshed twice a second: a bar for the
+# whole gate (check 1 of 3, ...) and one for the check running. For pytest
+# that bar shows tests done of total, failures so far, elapsed time, an
+# estimate of the time left and the test running now (and for how long).
+# The window title carries the same figures, for the taskbar. The estimate
+# comes from the durations recorded on earlier runs; the first run has none
+# and uses its own average per test.
 #
 # Exit code:
 #   0 = all checks passed
@@ -79,6 +90,9 @@ $MypyLog        = Join-Path $RunLogDir "mypy.log"
 $GitAfterLog    = Join-Path $RunLogDir "git-status-after.log"
 $SummaryLog     = Join-Path $RunLogDir "summary.log"
 
+$PytestProgressLog = Join-Path $RunLogDir "pytest-progress.jsonl"
+$PytestDurations   = Join-Path $LogRoot "pytest-durations.json"
+
 $LatestPointer = Join-Path $LogRoot "LATEST.txt"
 
 Set-Content `
@@ -103,6 +117,428 @@ function Write-Section {
     Write-Host " $Title"
     Write-Host "============================================================"
     Write-Host ""
+}
+
+
+# ============================================================================
+# Progress display
+#
+# Bar 0 is the whole gate; bar 1 is the check that is running.
+# The window title repeats the progress, so it is visible from the
+# taskbar. A host without a window title is ignored.
+# ============================================================================
+
+$TotalChecks = 3
+$CheckIndex = 0
+
+try {
+    $OriginalWindowTitle = $Host.UI.RawUI.WindowTitle
+}
+catch {
+    $OriginalWindowTitle = $null
+}
+
+
+function Set-GateWindowTitle {
+
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Title
+    )
+
+    try {
+        $Host.UI.RawUI.WindowTitle = $Title
+    }
+    catch {
+    }
+}
+
+
+function Format-Elapsed {
+
+    param (
+        [Parameter(Mandatory = $true)]
+        [TimeSpan]$Span
+    )
+
+    return "{0:hh\:mm\:ss}" -f $Span
+}
+
+
+# pytest progress comes from tools\gate_progress.py, a pytest plugin the
+# gate loads with -p. It writes one JSON event per line to
+# pytest-progress.jsonl in the run's log folder (collected, start and
+# finish of each test, finished), with its own estimate of the time left;
+# pytest's console output is not parsed. The file also shows which test
+# was running if pytest dies.
+#
+# The estimate uses Scratch\Log\pytest-durations.json, the per-test
+# durations the plugin recorded on earlier runs. The first run has none
+# and estimates from its own average per test.
+
+$PytestProgress = @{
+    Path        = $PytestProgressLog
+    Reader      = $null
+    Pending     = ""
+    Phase       = "starting"
+    Total       = 0
+    Known       = 0
+    Done        = 0
+    Failed      = 0
+    Current     = ""
+    CurrentAt   = $null
+    Remaining   = $null
+    RemainingAt = $null
+    Basis       = ""
+}
+
+
+function Read-PytestProgressEvents {
+
+    $State = $script:PytestProgress
+
+    if ($null -eq $State.Reader) {
+
+        if (-not (Test-Path -LiteralPath $State.Path)) {
+            return
+        }
+
+        try {
+            $Stream = [System.IO.FileStream]::new(
+                $State.Path,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+            )
+        }
+        catch {
+            return
+        }
+
+        $State.Reader = [System.IO.StreamReader]::new(
+            $Stream,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
+
+    $State.Pending += $State.Reader.ReadToEnd()
+
+    # The last piece may be a line the plugin has not finished writing.
+    $Pieces = $State.Pending -split "`n"
+    $State.Pending = $Pieces[$Pieces.Count - 1]
+
+    for ($Index = 0; $Index -lt $Pieces.Count - 1; $Index++) {
+
+        $Text = $Pieces[$Index].Trim()
+
+        if ($Text -eq "") {
+            continue
+        }
+
+        try {
+            $Item = $Text | ConvertFrom-Json
+        }
+        catch {
+            continue
+        }
+
+        switch ($Item.event) {
+
+            "collected" {
+                $State.Phase = "running"
+                $State.Total = [int]$Item.total
+                $State.Known = [int]$Item.known
+            }
+
+            "start" {
+                $State.Current = [string]$Item.nodeid
+                $State.CurrentAt = Get-Date
+            }
+
+            "finish" {
+                $State.Done = [int]$Item.done
+                $State.Failed = [int]$Item.failed
+                $State.Basis = [string]$Item.basis
+
+                if ($null -ne $Item.remaining_s) {
+                    $State.Remaining = [double]$Item.remaining_s
+                    $State.RemainingAt = Get-Date
+                }
+            }
+
+            "finished" {
+                $State.Phase = "finished"
+            }
+        }
+    }
+}
+
+
+function Close-PytestProgress {
+
+    $State = $script:PytestProgress
+
+    if ($null -ne $State.Reader) {
+        $State.Reader.Dispose()
+        $State.Reader = $null
+    }
+}
+
+
+function Update-PytestProgress {
+
+    param (
+        [Parameter(Mandatory = $true)]
+        [TimeSpan]$Elapsed
+    )
+
+    Read-PytestProgressEvents
+
+    $State = $script:PytestProgress
+    $ElapsedText = Format-Elapsed $Elapsed
+
+    if ($State.Phase -eq "starting") {
+
+        Write-Progress `
+            -Id 1 `
+            -ParentId 0 `
+            -Activity "pytest" `
+            -Status "Collecting tests | elapsed $ElapsedText"
+
+        Set-GateWindowTitle "OMRFlow gate - pytest collecting, $ElapsedText"
+        return
+    }
+
+    if ($State.Phase -eq "finished") {
+
+        Write-Progress `
+            -Id 1 `
+            -ParentId 0 `
+            -Activity "pytest" `
+            -Status ("All {0:N0} tests run, failed: {1} | elapsed {2} | writing the summary" -f `
+                $State.Done, $State.Failed, $ElapsedText) `
+            -PercentComplete 100
+
+        return
+    }
+
+    $Percent = 0
+
+    if ($State.Total -gt 0) {
+        $Percent = [int][math]::Floor(100 * [math]::Min($State.Done, $State.Total) / $State.Total)
+    }
+
+    # The plugin's estimate counts down between finished tests.
+    if ($null -eq $State.Remaining) {
+
+        $RemainingText = "estimating"
+        $ShortRemaining = ""
+    }
+    else {
+
+        $Left = $State.Remaining - ((Get-Date) - $State.RemainingAt).TotalSeconds
+        $Left = [math]::Max(0, [math]::Round($Left))
+        $LeftText = Format-Elapsed ([TimeSpan]::FromSeconds($Left))
+
+        if ($State.Basis -eq "previous-run") {
+            $RemainingText = "~$LeftText (from earlier timings)"
+        }
+        else {
+            $RemainingText = "~$LeftText (from this run's average)"
+        }
+
+        $ShortRemaining = ", ~$LeftText left"
+    }
+
+    $Status = "{0:N0} / {1:N0} tests ({2}%) | failed: {3} | elapsed {4} | remaining {5}" -f `
+        $State.Done,
+        $State.Total,
+        $Percent,
+        $State.Failed,
+        $ElapsedText,
+        $RemainingText
+
+    $Operation = "Starting"
+
+    if ($State.Current) {
+
+        $For = [int]((Get-Date) - $State.CurrentAt).TotalSeconds
+        $Operation = "Running $($State.Current) (for $For s)"
+    }
+
+    Write-Progress `
+        -Id 1 `
+        -ParentId 0 `
+        -Activity "pytest" `
+        -Status $Status `
+        -CurrentOperation $Operation `
+        -PercentComplete $Percent
+
+    Set-GateWindowTitle (
+        "[$Percent%] OMRFlow gate - pytest, failed: $($State.Failed)$ShortRemaining"
+    )
+}
+
+
+# ============================================================================
+# Run one native command, streaming its output
+#
+# STDOUT and STDERR are read as they arrive - not line by line - so the
+# console shows each test's result character the moment pytest prints it,
+# and the loop wakes at least twice a second to refresh the progress bars.
+# STDERR (e.g. an OpenCV warning from a test) is logged output, never an
+# error: the exit code alone decides PASS / FAIL. If the script is
+# stopped (Ctrl+C), the command and its children are killed rather than
+# left running.
+# ============================================================================
+
+function ConvertTo-CommandLineArgument {
+
+    param (
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    if ($Value -ne "" -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    return '"' + ($Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"'
+}
+
+
+function Invoke-StreamingCommand {
+
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [string[]]$Arguments = @(),
+
+        [Parameter(Mandatory = $true)]
+        [System.IO.StreamWriter]$LogWriter,
+
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$OnTick
+    )
+
+    $Info = [System.Diagnostics.ProcessStartInfo]::new()
+    $Info.FileName = $FilePath
+    $Info.Arguments = (
+        $Arguments | ForEach-Object { ConvertTo-CommandLineArgument $_ }
+    ) -join " "
+    $Info.WorkingDirectory = (Get-Location).Path
+    $Info.UseShellExecute = $false
+    $Info.RedirectStandardOutput = $true
+    $Info.RedirectStandardError = $true
+
+    # The encoding PowerShell itself decodes native output with.
+    $Info.StandardOutputEncoding = [Console]::OutputEncoding
+    $Info.StandardErrorEncoding = [Console]::OutputEncoding
+
+    $Start = Get-Date
+    $Process = [System.Diagnostics.Process]::Start($Info)
+
+    try {
+
+        $OutBuffer = [char[]]::new(8192)
+        $ErrBuffer = [char[]]::new(8192)
+
+        $OutTask = $Process.StandardOutput.ReadAsync($OutBuffer, 0, $OutBuffer.Length)
+        $ErrTask = $Process.StandardError.ReadAsync($ErrBuffer, 0, $ErrBuffer.Length)
+
+        $LastTick = [datetime]::MinValue
+
+        while (($null -ne $OutTask) -or ($null -ne $ErrTask)) {
+
+            $Pending = [System.Threading.Tasks.Task[]]@(
+                @($OutTask, $ErrTask) | Where-Object { $null -ne $_ }
+            )
+
+            $null = [System.Threading.Tasks.Task]::WaitAny($Pending, 500)
+
+            if (($null -ne $OutTask) -and $OutTask.IsCompleted) {
+
+                $Count = $OutTask.Result
+
+                if ($Count -eq 0) {
+                    $OutTask = $null
+                }
+                else {
+                    $Text = [string]::new($OutBuffer, 0, $Count)
+                    $LogWriter.Write($Text)
+                    Write-Host $Text -NoNewline
+                    $OutTask = $Process.StandardOutput.ReadAsync($OutBuffer, 0, $OutBuffer.Length)
+                }
+            }
+
+            if (($null -ne $ErrTask) -and $ErrTask.IsCompleted) {
+
+                $Count = $ErrTask.Result
+
+                if ($Count -eq 0) {
+                    $ErrTask = $null
+                }
+                else {
+                    $Text = [string]::new($ErrBuffer, 0, $Count)
+                    $LogWriter.Write($Text)
+                    Write-Host $Text -NoNewline -ForegroundColor DarkYellow
+                    $ErrTask = $Process.StandardError.ReadAsync($ErrBuffer, 0, $ErrBuffer.Length)
+                }
+            }
+
+            $Now = Get-Date
+
+            if (($null -ne $OnTick) -and (($Now - $LastTick).TotalMilliseconds -ge 250)) {
+
+                $LastTick = $Now
+
+                # The display is a convenience: if it fails, say so once and
+                # carry on without it rather than fail the check.
+                try {
+                    & $OnTick ($Now - $Start)
+                }
+                catch {
+                    $OnTick = $null
+                    Write-Host ""
+                    Write-Host "Progress display stopped: $($_.Exception.Message)" `
+                        -ForegroundColor Yellow
+                }
+            }
+        }
+
+        $Process.WaitForExit()
+
+        if ($null -ne $OnTick) {
+            try {
+                & $OnTick ((Get-Date) - $Start)
+            }
+            catch {
+            }
+        }
+
+        return $Process.ExitCode
+    }
+    finally {
+
+        if (-not $Process.HasExited) {
+
+            try {
+                # Kill(bool), the whole tree, is .NET Core 3+ (PowerShell 7).
+                $Process.Kill($true)
+            }
+            catch {
+                try {
+                    $null = & taskkill.exe /T /F /PID $Process.Id 2>&1
+                }
+                catch {
+                }
+            }
+        }
+
+        $Process.Dispose()
+    }
 }
 
 
@@ -302,14 +738,37 @@ function Invoke-QualityCheck {
         [Parameter(Mandatory = $true)]
         [string]$LogFile,
 
+        # Arguments to $Python.
         [Parameter(Mandatory = $true)]
-        [scriptblock]$Command
+        [string[]]$Arguments,
+
+        # Called with the elapsed time at least twice a second, to drive
+        # the check's progress bar. The default shows the elapsed time.
+        [scriptblock]$OnTick = $null
     )
 
 
     Write-Section $Name
 
     $StartTime = Get-Date
+
+    $script:CheckIndex += 1
+
+    Write-Progress `
+        -Id 0 `
+        -Activity "OMRFlow quality gate" `
+        -Status "Check $script:CheckIndex of ${TotalChecks}: $Name" `
+        -PercentComplete ([int](100 * ($script:CheckIndex - 1) / $TotalChecks))
+
+    Write-Progress `
+        -Id 1 `
+        -ParentId 0 `
+        -Activity $Name `
+        -Status "Running (started $($StartTime.ToString('HH:mm:ss')))"
+
+    Set-GateWindowTitle (
+        "[check $script:CheckIndex/$TotalChecks] OMRFlow gate - $Name"
+    )
 
 
     $Header = @"
@@ -334,22 +793,41 @@ Commit : $Commit
 
     try {
 
-        # Merge STDERR into STDOUT so traceback/error output is saved.
-        #
-        # Tee-Object simultaneously:
-        #   - displays output in PowerShell;
-        #   - appends it to the diagnostic log.
+        # STDOUT and STDERR go, as they arrive, to the console and to the
+        # diagnostic log (flushed as written, so the log is complete up to
+        # the moment a run is killed).
 
-        & $Command 2>&1 |
-            Tee-Object `
-                -FilePath $LogFile `
-                -Append
+        $LogWriter = [System.IO.StreamWriter]::new(
+            $LogFile,
+            $true,
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        $LogWriter.AutoFlush = $true
 
-        $ExitCode = $LASTEXITCODE
+        if ($null -eq $OnTick) {
 
+            $OnTick = {
 
-        if ($null -eq $ExitCode) {
-            $ExitCode = 0
+                param ($Elapsed)
+
+                Write-Progress `
+                    -Id 1 `
+                    -ParentId 0 `
+                    -Activity $Name `
+                    -Status "Running | elapsed $(Format-Elapsed $Elapsed)"
+            }
+        }
+
+        try {
+
+            $ExitCode = Invoke-StreamingCommand `
+                -FilePath $Python `
+                -Arguments $Arguments `
+                -LogWriter $LogWriter `
+                -OnTick $OnTick
+        }
+        finally {
+            $LogWriter.Dispose()
         }
 
     }
@@ -384,6 +862,8 @@ $($_.ScriptStackTrace)
 
     $EndTime = Get-Date
     $Duration = $EndTime - $StartTime
+
+    Write-Progress -Id 1 -ParentId 0 -Activity $Name -Completed
 
 
     if ($ExitCode -eq 0) {
@@ -446,10 +926,20 @@ Duration  : $DurationText
 Invoke-QualityCheck `
     -Name "PYTEST - Full test suite" `
     -LogFile $PytestLog `
-    -Command {
+    -Arguments @(
+        "-m", "pytest",
+        "-p", "tools.gate_progress",
+        "--gate-progress-file=$PytestProgressLog",
+        "--gate-durations-file=$PytestDurations"
+    ) `
+    -OnTick {
 
-        & $Python -m pytest
+        param ($Elapsed)
+
+        Update-PytestProgress $Elapsed
     }
+
+Close-PytestProgress
 
 
 # ============================================================================
@@ -459,10 +949,7 @@ Invoke-QualityCheck `
 Invoke-QualityCheck `
     -Name "RUFF - Lint and static checks" `
     -LogFile $RuffLog `
-    -Command {
-
-        & $Python -m ruff check src tests tools scripts
-    }
+    -Arguments @("-m", "ruff", "check", "src", "tests", "tools", "scripts")
 
 
 # ============================================================================
@@ -472,10 +959,7 @@ Invoke-QualityCheck `
 Invoke-QualityCheck `
     -Name "MYPY - Static type checking" `
     -LogFile $MypyLog `
-    -Command {
-
-        & $Python -m mypy src
-    }
+    -Arguments @("-m", "mypy", "src")
 
 
 # ============================================================================
@@ -555,6 +1039,12 @@ else {
 # ============================================================================
 # Final summary
 # ============================================================================
+
+Write-Progress -Id 0 -Activity "OMRFlow quality gate" -Completed
+
+if ($null -ne $OriginalWindowTitle) {
+    Set-GateWindowTitle $OriginalWindowTitle
+}
 
 Write-Section "FINAL SUMMARY"
 

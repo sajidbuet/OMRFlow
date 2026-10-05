@@ -937,10 +937,22 @@ class ResultsPage(WorkflowPage):
         session_scope = report_store.session_scope(database, batch_id)
         if session_scope.provisional:
             # While the session is open its results are provisional (§8.2).
+            stale = ""
+            if session_scope.scan_session_id is not None:
+                info = scan_sessions.get_scan_session(database, session_scope.scan_session_id)
+                if info is not None and info.final_outputs_stale_since is not None:
+                    # Reopened (revised phase 8): what was exported while it
+                    # was closed no longer stands - the session's own record.
+                    stale = " It was reopened: final exports made while closed are stale."
             text = (
                 "<span style='color:#8a5a00'><b>PROVISIONAL</b> - scan session "
-                f"'{html.escape(session_scope.name)}' is open; results may change.</span><br>"
-                + text
+                f"'{html.escape(session_scope.name)}' is open; results may change.{stale}"
+                "</span><br>" + text
+            )
+        elif session_scope.scan_session_id is not None:
+            text = (
+                f"Scan session '{html.escape(session_scope.name)}' · <b>closed</b> - "
+                "final scope<br>" + text
             )
         self.batch_label.setText(text)
         self.batch_label.setToolTip(scope)

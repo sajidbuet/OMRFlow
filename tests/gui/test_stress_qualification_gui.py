@@ -337,7 +337,7 @@ def test_b_preflight_and_resume_target_the_same_module(tmp_path: Path) -> None:
 
 
 def test_b_the_dialog_form_produces_the_request_it_shows(
-    dialog: StressQualificationDialog, tmp_path: Path
+    dialog: StressQualificationDialog, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """What the form displays is what gets launched."""
     request = dialog.request()
@@ -345,7 +345,16 @@ def test_b_the_dialog_form_produces_the_request_it_shows(
     assert request.output_dir == tmp_path / "campaign"
     assert request.mode is CampaignMode.FULL
 
+    # Switching mode re-measures the campaign: `start_preflight`, which runs
+    # the preflight on a QThread. Started here, that thread could still be
+    # running when the dialog is deleted at teardown - which aborts the whole
+    # process on Windows (0xC0000409), as it did in `tests/gui` runs. The
+    # request is recorded instead; no test starts a preflight thread.
+    preflights: list[bool] = []
+    monkeypatch.setattr(dialog, "start_preflight", lambda: preflights.append(True) or True)
     dialog.reference_radio.setChecked(True)
+    assert preflights == [True]
+    assert dialog._worker is None
     assert dialog.selected_mode() is CampaignMode.REFERENCE
     switched = dialog.request()
     assert switched is not None

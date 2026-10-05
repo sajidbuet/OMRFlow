@@ -3,8 +3,33 @@
 Status: Reject & Rescan **implemented — automated tests passing; scripted in
 the real window; not yet worked by an operator on real sheets.** The quality
 suggestions and the session-wide, provenance-ranked rescan matching below
-(0.1.1 revised phase 7) are **implemented and tested headless; no GUI shows
-them yet (phase 8); not validated on real rejected scripts.**
+(0.1.1 revised phase 7) are **implemented and tested; shown in Resolve since
+revised phase 8 (GUI tests and a local scripted run only); not validated on
+real rejected scripts.**
+
+## In Resolve (revised phase 8)
+
+* **Suggested rescans** (queue view): every unanswered suggestion of the
+  session, with its evidence, the suggested reason, scanner, batch, original
+  file name and the policy that decided it - marked *UNVALIDATED DEFAULT* -
+  and one note on the panel: *Rescan suggestions use an unvalidated default
+  quality policy. Operator confirmation is always required.* *Confirm Rescan
+  Required...* (reason pre-filled, changeable; Cancel is the default) is
+  `confirm_suggestion`; *Dismiss Suggestion...* (an optional note) is
+  `dismiss_suggestion`. Both need the reviewer name. The sheet is re-read to
+  show the stored quality evidence on the existing overlay; no outline is
+  drawn for a reason that has no geometry.
+* **Rejected / Rescan** (queue view, unchanged in workflow): in a continuous
+  session the candidates come from `session_possible_rescans`, each line saying
+  which scanner it came from and whether it arrived after the rejection; the
+  tooltip says it is a ranked suggestion, not a certainty. *Use as
+  replacement* confirms; *Remove replacement link...* (asks first) undoes it.
+* The Scan stage's session panel and Resolve's summary count suggested rescans;
+  *Finish Scan Session* lists them as blockers with a *Go to suggested
+  rescans* button.
+* Every row, candidate and caption names a watched-source sheet by the file
+  name it **arrived** with (`A-017.png`), not the project copy's
+  content-addressed name; the copy's name is in the provenance tooltip.
 
 ## The lifecycle (unchanged)
 

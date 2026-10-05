@@ -39,12 +39,14 @@ Why the queue holds value objects and pages its reads:
 
 from __future__ import annotations
 
+import contextlib
 import html
 import logging
+import time
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
@@ -57,11 +59,14 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -97,6 +102,7 @@ from omr_scanner.domain.scan_lifecycle import (
     RescanCase,
 )
 from omr_scanner.domain.scan_quality import issue_label
+from omr_scanner.domain.scan_sessions import ScanSessionState
 from omr_scanner.errors import OMRScannerError
 from omr_scanner.gui.error_reporting import report_error
 from omr_scanner.gui.icons import load_icon
@@ -108,6 +114,22 @@ from omr_scanner.gui.review.lanes import (
     context_bubbles,
     group_bubbles,
 )
+from omr_scanner.gui.review.live_queue import (
+    LiveQueueData,
+    LiveQueueReader,
+    LiveQueueRequest,
+    QueueSummary,
+    summary_counts,
+)
+from omr_scanner.gui.review.operational import (
+    ConfirmSuggestionDialog,
+    FilePanel,
+    SuggestionPanel,
+    file_state_text,
+    suggestion_details_html,
+    suggestion_issue,
+)
+from omr_scanner.gui.review.provenance_label import ProvenanceLabel
 from omr_scanner.gui.review.rescan import (
     LifecycleHistoryDialog,
     RejectScanDialog,
@@ -116,6 +138,7 @@ from omr_scanner.gui.review.rescan import (
 )
 from omr_scanner.gui.review.worker import OriginalImageWorker, SheetBundle, SheetWorker
 from omr_scanner.gui.scan.preview import ScanPreviewView
+from omr_scanner.gui.session_context import read_session, session_context_html
 from omr_scanner.gui.theme import (
     CANDIDATE_CHOSEN,
     CANDIDATE_MACHINE,
@@ -127,6 +150,7 @@ from omr_scanner.gui.theme import (
 )
 from omr_scanner.gui.ui_scale import scale_layout, scale_widget, set_floor, set_scaled_stylesheet
 from omr_scanner.services import (
+    BatchSummary,
     ConflictFilter,
     ConflictRecord,
     FieldEdit,
@@ -135,25 +159,31 @@ from omr_scanner.services import (
     UndoTarget,
     accept_machine_value,
     correct_value,
-    count_conflicts,
     count_conflicts_for_scan,
     defer,
     field_shape,
     group_labels,
     history_for,
+    intake_decisions,
     join_field_value,
     last_decision,
     last_resolved_sheet,
     list_conflicts,
     load_summary,
+    load_template,
     map_canonical_to_source,
     project_sets,
     provenance_for,
     provenance_for_scan,
+    quality_decisions,
     reopen,
+    resolve_active_template,
+    review_store,
     scan_lifecycle,
+    scan_sessions,
     scan_source_path,
     session_population,
+    session_sheets,
     set_identity,
     split_field_value,
     split_marks,
@@ -176,7 +206,7 @@ from omr_scanner.services.field_edit import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from collections.abc import Callable, Collection, Sequence
+    from collections.abc import Callable, Collection, Iterator, Sequence
 
     from omr_scanner.domain.review import Provenance
     from omr_scanner.domain.scan_lifecycle import ReplacementCandidate
@@ -189,6 +219,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         ProjectDatabase,
         ProjectSession,
     )
+    from omr_scanner.services.intake_decisions import FileDecision, PendingFile
+    from omr_scanner.services.quality_decisions import QualitySuggestion
+    from omr_scanner.services.review_store import SheetUndo
     from omr_scanner.services.scan_lifecycle import ProcessedSheet
 
 _LOGGER = logging.getLogger(__name__)
@@ -268,6 +301,14 @@ Part of the ordinary status filter rather than a panel of its own: the same
 queue, the same search box, the same Ctrl+Up / Ctrl+Down - which here walk the
 cases still awaiting a rescan, passing over the completed ones."""
 
+FILTER_SUGGESTED = "Suggested rescans"
+"""The quality decision layer's unanswered *rescan required* suggestions
+(0.1.1 revised phase 8): confirm (a named rejection) or dismiss each."""
+
+FILTER_FILES = "Files awaiting decision"
+"""Held, unreadable and unsupported intake files of the scan session (revised
+phase 8): release, read again or dismiss each - the intake service's options."""
+
 FILTER_SHEETS = "All processed sheets"
 """The inspection view: every read sheet of the batch, conflict or not.
 
@@ -290,6 +331,17 @@ so a state added later cannot be quietly left out of the unfiltered view."""
 
 ALL_TYPES = "All types"
 ALL_BATCHES = "All batches of the session"
+ALL_SOURCES = "All sources"
+
+LIVE_MIN_INTERVAL_S = 2.0
+"""A live queue refresh is asked for at most this often while counts keep changing."""
+
+_UNREAD: object = object()
+"""Marks a value a caller did not read (so the page reads it itself)."""
+
+QUEUE_SIGNATURE_FIELDS = ("conflicts", "rescans", "outstanding_suggestions", "pending_decisions")
+"""What a session snapshot must change in for an open Resolve queue to re-read
+itself while scanning continues (revised phase 8) - plus the partition."""
 
 _STATE_COLORS: dict[ConflictState, QColor] = {
     ConflictState.OPEN: QColor(255, 244, 214),
@@ -414,6 +466,15 @@ class ResolvePageState:
         default_factory=dict
     )
     showing_replacement: bool = False
+    scan_session_id: str = ""
+    """The scan session the queue belongs to (revised phase 8)."""
+    suggestions: list[QualitySuggestion] = field(default_factory=list)
+    """The *Suggested rescans* view's rows."""
+    pending_files: list[PendingFile] = field(default_factory=list)
+    """The *Files awaiting decision* view's rows."""
+    live: bool = False
+    """Whether session snapshots arrive for this session (continuous scanning):
+    the queue then refreshes itself as conflicts and suggestions appear."""
 
 
 class ResolvePage(WorkflowPage):
@@ -461,6 +522,19 @@ class ResolvePage(WorkflowPage):
         self._batch_unresolved = 0
         self._preferred_tab = ZOOM_TAB_INDEX
         self._suppress_tab_memory = False
+        self._live_signature: tuple[object, ...] | None = None
+        self._live_dirty = False
+        self._live_generation = 0
+        self._last_live_request = 0.0
+        self.last_live_read_ms = 0.0
+        """How long the last live read took in its thread - evidence."""
+        self._live_reader = LiveQueueReader(self)
+        self._live_reader.ready.connect(self._apply_live)
+        self._undo_key: object = None
+        self._undo_target: UndoTarget | None = None
+        self._undo_sheet: SheetUndo | None = None
+        """The last undo lookups and the ledger state they were read at -
+        see ``_refresh_undo_controls``."""
 
         # Ratios rather than pixel sizes, and floors rather than nothing: the
         # proportion has to survive a 1366-pixel laptop and a 2560-pixel
@@ -520,6 +594,8 @@ class ResolvePage(WorkflowPage):
                 FILTER_WITHDRAWN,
                 FILTER_RESCAN,
                 FILTER_SHEETS,
+                FILTER_SUGGESTED,
+                FILTER_FILES,
             ]
         )
         self.state_filter.setToolTip(
@@ -557,6 +633,22 @@ class ResolvePage(WorkflowPage):
         )
         self.batch_filter.currentIndexChanged.connect(self.refresh_queue)
         batch_row.addWidget(self.batch_filter, stretch=1)
+        # Which scanner a sheet arrived from (revised phase 8) - a view of the
+        # session's queue, never its scope. Shown only for a session that has
+        # intake sources, so a finite project's queue looks as it did.
+        self.source_filter_label = QLabel("Source")
+        batch_row.addWidget(self.source_filter_label)
+        self.source_filter = QComboBox()
+        self.source_filter.setObjectName("conflictSourceFilter")
+        self.source_filter.addItem(ALL_SOURCES, userData="")
+        self.source_filter.setToolTip(
+            "Show only sheets that arrived through one scanner source. The queue stays the "
+            "scan session's: this narrows what is listed, nothing else."
+        )
+        self.source_filter.currentIndexChanged.connect(self.refresh_queue)
+        batch_row.addWidget(self.source_filter, stretch=1)
+        self.source_filter_label.setVisible(False)
+        self.source_filter.setVisible(False)
         layout.addLayout(batch_row)
 
         self.search_box = QLineEdit()
@@ -620,6 +712,9 @@ class ResolvePage(WorkflowPage):
         self.summary_label = QLabel("")
         self.summary_label.setObjectName("reviewSummaryLabel")
         self.summary_label.setTextFormat(Qt.TextFormat.RichText)
+        # A live session adds suggested-rescan and waiting-file counts: wrap
+        # rather than clip them in a narrow queue column (revised phase 8).
+        self.summary_label.setWordWrap(True)
         layout.addWidget(self.summary_label)
 
         self.summary_breakdown = QLabel("")
@@ -653,10 +748,20 @@ class ResolvePage(WorkflowPage):
         self.lifecycle_banner.setVisible(False)
         layout.addWidget(self.lifecycle_banner)
 
+        # Where the sheet on screen came from (revised phase 8): scanner,
+        # batch, the operator's own file name, arrival - so a duplicate across
+        # two scanners reads as two sheets from two places, not two ids. It sits
+        # beside the evidence tabs, so the decision panel loses no height, and
+        # shortens to the room the tabs leave - never widening the page.
+        self.provenance_context_label = ProvenanceLabel()
+        self.provenance_context_label.setVisible(False)
+        self._provenance_names = ("", "")  # (stored copy, arrived as)
+
         self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
         self.workspace_splitter.setObjectName("resolveWorkspaceSplitter")
         self.workspace_splitter.setChildrenCollapsible(False)
         views = self._build_views()
+        self.view_tabs.setCornerWidget(self.provenance_context_label, Qt.Corner.TopRightCorner)
         set_floor(views, minimum_height=PREVIEW_MIN_HEIGHT)
         # The conflict decision panel, or - for a Rejected / Rescan case - the
         # case panel, in the same place and at the same size.
@@ -676,6 +781,13 @@ class ResolvePage(WorkflowPage):
         self.sheet_panel = SheetPanel()
         self.sheet_panel.reject_requested.connect(self.prompt_reject_current_sheet)
         self.decision_stack.addWidget(self.sheet_panel)
+        self.suggestion_panel = SuggestionPanel()
+        self.suggestion_panel.confirm_requested.connect(self.prompt_confirm_suggestion)
+        self.suggestion_panel.dismiss_requested.connect(self.prompt_dismiss_suggestion)
+        self.decision_stack.addWidget(self.suggestion_panel)
+        self.file_panel = FilePanel()
+        self.file_panel.decision_requested.connect(self.prompt_decide_file)
+        self.decision_stack.addWidget(self.file_panel)
         decisions = self.decision_stack
         set_floor(decisions, minimum_height=RESOLUTION_MIN_HEIGHT)
         self.workspace_splitter.addWidget(views)
@@ -729,6 +841,9 @@ class ResolvePage(WorkflowPage):
         """Apply the proportions once the page has a real size."""
         super().showEvent(event)
         self._apply_split_ratios()
+        # A queue that changed while another stage was on screen catches up
+        # now (revised phase 8).
+        self._catch_up_on_show()
 
     def _build_toolbar(self) -> QToolBar:
         """Build the undo, navigation and zoom toolbar above the views.
@@ -1366,6 +1481,12 @@ class ResolvePage(WorkflowPage):
         self.state.redo = []
         self.state.rescan_cases = []
         self.state.rescan_candidates = {}
+        self.state.scan_session_id = ""
+        self.state.suggestions = []
+        self.state.pending_files = []
+        self.state.live = False
+        self._live_signature = None
+        self._live_dirty = False
         self._loaded_scan_id = None
         self.queue_table.setRowCount(0)
         self._clear_views()
@@ -1403,27 +1524,158 @@ class ResolvePage(WorkflowPage):
             return False
 
         self.state.batch_id = batch_id
+        found_session = scan_sessions.session_of_batch(database, batch_id)
+        if found_session != self.state.scan_session_id:
+            self.state.live = False
+            self._live_signature = None
+        self.state.scan_session_id = found_session or ""
         self._fill_batch_filter()
+        self._fill_source_filter()
         self.state.template = template
         self.state.bundle = None
         self.state.sheet_conflicts = []
         self.state.sheet_provenance = {}
         self.state.redo = []
         self._loaded_scan_id = None
-        population = session_population.population(database, batch_id)
-        if len(population.batch_ids) > 1:
-            # A session of several batches is reviewed as one population.
-            self.batch_label.setText(
-                f"<b>Scan session</b><br>{session_population.describe(population)}"
-            )
-        else:
-            self.batch_label.setText(
-                f"<b>Batch {batch_id[:8]}</b><br>{summary.total} scan(s) from "
-                f"{summary.source_folder or '(files)'}"
-            )
+        self._refresh_batch_label()
         self.refresh_queue()
         _LOGGER.info("Review page opened batch %s", batch_id)
         return True
+
+    def _project_template(self) -> OmrTemplate | None:
+        """The open project's active template, or ``None`` (none set, or unreadable)."""
+        project = self.state.session
+        if project is None:
+            return None
+        active = resolve_active_template(project.project)
+        if active is None:
+            return None
+        try:
+            return load_template(active)
+        except OMRScannerError:
+            return None  # the Template stage reports the file; Resolve shows no images
+
+    def load_session(self, scan_session_id: str, template: OmrTemplate | None = None) -> bool:
+        """Show a scan session's queues (revised phase 8).
+
+        The queue is the session's whichever batch anchors it: the session's
+        first live batch is handed to :meth:`load_batch`, whose conflict reads
+        are session-wide. A session with no batch yet still shows its
+        suggested rescans and files awaiting a decision.
+        """
+        database = self.database
+        if database is None or not scan_session_id:
+            return False
+        batches = [
+            item for item in session_sheets.session_batches(database, scan_session_id)
+            if not item.superseded
+        ]
+        # Anchored by a live session rather than by Scan handing over a batch,
+        # no template comes with the call: the project's own one re-reads the
+        # sheets (the project-template rule), or no evidence could be shown.
+        template = template or self.state.template or self._project_template()
+        if batches:
+            return self.load_batch(batches[0].batch_id, template)
+        self.state.batch_id = None
+        self.state.scan_session_id = scan_session_id
+        self.state.template = template
+        self._fill_batch_filter()
+        self._fill_source_filter()
+        self._refresh_batch_label()
+        self.refresh_queue()
+        return True
+
+    def _refresh_batch_label(self) -> None:
+        """Name the scan session (and its state) above the queue - or the one batch."""
+        database = self.database
+        batch_id = self.state.batch_id
+        if database is None or (batch_id is None and not self.state.scan_session_id):
+            self.batch_label.setText("No batch selected")
+            return
+        if batch_id is None:
+            self.batch_label.setText(
+                f"{self._session_context_html()}<b>Scan session</b><br>No batch read yet"
+            )
+            return
+        population = session_population.population(database, batch_id)
+        self._render_batch_label(
+            session_population.describe(population), multi=len(population.batch_ids) > 1
+        )
+
+    def _session_context_html(self, info: object = _UNREAD) -> str:
+        """``Scan session <name> · open · results provisional`` (or closed / reopened).
+
+        ``info``: the session as already read (a live refresh); read here otherwise.
+        """
+        if info is _UNREAD:
+            info = read_session(self.database, self.state.scan_session_id)
+        if not isinstance(info, scan_sessions.ScanSessionInfo):
+            return ""
+        # The same words the Answer Key stage uses.
+        context = session_context_html(info)
+        return f"{context}<br>" if context else ""
+
+    def _render_batch_label(
+        self,
+        population_text: str,
+        *,
+        multi: bool,
+        info: object = _UNREAD,
+        summary: object = _UNREAD,
+    ) -> None:
+        """Write the heading from a population description already read.
+
+        ``info`` / ``summary``: the session and the batch summary as already
+        read (a live refresh - then nothing here touches the database).
+        """
+        database, batch_id = self.database, self.state.batch_id
+        if database is None or batch_id is None:
+            return
+        context = self._session_context_html(info)
+        if multi:
+            # A session of several batches is reviewed as one population.
+            # The context line already names the session; without it, say so.
+            self.batch_label.setText(
+                f"{context}{population_text}"
+                if context
+                else f"<b>Scan session</b><br>{population_text}"
+            )
+            return
+        if summary is _UNREAD:
+            summary = load_summary(database, batch_id)
+        if not isinstance(summary, BatchSummary):
+            return
+        if summary is not None:
+            self.batch_label.setText(
+                f"{context}<b>Batch {batch_id[:8]}</b><br>{summary.total} scan(s) from "
+                f"{summary.source_folder or '(files)'}"
+            )
+
+    def _fill_source_filter(self, sources: object = _UNREAD) -> None:
+        """List the session's scanner sources - shown only when it has any.
+
+        ``sources``: as already read (a live refresh); read here otherwise.
+        """
+        database = self.database
+        if sources is _UNREAD:
+            sources = (
+                session_sheets.session_sources(database, self.state.scan_session_id)
+                if database is not None and self.state.scan_session_id
+                else ()
+            )
+        offered = cast("tuple[session_sheets.SourceOption, ...]", sources)
+        watched = [item for item in offered if item.kind == "watched"]
+        current = self.source_filter.currentData()
+        self.source_filter.blockSignals(True)
+        self.source_filter.clear()
+        self.source_filter.addItem(ALL_SOURCES, userData="")
+        for item in watched:
+            self.source_filter.addItem(item.label, userData=item.source_id)
+        index = self.source_filter.findData(current) if current else 0
+        self.source_filter.setCurrentIndex(max(0, index))
+        self.source_filter.blockSignals(False)
+        self.source_filter.setVisible(bool(watched))
+        self.source_filter_label.setVisible(bool(watched))
 
     # ------------------------------------------------------------------
     # Queue
@@ -1434,12 +1686,25 @@ class ResolvePage(WorkflowPage):
         type_value = self.type_filter.currentData()
         types = (ConflictType(type_value),) if type_value else ()
         batch_value = self.batch_filter.currentData()
+        batch_ids: tuple[str, ...] = (str(batch_value),) if batch_value else ()
+        source_value = self.source_filter.currentData()
+        database = self.database
+        if source_value and database is not None and self.state.scan_session_id:
+            # A source is a set of batches of this session - a view filter.
+            of_source = session_sheets.batches_of_source(
+                database, self.state.scan_session_id, str(source_value)
+            )
+            batch_ids = (
+                tuple(item for item in batch_ids if item in of_source)
+                if batch_ids
+                else of_source
+            ) or ("(none)",)
         return ConflictFilter(
             states=states,
             conflict_types=types,
             search=self.search_box.text().strip(),
             include_withdrawn=self.state_filter.currentText() == FILTER_WITHDRAWN,
-            batch_ids=(str(batch_value),) if batch_value else (),
+            batch_ids=batch_ids,
         )
 
     def _fill_batch_filter(self) -> None:
@@ -1468,16 +1733,57 @@ class ResolvePage(WorkflowPage):
         """Whether the queue is showing *All processed sheets*."""
         return self.state_filter.currentText() == FILTER_SHEETS
 
+    @property
+    def suggestions_mode(self) -> bool:
+        """Whether the queue is showing *Suggested rescans* (revised phase 8)."""
+        return self.state_filter.currentText() == FILTER_SUGGESTED
+
+    @property
+    def files_mode(self) -> bool:
+        """Whether the queue is showing *Files awaiting decision* (revised phase 8)."""
+        return self.state_filter.currentText() == FILTER_FILES
+
+    def show_view(self, view: str) -> bool:
+        """Switch the queue to a named view (a finish-blocker destination).
+
+        ``conflicts``, ``suggestions``, ``rescans`` or ``files``.
+        """
+        target = {
+            "conflicts": FILTER_OPEN,
+            "suggestions": FILTER_SUGGESTED,
+            "rescans": FILTER_RESCAN,
+            "files": FILTER_FILES,
+        }.get(view)
+        if target is None:
+            return False
+        if self.state_filter.currentText() == target:
+            self.refresh_queue()
+        else:
+            self.state_filter.setCurrentText(target)
+        return True
+
     def refresh_queue(self) -> None:
         """Re-read the queue from the database and rebuild the table."""
         database = self.database
-        if database is None or self.state.batch_id is None:
+        session_views = self.suggestions_mode or self.files_mode
+        if database is None or (
+            self.state.batch_id is None
+            and not (session_views and self.state.scan_session_id)
+        ):
             self.queue_table.setRowCount(0)
             self.state.conflicts = []
             self.state.rescan_cases = []
             self.state.sheet_rows = []
+            self.state.suggestions = []
+            self.state.pending_files = []
             self._refresh_summary()
             self._refresh_controls()
+            return
+        if self.suggestions_mode:
+            self._refresh_suggestion_queue()
+            return
+        if self.files_mode:
+            self._refresh_file_queue()
             return
         if self.rescan_mode:
             self._refresh_rescan_queue()
@@ -1493,20 +1799,27 @@ class ResolvePage(WorkflowPage):
             self.lifecycle_banner.setVisible(False)
             self.state.rescan_cases = []
             self.state.sheet_rows = []
+            self.state.suggestions = []
+            self.state.pending_files = []
             self._loaded_scan_id = None
             self.state.bundle = None
 
+        batch_id = self.state.batch_id
+        if batch_id is None:  # pragma: no cover - the guard above returned
+            return
         selected = self.current_conflict()
         scrollbar = self.queue_table.verticalScrollBar()
         scrolled_to = scrollbar.value()
-        self.state.conflicts = list(
+        self.state.conflicts = session_sheets.with_original_names(
+            database,
             list_conflicts(
                 database,
-                self.state.batch_id,
+                batch_id,
                 filters=self._current_filter(),
                 limit=QUEUE_PAGE_SIZE,
                 session_wide=True,
-            )
+            ),
+            ("scan_id", "scan_name"),
         )
         self._rebuild_queue_table()
         self._refresh_summary()
@@ -1586,8 +1899,32 @@ class ResolvePage(WorkflowPage):
             return min(scrolled_to, len(self.state.conflicts) - 1)
         return 0
 
+    @contextlib.contextmanager
+    def _bulk_queue_fill(self) -> Iterator[None]:
+        """Fill the queue table without re-measuring its columns for every cell.
+
+        ``setItem`` on a ``ResizeToContents`` column re-measures the column
+        each time - quadratic in the rows, seconds for a 500-row page (found
+        by the revised phase 8 responsiveness test). The columns are fixed
+        while the rows are written and measured once afterwards.
+        """
+        header = self.queue_table.horizontalHeader()
+        modes = [header.sectionResizeMode(index) for index in range(header.count())]
+        for index, mode in enumerate(modes):
+            if mode == QHeaderView.ResizeMode.ResizeToContents:
+                header.setSectionResizeMode(index, QHeaderView.ResizeMode.Interactive)
+        try:
+            yield
+        finally:
+            for index, mode in enumerate(modes):
+                header.setSectionResizeMode(index, mode)
+
     def _rebuild_queue_table(self) -> None:
         """Rebuild the table from :attr:`ResolvePageState.conflicts`."""
+        with self._bulk_queue_fill():
+            self._fill_queue_table()
+
+    def _fill_queue_table(self) -> None:
         self._suppress_selection = True
         self.queue_table.setUpdatesEnabled(False)
         try:
@@ -1653,10 +1990,13 @@ class ResolvePage(WorkflowPage):
             self.summary_breakdown.setText("")
             self._batch_unresolved = 0
             return
-        # The whole scan session (0.1.1 phase 4): the queue Resolve shows is
-        # the session's, whichever batch each sheet was read in.
-        counts = count_conflicts(database, self.state.batch_id, session_wide=True)
-        rescans = scan_lifecycle.count_cases(database, self.state.batch_id, session_wide=True)
+        self._render_summary(
+            summary_counts(database, self.state.batch_id, self.state.scan_session_id)
+        )
+
+    def _render_summary(self, summary: QueueSummary) -> None:
+        """Write the counts under the queue (no database work here)."""
+        counts, rescans = summary.counts, summary.rescans
         self._batch_unresolved = counts.unresolved
         # Outstanding rescans are physical work, not decisions, so they are
         # counted beside the conflicts rather than in them - and said in
@@ -1666,6 +2006,13 @@ class ResolvePage(WorkflowPage):
             if rescans.outstanding or rescans.superseded
             else ""
         )
+        # Revised phase 8: the session's unanswered suggestions and files
+        # awaiting a decision - counted by their own services, said only when
+        # there are any.
+        if summary.suggested:
+            rescan_text += f" &nbsp; <b>{summary.suggested}</b> suggested rescan"
+        if summary.waiting:
+            rescan_text += f" &nbsp; <b>{summary.waiting}</b> file(s) awaiting decision"
         self.summary_label.setText(
             f"<b>{counts.total}</b> total &nbsp; "
             f"<b>{counts.unresolved}</b> unresolved &nbsp; "
@@ -1726,6 +2073,10 @@ class ResolvePage(WorkflowPage):
             return len(self.state.rescan_cases)
         if self.sheets_mode:
             return len(self.state.sheet_rows)
+        if self.suggestions_mode:
+            return len(self.state.suggestions)
+        if self.files_mode:
+            return len(self.state.pending_files)
         return len(self.state.conflicts)
 
     def select_next_unresolved(self) -> bool:
@@ -1762,6 +2113,17 @@ class ResolvePage(WorkflowPage):
         """
         if self._editing_text():
             return False
+        if self.suggestions_mode or self.files_mode:
+            # Every row of these views is still waiting for an answer: walk
+            # them in order, wrapping, like the others.
+            total = self._row_count()
+            if not total:
+                self._note_navigation("Nothing is waiting in this view.")
+                return False
+            start = self.queue_table.currentRow()
+            row = (start + step) % total if start >= 0 else 0
+            self.queue_table.selectRow(row)
+            return True
         if self.sheets_mode:
             # Sheets are not problems: this view has nothing "unresolved" to
             # walk. The arrow keys move through it as through any list.
@@ -1821,6 +2183,12 @@ class ResolvePage(WorkflowPage):
         if self.sheets_mode:
             self._show_sheet(self.current_sheet())
             return
+        if self.suggestions_mode:
+            self._show_suggestion(self.current_suggestion())
+            return
+        if self.files_mode:
+            self._show_file(self.current_file())
+            return
         conflict = self.current_conflict()
         if conflict is None:
             self._clear_views()
@@ -1839,6 +2207,7 @@ class ResolvePage(WorkflowPage):
         # a selection change would leave a ring on a bubble of a sheet the
         # reviewer has left, and arm the confirm button with it.
         self.clear_pending()
+        self._show_provenance(conflict.scan_id)
         self._reload_sheet_conflicts(conflict.scan_id)
         self._refresh_evidence(conflict)
         self._refresh_choices(conflict)
@@ -3413,8 +3782,13 @@ class ResolvePage(WorkflowPage):
     # ------------------------------------------------------------------
     # Enablement
     # ------------------------------------------------------------------
-    def _refresh_controls(self) -> None:
-        """Enable exactly the controls that can do something right now."""
+    def _refresh_controls(self, *, undo: bool = True) -> None:
+        """Enable exactly the controls that can do something right now.
+
+        ``undo=False`` (a live refresh, revised phase 8): the undo / redo
+        controls are left as they are - arrivals change nothing the operator
+        could take back, and their session-wide lookups are the expensive part.
+        """
         conflict = self.current_conflict()
         has_conflict = conflict is not None
         named = bool(self.state.reviewer)
@@ -3447,17 +3821,21 @@ class ResolvePage(WorkflowPage):
         ):
             action.setEnabled(bool(self._row_count()))
         rescan = self.rescan_mode
+        operational = self.suggestions_mode or self.files_mode
         # The type filter names conflict types, which the Rejected / Rescan
-        # view does not list.
-        self.type_filter.setEnabled(not rescan)
-        self.reject_button.setEnabled(named and not rescan and self._reject_target() is not None)
+        # view does not list (nor do the suggested-rescan and file views).
+        self.type_filter.setEnabled(not rescan and not operational)
+        self.reject_button.setEnabled(
+            named and not rescan and not operational and self._reject_target() is not None
+        )
         self.reject_button.setToolTip(
             "This scan is unusable - folded, clipped, skewed, the wrong page. "
             "Reject it pending a rescan (R). Nothing is deleted."
             if named
             else "Set your reviewer name in File > Settings before rejecting a scan."
         )
-        self._refresh_undo_controls(named=named)
+        if undo:
+            self._refresh_undo_controls(named=named)
         self._refresh_reviewer_label()
 
     def _refresh_field_edit_controls(
@@ -3583,11 +3961,22 @@ class ResolvePage(WorkflowPage):
         """
         database = self.database
         batch = self.state.batch_id
-        target = (
-            last_decision(database, batch, session_wide=True)
+        # The two session-wide lookups below cost a session population each
+        # (most of a second at 10,000 sheets). They change only when the audit
+        # ledger does, so they are recomputed only then (revised phase 8) -
+        # not on every selection change.
+        key = (
+            (id(database), batch, review_store.history_watermark(database))
             if database is not None and batch is not None
             else None
         )
+        if database is None or batch is None:
+            self._undo_key, self._undo_target, self._undo_sheet = None, None, None
+        elif self._undo_key != key:
+            self._undo_key = key
+            self._undo_target = last_decision(database, batch, session_wide=True)
+            self._undo_sheet = last_resolved_sheet(database, batch, session_wide=True)
+        target = self._undo_target
         self.undo_action.setEnabled(named and target is not None)
         self.undo_action.setToolTip(
             f"Undo {target.describe} (Ctrl+Z)"
@@ -3603,11 +3992,7 @@ class ResolvePage(WorkflowPage):
             else "Redo the decision you last undid (Ctrl+Y) - nothing to redo"
         )
 
-        sheet = (
-            last_resolved_sheet(database, batch, session_wide=True)
-            if database is not None and batch is not None
-            else None
-        )
+        sheet = self._undo_sheet
         self.undo_sheet_action.setEnabled(named and sheet is not None)
         self.undo_sheet_action.setToolTip(
             f"Undo all {sheet.decisions} decision(s) on "
@@ -3879,10 +4264,15 @@ class ResolvePage(WorkflowPage):
         selected = self.current_case()
         scrolled_to = self.queue_table.verticalScrollBar().value()
         self.state.conflicts = []
-        cases = list(
+        # Watched-source sheets by the names they arrived with, not their
+        # content-addressed copies' (revised phase 8).
+        cases = session_sheets.with_original_names(
+            database,
             scan_lifecycle.list_cases(
                 database, batch_id, include_completed=True, session_wide=True
-            )
+            ),
+            ("scan_id", "source_name"),
+            ("replacement_scan_id", "replacement_name"),
         )
         search = self.search_box.text().strip().casefold()
         if search:
@@ -3894,7 +4284,25 @@ class ResolvePage(WorkflowPage):
                 or search in (case.replacement_name or "").casefold()
             ]
         self.state.rescan_cases = cases
-        self.state.rescan_candidates = scan_lifecycle.possible_rescans(database, batch_id)
+        if self.state.live and self.state.scan_session_id:
+            # A continuous session: candidates from any scanner of the session,
+            # ranked (set agrees, arrived after the rejection, newest), each
+            # with its provenance (revised phase 7's matcher).
+            candidates = scan_lifecycle.session_possible_rescans(
+                database, self.state.scan_session_id
+            )
+        else:
+            candidates = scan_lifecycle.possible_rescans(database, batch_id)
+        flat = [(case_id, item) for case_id, found in candidates.items() for item in found]
+        shown = session_sheets.with_original_names(
+            database, [item for _, item in flat], ("scan_id", "source_name")
+        )
+        renamed: dict[int, list[ReplacementCandidate]] = {case_id: [] for case_id in candidates}
+        for (case_id, _), item in zip(flat, shown, strict=True):
+            renamed[case_id].append(item)
+        self.state.rescan_candidates = {
+            case_id: tuple(found) for case_id, found in renamed.items()
+        }
         self._rebuild_rescan_table()
         self._refresh_summary()
         if self.decision_stack.currentWidget() is not self.rescan_panel:
@@ -3917,6 +4325,10 @@ class ResolvePage(WorkflowPage):
 
     def _rebuild_rescan_table(self) -> None:
         """Rebuild the table from :attr:`ResolvePageState.rescan_cases`."""
+        with self._bulk_queue_fill():
+            self._fill_rescan_table()
+
+    def _fill_rescan_table(self) -> None:
         self._suppress_selection = True
         self.queue_table.setUpdatesEnabled(False)
         try:
@@ -4090,7 +4502,7 @@ class ResolvePage(WorkflowPage):
             self.original_view.set_overlay_visible(zones=False, bubbles=False, empty=False)
             self.original_view.fit_to_window()
             self.original_note.setText(
-                f"{bundle.path.name}, exactly as it arrived (never modified)."
+                f"{self._arrival_name(bundle.path)}, exactly as it arrived (never modified)."
             )
         else:
             reason = bundle.error or "The image could not be decoded."
@@ -4215,6 +4627,554 @@ class ResolvePage(WorkflowPage):
         self.lifecycle_changed.emit(scan_id)
 
     # ------------------------------------------------------------------
+    # Provenance of the sheet on screen (revised phase 8)
+    # ------------------------------------------------------------------
+    def _show_provenance(self, scan_id: int | None) -> None:
+        """Say which scanner, batch and original file the sheet on screen came from."""
+        database = self.database
+        found = (
+            session_sheets.sheet_provenance(database, scan_id)
+            if database is not None and scan_id is not None
+            else None
+        )
+        self._provenance_names = (
+            (found.stored_name, found.original_name) if found is not None else ("", "")
+        )
+        # A long line is shortened to fit; the tooltip always has all of it.
+        self.provenance_context_label.set_provenance(found)
+
+    def _arrival_name(self, path: Path) -> str:
+        """The file name an image arrived with - not its content-addressed copy's."""
+        stored, original = self._provenance_names
+        return original if original and path.name == stored else path.name
+
+    # ------------------------------------------------------------------
+    # Suggested rescans (revised phase 8)
+    # ------------------------------------------------------------------
+    def current_suggestion(self) -> QualitySuggestion | None:
+        """The suggested rescan selected in that view, or ``None``."""
+        if not self.suggestions_mode:
+            return None
+        row = self.queue_table.currentRow()
+        if 0 <= row < len(self.state.suggestions):
+            return self.state.suggestions[row]
+        return None
+
+    def select_suggestion(self, scan_id: int) -> bool:
+        """Select a suggested rescan by its sheet id (stable across refreshes)."""
+        for row, item in enumerate(self.state.suggestions):
+            if item.scan_id == scan_id:
+                self.queue_table.selectRow(row)
+                return True
+        return False
+
+    def _refresh_suggestion_queue(self) -> None:
+        """Re-read the session's unanswered suggested rescans (one SQL page)."""
+        database = self.database
+        session_id = self.state.scan_session_id
+        if database is None or not session_id:  # pragma: no cover - checked by caller
+            return
+        selected = self.current_suggestion()
+        self.state.conflicts = []
+        self.state.rescan_cases = []
+        self.state.sheet_rows = []
+        self.state.pending_files = []
+        found = session_sheets.with_original_names(
+            database,
+            quality_decisions.outstanding_suggestions(
+                database, session_id, limit=QUEUE_PAGE_SIZE
+            ),
+            ("scan_id", "source_name"),
+        )
+        allowed = set(self._current_filter().batch_ids)
+        if allowed:
+            found = [item for item in found if item.batch_id in allowed]
+        search = self.search_box.text().strip().casefold()
+        if search:
+            found = [item for item in found if search in item.source_name.casefold()]
+        self.state.suggestions = found
+        self._rebuild_rows(
+            [
+                (
+                    item.source_name,
+                    "",
+                    suggestion_issue(item),
+                    "⚠ Suggested rescan",
+                )
+                for item in found
+            ],
+            QColor(255, 236, 214),
+        )
+        self._refresh_summary()
+        if self.decision_stack.currentWidget() is not self.suggestion_panel:
+            self.decision_stack.setCurrentWidget(self.suggestion_panel)
+            self.lifecycle_banner.setVisible(False)
+            self._loaded_scan_id = None
+            self._note_navigation("")
+        if not found:
+            self.queue_table.clearSelection()
+            self._show_suggestion(None)
+        elif selected is None or not self.select_suggestion(selected.scan_id):
+            self.queue_table.selectRow(0)
+            if self.queue_table.currentRow() == 0:
+                self._on_queue_selection_changed()
+        self._refresh_controls()
+
+    def _rebuild_rows(self, rows: list[tuple[str, str, str, str]], colour: QColor) -> None:
+        """Fill the queue table with plain rows (the operational views)."""
+        self._suppress_selection = True
+        self.queue_table.setUpdatesEnabled(False)
+        try:
+            with self._bulk_queue_fill():
+                self.queue_table.clearSelection()
+                self.queue_table.setCurrentCell(-1, -1)
+                self.queue_table.setRowCount(len(rows))
+                for row, values in enumerate(rows):
+                    for column, text in enumerate(values):
+                        item = QTableWidgetItem(text)
+                        item.setBackground(colour)
+                        item.setToolTip(text)
+                        self.queue_table.setItem(row, column, item)
+        finally:
+            self.queue_table.setUpdatesEnabled(True)
+            self._suppress_selection = False
+
+    def _show_suggestion(self, item: QualitySuggestion | None) -> None:
+        """Show one suggestion: its evidence, provenance, the policy, and the sheet."""
+        self.clear_pending()
+        if item is None:
+            self.suggestion_panel.show_suggestion(None)
+            self._show_provenance(None)
+            self._clear_views()
+            self._refresh_controls()
+            return
+        database = self.database
+        provenance = (
+            session_sheets.sheet_provenance(database, item.scan_id) if database else None
+        )
+        policy = (
+            quality_decisions.session_policy(database, self.state.scan_session_id)
+            if database is not None and self.state.scan_session_id
+            else None
+        )
+        self.suggestion_panel.show_suggestion(
+            item,
+            details=suggestion_details_html(
+                item,
+                provenance,
+                policy,
+                student_id=provenance.student_id if provenance is not None else "",
+                set_code=provenance.set_code if provenance is not None else "",
+            ),
+            can_decide=bool(self.state.reviewer),
+        )
+        self._show_provenance(item.scan_id)
+        self._load_for_inspection(item.scan_id)
+        self._refresh_controls()
+
+    def _load_for_inspection(self, scan_id: int) -> None:
+        """Re-read one sheet to show it with the quality overlay (the existing views)."""
+        database = self.database
+        if database is None:
+            return
+        source = scan_source_path(database, scan_id)
+        if not source:
+            self._clear_views()
+            return
+        if self.state.template is None:
+            # No template: show the scan as it arrived.
+            self._load_image(Path(source))
+            return
+        for view in (self.zoom_view, self.normalised_view, self.original_view):
+            view.clear()
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.ready.disconnect()
+        worker = SheetWorker(Path(source), self.state.template, self)
+        worker.ready.connect(self._on_inspection_ready)
+        self._worker = worker
+        self._workers = [running for running in self._workers if running.isRunning()]
+        self._workers.append(worker)
+        worker.start()
+
+    def _on_inspection_ready(self, bundle: SheetBundle) -> None:
+        """Draw a re-read sheet with its scan-quality evidence. GUI thread."""
+        result = bundle.result
+        if result is not None and result.preview is not None:
+            for view in (self.normalised_view, self.zoom_view):
+                view.set_page(
+                    result.preview,
+                    canonical_width=result.canonical_width,
+                    canonical_height=result.canonical_height,
+                    preview_scale=result.preview_scale,
+                )
+                view.set_overlay(result.zones, (), ())
+                view.set_lanes(())
+                # The stored evidence's geometry, where recognition measured
+                # one - never an outline invented for a reason without one.
+                view.set_scan_quality(result.scan_quality)
+                view.set_overlay_visible(zones=True, bubbles=False, empty=False)
+                view.fit_to_window()
+        else:
+            message = _no_rectified_page_message(bundle)
+            for view in (self.normalised_view, self.zoom_view):
+                view.clear()
+                view.set_placeholder(message)
+        self._offer_the_useful_tab(registered=result is not None and result.preview is not None)
+        if bundle.original is not None:
+            self.original_view.set_placeholder("")
+            self.original_view.set_page(
+                bundle.original,
+                canonical_width=bundle.original.width,
+                canonical_height=bundle.original.height,
+            )
+            self.original_view.set_overlay((), (), ())
+            self.original_view.set_scan_quality(None)
+            self.original_view.set_overlay_visible(zones=False, bubbles=False, empty=False)
+            self.original_view.fit_to_window()
+            self.original_note.setText(
+                f"{self._arrival_name(bundle.path)}, exactly as it arrived (never modified)."
+            )
+        else:
+            reason = bundle.error or "The original scan could not be decoded."
+            self.original_view.set_placeholder(reason)
+            self.original_note.setText(reason)
+        self.sheet_ready.emit()
+
+    def confirm_suggestion(
+        self, scan_id: int, *, reason: RejectionReason | None = None, note: str = ""
+    ) -> bool:
+        """Confirm a suggested rescan: reject the sheet (named, audited). No dialog."""
+        database = self.database
+        if database is None:
+            return False
+        try:
+            quality_decisions.confirm_suggestion(
+                database, scan_id, reviewer=self.state.reviewer, reason=reason, note=note
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Confirm rescan required")
+            return False
+        self._after_lifecycle_action(scan_id)
+        return True
+
+    def dismiss_suggestion(self, scan_id: int, *, note: str = "") -> bool:
+        """Decline a suggested rescan: the sheet is kept as read (named, audited). No dialog."""
+        database = self.database
+        if database is None:
+            return False
+        try:
+            quality_decisions.dismiss_suggestion(
+                database, scan_id, reviewer=self.state.reviewer, note=note
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="Dismiss suggested rescan")
+            return False
+        self.refresh_queue()
+        self.lifecycle_changed.emit(scan_id)
+        return True
+
+    def prompt_confirm_suggestion(self) -> bool:
+        """Ask for the reason and note, then confirm. Cancel is the default."""
+        item = self.current_suggestion()
+        if item is None or not self.state.reviewer:
+            return False
+        dialog = ConfirmSuggestionDialog(item, reviewer=self.state.reviewer, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+        return self.confirm_suggestion(item.scan_id, reason=dialog.reason(), note=dialog.note())
+
+    def prompt_dismiss_suggestion(self) -> bool:
+        """Ask before declining a suggestion (it stays on record). Cancel is the default."""
+        item = self.current_suggestion()
+        if item is None or not self.state.reviewer:
+            return False
+        note, accepted = QInputDialog.getText(
+            self,
+            "Dismiss suggested rescan",
+            f"Keep {item.source_name} exactly as it was read? The suggestion and its evidence "
+            f"stay on record; this is recorded against {self.state.reviewer}.\n\n"
+            "Note (optional):",
+        )
+        if not accepted:
+            return False
+        return self.dismiss_suggestion(item.scan_id, note=note)
+
+    # ------------------------------------------------------------------
+    # Files awaiting a decision (revised phase 8)
+    # ------------------------------------------------------------------
+    def current_file(self) -> PendingFile | None:
+        """The waiting file selected in that view, or ``None``."""
+        if not self.files_mode:
+            return None
+        row = self.queue_table.currentRow()
+        if 0 <= row < len(self.state.pending_files):
+            return self.state.pending_files[row]
+        return None
+
+    def select_file(self, intake_file_id: int) -> bool:
+        """Select a waiting file by its ledger id."""
+        for row, item in enumerate(self.state.pending_files):
+            if item.intake_file_id == intake_file_id:
+                self.queue_table.selectRow(row)
+                return True
+        return False
+
+    def _refresh_file_queue(self) -> None:
+        """Re-read the session's held, unreadable and unsupported files (one SQL page)."""
+        database = self.database
+        session_id = self.state.scan_session_id
+        if database is None or not session_id:  # pragma: no cover - checked by caller
+            return
+        selected = self.current_file()
+        self.state.conflicts = []
+        self.state.rescan_cases = []
+        self.state.sheet_rows = []
+        self.state.suggestions = []
+        found = list(
+            intake_decisions.pending_decisions(database, session_id, limit=QUEUE_PAGE_SIZE)
+        )
+        source = self.source_filter.currentData()
+        if source:
+            found = [item for item in found if item.source_id == source]
+        search = self.search_box.text().strip().casefold()
+        if search:
+            found = [item for item in found if search in item.file_name.casefold()]
+        self.state.pending_files = found
+        self._rebuild_rows(
+            [
+                (item.file_name, item.source_label, item.why, file_state_text(item))
+                for item in found
+            ],
+            QColor(238, 238, 238),
+        )
+        self._refresh_summary()
+        if self.decision_stack.currentWidget() is not self.file_panel:
+            self.decision_stack.setCurrentWidget(self.file_panel)
+            self.lifecycle_banner.setVisible(False)
+            self._loaded_scan_id = None
+            self._note_navigation("")
+        if not found:
+            self.queue_table.clearSelection()
+            self._show_file(None)
+        elif selected is None or not self.select_file(selected.intake_file_id):
+            self.queue_table.selectRow(0)
+            if self.queue_table.currentRow() == 0:
+                self._on_queue_selection_changed()
+        self._refresh_controls()
+
+    def _show_file(self, item: PendingFile | None) -> None:
+        """Show one waiting file and exactly the service's options for its state."""
+        self.clear_pending()
+        self._show_provenance(None)
+        session_open = True
+        database = self.database
+        if item is not None and database is not None and item.scan_session_id:
+            info = scan_sessions.get_scan_session(database, item.scan_session_id)
+            session_open = info is not None and info.state is ScanSessionState.OPEN
+        self.file_panel.show_file(
+            item, can_decide=bool(self.state.reviewer), session_open=session_open
+        )
+        if item is None:
+            self._clear_views()
+        else:
+            self._load_image(Path(item.absolute_path))
+        self._refresh_controls()
+
+    def decide_file(self, intake_file_id: int, decision: FileDecision, *, note: str = "") -> bool:
+        """Apply the operator's decision to a waiting file (named, audited). No dialog."""
+        database = self.database
+        if database is None:
+            return False
+        try:
+            intake_decisions.decide_file(
+                database, intake_file_id, decision, reviewer=self.state.reviewer, note=note
+            )
+        except OMRScannerError as exc:
+            report_error(self, exc, context="File decision")
+            return False
+        self.refresh_queue()
+        return True
+
+    def prompt_decide_file(self, decision: object) -> bool:
+        """Confirm a dismissal (it is final for this file); other decisions act at once."""
+        item = self.current_file()
+        chosen = decision if isinstance(decision, intake_decisions.FileDecision) else None
+        if item is None or chosen is None or not self.state.reviewer:
+            return False
+        note = ""
+        if chosen is intake_decisions.FileDecision.DISMISS:
+            note, accepted = QInputDialog.getText(
+                self,
+                "Dismiss file",
+                f"Do not process {item.file_name}? The file is left on disk untouched and its "
+                f"record is kept; recorded against {self.state.reviewer}.\n\nNote (optional):",
+            )
+            if not accepted:
+                return False
+        return self.decide_file(item.intake_file_id, chosen, note=note)
+
+    # ------------------------------------------------------------------
+    # Live refresh while scanning (revised phase 8)
+    # ------------------------------------------------------------------
+    def on_session_view(self, view: object) -> None:
+        """A new session snapshot arrived: refresh the queue if its work changed.
+
+        Never on every tick: only when the snapshot's counts that this stage
+        lists changed, and at most every :data:`LIVE_MIN_INTERVAL_S`. Never on
+        the GUI thread: the reads run in :class:`LiveQueueReader`'s thread and
+        the page only applies them. Never under the operator: a choice being
+        staged, the whole-field editor, text being typed or a dialog open defer
+        the refresh - and the selected item is kept by its id, so the
+        workspace does not jump.
+        """
+        snapshot = getattr(view, "snapshot", None)
+        database = self.database
+        if snapshot is None or database is None:
+            return
+        session_id = str(getattr(snapshot, "scan_session_id", ""))
+        if self.state.batch_id is None and not self.state.scan_session_id:
+            # Nothing anchored yet (continuous scanning started on an empty
+            # session): anchor to it, so new conflicts appear without visiting Scan.
+            self.load_session(session_id)
+        if session_id != self.state.scan_session_id:
+            return
+        self.state.live = True
+        if (
+            self.state.batch_id is None
+            and snapshot.running_batches + snapshot.partition.total
+            # Possibly the first batch of a session that had none (one cheap
+            # query until it exists): anchor the queue to it.
+            and session_sheets.session_batches(database, session_id)
+        ):
+            self.load_session(session_id)
+        signature = (
+            tuple(snapshot.partition.as_dict().values()),
+            *(getattr(snapshot, name) for name in QUEUE_SIGNATURE_FIELDS),
+            snapshot.session_state,
+        )
+        if signature == self._live_signature and not self._live_dirty:
+            return
+        self._live_signature = signature
+        if not self.isVisible() or self._operator_busy():
+            self._live_dirty = True
+            return
+        self._request_live_refresh()
+
+    def _request_live_refresh(self) -> None:
+        """Ask the live reader for the queue as it is now (throttled)."""
+        database, batch_id = self.database, self.state.batch_id
+        if database is None:
+            return
+        if self.suggestions_mode or self.files_mode:
+            # One bounded page query each, no session population: immediate.
+            self._live_dirty = False
+            self.refresh_queue()
+            return
+        if batch_id is None:
+            return
+        now = time.monotonic()
+        if now - self._last_live_request < LIVE_MIN_INTERVAL_S:
+            self._live_dirty = True  # the next snapshot asks again
+            return
+        self._last_live_request = now
+        self._live_dirty = False
+        self._live_generation += 1
+        conflict_view = not (self.rescan_mode or self.sheets_mode)
+        self._live_reader.request(
+            LiveQueueRequest(
+                database=database,
+                batch_id=batch_id,
+                scan_session_id=self.state.scan_session_id,
+                view=self.state_filter.currentText(),
+                conflict_filter=self._current_filter() if conflict_view else None,
+                limit=QUEUE_PAGE_SIZE,
+                generation=self._live_generation,
+            )
+        )
+
+    def _apply_live(self, data: object) -> None:
+        """Show a live read - unless it is stale or the operator is busy now. No DB work."""
+        if not isinstance(data, LiveQueueData):
+            return
+        if (
+            data.generation != self._live_generation
+            or data.view != self.state_filter.currentText()
+            or self.database is None
+            or self.state.batch_id is None
+        ):
+            return
+        if self._operator_busy():
+            self._live_dirty = True
+            return
+        self.last_live_read_ms = data.elapsed_ms
+        self._apply_batch_options(data.batch_options, data.sources)
+        self._render_batch_label(
+            data.population_text,
+            multi=data.multi_batch,
+            info=data.session,
+            summary=data.batch_summary,
+        )
+        self._render_summary(data.summary)
+        if data.conflicts is None or self.rescan_mode or self.sheets_mode:
+            return
+        shown = self.current_conflict()
+        scrolled_to = self.queue_table.verticalScrollBar().value()
+        self._suppress_selection = True
+        try:
+            self.state.conflicts = list(data.conflicts)
+            self._rebuild_queue_table()
+            self._restore_selection(shown, scrolled_to)
+        finally:
+            self._suppress_selection = False
+        current = self.current_conflict()
+        if current is None:
+            if self.state.conflicts:
+                self._on_queue_selection_changed()
+            # else `_restore_selection` already cleared the workspace
+        elif shown is None or current.conflict_id != shown.conflict_id:
+            # What was on screen has left this view (decided elsewhere, or
+            # withdrawn by a re-read): show deliberately what took its place.
+            self._on_queue_selection_changed()
+        else:
+            self._refresh_controls(undo=False)
+
+    def _apply_batch_options(
+        self, options: tuple[tuple[str, str], ...], sources: tuple[object, ...]
+    ) -> None:
+        """Rebuild the batch (and source) filter only when the session gained a batch."""
+        current = tuple(
+            str(self.batch_filter.itemData(index)) for index in range(1, self.batch_filter.count())
+        )
+        if current == tuple(batch for _label, batch in options):
+            return
+        chosen = self.batch_filter.currentData()
+        self.batch_filter.blockSignals(True)
+        self.batch_filter.clear()
+        self.batch_filter.addItem(ALL_BATCHES, userData="")
+        for label, batch in options:
+            self.batch_filter.addItem(label, userData=batch)
+        index = self.batch_filter.findData(chosen) if chosen else 0
+        self.batch_filter.setCurrentIndex(max(0, index))
+        self.batch_filter.setEnabled(self.batch_filter.count() > 2)
+        self.batch_filter.blockSignals(False)
+        self._fill_source_filter(sources)
+
+    def _operator_busy(self) -> bool:
+        """Whether a refresh now could disturb what the operator is doing."""
+        if self.state.pending or self.state.editing_field is not None:
+            return True
+        if self._editing_text():
+            return True
+        app = QApplication.instance()
+        return isinstance(app, QApplication) and app.activeModalWidget() is not None
+
+    def _catch_up_on_show(self) -> None:
+        """Apply a live refresh that arrived while the stage was hidden."""
+        if self._live_dirty and not self._operator_busy():
+            self._last_live_request = 0.0
+            self._request_live_refresh()
+
+    # ------------------------------------------------------------------
     # Qt overrides
     # ------------------------------------------------------------------
     def shutdown(self) -> None:
@@ -4235,6 +5195,10 @@ class ResolvePage(WorkflowPage):
         for worker in workers:
             if worker.isRunning():
                 worker.wait(WORKER_SHUTDOWN_TIMEOUT_MS)
+        # The live queue reader (revised phase 8) reads the project database:
+        # it is joined before the window releases it.
+        self._live_generation += 1
+        self._live_reader.shutdown()
 
     def closeEvent(self, event: object) -> None:
         """Stop the sheet loader before the page disappears."""

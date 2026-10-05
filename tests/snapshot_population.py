@@ -144,7 +144,10 @@ def build(
             if position % 10 == 0:
                 conflicts.append({
                     "batch_id": batch_id, "scan_id": scan_id,
-                    "conflict_type": "identifier_ambiguous",
+                    # A real required type: until revised phase 8 this said
+                    # "identifier_ambiguous", which is no ConflictType, so the
+                    # population's conflicts were never counted as required.
+                    "conflict_type": "identifier_multiple",
                     "state": "resolved" if position % 20 == 0 else "open",
                     "zone_id": "roll_number", "group_key": 0,
                     "created_at": moment, "updated_at": moment,

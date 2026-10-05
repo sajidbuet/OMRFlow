@@ -40,7 +40,33 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Quality decisions, rescan suggestions, persisted controls and session closure (`0.1.1` revised phase 7 / roadmap E second part, 2026-10-04 — implemented; automated tests passing; branch `feat/0.1.1-phase7-quality-session-controls`, not merged; migration 17, schema 17; headless)
+### Operational GUI for continuous multi-source scanning (`0.1.1` revised phase 8 / roadmap F, 2026-10-05 — implemented; automated and GUI tests passing; branch `feat/0.1.1-phase8-operational-gui`, not merged; no migration, schema 17)
+
+- **What exists:** session mode on the Scan stage - `gui/scan/session_panel.py`
+  (status line, three progress lines, counts, warnings, folded *Sources* table,
+  grouped actions), `session_runner.py` (the Qt-free `ContinuousEngine` in a
+  `QThread` wrapper; commands queued to its own thread), `session_poller.py`
+  (the phase 7 snapshot read once a second in a worker), `session_mode.py`
+  (the controller: every action is one service call; dialogs only in
+  `_prompt_*`), `session_dialogs.py` (source, grouped finish blockers),
+  `session_table_model.py` + `services/session_sheets.py` (the session's sheet
+  list, SQL-paged and filtered, read off the GUI thread). Resolve:
+  `gui/review/live_queue.py` (live refresh reads in a worker),
+  `gui/review/operational.py` (*Suggested rescans*, *Files awaiting
+  decision*), source / batch filters, provenance, original file names.
+  `gui/session_close.py` groups blockers and maps them to destinations.
+  Window: close / project switch stop scanning in order (runner → wait → lease
+  → database) and leave the session open.
+- **Evidence:** GUI tests over the engine rig (controls, finish / reopen,
+  rescan and file queues, 10,000-sheet responsiveness with arrivals,
+  100,000-row paging, a real process kill then reopen); native scripted
+  screenshots (16 states, 1366×768 and 1100×680, 175 % scaling, zoom 80–200 %);
+  one scripted local three-folder run with the production worker pool.
+  Handoff `development/releases/0.1.1-alpha.0/PHASE_H_HANDOFF.md`.
+- **Not:** used by an operator; network-share, real-scanner or power-loss
+  validation; the phase 9 qualification campaign.
+
+### Quality decisions, rescan suggestions, persisted controls and session closure (`0.1.1` revised phase 7 / roadmap E second part, 2026-10-04 — implemented; automated tests passing; merged to `main` as `9169933`; migration 17, schema 17; headless until phase 8)
 
 - **What exists:** `domain/quality_decision.py` + `services/quality_decisions.py`
   (versioned, fingerprinted policy - **UNVALIDATED DEFAULT** - pinned per
@@ -61,8 +87,8 @@ Update this file at the end of every phase.
   one closure policy (pre-merge correction; no production caller of
   `close_scan_session` remains outside it). SQLite stays in rollback-journal
   mode (not WAL). ADR-0010; handoff `development/releases/0.1.1-alpha.0/PHASE_G_HANDOFF.md`.
-- **Not:** a GUI for any of it (phase 8); network-share, real-scanner or
-  power-loss validation; calibrated quality defaults; the phase 9 campaign.
+- **Not:** network-share, real-scanner or power-loss validation; calibrated
+  quality defaults; the phase 9 campaign. (Its GUI is revised phase 8, above.)
 
 ### Continuous-processing engine (`0.1.1` revised phase 6 / roadmap E first part, 2026-10-02 — implemented; automated tests passing; merged to `main` as `141d703`; no migration, schema 16; headless)
 
@@ -94,8 +120,9 @@ Update this file at the end of every phase.
   backlog; `pause_intake`, `pause_scheduling`, `cancel_queued`,
   `shutdown(drain=...)` - after a clean shutdown nothing claimed remains.
 - **Health:** `CLAIM_OUTSIDE_RUNNING_BATCH`, `INTAKE_REGISTERED_TWICE`.
-- **Not yet:** any GUI (phase 8); operator stop/finish policy, quality
-  decisions, held-file decisions (phase 7); the engine must not run beside a
+- **Not yet (as of this phase):** any GUI (since revised phase 8, above);
+  operator stop/finish policy, quality decisions, held-file decisions (since
+  phase 7); the engine must not run beside a
   finite Scan stage run of the same project; network share, real scanners,
   power loss, a fresh 100k run.
 
@@ -139,8 +166,8 @@ Update this file at the end of every phase.
   journal) could not be reopened - the pre-migration read-only probe failed.
 - **Also fixed:** the schema-14 upgrade fixtures' databases had never been
   committed.
-- **Not yet:** any operator-facing watched intake (no source panel - phase 8;
-  the headless engine is revised phase 6, above); SMB / network-share
+- **Not yet (as of this phase):** operator-facing watched intake (the source
+  panel is revised phase 8, the engine revised phase 6, above); SMB / network-share
   validation; real scanners; production use.
 
 ### Session-wide effective sheet set (`0.1.1` revised phase 4, 2026-10-02 — implemented; automated tests passing; merged to `main` as `fd063f8`; migration 15, schema 15)

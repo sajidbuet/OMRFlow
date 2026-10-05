@@ -25,6 +25,13 @@ data.
 Stages 6 and 7 are independent of each other and can be done in either
 order, or while a batch is still processing.
 
+With several scanners feeding one sitting, the Scan stage can watch their
+folders and read new sheets as they arrive while you resolve on stage 5
+([session mode](Scanning#several-scanners-at-once-session-mode) - in
+development, not yet used by an operator). The session's name appears in the
+headers of Resolve, Attendance, Results and Reports, and their figures are
+**provisional** until you finish the scan session.
+
 ## Moving between stages
 
 Everything above your work is one row at the top of the window, which is also
