@@ -1,4 +1,4 @@
-"""The revised phase 9 automated intake qualification (0.1.1-alpha.0, roadmap 0.1.1-G part 1).
+"""The revised phase 9 automated intake qualification (roadmap 0.1.1-G, first part).
 
 Purpose:
     Answer, with machine-verifiable evidence, whether the integrated
