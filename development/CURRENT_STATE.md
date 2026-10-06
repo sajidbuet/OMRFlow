@@ -40,7 +40,7 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Operational GUI for continuous multi-source scanning (`0.1.1` revised phase 8 / roadmap F, 2026-10-05 — implemented; automated and GUI tests passing; branch `feat/0.1.1-phase8-operational-gui`, not merged; no migration, schema 17)
+### Operational GUI for continuous multi-source scanning (`0.1.1` revised phase 8 / roadmap F, 2026-10-05 — implemented; automated and GUI tests passing; merged to `main` as `e620e7c`; no migration, schema 17)
 
 - **What exists:** session mode on the Scan stage - `gui/scan/session_panel.py`
   (status line, three progress lines, counts, warnings, folded *Sources* table,

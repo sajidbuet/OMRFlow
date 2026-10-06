@@ -63,7 +63,7 @@ Implemented in the revised ten-phase sequence (release `ROADMAP.md` §5.1):
 | 5 — Intake sources + ledger (migration 16; headless) | ✅ merged into `main` (`59ba8df`) | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer / engine process kills and a 2,400-arrival soak | 🟠 local temp-directory soak only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
 | 6 — Continuous-processing engine (no migration; headless) | ✅ merged into `main` (`141d703`) | ✅ passing, incl. a kill-boundary matrix, real process kills, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
 | 7 — Quality / rescan / session controls (migration 17; headless) | ✅ merged into `main` (`9169933`) | ✅ passing, incl. real process kills at every new durable transition, a 341-sheet three-scanner scenario, concurrent operator/snapshot contention and a schema-16 upgrade fixture | 🟠 local and fake-filesystem scenarios only, not the campaign | ❌ not performed | ❌ not performed | ❌ not performed |
-| 8 — Operational GUI (no migration) | ✅ implemented on branch `feat/0.1.1-phase8-operational-gui` (not merged) | ✅ passing, incl. GUI tests over the engine rig: 10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool; no operator | ❌ not performed | ❌ not performed | ❌ not performed |
+| 8 — Operational GUI (no migration) | ✅ merged into `main` (`e620e7c`) | ✅ passing, incl. GUI tests over the engine rig: 10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool; no operator | ❌ not performed | ❌ not performed | ❌ not performed |
 | 9–10 — Automated qualification, SMB / installed build / release gate | Pending | — | — | — | — | — |
 
 Since revised phase 4, a scan session with several batches is added up: every
@@ -84,7 +84,7 @@ scanners; persisted pause / finish / cancel intent; one processing coordinator
 per project; cross-sheet duplicates within one commit; a bounded session
 snapshot with *caught up* defined; and *Finish scan session* with a complete
 blocker list ([ADR-0010](../decisions/ADR-0010-quality-decisions-and-session-controls.md)).
-Revised phase 8 (branch, not merged) is the **operational GUI** over all of
+Revised phase 8 (merged) is the **operational GUI** over all of
 it: session mode on the Scan stage (sources, three progress lines, controls,
 *Finish Scan Session* with grouped blockers, reopen), a SQL-paged session
 sheet list, and Resolve refreshed live while scanning with *Suggested

@@ -103,7 +103,14 @@ evidence logs.
   while growing, one pause longer than the stability quiet period, and written
   under a temporary `.part` name then renamed. Arrival times come from a
   seeded per-source intensity profile with bursts, normal stretches and idle
-  gaps, ending in a burst.
+  gaps, ending in a burst. A writer writes **one file at a time**, as a
+  scanner does, so a planned time is the earliest a file starts: the pauses
+  of the partial-write patterns add up (about 11,400 s for the busiest
+  writer of the release plan against a 2,400 s schedule), and the real
+  arrival period is longer than the configured duration. The report quotes
+  the measured `arrival_seconds` (first to last completed write - which
+  includes the late script written in the endgame), not the configured
+  duration.
 * **Source outage**: the watched root is a directory junction to the writer's
   folder. Removing the junction makes the source unreachable to OMRFlow while
   the "scanner" keeps writing to its own disk; restoring it brings the files
@@ -139,7 +146,7 @@ evidence logs.
 | Run | What it is |
 |---|---|
 | `interrupted` | The qualification run: kills, clean close, outage, *Reprocess All*, checkpoints, endgame |
-| `control` | The same logical cohort and operator decisions, arrival times compressed, **no** interruption |
+| `control` | The same logical cohort and operator decisions, arrival times re-drawn on a shorter schedule (the writers' own pauses still bound it), **no** interruption |
 | `finite` | The same cohort as one finite batch through the finite Scan stage's own service sequence (coordinator lease, one batch, manual ledger and hashes, exact-duplicate rule, `BatchRecorder`, `process_batch` with workers, batch-scope review pass, finalise), then the same operator and endgame, the late script as a second batch after a reopen |
 | `golden` | The committed golden one-batch regression (`tests/golden_one_batch.py` against `tests/fixtures/golden_one_batch/golden.json`) on this build |
 
@@ -219,7 +226,7 @@ unexercised case is `not_exercised`, which fails like a failed check.
 
 | Assertion | Measured as |
 |---|---|
-| `stable_files_discovered_exactly_once` | every written file has exactly one ledger row with its final hash, registered or a byte copy; no unplanned row; no sheet from two rows; no content effective twice |
+| `stable_files_discovered_exactly_once` | every written file has exactly one ledger row with its final hash, registered or a byte copy; no unplanned row; no sheet from two rows; no content effective twice; no ledger row ever seen `vanished` (the supervisor samples them with every progress read - the plan never removes a file, so "vanished, then reappeared" is a file discovered twice even when the final ledger is right) |
 | `no_incomplete_file_processed` | per registered file: first `claimed` (logged before submission) and `registered_at` after the writer's `write_completed`, and the sheet's bytes are the completed file's |
 | `source_provenance_retained` | source, observed path, relative path and name equal the arrival; sheet and unit point back; the name the Scan list shows (`session_sheets.original_names`) is an arrival name; *Reprocess All* sheets traced to the watched arrival behind them |
 | `duplicate_content_identified` | each planted copy group: one registered, the rest `duplicate_content` linked to it; nothing else flagged; copies within **and** across sources |
@@ -268,3 +275,25 @@ QUALIFICATION`.
   recorded in the report).
 * Windows only for the release run (junctions, `TerminateProcess`, Job
   Objects).
+* A junction removed by the supervisor fails reads as *file not found*; a
+  real share drops with other errors and timings (revised phase 10).
+
+## 8. Tests of the harness itself
+
+* `tests/unit/test_intake_qualification.py` - the registry equals
+  `ACCEPTANCE_CRITERIA.md` §5.2; every assertion is emitted even when the
+  evaluator breaks; an unexercised case, a planted failure, a missing
+  assertion, a failed crash case or an incomplete campaign never passes; a
+  small campaign never qualifies; plan determinism; the reference scorer;
+  recovery comparison; integrity and health failures; torn and stale
+  evidence lines; reports; CLI exit codes and a malformed configuration.
+* `tests/integration/test_intake_qualification_failure_paths.py` - a scanner
+  writer that crashes on a malformed schedule, a coordinator that never
+  starts, a hung stage (timeout with diagnostics; every child stopped), a
+  planned 99 % kill that never landed on work in flight, an operator
+  interrupt, a harness defect and a broken evaluator: each ends `FAILED`
+  with a full report.
+* `tests/integration/test_intake_qualification_campaign.py` - a small real
+  campaign with one real kill (must pass what it exercises and still be
+  `FAILED`); `stress`: the self-test and a several-minute endurance campaign
+  with the 1 / 25 / 50 / 75 / 99 % series.

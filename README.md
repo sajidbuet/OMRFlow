@@ -261,8 +261,8 @@ ten revised phases.
   kills at every new durable transition and a 341-sheet three-scanner synthetic
   scenario; **not** network-share, real-scanner or power-loss validated; not
   production qualified.
-- **Implemented, tests passing, on branch `feat/0.1.1-phase8-operational-gui`
-  (not merged; no migration):** phase 8, the operational GUI. Session mode on
+- **Implemented, tests passing, merged as `e620e7c` (no migration):** phase 8,
+  the operational GUI. Session mode on
   the Scan stage (added by *Session → Add Scanner Source...*; a finite
   project never sees it): the session's state in the snapshot's own words
   (*caught up* is never *complete*), three separate progress lines, live
@@ -287,7 +287,7 @@ ten revised phases.
 | 5 — Intake sources + ledger | ✅ merged (`59ba8df`; migration 16; headless) | ✅ passing, incl. a three-source acceptance scenario, real temporary directories, real writer and engine process kills, and a 2,400-arrival seeded soak | 🟠 local temporary-directory and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
 | 6 — Continuous-processing engine | ✅ merged (`141d703`; no migration; headless) | ✅ passing, incl. a deterministic kill-boundary matrix, real process kills at six boundaries, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
 | 7 — Quality / rescan / session controls | ✅ merged (`9169933`; migration 17; headless) | ✅ passing, incl. real process kills at every new durable transition, concurrent operator / snapshot contention (local disk, rollback journal), a schema-16 upgrade fixture, and Reports / Scan closes driven through the finish policy | 🟠 a 341-sheet three-scanner scenario on a fake filesystem - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
-| 8 — Operational GUI | ✅ implemented on a branch, not merged (no migration) | ✅ passing, incl. GUI tests over the engine rig (10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen) | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
+| 8 — Operational GUI | ✅ merged (`e620e7c`; no migration) | ✅ passing, incl. GUI tests over the engine rig (10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen) | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 9 — Automated qualification | ⚪ pending | — | — | — | — | — |
 | 10 — SMB / installed build / Alpha release gate | ⚪ pending | — | — | — | — | — |
 
@@ -295,7 +295,7 @@ ten revised phases.
 
 | Track | Status |
 |---|---|
-| Implemented | ✅ on branch `feat/0.1.1-phase8-operational-gui`, not merged; no migration (schema 17) |
+| Implemented | ✅ merged into `main` as `e620e7c`; no migration (schema 17) |
 | Automated tests | ✅ passing (see *Testing status*) |
 | GUI tests | ✅ passing - session controls, finish / reopen, rescan and file queues, live Resolve, shutdown order, a real-kill reopen, 10,000-sheet responsiveness with arrivals, 100,000-row paging |
 | Scripted / manual local validation | 🟠 **scripted only**: native screenshots of 16 states (1366×768 and 1100×680 at 175 % Windows scaling; interface zoom 80–200 %) and one scripted local run of three folders fed over time with the production worker pool; for the pre-merge correction, native captures of the Answer Key session line and long Resolve provenance at 1100×680 / 150 %, 1366×768 / DPR 1.395 and DPR 1.75 (largest window that fits), interface zoom 100 / 150 / 200 %. **No person has operated it.** |
