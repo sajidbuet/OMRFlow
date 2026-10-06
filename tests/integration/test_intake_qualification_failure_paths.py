@@ -75,6 +75,22 @@ class TestTheSupervisorStopsHonestly:
             run.wait_started()
         assert raised.value.diagnostics["coordinator_exit"] == 1
 
+    def test_a_tail_kill_waits_for_its_target_before_its_deferral_runs(self, tmp_path):
+        """A tail kill's deferral starts at its target, not when it is armed.
+
+        Found by the first full release run: the 99 % pause, armed at 96 %,
+        expired at 97 % because its 180 s counted from arming.
+        """
+        run = stub_run(tmp_path)
+        armed = {"boundary": "in_flight_commit", "since": 0.0,
+                 "trigger": {"min_committed": 9_889}}
+        limit = run.DEFER_SECONDS
+        assert not run.deferral_expired(armed, 9_703, limit + 1)  # still on its way
+        assert not run.deferral_expired(armed, 9_889, limit + 2)  # reached: the wait starts
+        assert run.deferral_expired(armed, 9_900, 2 * limit + 2)
+        other = {"boundary": "after_commit", "since": 0.0, "trigger": {}}
+        assert run.deferral_expired(other, 0, limit + 1)
+
     def test_a_hung_stage_times_out_with_diagnostics(self, tmp_path):
         run = stub_run(tmp_path)
         run.incarnation = 2

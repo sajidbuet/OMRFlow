@@ -877,7 +877,7 @@ class ContinuousRun:
                 # send nothing else meanwhile - a paused coordinator answers
                 # nothing.
                 paused = self._paused(armed)
-                expired = time.monotonic() - armed["since"] > self.DEFER_SECONDS
+                expired = self.deferral_expired(armed, progress["committed"], time.monotonic())
                 if paused is None and (expired or (self.writers_done() and idle)):
                     # Not waited for: a coordinator that paused meanwhile cannot answer.
                     sent = self.command("disarm", wait=False, boundary=armed["boundary"])
@@ -964,6 +964,18 @@ class ContinuousRun:
     pause point: near the end of a run the last sheets finish within one poll,
     so an unpaused kill would rarely land on work in flight."""
     TAIL_ARM_EARLY = 3
+
+    def deferral_expired(self, armed: dict[str, Any], committed: int, now: float) -> bool:
+        """Whether an armed pause point has waited for its state long enough.
+
+        A tail kill is armed a few percent early; its wait starts only once the
+        session reaches its target - before that it is still on its way (found
+        by the first full release run: armed at 96 %, the 180 s ran out at 97 %).
+        """
+        target = int(armed.get("trigger", {}).get("min_committed", 0))
+        if armed["boundary"] == "in_flight_commit" and committed < target:
+            armed["since"] = now
+        return bool(now - armed["since"] > self.DEFER_SECONDS)
 
     def _is_tail_kill(self, item: tuple[str, Any]) -> bool:
         return item[0] == "kill" and int(item[1]) >= self.TAIL_PERCENT
