@@ -123,7 +123,11 @@ evidence logs.
   for its point); from 95 % on - where the last sheets finish within one
   poll - the coordinator itself holds the state: a pause point blocks right
   after a commit that brings the session to the target while other sheets are
-  still in a worker, and the supervisor kills it there; pause points the coordinator blocks
+  still in a worker, or, once the session is at the target, right after a
+  sheet is handed to a worker (its claim already durable), and the supervisor
+  kills it there; the pause is armed a few percent early and its 180 s wait
+  starts only at the target, and "nothing left to read" counts files still
+  settling in the ledger; pause points the coordinator blocks
   at on request - right after a work-unit commit, after a commit whose
   duplicate-ID pass is still owed (the sheets' identities collide with a
   committed sheet), and after the operator's n-th decision - which it reports

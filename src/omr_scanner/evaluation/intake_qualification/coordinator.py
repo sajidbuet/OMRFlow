@@ -158,6 +158,17 @@ class Coordinator:
                         _block(coordinator.log, "in_flight_commit", batch=batch_id, scans=ids,
                                in_flight_others=others)
 
+            def submitted(self, claim: Any) -> None:
+                armed = coordinator.armed.get("in_flight_commit")
+                # Or a sheet handed to a worker once the session is at the
+                # target (its claim is durable): the last sheets of a run may
+                # all commit in one group, leaving no commit with others in
+                # flight; a later claim then still lands the kill on work.
+                if armed is not None and coordinator._committed() >= armed["min_committed"]:
+                    _block(coordinator.log, "in_flight_commit", batch=claim.batch_id,
+                           scans=[claim.scan_id], in_flight_others=coordinator.engine.in_flight,
+                           when="submitted")
+
             def syncing_duplicates(self, batch_id: str, claims: Any) -> None:
                 armed = coordinator.armed.get("syncing_duplicates")
                 if armed is None:

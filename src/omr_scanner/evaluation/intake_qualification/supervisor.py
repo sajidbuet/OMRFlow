@@ -853,6 +853,7 @@ class ContinuousRun:
         link = self.share / f"Scanner_{config.outage_source}"
         deferred_since = 0.0
         armed: dict[str, Any] | None = None
+        last_committed, last_change = -1, time.monotonic()
         while True:
             self.pump()
             now = time.time()
@@ -870,7 +871,17 @@ class ContinuousRun:
                     outage_state = "done"
             progress = self.progress()
             fraction = progress["committed"] / max(1, self.expected_total)
-            idle = progress.get("pending", 0) + progress.get("processing", 0) == 0
+            # Nothing left: no sheet to read *and* no file still settling in the
+            # ledger (an instant with an empty queue is not the end - found by
+            # the endurance test, whose 99 % kill was dropped 6 s before the
+            # last files registered).
+            idle = (progress.get("pending", 0) + progress.get("processing", 0) == 0
+                    and not any(progress.get(f"ledger:{state}", 0)
+                                for state in ("discovered", "stabilizing", "ready")))
+            if progress["committed"] != last_committed:
+                last_committed, last_change = progress["committed"], time.monotonic()
+            if self.writers_done() and time.monotonic() - last_change > self.DEFER_SECONDS:
+                idle = True  # a ledger row that never settles must not hold the run forever
             if armed is not None:
                 # A pause point is armed in the coordinator: wait for it without
                 # blocking the timeline (the outage keeps its schedule), and
