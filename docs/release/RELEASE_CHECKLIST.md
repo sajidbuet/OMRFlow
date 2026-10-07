@@ -287,6 +287,7 @@ what remains. Nothing was tagged or published. Evidence:
 | 4 | Schema version recorded in the release notes; Upgrade Compatibility reflects reality | Done - schema 17; Upgrade Compatibility corrected (the released `v0.1.0-alpha.2`'s actual refusal message) |
 | 5 | Documentation items | Done, except *Release History* (only once released) and screenshots (no interface change in this phase) |
 | 6–7 | Tag, release workflow, publication, post-release | **Not performed - owner's decision; blocked by the release gate** |
+| 6 | `scripts/release.ps1 -Version 0.1.1-alpha.0` | **Will refuse as it stands**: `__version__` is already `0.1.1-alpha.0` (bumped at the start of the line, ACCEPTANCE A1) and `release.py` refuses a target equal to the current version. The owner chooses: teach the script to release an already-set, untagged version, or tag by hand after the gates (`PHASE_J_HANDOFF.md` §24) |
 | — | `ACCEPTANCE_CRITERIA.md` §6 real SMB qualification (required for this Alpha) | **Not performed - real infrastructure required** |
 
 Sign-off for the candidate:
