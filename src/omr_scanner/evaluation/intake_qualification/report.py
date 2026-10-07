@@ -156,6 +156,21 @@ def render_markdown(data: dict[str, Any]) -> str:
     add(f"- workers {config.get('workers')}, unit size {config.get('unit_size')}, trickle "
         f"{config.get('trickle_seconds')} s, in flight {config.get('max_in_flight')}, "
         f"stability {config.get('stability')}")
+    coordinator = env.get("coordinator")
+    if coordinator:
+        if coordinator.get("kind") == "packaged":
+            add(f"- coordinator: **packaged** `{coordinator.get('executable')}` "
+                f"({coordinator.get('size')} bytes, SHA-256 `{coordinator.get('sha256')}`)")
+        else:
+            add(f"- coordinator: source (`{coordinator.get('executable')}`)")
+    for runtime in data.get("coordinator_runtime", []):
+        add(f"- coordinator runtime ({runtime.get('incarnations')} incarnations of "
+            f"{', '.join(runtime.get('runs', []))}): frozen {runtime.get('frozen')}, "
+            f"Python {runtime.get('python')}, package `{runtime.get('package_location')}`, "
+            f"SQLite {runtime.get('sqlite_library')}, journal_mode {runtime.get('journal_mode')}, "
+            f"synchronous {runtime.get('synchronous')}, "
+            f"busy_timeout {runtime.get('busy_timeout')}, "
+            f"foreign_keys {runtime.get('foreign_keys')}")
     add("")
     return "\n".join(lines) + "\n"
 

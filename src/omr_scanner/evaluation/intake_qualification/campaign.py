@@ -11,6 +11,7 @@ process it owns.
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import subprocess
@@ -71,22 +72,56 @@ def environment() -> dict[str, Any]:
     }
 
 
+def coordinator_identity(executable: Path | None) -> dict[str, Any]:
+    """What ran as the coordinator: the source interpreter, or a packaged executable by hash."""
+    if executable is None:
+        return {"kind": "source", "executable": sys.executable}
+    import hashlib
+
+    digest = hashlib.sha256()
+    with executable.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return {
+        "kind": "packaged",
+        "executable": str(executable),
+        "size": executable.stat().st_size,
+        "sha256": digest.hexdigest(),
+        "bundle": str(executable.parent),
+    }
+
+
 def run_campaign(
     config: CampaignConfig,
     output_root: Path,
     *,
     template_path: Path = DEFAULT_TEMPLATE,
     progress: Any = None,
+    coordinator_executable: Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    """Run everything; return ``(campaign folder, report payload)``. Never raises for a failure."""
+    """Run everything; return ``(campaign folder, report payload)``. Never raises for a failure.
+
+    ``coordinator_executable``: run every coordinator incarnation inside this
+    packaged ``OMRFlow.exe`` (revised phase 10's installed-build run) instead
+    of from source. The supervisor, the writers, the finite control and the
+    evaluator still run from source - they are the test, not the product.
+    """
     from omr_scanner.evaluation.intake_qualification.finite import run_finite, run_golden
+    from omr_scanner.evaluation.intake_qualification.supervisor import coordinator_command_for
 
     say = progress or (lambda *_a, **_k: None)
     began = time.time()
     env = environment()
+    if coordinator_executable is not None:
+        coordinator_executable = coordinator_executable.resolve()
+    env["coordinator"] = coordinator_identity(coordinator_executable)
     campaign = prepare_campaign(
         config, output_root, template_path,
         progress=lambda done, total: say(f"rendered {done:,} / {total:,} images"),
+        coordinator_command=(
+            coordinator_command_for(coordinator_executable)
+            if coordinator_executable is not None else ()
+        ),
     )
     say(f"campaign {campaign.campaign_id}: {len(campaign.plan.main_arrivals):,} arrivals, "
         f"{len(campaign.plan.contents):,} images rendered")
@@ -154,6 +189,7 @@ def evaluate(campaign: Any, runs: dict[str, Any], finite: Any, golden: Any, *,
     run = runs.get("interrupted")
     control = runs.get("control")
     sha_to_content = campaign.sha_to_content()
+    packaged = bool(getattr(campaign, "coordinator_command", ()))
     payload: dict[str, Any] = {
         "schema_version": assertions.REPORT_SCHEMA_VERSION,
         "campaign_id": campaign.campaign_id,
@@ -166,8 +202,9 @@ def evaluate(campaign: Any, runs: dict[str, Any], finite: Any, golden: Any, *,
         "seconds": round(seconds, 1),
         "render_seconds": round(campaign.timings.get("render_seconds", 0.0), 1),
         "ground_truth": reference.summarize_expected(plan),
-        "not_proven": NOT_PROVEN,
-        "proves": PROVES,
+        "not_proven": PACKAGED_NOT_PROVEN if packaged else NOT_PROVEN,
+        "proves": PACKAGED_PROVES if packaged else PROVES,
+        "coordinator_runtime": coordinator_runtimes(runs),
     }
     completed = run is not None and not error and (control is not None or not config.run_control)
     if run is None:
@@ -296,6 +333,23 @@ def summarize_run(run: Any) -> dict[str, Any]:
     }
 
 
+def coordinator_runtimes(runs: dict[str, Any]) -> list[dict[str, Any]]:
+    """The distinct runtimes the coordinator incarnations reported (``runtime`` events)."""
+    distinct: dict[str, dict[str, Any]] = {}
+    for name, run in runs.items():
+        for event in getattr(run, "coordinator_events", ()):
+            if event.get("event") != "runtime":
+                continue
+            facts = {key: value for key, value in event.items()
+                     if key not in ("event", "t", "seq", "pid", "role", "campaign")}
+            entry = distinct.setdefault(json.dumps(facts, sort_keys=True, default=str),
+                                        {**facts, "runs": [], "incarnations": 0})
+            entry["incarnations"] += 1
+            if name not in entry["runs"]:
+                entry["runs"].append(name)
+    return list(distinct.values())
+
+
 def summarize_finite(finite: Any) -> dict[str, Any] | None:
     if finite is None:
         return None
@@ -331,4 +385,37 @@ NOT_PROVEN = (
 )
 
 
-__all__ = ["DEFAULT_TEMPLATE", "NOT_PROVEN", "PROVES", "environment", "evaluate", "run_campaign"]
+PACKAGED_PROVES = (
+    "Installed-build behaviour of the headless continuous-processing stack under a synthetic "
+    "multi-source intake campaign: every coordinator incarnation is the packaged OMRFlow "
+    "executable (its bundled Python, SQLite, OpenCV and frozen recognition workers), forcibly "
+    "terminated and restarted into the same project and session while separate scanner writer "
+    "processes keep writing to local folders; durable state is read from outside and compared "
+    "with exact ground truth."
+)
+
+PACKAGED_NOT_PROVEN = (
+    "the installed build's GUI (the packaged executable runs the coordinator headless; "
+    "the supervisor, writers, finite control and evaluator run from source)",
+    "genuine SMB / network-share behaviour (local folders; the outage is a local folder link)",
+    "real scanner behaviour (images are synthetic, written by processes)",
+    "actual power-loss durability (process termination is not power removal)",
+    "real-paper quality-policy calibration (the quality policy is the unvalidated default)",
+    "a clean machine (the build machine ran it)",
+    "recognition accuracy on real scans",
+    "production readiness",
+)
+
+
+__all__ = [
+    "DEFAULT_TEMPLATE",
+    "NOT_PROVEN",
+    "PACKAGED_NOT_PROVEN",
+    "PACKAGED_PROVES",
+    "PROVES",
+    "coordinator_identity",
+    "coordinator_runtimes",
+    "environment",
+    "evaluate",
+    "run_campaign",
+]

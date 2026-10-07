@@ -569,6 +569,111 @@ class TestCommandLine:
         assert cli.main(["--config", str(bad), "--output", str(tmp_path),
                          "--template", str(TEMPLATE)]) == 2
 
+    def test_a_packaged_coordinator_is_passed_through(self, monkeypatch, tmp_path):
+        seen: dict[str, Any] = {}
+
+        def run_campaign(config_, output, *, template_path, progress,
+                         coordinator_executable=None) -> tuple[Path, dict[str, Any]]:
+            seen["exe"] = coordinator_executable
+            return tmp_path, payload(config.VERDICT_SMALL)
+
+        monkeypatch.setattr(
+            "omr_scanner.evaluation.intake_qualification.campaign.run_campaign", run_campaign
+        )
+        exe = tmp_path / "OMRFlow.exe"
+        exe.write_bytes(b"MZ")
+        assert cli.main(["--self-test", "--output", str(tmp_path), "--template", str(TEMPLATE),
+                         "--coordinator-exe", str(exe)]) == 0
+        assert seen["exe"] == exe
+
+    def test_a_missing_packaged_executable_is_refused(self, tmp_path):
+        assert cli.main(["--self-test", "--output", str(tmp_path), "--template", str(TEMPLATE),
+                         "--coordinator-exe", str(tmp_path / "absent.exe")]) == 2
+
+
+class TestPackagedCoordinator:
+    """Revised phase 10: the coordinator may be the packaged executable."""
+
+    def test_the_command_runs_the_hidden_entry(self, tmp_path):
+        from omr_scanner.evaluation.intake_qualification import supervisor
+        from omr_scanner.main import QUALIFICATION_COORDINATOR_ARGUMENT
+
+        exe = tmp_path / "OMRFlow.exe"
+        assert supervisor.coordinator_command_for(exe) == (
+            str(exe), QUALIFICATION_COORDINATOR_ARGUMENT
+        )
+
+    def test_its_environment_points_at_no_python_or_source(self, monkeypatch):
+        from omr_scanner.evaluation.intake_qualification import supervisor
+
+        for key in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"):
+            monkeypatch.setenv(key, "C:/somewhere")
+        monkeypatch.setenv("OMRFLOW_KEEP", "1")
+        environment = supervisor.packaged_env()
+        assert not {"PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"} & set(environment)
+        assert environment["OMRFLOW_KEEP"] == "1"
+
+    def test_the_identity_names_the_executable_by_hash(self, tmp_path):
+        import hashlib
+
+        from omr_scanner.evaluation.intake_qualification.campaign import coordinator_identity
+
+        exe = tmp_path / "OMRFlow.exe"
+        exe.write_bytes(b"MZ packaged")
+        identity = coordinator_identity(exe)
+        assert identity["kind"] == "packaged"
+        assert identity["sha256"] == hashlib.sha256(b"MZ packaged").hexdigest()
+        assert coordinator_identity(None)["kind"] == "source"
+
+    def test_runtimes_are_collected_per_distinct_runtime(self):
+        from omr_scanner.evaluation.intake_qualification.campaign import coordinator_runtimes
+
+        def runtime(pid: int, **facts: Any) -> dict[str, Any]:
+            return {"event": "runtime", "t": 1.0, "pid": pid, "role": "coordinator:1",
+                    "campaign": "c", "frozen": True, "journal_mode": "delete", **facts}
+
+        runs = {
+            "interrupted": SimpleNamespace(coordinator_events=[
+                runtime(1), {"event": "started"}, runtime(2),
+            ]),
+            "control": SimpleNamespace(coordinator_events=[runtime(3, journal_mode="wal")]),
+        }
+        found = coordinator_runtimes(runs)
+        assert [(item["journal_mode"], item["incarnations"], item["runs"]) for item in found] == [
+            ("delete", 2, ["interrupted"]), ("wal", 1, ["control"]),
+        ]
+
+    def test_the_coordinator_reports_its_runtime_and_sqlite_settings(self, tmp_path):
+        import sqlite3
+
+        from omr_scanner.evaluation.intake_qualification.coordinator import runtime_facts
+        from omr_scanner.services import create_project
+
+        session = create_project(tmp_path, "runtime")
+        try:
+            facts = runtime_facts(session.database)
+        finally:
+            session.close()
+        assert facts["frozen"] is False
+        assert facts["sqlite_library"] == sqlite3.sqlite_version == facts["sqlite_connection"]
+        # The architecture's rollback journal (never WAL), the explicit busy
+        # timeout of revised phase 6, and enforced foreign keys.
+        assert facts["journal_mode"] == "delete"
+        assert int(facts["busy_timeout"]) > 0
+        assert int(facts["foreign_keys"]) == 1
+        assert "synchronous" in facts
+
+    def test_the_report_names_the_packaged_coordinator(self, tmp_path):
+        data = payload(config.VERDICT_SMALL)
+        data["environment"]["coordinator"] = {"kind": "packaged", "executable": "C:/x/OMRFlow.exe",
+                                              "size": 3, "sha256": "ab" * 32}
+        data["coordinator_runtime"] = [{"frozen": True, "incarnations": 4, "runs": ["interrupted"],
+                                        "sqlite_library": "3.45.3", "journal_mode": "delete"}]
+        _json_path, md_path = report.write_reports(tmp_path, data)
+        text = md_path.read_text(encoding="utf-8")
+        assert "coordinator: **packaged** `C:/x/OMRFlow.exe`" in text
+        assert "frozen True" in text and "journal_mode delete" in text
+
 
 def test_the_qualification_template_is_the_crash_harness_sheet(template):
     """The committed template must stay the geometry the expectations were measured on."""

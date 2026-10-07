@@ -77,6 +77,34 @@ def resolve_view(database: Any, session_id: str) -> dict[str, Any]:
     }
 
 
+def runtime_facts(database: Any) -> dict[str, Any]:
+    """Which runtime this incarnation really is, and its project connection's SQLite settings.
+
+    Recorded so an installed-build run proves it ran the packaged executable
+    (``frozen``, the module's location inside the bundle) and reports the
+    SQLite library and connection settings the packaged application actually
+    uses (``ARCHITECTURE_NOTES.md`` §13.3), not the build machine's.
+    """
+    import sqlite3
+
+    from sqlalchemy import text
+
+    import omr_scanner
+
+    facts: dict[str, Any] = {
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "executable": sys.executable,
+        "package_location": str(Path(omr_scanner.__file__).resolve().parent),
+        "python": sys.version.split()[0],
+        "sqlite_library": sqlite3.sqlite_version,
+    }
+    with database.session() as session:
+        facts["sqlite_connection"] = str(session.execute(text("SELECT sqlite_version()")).scalar())
+        for pragma in ("journal_mode", "synchronous", "busy_timeout", "foreign_keys"):
+            facts[pragma] = session.execute(text(f"PRAGMA {pragma}")).scalar()
+    return facts
+
+
 class Coordinator:
     """One incarnation of the application under test."""
 
@@ -116,6 +144,7 @@ class Coordinator:
                        python=sys.version.split()[0])
         self.project = open_project(Path(run["project"]), force_lock=self.force_lock)
         self.database = self.project.database
+        self.log.write("runtime", **runtime_facts(self.database))
         self.session_id = run["session_id"]
         self.template_path = Path(run["template_path"])
         self.template = load_template(self.template_path)

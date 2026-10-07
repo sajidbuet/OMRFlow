@@ -41,6 +41,20 @@ logger = logging.getLogger(__name__)
 EXIT_OK = 0
 EXIT_FAILURE = 1
 
+QUALIFICATION_COORDINATOR_ARGUMENT = "--intake-qualification-coordinator"
+"""Hidden first argument: run the intake-qualification coordinator, not the GUI.
+
+The intake qualification harness (``omr_scanner.evaluation.intake_qualification``)
+kills and restarts a headless coordinator process - the production continuous
+engine, recognition worker pool and intake service - while scanner writers keep
+writing. From source that process is ``python -m ...coordinator``; a frozen
+build has no ``-m``, so the release gate's installed-build run (revised phase
+10) starts the *installed* executable with this argument instead, and the
+packaged runtime - its bundled Python, SQLite, OpenCV and frozen worker
+start-up - is what gets killed. Not listed in ``--help``: it is a qualification
+hook, not an operator command, and it opens no window.
+"""
+
 
 def build_argument_parser() -> argparse.ArgumentParser:
     """Return the command line parser for the ``omrflow`` entry point."""
@@ -79,6 +93,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # recursively. It does nothing at all when running from source.
     multiprocessing.freeze_support()
 
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == [QUALIFICATION_COORDINATOR_ARGUMENT]:
+        return _run_qualification_coordinator(raw[1:])
+
     arguments = build_argument_parser().parse_args(argv)
 
     config = load_app_config()
@@ -113,6 +131,40 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logger.info("%s exiting with code %d", APPLICATION_NAME, exit_code)
     return exit_code
+
+
+def _run_qualification_coordinator(argv: Sequence[str]) -> int:
+    """Run one intake-qualification coordinator incarnation; see the argument's note."""
+    import os
+
+    # A windowed frozen build has no console, so `sys.stdout` / `sys.stderr`
+    # are None and anything that prints would raise. The coordinator's
+    # evidence goes to its own log file; route stray output to the null device
+    # (left open for the life of the process).
+    if sys.stdout is None:
+        sys.stdout = Path(os.devnull).open("w", encoding="utf-8")  # noqa: SIM115
+    if sys.stderr is None:
+        sys.stderr = Path(os.devnull).open("w", encoding="utf-8")  # noqa: SIM115
+    configure_logging(level=load_app_config().log_level_value(), log_file=app_log_file())
+    _install_exception_hook()
+    logger.info(
+        "%s %s (%s) starting as an intake-qualification coordinator (Python %s)",
+        APPLICATION_NAME,
+        build_identifier(),
+        RELEASE_CHANNEL.value,
+        sys.version.split()[0],
+    )
+    from omr_scanner.evaluation.intake_qualification.coordinator import main as coordinator_main
+
+    try:
+        return coordinator_main(list(argv))
+    except SystemExit as exit_request:
+        code = exit_request.code
+        return code if isinstance(code, int) else EXIT_FAILURE
+    except BaseException:
+        # Already written to the coordinator's own evidence log ("crashed").
+        logger.exception("The intake-qualification coordinator failed")
+        return EXIT_FAILURE
 
 
 def _install_exception_hook() -> None:

@@ -60,6 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, help="recognition worker processes")
     parser.add_argument("--no-control", action="store_true", help="skip the uninterrupted control")
     parser.add_argument("--no-finite", action="store_true", help="skip the finite-mode control")
+    parser.add_argument("--coordinator-exe", type=Path,
+                        help="run every coordinator incarnation inside this packaged OMRFlow.exe "
+                             "(the installed-build run) instead of from source")
     return parser
 
 
@@ -94,20 +97,29 @@ def main(argv: list[str] | None = None) -> int:
     if not arguments.template.is_file():
         print(f"Template not found: {arguments.template}", file=sys.stderr)
         return 2
+    if arguments.coordinator_exe is not None and not arguments.coordinator_exe.is_file():
+        print(f"Packaged executable not found: {arguments.coordinator_exe}", file=sys.stderr)
+        return 2
     print(f"Intake qualification - mode {config.mode.value}: {config.sources} sources, "
           f"{config.candidates_per_set:,} candidates per set x {len(config.sets)} sets, "
           f"{config.duration_seconds:.0f} s arrival timeline, {config.workers} workers, "
           f"seed {config.seed} / timing seed {config.timing_seed}.")
     if config.mode is not Mode.RELEASE:
         print(f"This is not the release qualification; its best verdict is '{VERDICT_SMALL}'.")
+    if arguments.coordinator_exe is not None:
+        print(f"Coordinator: the packaged executable {arguments.coordinator_exe}.")
     began = time.monotonic()
 
     def say(message: str) -> None:
         print(f"[{time.monotonic() - began:8.1f}s] {message}", flush=True)
 
     try:
+        packaged = (
+            {} if arguments.coordinator_exe is None
+            else {"coordinator_executable": arguments.coordinator_exe}
+        )
         root, payload = run_campaign(config, arguments.output, template_path=arguments.template,
-                                     progress=say)
+                                     progress=say, **packaged)
     except KeyboardInterrupt:
         print("Interrupted.", file=sys.stderr)
         return 130
