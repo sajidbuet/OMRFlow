@@ -304,17 +304,25 @@ def verify_migrated(project: Path, before: dict[str, dict[str, Any]], old_versio
     sets = after.get("project_set", {"rows": {}})["rows"]
     checks["sets"] = [{"code": row.get("code"), "canonical_code": row.get("canonical_code")}
                       for row in sets.values()]
-    if any(not row.get("canonical_code") for row in sets.values()):
-        failures.append("a set without a canonical code after migration 13")
     # Integrity and Project Health, read from outside.
     report = integrity_report(database)
+    issues = report.get("health_issues", [])
+    # Migration 13: a set whose code collides case-insensitively with an
+    # earlier one keeps NULL until an operator renames it - kept, never
+    # merged, and named by Project Health (ACCEPTANCE_CRITERIA A2). Any other
+    # set without a canonical code is a failure.
+    uncoded = sorted(str(row.get("code")) for row in sets.values()
+                     if not row.get("canonical_code"))
+    collision = any(item["code"] == "SET_CODE_COLLISION" for item in issues)
+    checks["sets_kept_as_collisions"] = uncoded if collision else []
+    if uncoded and not collision:
+        failures.append(f"sets without a canonical code and no collision reported: {uncoded}")
     checks["integrity"] = {k: report.get(k) for k in (
         "quick_check", "integrity_check", "foreign_key_check", "journal_mode")}
     if report.get("quick_check") != ["ok"] or report.get("integrity_check") != ["ok"]:
         failures.append(f"integrity: {checks['integrity']}")
     if report.get("foreign_key_check") != []:
         failures.append(f"foreign keys: {report.get('foreign_key_check')}")
-    issues = report.get("health_issues", [])
     checks["health"] = [{"level": item["level"], "code": item["code"]} for item in issues]
     for item in issues:
         if item["level"] in ("error", "critical"):
