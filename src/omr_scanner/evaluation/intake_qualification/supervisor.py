@@ -534,8 +534,15 @@ class ContinuousRun:
         if force_lock:
             args.append("--force-lock")
         out = (self.logs / f"coordinator_{self.incarnation:03d}.out").open("wb")
-        self.process = subprocess.Popen(args, cwd=str(self.dir),
-                                        env=packaged_env() if packaged else python_env(),
+        environment = python_env()
+        if packaged:
+            # The packaged entry configures the application's own logging: keep
+            # its log with this run's evidence, and its configuration out of the
+            # operator's real OMRFlow profile.
+            environment = packaged_env()
+            environment.setdefault("OMRFLOW_LOG_DIR", str(self.logs / "app"))
+            environment.setdefault("OMRFLOW_CONFIG_DIR", str(self.dir / "app-config"))
+        self.process = subprocess.Popen(args, cwd=str(self.dir), env=environment,
                                         stdout=out, stderr=subprocess.STDOUT)
         self.log.write("coordinator_launched", incarnation=self.incarnation,
                        launcher_pid=self.process.pid, force_lock=force_lock, await_go=await_go)
