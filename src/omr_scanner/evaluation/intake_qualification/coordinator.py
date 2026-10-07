@@ -105,6 +105,37 @@ def runtime_facts(database: Any) -> dict[str, Any]:
     return facts
 
 
+class TimedFileSystem:
+    """The production intake filesystem, with every source listing timed into the log.
+
+    Used only when the run asks for it (``instrument_listing``) - the SMB
+    qualification measures the listing cost of a real share per
+    reconciliation (``ACCEPTANCE_CRITERIA.md`` §6). Reads pass straight
+    through; nothing about the intake service's behaviour changes.
+    """
+
+    def __init__(self, inner: Any, log: Any) -> None:
+        self._inner = inner
+        self._log = log
+
+    def list_source(self, root: str, *, recursive: bool, exclusions: Any) -> Any:
+        """List ``root`` through the production filesystem, logging how long it took."""
+        began = time.perf_counter()
+        try:
+            listing = self._inner.list_source(root, recursive=recursive, exclusions=exclusions)
+        except Exception as exc:
+            self._log.write("listing", root=root, seconds=round(time.perf_counter() - began, 6),
+                            files=None, error=f"{type(exc).__name__}: {exc}"[:300])
+            raise
+        self._log.write("listing", root=root, seconds=round(time.perf_counter() - began, 6),
+                        files=len(listing.files), error="")
+        return listing
+
+    def read_snapshot(self, path: str) -> Any:
+        """Read ``path`` through the production filesystem (not timed)."""
+        return self._inner.read_snapshot(path)
+
+
 class Coordinator:
     """One incarnation of the application under test."""
 
@@ -219,12 +250,17 @@ class Coordinator:
             self.template, workers=int(run["workers"]),
             options=RecognitionOptions(with_preview=False, keep_bubble_measurements=False),
         )
+        filesystem = None
+        if run.get("instrument_listing"):
+            from omr_scanner.services.intake_fs import OsFileSystem
+
+            filesystem = TimedFileSystem(OsFileSystem(), self.log)
         self.engine = ContinuousEngine(
             self.database,
             scan_session_id=self.session_id,
             template=self.template,
             recogniser=recogniser,
-            intake_factory=lambda: IntakeService(self.database, self.project.root),
+            intake_factory=lambda: IntakeService(self.database, self.project.root, fs=filesystem),
             limits=EngineLimits(
                 max_in_flight=int(run["max_in_flight"]), claim_window=int(run["claim_window"]),
                 max_commit_group=int(run["max_commit_group"]),

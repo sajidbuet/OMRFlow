@@ -360,6 +360,8 @@ class ContinuousRun:
         self._targets_at = -1e9
         self._kill_attempts: dict[str, int] = {}
         self.down_intervals: list[tuple[float, float]] = []
+        self.extra_spec: dict[str, Any] = {}
+        """Extra coordinator run-spec keys (the SMB qualification's listing timing)."""
 
     # ------------------------------------------------------------------
     # Observation
@@ -519,6 +521,7 @@ class ContinuousRun:
             "late_progress": 0.6,
             "operator_interval": 0.5 if self.config.duration_seconds < 600 else 1.5,
             "await_go": await_go,
+            **self.extra_spec,
         }
         path = self.dir / f"run_{self.incarnation:03d}.json"
         path.write_text(json.dumps(spec, indent=1), encoding="utf-8")
