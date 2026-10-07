@@ -1,0 +1,124 @@
+=== New-Checksums
+  f69a02e1dd5eb81d0cdc09d3ac3b86b0b873b70e360e8874f0c75362c2724328  OMRFlow-0.1.1-alpha.0-Setup-x64.exe
+
+Wrote C:\Research\OMRflow-p10\dist\installer\SHA256SUMS.txt
+
+Verify a download with either of:
+  certutil -hashfile <file> SHA256
+  sha256sum --check SHA256SUMS.txt
+exit 0
+=== Test-PackagedApp
+Smoke-testing the packaged build of OMRFlow 0.1.1-alpha.0
+
+  PASS bundle directory exists                      C:\Research\OMRflow-p10\dist\OMRFlow
+  PASS executable exists                            
+  PASS executable reports the right version         0.1.1-alpha.0
+  PASS executable names the product                 OMRFlow
+  PASS bundled: logo.svg                            
+  PASS bundled: icon.ico                            
+  PASS bundled: menu.svg                            
+  PASS bundled: folder.svg                          
+  PASS Qt runtime is bundled                        
+
+  launching...
+  PASS process survived start-up                    running
+  PASS main window appeared                         OMRFlow 0.1.1-alpha.0
+  PASS window title carries the version             OMRFlow 0.1.1-alpha.0
+  PASS application name appears exactly once        OMRFlow 0.1.1-alpha.0
+  PASS still responding                             
+  PASS closed cleanly on request                    exit code 0
+  PASS exit code is zero                            0
+
+All 16 checks passed.
+
+Note: this exercises the packaged build on the machine that built it.
+Clean-machine validation is a separate step - docs/release/CLEAN_MACHINE_TEST.md
+exit 0
+=== audit_dependencies
+Bundle : C:\Research\OMRflow-p10\dist\OMRFlow
+Binaries: 170
+
+Distinct imported DLLs: 129
+  satisfied from the bundle : 77
+  satisfied by Windows      : 52
+  UNRESOLVED                : 0
+
+Microsoft C/C++ runtime - the classic clean-machine failure:
+  OK   msvcp140-a4c2229bdc2a2a630acdc095b4d86008.dll    resolves from: bundled
+  OK   msvcp140.dll                                     resolves from: bundled
+  OK   msvcp140_1.dll                                   resolves from: bundled
+  OK   msvcp140_2.dll                                   resolves from: bundled
+  OK   vcruntime140.dll                                 resolves from: bundled
+  OK   vcruntime140_1.dll                               resolves from: bundled
+  OK   msvcrt.dll                                       part of Windows, not redistributable
+
+Resolved from Windows, excluding API sets (47):
+  advapi32.dll
+  authz.dll
+  bcrypt.dll
+  bcryptprimitives.dll
+  comctl32.dll
+  comdlg32.dll
+  crypt32.dll
+  d2d1.dll
+  d3d11.dll
+  d3d12.dll
+  d3d9.dll
+  dnsapi.dll
+  dwmapi.dll
+  dwrite.dll
+  dxgi.dll
+  gdi32.dll
+  icuuc.dll
+  imagehlp.dll
+  imm32.dll
+  iphlpapi.dll
+  kernel32.dll
+  mpr.dll
+  msvcrt.dll
+  ncrypt.dll
+  netapi32.dll
+  ntdll.dll
+  ole32.dll
+  oleaut32.dll
+  pdh.dll
+  powrprof.dll
+  propsys.dll
+  psapi.dll
+  rpcrt4.dll
+  secur32.dll
+  setupapi.dll
+  shell32.dll
+  shlwapi.dll
+  uiautomationcore.dll
+  user32.dll
+  userenv.dll
+  uxtheme.dll
+  version.dll
+  wevtapi.dll
+  winhttp.dll
+  winmm.dll
+  ws2_32.dll
+  wtsapi32.dll
+
+No unresolved imports, and the C/C++ runtime is bundled.
+exit 0
+=== verify_frozen_imports
+Frozen bundle : C:\Research\OMRflow-p10\dist\OMRFlow
+Modules found : 1278
+
+  ok       openpyxl       4 module(s) required
+  ok       et_xmlfile     1 module(s) required
+  ok       PIL            2 module(s) required
+  ok       numpy          1 module(s) required
+  ok       cv2            1 module(s) required
+  ok       sqlalchemy     2 module(s) required
+  ok       pydantic       1 module(s) required
+  ok       psutil         1 module(s) required
+  ok       PySide6        4 module(s) required
+  ok       omr_scanner    5 module(s) required
+
+  note     pandas         declared in pyproject.toml, imported by nothing - correctly absent
+
+Every dependency the application imports is present in the frozen bundle.
+exit 0

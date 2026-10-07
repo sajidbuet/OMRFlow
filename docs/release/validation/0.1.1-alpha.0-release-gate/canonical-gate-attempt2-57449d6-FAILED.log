@@ -1,0 +1,20 @@
+OMRFlow pytest / Ruff / Mypy quality-gate summary
+================================================
+
+Started repository : C:\Research\OMRflow-p10g
+Branch             : gate/phase10-57449d6
+Commit             : 57449d62d400ace6c403f35135f3f08972689106
+Log directory      : C:\Research\OMRflow-p10g\Scratch\Log\2026-10-07_145349
+
+Checks:
+
+PYTEST - Full test suite            FAIL   Exit=1   02:18:02
+RUFF - Lint and static checks       PASS   Exit=0   00:00:00
+MYPY - Static type checking         PASS   Exit=0   00:00:03
+
+--- pytest result
+FAILED tests/unit/test_release_gate.py::test_the_committed_matrix_is_valid_and_its_verdict_is_computed
+=== 1 failed, 7261 passed, 29 skipped, 10 deselected in 8272.12s (2:17:52) ====
+
+--- cause
+The committed release-gate matrix cited evidence files this gate run was to produce (canonical-gate-summary.log, stress-summary.log); the matrix test refuses evidence not in the repository - as designed. Matrix defect, fixed by citing only evidence that exists. Every other test passed.

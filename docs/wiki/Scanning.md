@@ -46,9 +46,16 @@ anything; **Resume Batch** reads only what is left. See
 
 ## Several scanners at once: session mode
 
-> In development (`0.1.1`, branch `feat/0.1.1-phase8-operational-gui`, not
-> released). Tested by automated GUI tests and scripted local runs only - not
-> yet used in a scanning room, on a network share or with a real scanner.
+> In development (`0.1.1`, merged into `main`, **not released**). Tested by
+> automated GUI tests, scripted local runs, a headless 10,189-file synthetic
+> campaign (source build) and - revised phase 10 - the same continuous engine
+> running inside the **installed** `0.1.1-alpha.0` candidate on two local
+> folders, with the installed GUI checked after a forced kill. **Not yet used
+> in a scanning room, with a real scanner, or on a real network share** (the
+> SMB qualification is prepared but has not been run). Keep the project on
+> this computer's local disk; a scanner's folder may be a network path, but
+> the network stability defaults (wait 15 s of quiet, look every 30 s) are
+> unmeasured on a real share.
 
 Nothing above changes for a single, finite set of scans. When several scanners
 feed one examination, **Session → Add Scanner Source…** adds a scanner's

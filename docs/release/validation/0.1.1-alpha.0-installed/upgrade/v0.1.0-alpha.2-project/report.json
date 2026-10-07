@@ -1,0 +1,192 @@
+{
+ "check": "upgrade",
+ "label": "v0.1.0-alpha.2 project",
+ "fixture": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\upgrade\\fixtures\\alpha2-project",
+ "exe": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow\\OMRFlow.exe",
+ "schema_before": 9,
+ "schema_expected": 17,
+ "rows_before": {
+  "schema_migration": 9,
+  "project_setting": 5,
+  "scan_batch": 1,
+  "batch_scan": 5,
+  "review_conflict": 0,
+  "audit_event": 0,
+  "candidate_roster": 1,
+  "registered_candidate": 6,
+  "reconciliation_run": 1,
+  "reconciliation_entry": 6,
+  "reconciliation_decision": 0,
+  "reconciliation_script": 5,
+  "answer_key_revision": 1,
+  "scoring_policy_revision": 1,
+  "candidate_result": 6,
+  "report_template_association": 1,
+  "report_layout_config": 1,
+  "generated_report": 1,
+  "batch_scan_history": 0,
+  "processing_manifest": 0,
+  "project_set": 0
+ },
+ "title": "Qualification Exam - OMRFlow 0.1.1-alpha.0",
+ "migrated_seconds": 10.22,
+ "stages": {
+  "project": {},
+  "template": {},
+  "calibration": {},
+  "scan": {
+   "scanSessionLabel": "Scan session: Legacy batch b7d6446f (2026-10-07 04:32) - open, 1 batch(es)",
+   "workersLabel": "16 CPU threads detected - no scans added yet",
+   "batchStateLabel": "Processing"
+  },
+  "resolve": {
+   "reviewBatchLabel": "Scan session Legacy batch b7d6446f (2026-10-07 04:32) \u00b7 open \u00b7 results provisional\nBatch b7d6446f\n5 scan(s) from (files)",
+   "reviewSummaryLabel": "0 total   0 unresolved   0 resolved"
+  },
+  "attendance": {
+   "attendanceBatchLabel": "Batch: b7d6446f \u00b7 scan session Legacy batch b7d6446f (2026-10-07 04:32) (open - provisional)",
+   "activeRosterLabel": "candidates.csv \u00b7 6 candidate(s) \u00b7 5 expected present \u00b7 1 absent \u00b7 Reconciled: no exceptions",
+   "reconciliationSummaryLabel": "Reconciliation complete. No attendance exceptions need review.\nRegistered 6 \u00b7 Expected present 5 \u00b7 Marked absent 1 \u00b7 Scripts 5 \u00b7 Absent confirmed 1 \u00b7 Resolved 0 \u00b7 Accepted as-is 0"
+  },
+  "answer_key": {
+   "answerKeySessionLabel": "Scan session Legacy batch b7d6446f (2026-10-07 04:32) \u00b7 open \u00b7 results provisional",
+   "answerKeyReadinessLabel": "Answer keys: 1 of 1 verified"
+  },
+  "results": {
+   "resultsBatchLabel": "PROVISIONAL - scan session 'Legacy batch b7d6446f (2026-10-07 04:32)' is open; results may change.\nMarking batch b7d6446f \u00b7 5 scan(s) from (files)",
+   "resultsSummaryLabel": "Candidates 6 \u00b7 Scored 5 \u00b7 Absent 1 \u00b7 Cannot be scored 0 \u00b7 Need recalculating 0\nSet A: 5\nEvery candidate is accounted for."
+  },
+  "reports": {}
+ },
+ "responding": true,
+ "close": {
+  "exit_code": 0,
+  "closed_cleanly": true
+ },
+ "lock_left": false,
+ "log_problems": [],
+ "checks": {
+  "schema_version": 17,
+  "backups": [
+   "backup_20261007T045444Z_before-migration-9-to-17.sqlite3"
+  ],
+  "backup_schema_version": 9,
+  "backup_manifest": {
+   "backup_file": "backup_20261007T045444Z_before-migration-9-to-17.sqlite3",
+   "created_at": "2026-10-07T04:54:44.197940+00:00",
+   "app_version": "0.1.1-alpha.0",
+   "schema_version": 9,
+   "reason": "before-migration-9-to-17",
+   "source_size_bytes": 581632,
+   "backup_sha256": "a30546142ddd4935c88485f30eeff6084a52b89ca237d1c042a9e7e5d7e8f00b"
+  },
+  "tables": {
+   "answer_key_revision": {
+    "before": 1,
+    "after": 1
+   },
+   "audit_event": {
+    "before": 0,
+    "after": 4
+   },
+   "batch_scan": {
+    "before": 5,
+    "after": 5
+   },
+   "batch_scan_history": {
+    "before": 0,
+    "after": 0
+   },
+   "candidate_result": {
+    "before": 6,
+    "after": 6
+   },
+   "candidate_roster": {
+    "before": 1,
+    "after": 1
+   },
+   "generated_report": {
+    "before": 1,
+    "after": 1
+   },
+   "processing_manifest": {
+    "before": 0,
+    "after": 1
+   },
+   "project_set": {
+    "before": 0,
+    "after": 0
+   },
+   "project_setting": {
+    "before": 5,
+    "after": 7
+   },
+   "reconciliation_decision": {
+    "before": 0,
+    "after": 0
+   },
+   "reconciliation_entry": {
+    "before": 6,
+    "after": 6
+   },
+   "reconciliation_run": {
+    "before": 1,
+    "after": 1
+   },
+   "reconciliation_script": {
+    "before": 5,
+    "after": 5
+   },
+   "registered_candidate": {
+    "before": 6,
+    "after": 6
+   },
+   "report_layout_config": {
+    "before": 1,
+    "after": 1
+   },
+   "report_template_association": {
+    "before": 1,
+    "after": 1
+   },
+   "review_conflict": {
+    "before": 0,
+    "after": 0
+   },
+   "scan_batch": {
+    "before": 1,
+    "after": 1
+   },
+   "schema_migration": {
+    "before": 9,
+    "after": 17
+   },
+   "scoring_policy_revision": {
+    "before": 1,
+    "after": 1
+   }
+  },
+  "scan_sessions": [
+   {
+    "name": "Legacy batch b7d6446f (2026-10-07 04:32)",
+    "state": "open",
+    "origin": "backfill"
+   }
+  ],
+  "batches": 1,
+  "sets": [],
+  "integrity": {
+   "quick_check": [
+    "ok"
+   ],
+   "integrity_check": [
+    "ok"
+   ],
+   "foreign_key_check": [],
+   "journal_mode": "delete"
+  },
+  "health": []
+ },
+ "failures": [],
+ "result": "PASS"
+}

@@ -205,9 +205,15 @@ def new_run(
     not - a run takes minutes.
     """
     run_id = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    root = results_root if results_root is not None else RESULTS_ROOT
+    # Absolute: the workspace's directories are handed to launched applications
+    # as OMRFLOW_CONFIG_DIR / OMRFLOW_LOG_DIR, and an application started in
+    # the workspace resolves a relative one against *its* working directory -
+    # found in revised phase 10, where a relative --results-dir made the log
+    # check look in one place while the application wrote to another.
+    root = (results_root if results_root is not None else RESULTS_ROOT).resolve()
     workspace_base = (
-        workspace_root if workspace_root is not None else root / run_id / "workspace"
+        workspace_root.resolve() if workspace_root is not None
+        else root / run_id / "workspace"
     )
     config = ValidationConfig(
         run_id=run_id,

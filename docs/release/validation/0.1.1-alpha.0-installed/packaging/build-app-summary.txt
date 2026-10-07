@@ -1,0 +1,6 @@
+OMRFlow 0.1.1-alpha.0 - Alpha channel
+  source commit : 73e364b
+C:\Research\OMRflow-p10\packaging\build\file_version_info.txt: OMRFlow 0.1.1-alpha.0 (0, 1, 1, 0)
+112574 INFO: Build complete! The results are available in: C:\Research\OMRflow-p10\dist
+Built dist\OMRFlow  -  285 MB
+  version : 0.1.1-alpha.0

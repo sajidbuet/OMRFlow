@@ -64,9 +64,17 @@ def describe(payload: dict) -> str:
 
 
 def test_a_small_campaign_with_one_real_kill(tmp_path: Path) -> None:
+    # The kill must land while the scanners are still writing, or nothing can
+    # arrive while the coordinator is down and `offline_arrivals_discovered`
+    # rightly fails. With a 36 s timeline and the kill at 50 % that depended on
+    # the machine's pace: on a loaded run (canonical gate at 5c9d501, revised
+    # phase 10) recognition reached 50 % half a second after the last write.
+    # A longer timeline and an earlier kill keep the scenario's intent - one
+    # real kill with work in flight and arrivals while it is down - without
+    # that race.
     small = replace(
         config.self_test_config(),
-        candidates_per_set=26, duration_seconds=36.0, kill_percents=(50,),
+        candidates_per_set=26, duration_seconds=54.0, kill_percents=(30,),
         after_commit_kill_percent=0, duplicate_sync_kill_percent=0, operator_kill_percent=0,
         clean_close_percent=0, reprocess=False, checkpoint_percents=(40, 100),
         run_control=False, run_finite=False, restart_offline_files=2,

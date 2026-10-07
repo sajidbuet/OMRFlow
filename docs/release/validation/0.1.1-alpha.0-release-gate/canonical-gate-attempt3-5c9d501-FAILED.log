@@ -1,0 +1,22 @@
+OMRFlow pytest / Ruff / Mypy quality-gate summary
+================================================
+
+Started repository : C:\Research\OMRflow-p10g
+Branch             : gate/phase10-5c9d501
+Commit             : 5c9d5018f08ca60937c36c9112ad5dbf116558b5
+Log directory      : C:\Research\OMRflow-p10g\Scratch\Log\2026-10-07_181624
+
+Checks:
+
+PYTEST - Full test suite            FAIL   Exit=1   02:05:25
+RUFF - Lint and static checks       PASS   Exit=0   00:00:00
+MYPY - Static type checking         PASS   Exit=0   00:00:01
+
+--- pytest result
+FAILED tests/integration/test_intake_qualification_campaign.py::test_a_small_campaign_with_one_real_kill
+FAILED tests/unit/test_release_gate.py::test_the_committed_matrix_is_valid_and_its_verdict_is_computed
+=== 2 failed, 7260 passed, 29 skipped, 10 deselected in 7516.50s (2:05:16) ====
+
+--- causes
+1. test_a_small_campaign_with_one_real_kill: all three scanner writers finished 0.5 s before its 50 % kill landed (recognition lagged behind writing on this run), so no file could arrive while the coordinator was down and offline_arrivals_discovered failed, as it should for such a run. Pre-existing phase 9 test whose kill point depended on machine pace; fixed by a longer timeline and an earlier kill.
+2. test_the_committed_matrix_is_valid...: evidence files named *.log were never committed (.gitignore: *.log), so a clean checkout lacked packaging-checks.log; the matrix test refused it, as designed. Fixed by force-adding the evidence logs.

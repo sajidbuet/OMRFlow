@@ -1,0 +1,12 @@
+platform win32 -- Python 3.12.7, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Research\OMRflow-p10g
+PASSED tests/crash/test_crash_matrix.py::test_case_11_at_one_thousand_sheets
+PASSED tests/gui/test_batch_progress_gui.py::TestETenThousandScans::test_a_lazy_model_costs_orders_of_magnitude_less_than_eager_items
+PASSED tests/integration/test_engine_endurance.py::test_long_session_with_waves_and_kills_equals_an_uninterrupted_run
+PASSED tests/integration/test_intake_qualification_campaign.py::test_the_harness_self_test
+PASSED tests/integration/test_intake_qualification_campaign.py::test_endurance_campaign
+PASSED tests/integration/test_intake_soak.py::test_randomised_arrivals
+PASSED tests/integration/test_multi_set_reports.py::TestFullScaleExamination::test_three_full_size_sets_generate_without_cross_contamination
+PASSED tests/integration/test_smb_rehearsal.py::test_the_rehearsal_runs_every_local_assertion_and_is_never_smb
+PASSED tests/integration/test_stress_kill_resume.py::test_a_forced_kill_mid_run_resumes_without_loss_or_duplication[10000]
+PASSED tests/integration/test_stress_reconciliation_and_reports.py::TestStressReconciliationAndReportGeneration::test_at_10000_sheets

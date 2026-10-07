@@ -1,0 +1,50 @@
+{
+ "after_commit_kill_percent": 35,
+ "candidates_per_set": 60,
+ "checkpoint_percents": [
+  10,
+  50,
+  90,
+  100
+ ],
+ "claim_window": 32,
+ "clean_close_percent": 85,
+ "control_duration_seconds": 120.0,
+ "duplicate_sync_kill_percent": 45,
+ "duration_seconds": 240.0,
+ "kill_percents": [
+  25,
+  75
+ ],
+ "max_commit_group": 25,
+ "max_in_flight": 16,
+ "mode": "custom",
+ "operator_kill_percent": 60,
+ "outage_end": 0.55,
+ "outage_source": "B",
+ "outage_start": 0.35,
+ "reprocess": true,
+ "restart_offline_files": 3,
+ "run_control": true,
+ "run_finite": true,
+ "seed": 20261006,
+ "sets": [
+  "A",
+  "B",
+  "C",
+  "D"
+ ],
+ "sources": 2,
+ "stability": {
+  "max_decode_attempts": 3,
+  "min_observations": 2,
+  "poll_interval_seconds": 10.0,
+  "quiet_seconds": 5.0,
+  "retry_backoff_seconds": 5.0
+ },
+ "stage_timeout_seconds": 900.0,
+ "timing_seed": 6102026,
+ "trickle_seconds": 4.0,
+ "unit_size": 25,
+ "workers": 4
+}

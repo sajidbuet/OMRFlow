@@ -208,8 +208,47 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   `542b2af`; compact evidence in
   `docs/release/validation/0.1.1-alpha.0-phase9-intake/`, details in
   `PHASE_I_HANDOFF.md`.
+- **Release-gate tooling (`0.1.1` revised phase 10; no migration, schema
+  17).** Nothing an operator sees changes.
+  - `OMRFlow.exe --intake-qualification-coordinator` (hidden, not in
+    `--help`): the packaged executable runs the headless intake-qualification
+    coordinator, so the intake campaign's application under test - and what
+    its real kills hit - can be the **installed** build
+    (`intake_qualification --coordinator-exe`); each incarnation records
+    whether it is frozen, where its package lives and its SQLite library and
+    connection settings.
+  - **SMB qualification** (`python -m omr_scanner.tools.smb_qualification
+    prepare | run | rehearse`, `docs/release/SMB_QUALIFICATION.md`): the
+    Phase 9 cohort packaged per scanner PC, a PowerShell scanner writer that
+    needs no Python (`scripts/smb/Invoke-OmrflowScannerWriter.ps1`), one
+    forced restart and a person-made share outage that is observed rather
+    than assumed, per-source listing cost and completion-to-ready latency, and
+    15 assertions; genuineness is decided from facts (UNC host, the writer's
+    own host, a local fixed disk for the database). A rehearsal on local
+    folders is never SMB evidence.
+  - `tools/release_validation/installed_checks.py` (installed-build upgrade
+    and post-kill GUI checks through UI Automation) and
+    `tools/release_validation/release_gate.py` (the `ACCEPTANCE_CRITERIA.md`
+    §8 verdict computed from a committed matrix).
+  - Evidence: `docs/release/validation/0.1.1-alpha.0-installed/`; details in
+    `development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md`. **Real SMB
+    qualification: not performed (no second machine); the release gate is
+    not met.**
 
 ### Fixed (`0.1.1` line)
+
+- **Documentation:** *Upgrade Compatibility* attributed to the released
+  `0.1.0-alpha.2` the refusal message of the schema-12 build `0ed96ed`; the
+  actual `v0.1.0-alpha.2` refuses a project `0.1.1` has opened with *"The
+  project file is not valid"* (its strict `project.json` reader rejects the
+  new `active_template` key), and the database-only pre-migration backup does
+  not undo that - copy the project folder (revised phase 10, checked against
+  the released code). *Installation* listed the settings file under
+  `%LOCALAPPDATA%`; it is under `%APPDATA%`.
+- **Release-validation framework:** a relative `--results-dir` handed the
+  launched application a relative log directory, so the "a log was written"
+  check failed for the packaged and installed launches although the log
+  existed (revised phase 10).
 
 - **A scanner source lost in the middle of a reconciliation pass marked its
   files vanished** (found by the revised phase 9 release campaign). When the

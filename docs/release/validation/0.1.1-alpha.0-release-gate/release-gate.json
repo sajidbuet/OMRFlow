@@ -1,0 +1,195 @@
+{
+ "version": "0.1.1-alpha.0",
+ "candidate_commit": "73e364b",
+ "branch": "feat/0.1.1-phase10-release-gate",
+ "recorded": "2026-10-07 (revised phase 10)",
+ "statuses": "PASS / FAIL / NOT PERFORMED - the verdict is computed by tools/release_validation/release_gate.py",
+ "gates": [
+  {
+   "gate": "1",
+   "title": "Phases A-F implemented and tested; X1-X12 hold",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "development/releases/0.1.1-alpha.0/PHASE_A_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_B_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_C_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_D_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_E_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_F_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_G_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_H_HANDOFF.md",
+    "development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md#19-final-automated-validation"
+   ],
+   "note": "Every phase handoff records implementation and tests; the invariants' suites (architecture, golden one-batch, migrations, harness) pass in the canonical gate on this branch."
+  },
+  {
+   "gate": "2",
+   "title": "Section 5 synthetic intake campaign QUALIFIED at full scale",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/release/validation/0.1.1-alpha.0-phase9-intake/release/report.md",
+    "development/releases/0.1.1-alpha.0/PHASE_I_HANDOFF.md"
+   ],
+   "note": "p9-release-20261006T151124Z at 542b2af: QUALIFIED - 3 scanners, 10,189 files, 16/16 assertions, crash cases 1-15, endurance A-E. Retained: phase 10 changed no correctness-critical production code."
+  },
+  {
+   "gate": "3",
+   "title": "Section 6 SMB qualification passed and recorded",
+   "required": true,
+   "status": "NOT PERFORMED",
+   "evidence": [
+    "docs/release/SMB_QUALIFICATION.md"
+   ],
+   "note": "Real infrastructure required: one laptop, no second Windows machine, no share. Tooling, writer script and procedure ready; a local rehearsal (never SMB evidence) passed every assertion that can run on one machine."
+  },
+  {
+   "gate": "4",
+   "title": "Phase 10 harness self-test; section 5.3 endurance and every 5.4 crash test pass; fresh 100k optional",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "tests/unit/test_qualification.py",
+    "tests/integration/test_stress_kill_resume.py",
+    "docs/release/validation/0.1.1-alpha.0-phase9-intake/release/report.md",
+    "development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md#19-final-automated-validation"
+   ],
+   "note": "The finite Phase 10 harness's unit / integration tests run in the canonical gate and stress suite; section 5.3 / 5.4 evidence from the QUALIFIED campaign. A fresh 100,000-sheet run was NOT performed (optional for this Alpha; the release notes say so)."
+  },
+  {
+   "gate": "4a",
+   "title": "S1, S2, S3 and R1 closed, tests passing on the installed build as well as from source",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/release/validation/0.1.1-alpha.0-installed/installed-intake/report.md",
+    "docs/release/validation/0.1.1-alpha.0-installed/gui-recovery/report.md"
+   ],
+   "note": "Installed: crash case 13 (S1) with the kill inside the installed executable, 2 owed conflicts created by recovery; installed GUI after a kill - Scan 43/58 read = 43 committed, one session (S2, S3); Resolve before Scan = the services' summary of committed rows (R1). Source: phase 3 / phase 9."
+  },
+  {
+   "gate": "5",
+   "title": "Packaging smoke, installer checks, live-intake smoke on the installed build (two local sources, a few hundred files, one restart)",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/release/validation/0.1.1-alpha.0-installed/packaging/packaging-checks.log",
+    "docs/release/validation/0.1.1-alpha.0-installed/packaging/installer-checks.log",
+    "docs/release/validation/0.1.1-alpha.0-installed/packaging/release-validation/validation-summary.md",
+    "docs/release/validation/0.1.1-alpha.0-installed/installed-intake/report.md"
+   ],
+   "note": "Smoke 16/16; round trip 15/15; sanitised launch 14/14; release verification 14/14; framework stages 78/0. Installed intake: 2 sources, 249 files, 5 kills + 1 clean close, ALL RUNS PASSED - NOT THE RELEASE QUALIFICATION (16/16, cases 1-15)."
+  },
+  {
+   "gate": "6",
+   "title": "Upgrade from schema 12 and from 0.1.0-alpha.2 on the installed build; forward-only consequence in the release notes",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/release/validation/0.1.1-alpha.0-installed/upgrade/v0.1.0-alpha.2-project/report.md",
+    "docs/release/validation/0.1.1-alpha.0-installed/upgrade/schema12-unique_sets/report.md",
+    "docs/release/validation/0.1.1-alpha.0-installed/upgrade/schema12-colliding_sets/report.md",
+    "docs/release/RELEASE_NOTES_0.1.1-alpha.0.md"
+   ],
+   "note": "Installed in place over installed v0.1.0-alpha.2; its project (schema 9) and the schema-12 fixtures migrated with every stored value kept, backups verified. Forward-only incl. project.json - stated."
+  },
+  {
+   "gate": "7",
+   "title": "Documentation: scan-session user guide; Scanning, Processing, Review-and-Resolution, Attendance, Results-and-Reports, Known-Limitations, Upgrade-Compatibility; README status",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/wiki/Scanning.md",
+    "docs/wiki/Processing.md",
+    "docs/wiki/Review-and-Resolution.md",
+    "docs/wiki/Attendance.md",
+    "docs/wiki/Results-and-Reports.md",
+    "docs/wiki/Known-Limitations.md",
+    "docs/wiki/Upgrade-Compatibility.md",
+    "README.md"
+   ],
+   "note": "Session mode is documented on Scanning (since phase 8); all pages carry the phase 10 status; README tracks kept separate."
+  },
+  {
+   "gate": "8",
+   "title": "Release notes state: real scanning-room qualification not performed; quality-decision defaults unvalidated",
+   "required": true,
+   "status": "PASS",
+   "evidence": [
+    "docs/release/RELEASE_NOTES_0.1.1-alpha.0.md"
+   ],
+   "note": "Draft, not published. Also states: SMB not qualified, fresh 100k not performed, unsigned, forward-only."
+  },
+  {
+   "gate": "9",
+   "title": "RELEASE_CHECKLIST.md followed; published as a pre-release only on the owner's instruction",
+   "required": true,
+   "status": "NOT PERFORMED",
+   "evidence": [
+    "docs/release/RELEASE_CHECKLIST.md"
+   ],
+   "note": "Worked through for the candidate: clean-machine (no Windows Sandbox) and person-only checks not performed; release.ps1 refuses the already-set version 0.1.1-alpha.0; publication is the owner's and blocked by gate 3."
+  },
+  {
+   "gate": "x-scanning-room",
+   "title": "Real scanning-room qualification (section 7)",
+   "required": false,
+   "status": "NOT PERFORMED",
+   "evidence": [],
+   "note": "Later 0.1.1 Alpha; pre-Beta gate."
+  },
+  {
+   "gate": "x-100k",
+   "title": "Fresh 100,000-sheet run on the new architecture",
+   "required": false,
+   "status": "NOT PERFORMED",
+   "evidence": [],
+   "note": "Optional for Alpha; mandatory before the first Beta."
+  },
+  {
+   "gate": "x-f8",
+   "title": "F8 prerelease version ordering",
+   "required": false,
+   "status": "FAIL",
+   "evidence": [
+    "docs/wiki/Known-Limitations.md"
+   ],
+   "note": "Open: numeric_version sorts 0.1.1-beta.1 below 0.1.1-alpha.3. Pre-Beta gate; harmless for this Alpha."
+  },
+  {
+   "gate": "x-clean-machine",
+   "title": "Clean-machine (Windows Sandbox) test for this build",
+   "required": false,
+   "status": "NOT PERFORMED",
+   "evidence": [
+    "docs/release/CLEAN_MACHINE_TEST.md"
+   ],
+   "note": "Part of gate 9's checklist; no Windows Sandbox on the build machine. Substitutes passed."
+  },
+  {
+   "gate": "x-signing",
+   "title": "Code signing",
+   "required": false,
+   "status": "NOT PERFORMED",
+   "evidence": [],
+   "note": "Not required for Alpha; SmartScreen will warn."
+  },
+  {
+   "gate": "x-power-loss",
+   "title": "Power-loss qualification",
+   "required": false,
+   "status": "NOT PERFORMED",
+   "evidence": [],
+   "note": "Process termination is not power loss."
+  },
+  {
+   "gate": "x-production",
+   "title": "Production qualification",
+   "required": false,
+   "status": "NOT PERFORMED",
+   "evidence": [],
+   "note": ""
+  }
+ ]
+}

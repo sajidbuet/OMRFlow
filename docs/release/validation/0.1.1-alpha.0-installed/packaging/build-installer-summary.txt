@@ -1,0 +1,8 @@
+
+
+Successful compile (76.250 sec). Resulting Setup program filename is:
+C:\Research\OMRflow-p10\dist\installer\OMRFlow-0.1.1-alpha.0-Setup-x64.exe
+
+Built C:\Research\OMRflow-p10\dist\installer\OMRFlow-0.1.1-alpha.0-Setup-x64.exe  -  81.9 MB
+  UNSIGNED: Windows SmartScreen will warn. See docs/wiki/Installation.md.
+  next    : .\scripts\release\New-Checksums.ps1

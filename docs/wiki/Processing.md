@@ -66,7 +66,11 @@ shows as *saving*). So:
 - **Retry Failed** re-attempts only the failures.
 
 This was tested by cancelling, by closing the window and by killing a real
-OMRFlow process mid-run (0.1.1 phase 3). A real power cut was **not** tested;
+OMRFlow process mid-run (0.1.1 phase 3) - and, for `0.1.1-alpha.0`, by killing
+the **installed** application's processing engine with sheets in its workers
+and reopening the project in the installed application (revised phase 10).
+The database keeps SQLite's rollback journal with `synchronous = FULL`
+(recorded from the installed build). A real power cut was **not** tested;
 it is covered only as far as SQLite and your storage are. See
 [Recovery After Interrupted Processing](Recovery-After-Interrupted-Processing).
 

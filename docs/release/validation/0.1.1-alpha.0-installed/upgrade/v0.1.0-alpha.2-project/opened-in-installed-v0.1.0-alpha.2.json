@@ -1,0 +1,33 @@
+{
+ "exe": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow\\OMRFlow.exe",
+ "fixture": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\upgrade\\fixtures\\alpha2-project",
+ "schema_before": 9,
+ "db_sha256_before": "d1e8eb49ea4c1a06ee7cee5832e8a1b0ee6c770b50e02da736f01cccdff56612",
+ "title": "Qualification Exam - OMRFlow 0.1.0-alpha.2",
+ "stages": {
+  "scan": {
+   "workersLabel": "16 CPU threads detected - no scans added yet",
+   "batchStateLabel": "Processing"
+  },
+  "resolve": {
+   "reviewBatchLabel": "No batch selected"
+  },
+  "attendance": {
+   "activeRosterLabel": "candidates.csv \u00b7 6 candidate(s) \u00b7 5 expected present, 1 marked absent",
+   "reconciliationSummaryLabel": "Registered 6 \u00b7 Expected present 5 \u00b7 Marked absent 1 \u00b7 Scripts 5\nMatched 5 \u00b7 Absent confirmed 1 \u00b7 Unknown ID 0 \u00b7 Duplicate script 0 \u00b7 Present without script 0 \u00b7 Absent with script 0 \u00b7 ID not yet resolved 0\nResolved 0 \u00b7 Accepted as-is 0 \u00b7 Every exception has been dealt with."
+  },
+  "answer_key": {},
+  "results": {
+   "resultsSummaryLabel": "Candidates 6 \u00b7 Scored 5 \u00b7 Absent 1 \u00b7 Cannot be scored 0 \u00b7 Need recalculating 0\nSet A: 5\nEvery candidate is accounted for."
+  },
+  "reports": {}
+ },
+ "other_windows": [],
+ "close": {
+  "exit_code": 0,
+  "closed_cleanly": true
+ },
+ "schema_after": 9,
+ "log_problems": [],
+ "backups": []
+}

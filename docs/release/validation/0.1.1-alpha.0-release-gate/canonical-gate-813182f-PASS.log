@@ -1,0 +1,23 @@
+OMRFlow pytest / Ruff / Mypy quality-gate summary
+================================================
+
+Started repository : C:\Research\OMRflow-p10g
+Branch             : gate/phase10-813182f
+Commit             : 813182fdf195f22300b61f6a0683e7d1c1843fae
+Log directory      : C:\Research\OMRflow-p10g\Scratch\Log\2026-10-07_203005
+
+Checks:
+
+PYTEST - Full test suite            PASS   Exit=0   01:51:01
+RUFF - Lint and static checks       PASS   Exit=0   00:00:00
+MYPY - Static type checking         PASS   Exit=0   00:00:00
+Git state changed during testing: False
+OVERALL RESULT: PASS
+
+--- pytest result
+======== 7263 passed, 29 skipped, 10 deselected in 6653.07s (1:50:53) =========
+
+--- ruff
+All checks passed!
+--- mypy
+Success: no issues found in 269 source files

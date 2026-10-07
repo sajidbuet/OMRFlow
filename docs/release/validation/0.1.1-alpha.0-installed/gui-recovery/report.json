@@ -1,0 +1,141 @@
+{
+ "check": "gui-recovery",
+ "exe": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow\\OMRFlow.exe",
+ "project": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\installed-gui-recovery\\campaign\\p9-self_test-20261007T045930Z-20261006\\gui-recovery\\workspace\\Installed recovery check",
+ "session": "9d026eb9a94b49d68d0aac4b37486e24",
+ "coordinator_runtime": {
+  "event": "runtime",
+  "campaign": "p9-self_test-20261007T045930Z-20261006",
+  "role": "coordinator:1",
+  "pid": 20112,
+  "t": 1791349185.2997043,
+  "frozen": true,
+  "executable": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow\\OMRFlow.exe",
+  "package_location": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow\\_internal\\omr_scanner",
+  "python": "3.12.7",
+  "sqlite_library": "3.45.3",
+  "sqlite_connection": "3.45.3",
+  "journal_mode": "delete",
+  "synchronous": 2,
+  "busy_timeout": 5000,
+  "foreign_keys": 1
+ },
+ "coordinator_started": {
+  "seconds": 0.015,
+  "intent": "running"
+ },
+ "kill": {
+  "exit_code": 1,
+  "orphans": [],
+  "lock_left": true,
+  "pre": {
+   "committed": 43,
+   "processing": 3,
+   "remaining": 15,
+   "t": 1791349222.1877923
+  }
+ },
+ "stale_lock_removed": ".omrflow.lock",
+ "database_after_open": {
+  "statuses": {
+   "completed": 36,
+   "duplicate": 1,
+   "failed": 3,
+   "pending": 3,
+   "warning": 4
+  },
+  "committed": 43,
+  "registered": 47,
+  "conflicts": {
+   "open": 5,
+   "resolved": 4,
+   "withdrawn": 1
+  },
+  "sessions": [
+   [
+    "9d026eb9a94b49d68d0aac4b37486e24",
+    "Qualification examination",
+    "open"
+   ]
+  ],
+  "batches": 10,
+  "running_batches": 0
+ },
+ "R1": {
+  "reviewSummaryLabel": "9 total   4 unresolved   4 resolved   1 rescan required   2 suggested rescan",
+  "reviewBatchLabel": "Scan session Qualification examination \u00b7 open \u00b7 results provisional\n41 effective script(s) from 10 batch(es) \u00b7 1 replaced \u00b7 1 rejected / excluded / deferred \u00b7 1 exact duplicate image(s) \u00b7 3 not read yet",
+  "database_conflicts": {
+   "open": 5,
+   "resolved": 4,
+   "withdrawn": 1
+  },
+  "service_summary": {
+   "total": 9,
+   "unresolved": 4,
+   "resolved": 4,
+   "withdrawn": 1,
+   "rescans_outstanding": 1,
+   "suggested": 2
+  },
+  "result": "PASS",
+  "failures": []
+ },
+ "S2_S3": {
+  "labels": {
+   "sessionNameLabel": "Session: Qualification examination",
+   "sessionLifecycleLabel": "OPEN",
+   "sessionActivityLabel": "Session activity: Processing (not running in this window)",
+   "sessionStopButton": "Stop continuous scanning",
+   "intakePauseButton": "Pause Intake",
+   "addSourceButton": "Add Source...",
+   "finishScanSessionButton": "Finish Scan Session...",
+   "recognitionProgressTitle": "Recognition",
+   "recognitionProgressLabel": "43 / 58 read",
+   "recognitionProgressBar": "Recognition progress",
+   "conflictsProgressTitle": "Conflicts",
+   "conflictsProgressLabel": "4 / 8 resolved",
+   "conflictsProgressBar": "Conflicts progress",
+   "rescansProgressTitle": "Rescans",
+   "rescansProgressLabel": "1 / 4 replaced",
+   "rescansProgressBar": "Rescans progress",
+   "collapsibleHeader_session_details": "Session details",
+   "sessionCountsLabel": "Discovered 60 \u00b7 Stabilizing 3 \u00b7 Waiting 12 \u00b7 Being read 0 \u00b7 Accepted 37 \u00b7 Conflict 2 \u00b7 Rescan required 3",
+   "sessionSecondaryCountsLabel": "Duplicate 2 \u00b7 Superseded 1",
+   "sessionStateLineLabel": "Processing: running \u00b7 Intake: on \u00b7 Continuous scanning is not running in this window.",
+   "sessionWarningsLabel": "\u26a0 2 suggested rescan(s) await an operator on Resolve. Suggestions use an unvalidated default quality policy; nothing is rejected without a named operator's confirmation.",
+   "collapsibleHeader_sources": "Sources",
+   "collapsibleSummary_sources": "2 source(s)",
+   "resultSummaryLabel": "No scan selected",
+   "sessionStatusFilter": "Status filter",
+   "sessionSourceFilter": "Source filter",
+   "sessionBatchFilter": "Batch filter",
+   "sessionSheetSearch": "Search sheets",
+   "sessionQualityFilter": "Quality filter",
+   "sessionConflictFilter": "Conflict filter",
+   "sessionRescanFilter": "Rescan filter",
+   "sessionPageLabel": "1-47 of 47",
+   "sessionPreviousPage": "Previous",
+   "sessionNextPage": "Next",
+   "sessionSheetTable": "Status",
+   "scanSessionLabel": "Scan session: Qualification examination - open, 10 batch(es)",
+   "scanSessionMenuButton": "Session",
+   "batchStateLabel": "Batch 3ecd9b62 - 1 of 4 processed - 3 remaining (0 ok, 0 review, 1 failed)",
+   "batchProgressPanel": "Processing",
+   "progressLabel": "Batch interrupted - press Resume to read the 3 remaining scan(s).",
+   "progressCountsLabel": "1 / 4 recognised \u00b7 1 failed (retryable) \u00b7 3 pending",
+   "progressTimingLabel": "Restored from the project database",
+   "progressOutcomeLabel": "Successful 0 \u00b7 Review 0 \u00b7 Failed 1"
+  },
+  "recognition_text": "43 / 58 read",
+  "result": "PASS",
+  "failures": []
+ },
+ "other_windows": [],
+ "close": {
+  "exit_code": 0,
+  "closed_cleanly": true
+ },
+ "log_problems": [],
+ "failures": [],
+ "result": "PASS"
+}

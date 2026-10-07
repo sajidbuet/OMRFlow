@@ -99,6 +99,32 @@ def python_env() -> dict[str, str]:
     return environment
 
 
+PACKAGED_COORDINATOR_ARGUMENT = "--intake-qualification-coordinator"
+"""The hidden first argument the packaged executable runs the coordinator with
+(``omr_scanner.main.QUALIFICATION_COORDINATOR_ARGUMENT``; repeated here so the
+harness does not import the application's entry point)."""
+
+_DEVELOPMENT_VARIABLES = (
+    "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE", "VIRTUAL_ENV",
+    "CONDA_PREFIX", "CONDA_DEFAULT_ENV",
+)
+
+
+def packaged_env() -> dict[str, str]:
+    """The environment for a packaged coordinator: nothing pointing at a Python or the source."""
+    environment = {
+        key: value for key, value in os.environ.items()
+        if key.upper() not in _DEVELOPMENT_VARIABLES
+    }
+    environment.setdefault("QT_QPA_PLATFORM", "offscreen")
+    return environment
+
+
+def coordinator_command_for(executable: Path) -> tuple[str, ...]:
+    """The command prefix that runs the coordinator inside a packaged ``OMRFlow.exe``."""
+    return (str(executable), PACKAGED_COORDINATOR_ARGUMENT)
+
+
 def descendants(pid: int) -> tuple[int, ...]:
     import psutil
 
@@ -108,8 +134,12 @@ def descendants(pid: int) -> tuple[int, ...]:
         return ()
 
 
-def tree_memory(pid: int) -> tuple[int, int, int]:
-    """``(tree RSS, coordinator RSS, processes)`` of ``pid``'s whole process tree."""
+def tree_memory(pid: int, *, launcher: bool = True) -> tuple[int, int, int]:
+    """``(tree RSS, coordinator RSS, processes)`` of ``pid``'s whole process tree.
+
+    ``launcher``: ``pid`` is the venv's launcher and the interpreter its first
+    child (a source run); a packaged executable is the coordinator itself.
+    """
     import psutil
 
     try:
@@ -129,7 +159,7 @@ def tree_memory(pid: int) -> tuple[int, int, int]:
         if member.pid == pid:
             own = rss
     # The venv launcher is the root; the interpreter is its child.
-    if len(members) > 1:
+    if launcher and len(members) > 1:
         with contextlib.suppress(psutil.Error):
             own = max(own, members[1].memory_info().rss)
     return total, own, count
@@ -151,6 +181,9 @@ class Campaign:
     log: EvidenceLog
     started: float = field(default_factory=time.time)
     timings: dict[str, float] = field(default_factory=dict)
+    coordinator_command: tuple[str, ...] = ()
+    """Empty: the coordinator runs from source (``python -m``). Otherwise the
+    command prefix of a packaged executable (:func:`coordinator_command_for`)."""
 
     @property
     def pool_index(self) -> Path:
@@ -176,6 +209,7 @@ def prepare_campaign(
     *,
     render_workers: int | None = None,
     progress: Any = None,
+    coordinator_command: tuple[str, ...] = (),
 ) -> Campaign:
     """Plan, render and lay out a new campaign folder (never reusing an old one)."""
     from omr_scanner.evaluation.intake_qualification.render import render_pool
@@ -203,7 +237,8 @@ def prepare_campaign(
     log.write("rendered", images=len(pool), seconds=round(rendered, 2), workers=workers,
               bytes=sum(item.size for item in pool.values()))
     campaign = Campaign(config=config, campaign_id=campaign_id, root=root,
-                        template_path=template_path, plan=plan, pool=pool, log=log)
+                        template_path=template_path, plan=plan, pool=pool, log=log,
+                        coordinator_command=tuple(coordinator_command))
     campaign.timings["render_seconds"] = rendered
     return campaign
 
@@ -325,10 +360,22 @@ class ContinuousRun:
         self._targets_at = -1e9
         self._kill_attempts: dict[str, int] = {}
         self.down_intervals: list[tuple[float, float]] = []
+        self.extra_spec: dict[str, Any] = {}
+        """Extra coordinator run-spec keys (the SMB qualification's listing timing)."""
 
     # ------------------------------------------------------------------
     # Observation
     # ------------------------------------------------------------------
+    @property
+    def coordinator_command(self) -> tuple[str, ...]:
+        """The packaged coordinator's command prefix; empty for a source run.
+
+        Read defensively: a campaign built before this field existed (or a
+        test's stand-in for one) is a source run - found by the canonical gate,
+        where the failure-path tests drive the supervisor with such a stand-in.
+        """
+        return tuple(getattr(self.campaign, "coordinator_command", ()) or ())
+
     @property
     def db_path(self) -> Path:
         """The run project's database file."""
@@ -354,7 +401,9 @@ class ContinuousRun:
         now = time.monotonic()
         if self.process is not None and now - self._last_sample >= 2.0:
             self._last_sample = now
-            total, own, count = tree_memory(self.process.pid)
+            total, own, count = tree_memory(
+                self.process.pid, launcher=not self.coordinator_command
+            )
             self.peak_tree = max(self.peak_tree, total)
             self.peak_coordinator = max(self.peak_coordinator, own)
             self.peak_processes = max(self.peak_processes, count)
@@ -482,16 +531,29 @@ class ContinuousRun:
             "late_progress": 0.6,
             "operator_interval": 0.5 if self.config.duration_seconds < 600 else 1.5,
             "await_go": await_go,
+            **self.extra_spec,
         }
         path = self.dir / f"run_{self.incarnation:03d}.json"
         path.write_text(json.dumps(spec, indent=1), encoding="utf-8")
-        args = [sys.executable, "-m", "omr_scanner.evaluation.intake_qualification.coordinator",
-                "--run", str(path), "--incarnation", str(self.incarnation)]
+        packaged = bool(self.coordinator_command)
+        prefix = (
+            list(self.coordinator_command) if packaged
+            else [sys.executable, "-m", "omr_scanner.evaluation.intake_qualification.coordinator"]
+        )
+        args = [*prefix, "--run", str(path), "--incarnation", str(self.incarnation)]
         if force_lock:
             args.append("--force-lock")
         out = (self.logs / f"coordinator_{self.incarnation:03d}.out").open("wb")
-        self.process = subprocess.Popen(args, cwd=str(self.dir), env=python_env(), stdout=out,
-                                        stderr=subprocess.STDOUT)
+        environment = python_env()
+        if packaged:
+            # The packaged entry configures the application's own logging: keep
+            # its log with this run's evidence, and its configuration out of the
+            # operator's real OMRFlow profile.
+            environment = packaged_env()
+            environment.setdefault("OMRFLOW_LOG_DIR", str(self.logs / "app"))
+            environment.setdefault("OMRFLOW_CONFIG_DIR", str(self.dir / "app-config"))
+        self.process = subprocess.Popen(args, cwd=str(self.dir), env=environment,
+                                        stdout=out, stderr=subprocess.STDOUT)
         self.log.write("coordinator_launched", incarnation=self.incarnation,
                        launcher_pid=self.process.pid, force_lock=force_lock, await_go=await_go)
 

@@ -1,0 +1,846 @@
+{
+  "schema": "omrflow.release-validation/1",
+  "run_id": "2026-10-07_105054",
+  "started": "2026-10-07T10:50:54",
+  "finished": "2026-10-07T10:51:41",
+  "command_line": "validate_release.py --build --packaged --installer dist\\installer\\OMRFlow-0.1.1-alpha.0-Setup-x64.exe --results-dir Scratch\\phase10\\release-validation",
+  "environment": {
+    "python": "3.12.7",
+    "python_executable": "C:\\Research\\OMRflow-p10\\.venv\\Scripts\\python.exe",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor_count": 16,
+    "repository_root": "C:\\Research\\OMRflow-p10",
+    "qt_qpa_platform": "(default)",
+    "modules": {
+      "pytestqt": true,
+      "pywinauto": true,
+      "PIL": true,
+      "PyInstaller": true
+    }
+  },
+  "totals": {
+    "PASS": 78,
+    "FAIL": 0,
+    "WARNING": 0,
+    "SKIPPED": 3
+  },
+  "blocking_failures": [],
+  "verified_anything": true,
+  "stages": [
+    {
+      "name": "Environment",
+      "status": "PASS",
+      "blocking": true,
+      "skipped_reason": "",
+      "duration_seconds": 0.0,
+      "counts": {
+        "PASS": 12,
+        "FAIL": 0,
+        "WARNING": 0,
+        "SKIPPED": 0
+      },
+      "checks": [
+        {
+          "name": "running on Windows",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "Windows-11-10.0.26200-SP0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "Python is 3.12 or newer",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "3.12.7",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the omr_scanner package can be imported",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Research\\OMRflow-p10\\src",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "pytest is available",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "required by every source and GUI stage",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "this is an OMRFlow checkout",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Research\\OMRflow-p10",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "application version",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "0.1.1-alpha.0 (Alpha)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "optional: pytestqt",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "Qt GUI and accessibility stages (pip install pytest-qt)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "optional: pywinauto",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "richer packaged-application checks (pip install pywinauto)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "optional: PIL",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "visual baseline comparison (pip install pillow)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "optional: PyInstaller",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "the build stage (pip install pyinstaller)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "optional: Inno Setup compiler",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\Inno Setup 6\\ISCC.exe",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "isolated workspace prepared",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\release-validation\\2026-10-07_105054\\workspace",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        }
+      ]
+    },
+    {
+      "name": "Build/package verification",
+      "status": "PASS",
+      "blocking": true,
+      "skipped_reason": "",
+      "duration_seconds": 1.344,
+      "counts": {
+        "PASS": 19,
+        "FAIL": 0,
+        "WARNING": 0,
+        "SKIPPED": 0
+      },
+      "checks": [
+        {
+          "name": "the executable exists",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Research\\OMRflow-p10\\dist\\OMRFlow\\OMRFlow.exe",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the executable's version matches the source",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "binary reports '0.1.1-alpha.0', source says '0.1.1-alpha.0'",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Qt core runtime",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PySide6\\Qt6Core.dll",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Qt GUI runtime",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PySide6\\Qt6Gui.dll",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Qt widgets runtime",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PySide6\\Qt6Widgets.dll",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Qt Windows platform plugin",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PySide6\\plugins\\platforms\\qwindows.dll",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Qt image format plugins",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PySide6\\plugins\\imageformats",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Visual C++ runtime (bundled)",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\VCRUNTIME140.dll",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: Pillow imaging backend",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PIL",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: OpenCV",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\cv2",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: NumPy",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\numpy",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: application icon",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\omr_scanner\\gui\\resources\\branding\\icon.ico",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: application logo",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\omr_scanner\\gui\\resources\\branding\\logo.svg",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: workflow stage icons",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\omr_scanner\\gui\\resources\\icons\\lucide",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "bundled: bundled sample workbook",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\omr_scanner\\resources\\templates",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the stage icon set is complete",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "39 SVG icons",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "no unexpected build artifacts",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "none",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "no unresolved DLL imports",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "No unresolved imports, and the C/C++ runtime is bundled.",
+          "reason": "",
+          "exception": "",
+          "artifacts": [
+            "logs/audit_dependencies.log"
+          ]
+        },
+        {
+          "name": "every imported dependency survived the freeze",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "Every dependency the application imports is present in the frozen bundle.",
+          "reason": "",
+          "exception": "",
+          "artifacts": [
+            "logs/verify_frozen_imports.log"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Packaged application launch",
+      "status": "PASS",
+      "blocking": true,
+      "skipped_reason": "",
+      "duration_seconds": 8.875,
+      "counts": {
+        "PASS": 12,
+        "FAIL": 0,
+        "WARNING": 0,
+        "SKIPPED": 0
+      },
+      "checks": [
+        {
+          "name": "the executable reports its version",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow 0.1.1-alpha.0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application stays running after start-up",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "running",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "a main window appeared",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow 0.1.1-alpha.0",
+          "reason": "",
+          "exception": "",
+          "artifacts": [
+            "logs/packaged-application-launch.stdout.log",
+            "logs/packaged-application-launch.stderr.log"
+          ]
+        },
+        {
+          "name": "the window title names the application and its version",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow 0.1.1-alpha.0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the window is responding",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "answers messages",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "UI Automation can attach to the window",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "pid 18524",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the window exposes an accessibility tree",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "79 automation elements",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "every workflow stage is present in the packaged window",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "9 of 9 found",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application closes cleanly when asked",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "closed its window",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the exit code is zero",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "nothing was written into the installation directory",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "unchanged",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "a log was written under the redirected user directory",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\release-validation\\2026-10-07_105054\\workspace\\user-logs",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        }
+      ]
+    },
+    {
+      "name": "Installer qualification",
+      "status": "PASS",
+      "blocking": true,
+      "skipped_reason": "",
+      "duration_seconds": 36.328,
+      "counts": {
+        "PASS": 33,
+        "FAIL": 0,
+        "WARNING": 0,
+        "SKIPPED": 3
+      },
+      "checks": [
+        {
+          "name": "the installer exists",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow-0.1.1-alpha.0-Setup-x64.exe (81.9 MB)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "installer SHA-256",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "f69a02e1dd5eb81d0cdc09d3ac3b86b0b873b70e360e8874f0c75362c2724328",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "user data recorded before installing",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "1 file(s) under C:\\Users\\Sajid\\AppData\\Local\\OMRFlow",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the installer completed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "exit 0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application was installed to the per-user location",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the licence was installed beside the application",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "LICENSE.txt",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the bundled runtime was installed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "installed: application icon",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\omr_scanner\\gui\\resources\\branding\\icon.ico",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "installed: Qt platform plugin",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "_internal\\PySide6\\plugins\\platforms\\qwindows.dll",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "a Start menu shortcut was created",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow.lnk",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "desktop shortcut matches the installer's configuration",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "absent, as the unticked 'desktopicon' task intends",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "an uninstaller was created",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "unins000.exe",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the executable reports its version",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow 0.1.1-alpha.0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application stays running after start-up",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "running",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "a main window appeared",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow 0.1.1-alpha.0",
+          "reason": "",
+          "exception": "",
+          "artifacts": [
+            "logs/installed-application-launch.stdout.log",
+            "logs/installed-application-launch.stderr.log"
+          ]
+        },
+        {
+          "name": "the window title names the application and its version",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "OMRFlow 0.1.1-alpha.0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the window is responding",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "answers messages",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "UI Automation can attach to the window",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "pid 5420",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the window exposes an accessibility tree",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "79 automation elements",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "every workflow stage is present in the packaged window",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "9 of 9 found",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application closes cleanly when asked",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "closed its window",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the exit code is zero",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "nothing was written into the installation directory",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "unchanged",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "a log was written under the redirected user directory",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\release-validation\\2026-10-07_105054\\workspace\\user-logs",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the uninstaller completed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "exit 0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application binary was removed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the bundled runtime was removed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the Start menu shortcut was removed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "no pre-existing user file was deleted",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "1 file(s) remain",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "what remains after uninstalling",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Users\\Sajid\\AppData\\Local\\OMRFlow: 1 file(s) - settings and logs are documented as retained",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the application can be reinstalled",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "exit 0",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "retained user data is still reachable after reinstalling",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "1 file(s)",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "CLEAN_MACHINE_TEST.md step 5",
+          "status": "SKIPPED",
+          "duration_seconds": 0.0,
+          "detail": "",
+          "reason": "not performed: the SmartScreen warning and its wording (a silent install cannot see it). Run the installer interactively.",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "CLEAN_MACHINE_TEST.md step 6",
+          "status": "SKIPPED",
+          "duration_seconds": 0.0,
+          "detail": "",
+          "reason": "not performed: the licence page shows the MIT licence. Run the installer interactively.",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "CLEAN_MACHINE_TEST.md step 7",
+          "status": "SKIPPED",
+          "duration_seconds": 0.0,
+          "detail": "",
+          "reason": "not performed: the Alpha warning is shown during installation. Run the installer interactively.",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "cleanup: the test installation was removed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "C:\\Users\\Sajid\\AppData\\Local\\Programs\\OMRFlow",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        }
+      ]
+    },
+    {
+      "name": "Cleanup",
+      "status": "PASS",
+      "blocking": false,
+      "skipped_reason": "",
+      "duration_seconds": 0.047,
+      "counts": {
+        "PASS": 2,
+        "FAIL": 0,
+        "WARNING": 0,
+        "SKIPPED": 0
+      },
+      "checks": [
+        {
+          "name": "processes started by this run were stopped",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "none were still running",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        },
+        {
+          "name": "the temporary workspace was removed",
+          "status": "PASS",
+          "duration_seconds": 0.0,
+          "detail": "0.0 MB freed from C:\\Research\\OMRflow-p10\\Scratch\\phase10\\release-validation\\2026-10-07_105054\\workspace",
+          "reason": "",
+          "exception": "",
+          "artifacts": []
+        }
+      ]
+    }
+  ]
+}

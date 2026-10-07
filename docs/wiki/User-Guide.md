@@ -27,10 +27,11 @@ order, or while a batch is still processing.
 
 With several scanners feeding one sitting, the Scan stage can watch their
 folders and read new sheets as they arrive while you resolve on stage 5
-([session mode](Scanning#several-scanners-at-once-session-mode) - in
-development, not yet used by an operator). The session's name appears in the
-headers of Resolve, Attendance, Results and Reports, and their figures are
-**provisional** until you finish the scan session.
+([session mode](Scanning#several-scanners-at-once-session-mode) - part of
+`0.1.1-alpha.0`, not yet released and not yet used by an operator or on a
+real network share). The session's name appears in the headers of Resolve,
+Attendance, Results and Reports, and their figures are **provisional** until
+you finish the scan session.
 
 ## Moving between stages
 

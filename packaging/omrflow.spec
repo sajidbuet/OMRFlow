@@ -165,6 +165,10 @@ analysis = Analysis(
     hiddenimports=[
         "omr_scanner.tools.benchmark_stress",
         "omr_scanner.tools.phase10_qualification",
+        # Run by `OMRFlow.exe --intake-qualification-coordinator` for the
+        # release gate's installed-build intake run (see `main.py`). Imported
+        # inside a function there; named here so it can never be dropped.
+        "omr_scanner.evaluation.intake_qualification.coordinator",
     ],
     hookspath=[],
     hooksconfig={},

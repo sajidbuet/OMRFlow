@@ -1,0 +1,92 @@
+=== Test-InstallerRoundTrip
+Installer round trip: OMRFlow-0.1.1-alpha.0-Setup-x64.exe
+  install directory : C:\Users\Sajid\AppData\Local\Temp\omrflow-installer-test-1948110265
+
+  PASS installer reports the right version            0.1.1-alpha.0
+  installing (silent, per-user)...
+  PASS installer exited successfully                  exit 0
+  PASS application was installed                      
+  PASS licence was installed                          
+  PASS runtime was installed                          
+  PASS uninstaller was created                        
+  PASS listed in Apps & features                      OMRFlow 0.1.1-alpha.0 0.1.1-alpha.0
+  PASS installed application has the right version    0.1.1-alpha.0
+  launching the installed application...
+  PASS installed application launches                 OMRFlow 0.1.1-alpha.0
+  PASS installed application closes cleanly           exit 0
+  uninstalling (silent)...
+  PASS uninstaller exited successfully                exit 0
+  PASS application was removed                        
+  PASS runtime was removed                            
+  PASS removed from Apps & features                   
+  PASS user configuration and logs were preserved     1 file(s) intact
+
+All 15 checks passed.
+exit 0
+=== Test-SelfContained
+Self-containment check - OMRFlow 0.1.1-alpha.0
+  installer : OMRFlow-0.1.1-alpha.0-Setup-x64.exe
+
+  auditing the bundle's DLL imports...
+  PASS no unresolved DLL imports in the bundle            UNRESOLVED: 0
+  verifying the frozen Python imports...
+  PASS every imported dependency survived the freeze      
+  installing into a scratch directory...
+  PASS installer succeeded                                exit 0
+  PASS application installed                              
+  PASS no Python interpreter inside the installation      
+  launching with a sanitised environment...
+      PATH = C:\WINDOWS\System32;C:\WINDOWS;C:\WINDOWS\System32\Wbem
+      cleared: PYTHONPATH, PYTHONHOME, PYTHONSTARTUP, PYTHONEXECUTABLE, PYTHONNOUSERSITE, VIRTUAL_ENV, CONDA_PREFIX, PIP_TARGET, QT_PLUGIN_PATH, QT_QPA_PLATFORM_PLUGIN_PATH, QT_QPA_PLATFORM, QML2_IMPORT_PATH, QML_IMPORT_PATH, QT_DIR, QTDIR, OPENCV_DIR, OMRFLOW_BUILD_COMMIT
+2026-10-07 10:48:21 INFO     __main__: OMRFlow 0.1.1-alpha.0+73e364b (Alpha) starting (Python 3.12.7)
+2026-10-07 10:48:27 INFO     omr_scanner.gui.application: Entering Qt event loop
+  PASS starts with no Python on the PATH                  running
+  PASS window appears                                     OMRFlow 0.1.1-alpha.0
+  PASS window title carries the version                   
+  PASS responsive                                         
+  PASS loaded its Qt platform plugin from the bundle      
+2026-10-07 10:48:30 INFO     omr_scanner.gui.main_window: Main window closed
+2026-10-07 10:48:30 INFO     __main__: OMRFlow exiting with code 0
+  PASS closes cleanly                                     exit 0
+  PASS wrote a log under the user profile during this run omrflow.log
+  PASS wrote nothing into the installation directory      
+  PASS uninstalled                                        
+
+All 14 checks passed.
+
+This is NOT a clean-machine test.
+It cannot detect a DLL that is present in System32 on this machine
+because a developer tool installed it there. Run the real test on a
+fresh Windows install: docs\release\CLEAN_MACHINE_TEST.md
+exit 0
+=== Invoke-ReleaseVerification
+Verifying the release of OMRFlow 0.1.1-alpha.0
+  channel : Alpha   prerelease: True
+
+  PASS application bundle exists                        
+  PASS bundle version matches the source                0.1.1-alpha.0
+  PASS installer exists under its versioned name        OMRFlow-0.1.1-alpha.0-Setup-x64.exe
+  PASS installer version matches the source             0.1.1-alpha.0
+  PASS installer is a plausible size                    81.9 MB
+  NOTE code signature                                   unsigned - SmartScreen will warn (documented)
+  PASS SHA256SUMS.txt exists                            
+  PASS checksum file is not empty                       1 entry/entries
+  PASS every line is a valid checksum entry             
+  PASS the installer is listed                          
+  PASS the recorded checksum is correct                 f69a02e1dd5eb81d0cdc09d3ac3b86b0b873b70e360e8874f0c75362c2724328
+  PASS the version is a recognised prerelease or release Alpha
+  PASS a prerelease is flagged as one                   must be published as a GitHub pre-release
+  PASS the build records a source commit                0.1.1-alpha.0+73e364b
+  PASS the changelog mentions this version              
+
+All 14 automated checks passed.
+
+Still to do by hand - these need a desktop and cannot run here:
+  .\scripts\release\Test-PackagedApp.ps1          launch the built bundle
+  .\scripts\release\Test-InstallerRoundTrip.ps1   install, launch, uninstall
+  .\scripts\release\Test-SelfContained.ps1        launch with no Python on the PATH
+  .\packaging\sandbox\New-SandboxPayload.ps1      the clean-machine test, in Windows Sandbox
+  docs\release\CLEAN_MACHINE_TEST.md              what that test requires, and its manual steps
+
+Then work through docs\release\RELEASE_CHECKLIST.md.
+exit 0

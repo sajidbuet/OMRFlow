@@ -7,12 +7,46 @@ What OMRFlow promises about opening a project written by a different version.
 | | Current source (`0.1.1` development line, unreleased) |
 |---|---|
 | **Project format version** — the shape of `project.json` | **3** |
-| **Database schema version** — the shape of `database.sqlite` | **16** on `main` (since the phase 5 merge `59ba8df`; revised phase 6 adds no migration); **17** on the revised phase 7 branch `feat/0.1.1-phase7-quality-session-controls` (not merged) |
+| **Database schema version** — the shape of `database.sqlite` | **17** on `main` (since the revised phase 7 merge `9169933`; phases 8–10 add no migration) |
 
 (This table previously read format 2 / schema 9, which no longer matched the
 code; corrected 2026-10-01 from `project_format_version` in a project written
 by current code and `SCHEMA_VERSION` in `database/migrations.py`. It then read
-14 after phase 4 had moved `main` to 15; corrected 2026-10-02.)
+14 after phase 4 had moved `main` to 15; corrected 2026-10-02. It read 16 /
+"17 on a branch" until revised phase 10; corrected 2026-10-07.)
+
+## Upgrading to `0.1.1-alpha.0` — verified on the installed build (revised phase 10)
+
+Recorded 2026-10-07 against the `0.1.1-alpha.0` candidate installer
+(`OMRFlow-0.1.1-alpha.0-Setup-x64.exe`, commit `73e364b`), **installed**, not
+from source. Evidence:
+[`docs/release/validation/0.1.1-alpha.0-installed/`](../release/validation/0.1.1-alpha.0-installed/README.md).
+
+| From | How the project was made | Result on the installed `0.1.1-alpha.0` |
+|---|---|---|
+| **`v0.1.0-alpha.2` (schema 9)** | by the `v0.1.0-alpha.2` code itself - its own release-validation workflow suite, run from the `v0.1.0-alpha.2` tag: real recognition of 5 sheets, a 6-candidate roster, reconciliation, a verified key, 6 results, one generated report - then opened and closed in the **installed `v0.1.0-alpha.2` release** (downloaded, checksum verified) | **PASS** - the release installed **in place over `v0.1.0-alpha.2`** (one uninstall entry, user data kept); migrations 10–17 ran on opening; pre-migration backup `before-migration-9-to-17`; every row and value the old build wrote unchanged; one backfilled session; integrity and Project Health clean; the stages show what `v0.1.0-alpha.2` showed (6 candidates, 5 scored, 1 absent, key verified) |
+| **schema 12** (`0.1.0-alpha.2` + later work, `0ed96ed`) | the committed fixtures `tests/fixtures/schema12/unique_sets` and `colliding_sets`, written by that build | **PASS** - migrations 13–17, backup, every old value kept, backfill, integrity; `colliding_sets` keeps set `a` without a canonical code and Project Health names the collision, as designed |
+
+Opening an older project in `0.1.1-alpha.0` is **forward-only**:
+
+- The database is migrated in place (backed up first, under `backups/`).
+- **`project.json` is also updated** - `0.1.1` records the project's active
+  template in it - and the pre-migration backup holds the *database only*.
+- The actual **`v0.1.0-alpha.2` then refuses the project**, writable and
+  read-only, with *"The project file is not valid and could not be opened."*
+  (its strict `project.json` reader rejects the new key before it reaches the
+  schema check; checked with the `v0.1.0-alpha.2` tagged code on a project the
+  installed `0.1.1-alpha.0` had opened). The *"created with a newer version"*
+  message quoted under Schema 13 below is what the schema-12 build `0ed96ed`
+  says, not the release.
+- So restoring `backups/…before-migration-…sqlite3` alone does **not** make a
+  project usable by `v0.1.0-alpha.2` again. **To keep the option of going
+  back, copy the whole project folder before opening it in `0.1.1-alpha.0`.**
+
+Installing `0.1.1-alpha.0` over `v0.1.0-alpha.2` leaves three runtime DLLs
+the old build shipped and the new one does not (`libcrypto-3.dll`,
+`libssl-3.dll`, `libffi-8.dll`) in the installation folder; `0.1.1-alpha.0`
+does not load them, and its uninstaller removes them.
 
 ## Schema 17 — quality decisions and operator controls (`0.1.1` line, revised phase 7, branch)
 
@@ -136,25 +170,29 @@ results and reports keep their stored values. If the project defines two sets
 that differ only in case (`A` and `a`), both are kept and the conflict is
 reported; see [Examination Sets](Examination-Sets).
 
-**Going back is not possible.** Once migrated, a `0.1.0-alpha.2` build refuses
-the project with *"This project was created with a newer version of OMRFlow.
-Please update OMRFlow to open it."* This was checked by opening a migrated
-project with the schema-12 code (`0ed96ed`); keep the pre-migration backup if
-you may need the older build. A **read-only** open in the new build does not
-migrate, so a schema-12 project can be inspected without upgrading it.
+**Going back is not possible.** Once migrated, the schema-12 build (`0ed96ed`)
+refuses the project with *"This project was created with a newer version of
+OMRFlow. Please update OMRFlow to open it."* This was checked by opening a
+migrated project with the schema-12 code. **The released `v0.1.0-alpha.2`
+refuses it differently** - *"The project file is not valid and could not be
+opened."* - see *Upgrading to `0.1.1-alpha.0`* above (corrected 2026-10-07:
+this paragraph used to attribute the schema-12 build's message to
+`0.1.0-alpha.2`). Copy the whole project folder if you may need the older
+build. A **read-only** open in the new build does not migrate, so a schema-12
+project can be inspected without upgrading it.
 
 Tested: automated upgrade tests from schema-12 projects written by the
-schema-12 build itself (`tests/fixtures/schema12/`). Not yet performed: an
-upgrade through an installed release build.
+schema-12 build itself (`tests/fixtures/schema12/`), and (revised phase 10)
+the same fixtures opened in the **installed** `0.1.1-alpha.0` candidate.
 
 ## What is *not* promised, before 1.0
 
 - **No compatibility between prerelease versions.** An Alpha may change the
   schema. There is no supported path back.
 - **No guarantee that a project created by one Alpha will open in the next.**
-  It is expected to, via migration, and it is tested at the schema level —
-  but an upgrade between two *released builds* has never been performed.
-  `0.1.0-alpha.2` is the first release with a predecessor, and the upgrade
+  It is expected to, via migration, and it is tested at the schema level.
+  `v0.1.0-alpha.2` → the `0.1.1-alpha.0` *candidate* installer has been
+  performed on one machine with one synthetic project (above); the upgrade
   from `0.1.0-alpha.1` has not been exercised.
 
 From `v1.0.0` onwards, opening a project created by any earlier 1.x release
@@ -163,8 +201,10 @@ becomes a promise rather than an expectation.
 ## Before upgrading anything you care about
 
 1. Close OMRFlow.
-2. Back up the project folder — or use **Project Health / Recovery…**, which
-   snapshots the database safely.
+2. Back up the **whole project folder** (copy it). **Project Health /
+   Recovery…** snapshots the database safely, but the database alone is not
+   enough to take a project back to `v0.1.0-alpha.2` after `0.1.1-alpha.0` has
+   opened it (`project.json` changes too).
 3. Upgrade.
 4. Open the project and check a sample of results.
 

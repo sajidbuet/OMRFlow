@@ -1,5 +1,17 @@
 # Clean-Machine Installation Test
 
+> **Status for the `0.1.1-alpha.0` candidate (`73e364b`, 2026-10-07): NOT
+> PERFORMED.** Windows Sandbox is not available on the machine revised
+> phase 10 ran on (`WindowsSandbox.exe` and the `wsb` CLI are absent; enabling
+> the feature needs elevation and a restart), and no other clean machine or
+> VM was available. The substitutes passed on that candidate -
+> `audit_dependencies.py` (0 unresolved), `verify_frozen_imports.py`,
+> `Test-SelfContained.ps1` (14/14) - and they are **not** a clean-machine
+> pass. The release notes must say so. Separately, and also not a substitute:
+> the installed candidate ran recognition, attendance, scoring and report
+> generation headlessly and its GUI was walked by UI Automation (see
+> `docs/release/validation/0.1.1-alpha.0-installed/`).
+
 > **Status for `0.1.0-alpha.1`: PERFORMED — automated portion passed; the
 > steps needing a person are outstanding.**
 >

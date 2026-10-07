@@ -207,7 +207,12 @@ in the queue, e.g. *120 total · 73 unresolved · 47 resolved*. Which row was
 selected is not kept, and neither is **Redo** after a restart.
 
 This was tested by killing a real OMRFlow process after several corrections
-(0.1.1 phase 3); it has not yet been used by an examination office.
+(0.1.1 phase 3), and - for `0.1.1-alpha.0`, revised phase 10 - in the
+**installed** application: after its processing engine was killed during a
+two-scanner session, Resolve, opened before Scan, showed the session's queue
+exactly as the saved decisions give it (*9 total · 4 unresolved · 4 resolved ·
+1 rescan required · 2 suggested rescan* in that run). It has not yet been used
+by an examination office.
 
 ## Reviewing while scanning continues (in development)
 
