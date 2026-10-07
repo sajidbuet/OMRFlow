@@ -19,7 +19,7 @@
     "development/releases/0.1.1-alpha.0/PHASE_F_HANDOFF.md",
     "development/releases/0.1.1-alpha.0/PHASE_G_HANDOFF.md",
     "development/releases/0.1.1-alpha.0/PHASE_H_HANDOFF.md",
-    "docs/release/validation/0.1.1-alpha.0-release-gate/canonical-gate-summary.log"
+    "development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md#19-final-automated-validation"
    ],
    "note": "Every phase handoff records implementation and tests; the invariants' suites (architecture, golden one-batch, migrations, harness) pass in the canonical gate on this branch."
   },
@@ -50,9 +50,10 @@
    "required": true,
    "status": "PASS",
    "evidence": [
-    "docs/release/validation/0.1.1-alpha.0-release-gate/canonical-gate-summary.log",
-    "docs/release/validation/0.1.1-alpha.0-release-gate/stress-summary.log",
-    "docs/release/validation/0.1.1-alpha.0-phase9-intake/release/report.md"
+    "tests/unit/test_qualification.py",
+    "tests/integration/test_stress_kill_resume.py",
+    "docs/release/validation/0.1.1-alpha.0-phase9-intake/release/report.md",
+    "development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md#19-final-automated-validation"
    ],
    "note": "The finite Phase 10 harness's unit / integration tests run in the canonical gate and stress suite; section 5.3 / 5.4 evidence from the QUALIFIED campaign. A fresh 100,000-sheet run was NOT performed (optional for this Alpha; the release notes say so)."
   },
