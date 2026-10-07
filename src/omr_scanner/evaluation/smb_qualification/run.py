@@ -139,7 +139,7 @@ class SmbRun(ContinuousRun):
         }
         self.extra_spec = {"instrument_listing": True}
         self.smb = SmbEvidence(mode=mode)
-        self.smb.coordinator = "packaged" if campaign.coordinator_command else "source"
+        self.smb.coordinator = "packaged" if self.coordinator_command else "source"
         self._last_reach = 0.0
 
     # ------------------------------------------------------------------

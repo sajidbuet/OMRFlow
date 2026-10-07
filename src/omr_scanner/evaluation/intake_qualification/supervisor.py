@@ -367,6 +367,16 @@ class ContinuousRun:
     # Observation
     # ------------------------------------------------------------------
     @property
+    def coordinator_command(self) -> tuple[str, ...]:
+        """The packaged coordinator's command prefix; empty for a source run.
+
+        Read defensively: a campaign built before this field existed (or a
+        test's stand-in for one) is a source run - found by the canonical gate,
+        where the failure-path tests drive the supervisor with such a stand-in.
+        """
+        return tuple(getattr(self.campaign, "coordinator_command", ()) or ())
+
+    @property
     def db_path(self) -> Path:
         """The run project's database file."""
         assert self.evidence is not None
@@ -392,7 +402,7 @@ class ContinuousRun:
         if self.process is not None and now - self._last_sample >= 2.0:
             self._last_sample = now
             total, own, count = tree_memory(
-                self.process.pid, launcher=not self.campaign.coordinator_command
+                self.process.pid, launcher=not self.coordinator_command
             )
             self.peak_tree = max(self.peak_tree, total)
             self.peak_coordinator = max(self.peak_coordinator, own)
@@ -525,9 +535,9 @@ class ContinuousRun:
         }
         path = self.dir / f"run_{self.incarnation:03d}.json"
         path.write_text(json.dumps(spec, indent=1), encoding="utf-8")
-        packaged = bool(self.campaign.coordinator_command)
+        packaged = bool(self.coordinator_command)
         prefix = (
-            list(self.campaign.coordinator_command) if packaged
+            list(self.coordinator_command) if packaged
             else [sys.executable, "-m", "omr_scanner.evaluation.intake_qualification.coordinator"]
         )
         args = [*prefix, "--run", str(path), "--incarnation", str(self.incarnation)]
