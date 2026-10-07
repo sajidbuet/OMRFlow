@@ -126,8 +126,10 @@ Procedure: [`docs/release/SMB_QUALIFICATION.md`](../../../docs/release/SMB_QUALI
 |---|---|
 | all 15 (`genuine_smb_topology` … `project_health`) | **NOT PERFORMED** |
 
-**Rehearsal (tooling only, local folders, not SMB):** source build `1e7d493`
-and the `stress`-marked `tests/integration/test_smb_rehearsal.py`: two local
+**Rehearsal (tooling only, local folders, not SMB):** source build `1e7d493`,
+again at `57449d6` (committed as
+`docs/release/validation/0.1.1-alpha.0-smb-rehearsal-NOT-SMB/`), and the
+`stress`-marked `tests/integration/test_smb_rehearsal.py`: two local
 PowerShell writers (50 + 81 files), one real kill with a sheet in a worker and
 restart, a simulated outage by removing a folder link; every assertion that can
 run on one machine `PASS`, `genuine_smb_topology` and `scale_and_workload`
@@ -139,8 +141,10 @@ OMRFlow machine would not have been caught - fixed before commit, with a test.
 ## 8. SMB performance
 
 ```text
-listing median/p95/max:        not measured on SMB (rehearsal, local folder: 0.0003 / 0.0009 / 0.0022 s)
-stabilization median/p95/max:  not measured on SMB (rehearsal, local, fast policy: 2.64 / 10.78 / 22.91 s)
+listing median/p95/max:        not measured on SMB (rehearsal at 57449d6, local folders: A 0.0004 / 0.0010 /
+                               0.0020 s over 108 listings; B 0.0005 / 0.0011 / 0.0015 s over 89, 266 failed
+                               listings while its link was removed)
+stabilization median/p95/max:  not measured on SMB (rehearsal, local, fast policy: 2.75 / 8.32 / 23.43 s, n 101)
 ```
 
 The network stability defaults (`NETWORK_POLICY`: quiet 15 s, poll 30 s) are
@@ -302,7 +306,48 @@ clean close, no lock left, no ERROR logged.
 
 `ACCEPTANCE_CRITERIA.md` §8, evaluated by `tools/release_validation/release_gate.py`:
 
-<<GATEMATRIX>>
+| §8 gate | Required | Status | Evidence (abridged) |
+|---|---|---|---|
+| 1 Phases A–F implemented and tested; X1–X12 | Yes | **PASS** | handoffs A–H; the canonical gate (§19) |
+| 2 §5 synthetic intake campaign QUALIFIED | Yes | **PASS** | phase 9 `release/report.md` (`542b2af`) |
+| 3 §6 SMB qualification | Yes | **NOT PERFORMED** | `docs/release/SMB_QUALIFICATION.md` |
+| 4 Phase 10 harness self-test; §5.3 / §5.4 pass; fresh 100k optional | Yes | **PASS** | `test_qualification.py` / `test_stress_*` in the gate and stress suite; phase 9 report; fresh 100k **not performed** (stated) |
+| 4a S1, S2, S3, R1 on the installed build too | Yes | **PASS** | installed campaign case 13; installed GUI check |
+| 5 packaging smoke, installer checks, installed live intake | Yes | **PASS** | `0.1.1-alpha.0-installed/` |
+| 6 upgrade from schema 12 and `0.1.0-alpha.2` on the installed build; forward-only stated | Yes | **PASS** | three installed upgrade reports; release notes |
+| 7 documentation | Yes | **PASS** | wiki pages, README |
+| 8 release notes: scanning room not performed; quality defaults unvalidated | Yes | **PASS** | `RELEASE_NOTES_0.1.1-alpha.0.md` (draft) |
+| 9 release checklist followed; publication on the owner's instruction | Yes | **NOT PERFORMED** | `RELEASE_CHECKLIST.md` (recorded section) |
+
+Optional rows (never blocking this Alpha): real scanning room NOT PERFORMED;
+fresh 100k NOT PERFORMED; F8 FAIL (open); clean machine NOT PERFORMED; code
+signing NOT PERFORMED; power loss NOT PERFORMED; production NOT PERFORMED.
+Full matrix: `docs/release/validation/0.1.1-alpha.0-release-gate/release-gate.md`.
+
+**Computed verdict: NOT READY FOR RELEASE — BLOCKERS REMAIN** (gates 3, 9).
+
+### Completion matrix (brief, Part M)
+
+| Gate | Required for alpha.0 | Status | Evidence |
+|---|---|---|---|
+| Phase 9 synthetic qualification | Yes | PASS (`QUALIFIED`) | phase 9 report |
+| Canonical source gate | Yes | <<CANON>> | §19 |
+| SMB real infrastructure | Yes | **NOT PERFORMED** | `SMB_QUALIFICATION.md` |
+| Phase 10 harness self-test | Yes | PASS (`test_qualification.py` in the gate; `test_stress_*` 10/10 stress) | §19 |
+| Phase 9 endurance/crash evidence | Yes | PASS | phase 9 report |
+| Installed S1/S2/S3/R1 | Yes | PASS | §11 |
+| Packaging smoke | Yes | PASS | §9, `packaging/` |
+| Installed live intake | Yes | PASS (best small-run verdict) | §10 |
+| Schema-12 upgrade | Yes | PASS | §14 |
+| v0.1.0-alpha.2 upgrade | Yes | PASS | §15 |
+| Documentation | Yes | PASS | §21 |
+| Release checklist | Yes | **NOT PERFORMED** | `RELEASE_CHECKLIST.md` |
+| Real scanning-room | No | NOT PERFORMED | Later |
+| Fresh 100k architecture run | No for Alpha | NOT PERFORMED | Pre-Beta |
+| F8 fix | No for Alpha | OPEN | Pre-Beta |
+| Code signing | No for Alpha | NOT PERFORMED (unsigned) | SmartScreen warns |
+| Power loss | No | NOT PERFORMED | - |
+| Production qualification | No | NOT PERFORMED | - |
 
 ## 18. Product defects discovered
 
@@ -316,6 +361,8 @@ clean close, no lock left, no ERROR logged.
 | 5 | test / harness | my upgrade check first required a canonical code on every set; migration 13 deliberately keeps a case-collision without one | fixed in `ef8961b` | unaffected |
 | 6 | test / harness | SMB tooling: writer host compared with the DNS host name, not the NetBIOS name | fixed before commit, test | unaffected |
 | 7 | test / harness (configuration) | installed campaign attempt 1: crash case 13 not exercised (pause deferral expired) | rerun with the kill at 45 % | unaffected |
+| 7a | test / harness | the supervisor read `campaign.coordinator_command` directly; two pre-existing failure-path tests use a stand-in campaign without it (canonical gate at `ef8961b`: 2 failed) | `57449d6` reads it defensively; the pre-existing tests unchanged | unaffected (harness only; the packaged app does not contain the supervisor's launch path) |
+| 7b | test / harness (my matrix) | the committed release-gate matrix cited evidence a later gate was to produce; the matrix test refused it (gate at `57449d6`: 1 failed) | `6e3c7a7` cites only existing evidence | unaffected |
 | 8 | environment / process | my first UI Automation exploration launched the app without a redirected profile and added a scratch project to the operator's *Recent Projects* (and moved `default_projects_root`) | both restored by hand (the previous root inferred from the most recent project, as the application sets it); every later launch redirected | - |
 | 9 | environment / process | the canonical gate script needs a branch name; a detached-HEAD worktree made it stop at once | gate worktree given a local branch at the same commit, relaunched | - |
 | - | **product** | **none found** | - | **Phase 9 qualification retained**: no correctness-critical production code changed |
@@ -331,9 +378,23 @@ targeted:                 tests/unit/test_main_entry.py, test_intake_qualificati
                           test_release_validation_config.py, test_release_gate.py,
                           test_architecture.py, test_version.py, test_release_automation.py - passed
 full pytest:              <<GATE>>
-stress:                   <<STRESS>>
+                          earlier canonical gates on this branch (clean worktree C:\Research\OMRflow-p10g,
+                          PowerShell 7.6.6, PYTHONPATH = its src):
+                          - ef8961b: 7,259 passed, 30 skipped, 2 FAILED (1 h 50 min) - the phase 9
+                            failure-path tests drive the supervisor with a stand-in campaign lacking the
+                            new coordinator_command field; harness defect, fixed 57449d6
+                          - 57449d6: 7,261 passed, 29 skipped, 1 FAILED (2 h 18 min) - the new
+                            release-gate matrix test refused the committed matrix, which cited evidence
+                            files that gate was to produce; matrix defect, fixed 6e3c7a7
+                          (summaries: docs/release/validation/0.1.1-alpha.0-release-gate/
+                          canonical-gate-attempt*.log). Ruff and mypy clean in both.
+stress:                   10 passed, 0 failed (1 h 00 min) at 57449d6 in the clean worktree: the 1,000-sheet
+                          crash series, 10k lazy model, engine endurance, the phase 9 harness self-test and
+                          endurance campaign, intake soak, full-size multi-set reports, the SMB rehearsal,
+                          10,000-sheet kill/resume, 10,000-sheet reconciliation and reports
+                          (docs/release/validation/0.1.1-alpha.0-release-gate/stress-57449d6.log)
 ruff:                     <<RUFF>>
-fresh-cache mypy:         <<MYPY>>
+fresh-cache mypy:         clean - 269 source files, empty cache directory, at 57449d6 (the code of the tip)
 packaging tests:          Test-PackagedApp 16/16; audit_dependencies 0 unresolved; verify_frozen_imports ok;
                           Test-SelfContained 14/14
 release-automation tests: Test-InstallerRoundTrip 15/15; Invoke-ReleaseVerification 14/14;

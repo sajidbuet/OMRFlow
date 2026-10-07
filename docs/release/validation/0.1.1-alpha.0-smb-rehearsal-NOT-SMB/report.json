@@ -1,0 +1,792 @@
+{
+ "campaign_id": "p9-custom-20261007T121328Z-20261007",
+ "mode": "rehearsal",
+ "plan_digest": "a0d24bc13adae0ce1e9ab12e6945cc3fd5e2a01bd14b85c53932b8ccb33d2211",
+ "config": {
+  "mode": "custom",
+  "seed": 20261007,
+  "timing_seed": 7102026,
+  "sources": 2,
+  "sets": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "candidates_per_set": 30,
+  "duration_seconds": 90.0,
+  "control_duration_seconds": 90.0,
+  "workers": 2,
+  "unit_size": 25,
+  "trickle_seconds": 4.0,
+  "max_in_flight": 16,
+  "claim_window": 32,
+  "max_commit_group": 25,
+  "stability": {
+   "min_observations": 2,
+   "quiet_seconds": 1.5,
+   "max_decode_attempts": 3,
+   "retry_backoff_seconds": 1.0,
+   "poll_interval_seconds": 1.0
+  },
+  "kill_percents": [
+   25,
+   75
+  ],
+  "after_commit_kill_percent": 35,
+  "duplicate_sync_kill_percent": 10,
+  "operator_kill_percent": 60,
+  "clean_close_percent": 85,
+  "outage_source": "B",
+  "outage_start": 0.35,
+  "outage_end": 0.55,
+  "checkpoint_percents": [
+   10,
+   50,
+   90,
+   100
+  ],
+  "run_control": false,
+  "run_finite": false,
+  "reprocess": false,
+  "restart_offline_files": 3,
+  "stage_timeout_seconds": 7200.0
+ },
+ "prepared": {
+  "files_per_source_required": 40,
+  "files_per_source_planned": {
+   "A": 50,
+   "B": 81
+  },
+  "packages": {
+   "A": {
+    "label": "A",
+    "files": 50,
+    "images": 50,
+    "bytes": 3633378,
+    "schedule_sha256": "63e1c74b13a387c5f95139e9b1451668aa58adec4d912c1cde221ac7ed34909d"
+   },
+   "B": {
+    "label": "B",
+    "files": 81,
+    "images": 79,
+    "bytes": 5524489,
+    "schedule_sha256": "9aaf4b1cc95a306515c7cf6e0eb646625fc5632e3d5aa216ed97ef32c53b423f"
+   }
+  },
+  "writer_script_sha256": "c176aa5e16ee2b9bcb93a60f8c57bb12dd0bc8e220831d1b71905f64482dad52"
+ },
+ "coordinator": {
+  "kind": "source",
+  "executable": "C:\\Research\\OMRflow-p10\\.venv\\Scripts\\python.exe"
+ },
+ "seconds": 124.9,
+ "error": {},
+ "smb": {
+  "mode": "rehearsal",
+  "sources": [
+   {
+    "label": "A",
+    "root": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\share\\Scanner_A",
+    "host": null,
+    "genuine_smb": false,
+    "reason": "not a UNC path (a local folder, junction, subst or mapped drive)",
+    "writer_log": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\logs\\writer_A.jsonl"
+   },
+   {
+    "label": "B",
+    "root": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\share\\Scanner_B",
+    "host": null,
+    "genuine_smb": false,
+    "reason": "not a UNC path (a local folder, junction, subst or mapped drive)",
+    "writer_log": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\logs\\writer_B.jsonl"
+   }
+  ],
+  "database": {
+   "path": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\p9-custom-20261007T121328Z-20261007\\rehearsal\\workspace\\SMB qualification rehearsal\\database.sqlite",
+   "drive_type": "fixed",
+   "local": true,
+   "unc": false
+  },
+  "machine": {
+   "host": "Sajid-Asus-Laptop",
+   "computer_name": "SAJID-ASUS-LAPT",
+   "identities": [
+    ".",
+    "0:0:0:0:0:0:0:1",
+    "127.0.0.1",
+    "192.168.50.101",
+    "::1",
+    "fd34:e7fa:884e:ae27:34fe:9836:a5cb:4793",
+    "fd34:e7fa:884e:ae27:9c08:a8b2:e1e6:f233",
+    "fe80::4aea:2b92:a273:f590",
+    "localhost",
+    "sajid-asus-lapt",
+    "sajid-asus-laptop"
+   ],
+   "platform": "Windows-11-10.0.26200-SP0",
+   "windows": [
+    "11",
+    "10.0.26200",
+    "SP0",
+    "Multiprocessor Free"
+   ],
+   "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+   "cpu_logical": 16,
+   "ram_bytes": 33721307136
+  },
+  "smb_connections": {
+   "available": false,
+   "reason": "Get-SmbConnection : Access is denied. \nAt line:1 char:1\n+ Get-SmbConnection -ErrorAction Stop | Select-Object ServerName, Share ...\n+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n    + CategoryInfo          : PermissionDenied: (MSFT_SMBConnection:ROOT/Microsoft/...T_SMBConnection) [Get-SmbConnect \n   ion], CimException\n    + FullyQualifiedErrorId : Windows System Error 5,Get-SmbConnection"
+  },
+  "clock": {
+   "A": {
+    "ok": true,
+    "offset_seconds": -0.0015,
+    "uncertainty_seconds": 0.0125,
+    "samples": 5,
+    "spread_seconds": 0.0015,
+    "errors": []
+   },
+   "B": {
+    "ok": true,
+    "offset_seconds": -0.0018,
+    "uncertainty_seconds": 0.0123,
+    "samples": 5,
+    "spread_seconds": 0.0009,
+    "errors": []
+   }
+  },
+  "writers": {
+   "A": {
+    "host": "SAJID-ASUS-LAPT",
+    "user": "Sajid",
+    "os_caption": "Microsoft Windows 11 Education",
+    "os_version": "Microsoft Windows NT 10.0.26200.0",
+    "os_build": "26200",
+    "powershell": "5.1.26100.9444",
+    "powershell_edition": "Desktop",
+    "target": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\disk\\Scanner_A",
+    "target_is_unc": false,
+    "files": 50,
+    "writer": "Invoke-OmrflowScannerWriter.ps1"
+   },
+   "B": {
+    "host": "SAJID-ASUS-LAPT",
+    "user": "Sajid",
+    "os_caption": "Microsoft Windows 11 Education",
+    "os_version": "Microsoft Windows NT 10.0.26200.0",
+    "os_build": "26200",
+    "powershell": "5.1.26100.9444",
+    "powershell_edition": "Desktop",
+    "target": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\disk\\Scanner_B",
+    "target_is_unc": false,
+    "files": 81,
+    "writer": "Invoke-OmrflowScannerWriter.ps1"
+   }
+  },
+  "outage": {},
+  "restart": {
+   "label": "smb-restart",
+   "attempts": 1,
+   "completed_writes_at_kill": 46,
+   "committed_at_kill": 33,
+   "in_flight_at_kill": 6,
+   "offline_files": 3,
+   "restart_seconds": 0.234,
+   "recovery_ok": true,
+   "recovery_failures": [],
+   "same_session": true,
+   "orphans": [],
+   "integrity_ok": true
+  },
+  "reachability_samples": [
+   {
+    "t": 1791375229.172552,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375239.2795093,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375249.399357,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375259.5243015,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375269.6593416,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375280.580826,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375290.7469,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   },
+   {
+    "t": 1791375300.890458,
+    "project": {
+     "A": "online",
+     "B": "unreachable"
+    },
+    "lists": {
+     "A": true,
+     "B": false
+    }
+   },
+   {
+    "t": 1791375310.9743934,
+    "project": {
+     "A": "online",
+     "B": "unreachable"
+    },
+    "lists": {
+     "A": true,
+     "B": false
+    }
+   },
+   {
+    "t": 1791375321.0783458,
+    "project": {
+     "A": "online",
+     "B": "online"
+    },
+    "lists": {
+     "A": true,
+     "B": true
+    }
+   }
+  ],
+  "log_read_errors": {
+   "A": 0,
+   "B": 0
+  },
+  "coordinator": "source"
+ },
+ "not_proven": [
+  "real scanner hardware or real paper (the images are synthetic, written by a script)",
+  "power-loss durability (the restart is a process termination)",
+  "the installed build's GUI on a share (the coordinator is headless)",
+  "other SMB servers, NAS devices, VPNs or Wi-Fi links than the ones described here",
+  "real-paper calibration of the quality policy (the unvalidated default)",
+  "production readiness"
+ ],
+ "assertions": [
+  {
+   "name": "genuine_smb_topology",
+   "title": "",
+   "status": "not_exercised",
+   "checked": 0,
+   "minimum": 2,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "sources": [
+     {
+      "label": "A",
+      "root": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\share\\Scanner_A",
+      "host": null,
+      "genuine_smb": false,
+      "reason": "not a UNC path (a local folder, junction, subst or mapped drive)",
+      "writer_log": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\logs\\writer_A.jsonl"
+     },
+     {
+      "label": "B",
+      "root": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\share\\Scanner_B",
+      "host": null,
+      "genuine_smb": false,
+      "reason": "not a UNC path (a local folder, junction, subst or mapped drive)",
+      "writer_log": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\logs\\writer_B.jsonl"
+     }
+    ],
+    "writers": {
+     "A": {
+      "host": "SAJID-ASUS-LAPT",
+      "user": "Sajid",
+      "os_caption": "Microsoft Windows 11 Education",
+      "os_version": "Microsoft Windows NT 10.0.26200.0",
+      "os_build": "26200",
+      "powershell": "5.1.26100.9444",
+      "powershell_edition": "Desktop",
+      "target": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\disk\\Scanner_A",
+      "target_is_unc": false,
+      "files": 50,
+      "writer": "Invoke-OmrflowScannerWriter.ps1"
+     },
+     "B": {
+      "host": "SAJID-ASUS-LAPT",
+      "user": "Sajid",
+      "os_caption": "Microsoft Windows 11 Education",
+      "os_version": "Microsoft Windows NT 10.0.26200.0",
+      "os_build": "26200",
+      "powershell": "5.1.26100.9444",
+      "powershell_edition": "Desktop",
+      "target": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\disk\\Scanner_B",
+      "target_is_unc": false,
+      "files": 81,
+      "writer": "Invoke-OmrflowScannerWriter.ps1"
+     }
+    },
+    "omrflow_host": "Sajid-Asus-Laptop",
+    "omrflow_names": [
+     "",
+     ".",
+     "0:0:0:0:0:0:0:1",
+     "127",
+     "127.0.0.1",
+     "192",
+     "192.168.50.101",
+     "::1",
+     "fd34:e7fa:884e:ae27:34fe:9836:a5cb:4793",
+     "fd34:e7fa:884e:ae27:9c08:a8b2:e1e6:f233",
+     "fe80::4aea:2b92:a273:f590",
+     "localhost",
+     "sajid-asus-lapt",
+     "sajid-asus-laptop"
+    ],
+    "note": "rehearsal on local folders: not SMB evidence"
+   },
+   "scale": ""
+  },
+  {
+   "name": "database_on_local_disk",
+   "title": "",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "path": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\p9-custom-20261007T121328Z-20261007\\rehearsal\\workspace\\SMB qualification rehearsal\\database.sqlite",
+    "drive_type": "fixed",
+    "local": true,
+    "unc": false
+   },
+   "scale": ""
+  },
+  {
+   "name": "scale_and_workload",
+   "title": "",
+   "status": "not_exercised",
+   "checked": 0,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "files_per_source": {
+     "A": 50,
+     "B": 81
+    },
+    "patterns": {
+     "held_open": 22,
+     "header_first": 16,
+     "rename": 23,
+     "stepped": 35,
+     "atomic": 32,
+     "long_pause": 3
+    },
+    "partial_writes": 99,
+    "same_name_across_sources": 50,
+    "restarts": 1,
+    "outages": 1,
+    "reasons": [
+     "fewer than 1000 files written at {'A': 50, 'B': 81}"
+    ]
+   },
+   "scale": ""
+  },
+  {
+   "name": "completed_files_discovered_exactly_once",
+   "title": "",
+   "status": "pass",
+   "checked": 131,
+   "minimum": 131,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "planned_files": 131,
+    "checked": 131,
+    "vanished_seen": 0
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_partial_file_processed",
+   "title": "",
+   "status": "pass",
+   "checked": 127,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "registered_files_checked": 127,
+    "partial_writes_planned": 99,
+    "completion_to_submission_seconds": {
+     "count": 127,
+     "min": 2.685,
+     "median": 6.734,
+     "p95": 20.2508,
+     "max": 25.5407
+    },
+    "clock_allowance_seconds": {
+     "A": 0.014,
+     "B": 0.0132
+    }
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_stable_file_duplicated",
+   "title": "",
+   "status": "pass",
+   "checked": 4,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "planted_copies": 4,
+    "within_source": 2,
+    "across_sources": 2,
+    "same_name_across_sources": 0,
+    "flagged": 4,
+    "false_positives": 0
+   },
+   "scale": ""
+  },
+  {
+   "name": "provenance_correct",
+   "title": "",
+   "status": "pass",
+   "checked": 127,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "registered_files_checked": 127,
+    "displayed_names_checked": 131
+   },
+   "scale": ""
+  },
+  {
+   "name": "same_filenames_independent",
+   "title": "",
+   "status": "pass",
+   "checked": 100,
+   "minimum": 2,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "names_on_several_sources": 50,
+    "files_checked": 100,
+    "independent_registered": 94
+   },
+   "scale": ""
+  },
+  {
+   "name": "outage_marked_unreachable",
+   "title": "",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "outages": [
+     {
+      "source": "B",
+      "root": "C:\\Research\\OMRflow-p10\\Scratch\\phase10\\smb-rehearsal-final\\rehearsal-20261007T181327\\rehearsal\\share\\Scanner_B",
+      "mode": "rehearsal",
+      "requested_at": 1791375296.8496635,
+      "completed_writes_at_request": 81,
+      "mechanism": "rehearsal: the local folder link was removed (NOT SMB)",
+      "unreachable_from_here_at": 1791375296.8506668,
+      "start": 1791375296.8506668,
+      "seen_unreachable": 1791375297.8680134,
+      "reachability": "unreachable",
+      "other_sources_listing": {
+       "A": true
+      },
+      "completed_writes_before_restore": 112,
+      "restore_requested_at": 1791375317.023011,
+      "reachable_from_here_at": 1791375317.0253468,
+      "end": 1791375317.0253468,
+      "project_online_at": 1791375318.05277,
+      "other_sources_files_during_outage": 8
+     }
+    ]
+   },
+   "scale": ""
+  },
+  {
+   "name": "reconnection_recovers_files",
+   "title": "",
+   "status": "pass",
+   "checked": 26,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "files_written_during_outages": 26
+   },
+   "scale": ""
+  },
+  {
+   "name": "restart_same_session_and_offline_arrivals",
+   "title": "",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "restarts": 1,
+    "files_written_while_down": 4,
+    "sessions": [
+     "6303751a1d1944bba4860b4028da57a5"
+    ]
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_completed_scan_rerecognised",
+   "title": "",
+   "status": "pass",
+   "checked": 33,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "kills": [
+     {
+      "kill": "smb-restart",
+      "committed_before": 33,
+      "resubmitted": 0
+     }
+    ],
+    "claimed_twice_in_one_incarnation": 0
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_database_lock_errors",
+   "title": "",
+   "status": "pass",
+   "checked": 698,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "coordinator_events_checked": 698
+   },
+   "scale": ""
+  },
+  {
+   "name": "sqlite_integrity",
+   "title": "",
+   "status": "pass",
+   "checked": 2,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "reports": 2
+   },
+   "scale": ""
+  },
+  {
+   "name": "project_health",
+   "title": "",
+   "status": "pass",
+   "checked": 2,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "reports": 2,
+    "warnings": {
+     "STALE_PROCESSING_JOBS": 1,
+     "BATCH_LEFT_RUNNING": 1,
+     "UNRESOLVED_CONFLICTS": 2,
+     "NO_BACKUPS": 2
+    }
+   },
+   "scale": ""
+  }
+ ],
+ "measurements": {
+  "listing_seconds_per_reconciliation": {
+   "A": {
+    "count": 108,
+    "min": 0.0002,
+    "median": 0.0004,
+    "p95": 0.001,
+    "max": 0.002,
+    "files_listed": {
+     "count": 108,
+     "min": 0.0,
+     "median": 25.0,
+     "p95": 50.0,
+     "max": 50.0
+    },
+    "errors": 0
+   },
+   "B": {
+    "count": 89,
+    "min": 0.0002,
+    "median": 0.0005,
+    "p95": 0.0011,
+    "max": 0.0015,
+    "files_listed": {
+     "count": 89,
+     "min": 0.0,
+     "median": 26.0,
+     "p95": 81.0,
+     "max": 81.0
+    },
+    "errors": 266
+   }
+  },
+  "stabilisation_seconds_completion_to_ready": {
+   "all": {
+    "count": 101,
+    "min": 2.1555,
+    "median": 2.7507,
+    "p95": 8.3249,
+    "max": 23.4297
+   },
+   "A": {
+    "count": 49,
+    "min": 2.1651,
+    "median": 2.8241,
+    "p95": 3.116,
+    "max": 6.6807
+   },
+   "B": {
+    "count": 52,
+    "min": 2.1555,
+    "median": 2.7416,
+    "p95": 8.3421,
+    "max": 23.4297
+   },
+   "excludes": "files completed during an outage or while OMRFlow was down"
+  },
+  "first_seen_after_write_started_seconds": {
+   "A": {
+    "count": 50,
+    "min": 0.0423,
+    "median": 0.5532,
+    "p95": 1.0203,
+    "max": 2.1336
+   },
+   "B": {
+    "count": 81,
+    "min": 0.0174,
+    "median": 0.9947,
+    "p95": 15.067,
+    "max": 20.8766
+   }
+  },
+  "outages": [
+   {
+    "source": "B",
+    "mechanism": "rehearsal: the local folder link was removed (NOT SMB)",
+    "requested_at": 1791375296.8496635,
+    "start": 1791375296.8506668,
+    "seen_unreachable": 1791375297.8680134,
+    "restore_requested_at": 1791375317.023011,
+    "end": 1791375317.0253468,
+    "project_online_at": 1791375318.05277,
+    "detected_after_seconds": 1.017,
+    "online_after_seconds": 1.027
+   }
+  ],
+  "restart": {
+   "label": "smb-restart",
+   "attempts": 1,
+   "completed_writes_at_kill": 46,
+   "committed_at_kill": 33,
+   "in_flight_at_kill": 6,
+   "offline_files": 3,
+   "restart_seconds": 0.234,
+   "recovery_ok": true,
+   "recovery_failures": [],
+   "same_session": true,
+   "orphans": [],
+   "integrity_ok": true
+  },
+  "clock_offsets": {
+   "A": {
+    "ok": true,
+    "offset_seconds": -0.0015,
+    "uncertainty_seconds": 0.0125,
+    "samples": 5,
+    "spread_seconds": 0.0015,
+    "errors": []
+   },
+   "B": {
+    "ok": true,
+    "offset_seconds": -0.0018,
+    "uncertainty_seconds": 0.0123,
+    "samples": 5,
+    "spread_seconds": 0.0009,
+    "errors": []
+   }
+  }
+ },
+ "verdict": "NOT SMB QUALIFICATION"
+}
