@@ -40,7 +40,7 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### SMB / installed build / Alpha release gate (`0.1.1` revised phase 10 / roadmap G second part, 2026-10-07 — branch `feat/0.1.1-phase10-release-gate`, not merged; no migration, schema 17; **release gate not met: real SMB not performed**)
+### SMB / installed build / Alpha release gate (`0.1.1` revised phase 10 / roadmap G second part, 2026-10-07 — merged to `main` as `da05d99`; no migration, schema 17; **release gate not met: real SMB not performed**)
 
 - **What exists:** `OMRFlow.exe --intake-qualification-coordinator` (hidden;
   the packaged executable runs the intake-qualification coordinator, so the

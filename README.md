@@ -292,8 +292,8 @@ ten revised phases.
   [docs/release/validation/0.1.1-alpha.0-phase9-intake/](docs/release/validation/0.1.1-alpha.0-phase9-intake/README.md).
   **Synthetic, local-disk, source-build only: not SMB, real-scanner,
   power-loss or installed-build evidence; not production qualified.**
-- **Implemented and run on branch `feat/0.1.1-phase10-release-gate` (not
-  merged; no migration):** phase 10, the SMB / installed-build / Alpha release
+- **Implemented and run; merged into `main` as `da05d99`
+  (no migration):** phase 10, the SMB / installed-build / Alpha release
   gate. On the **installed** `0.1.1-alpha.0` candidate (built from `73e364b`,
   installed in place over the released `v0.1.0-alpha.2`): a two-scanner
   live-intake campaign with the continuous engine running inside the
@@ -320,13 +320,13 @@ ten revised phases.
 | 7 — Quality / rescan / session controls | ✅ merged (`9169933`; migration 17; headless) | ✅ passing, incl. real process kills at every new durable transition, concurrent operator / snapshot contention (local disk, rollback journal), a schema-16 upgrade fixture, and Reports / Scan closes driven through the finish policy | 🟠 a 341-sheet three-scanner scenario on a fake filesystem - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 8 — Operational GUI | ✅ merged (`e620e7c`; no migration) | ✅ passing, incl. GUI tests over the engine rig (10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen) | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 9 — Automated qualification | ✅ merged (`459c65b`; no migration) | ✅ passing, incl. harness failure paths, a small real-kill campaign, the self-test and an endurance campaign | ✅ **`QUALIFIED`** - the 10,189-file three-scanner intake campaign (synthetic, local disk, source build) | ❌ | ❌ not performed (phase 10) | ❌ |
-| 10 — SMB / installed build / Alpha release gate | ✅ branch (tooling; no migration; not merged) | ✅ passing (see *Testing status*) | ✅ on the **installed** build at small scale (2 sources, ~250 files, real kills) | ❌ | ❌ **not performed** - real infrastructure required | ❌ |
+| 10 — SMB / installed build / Alpha release gate | ✅ merged (`da05d99`; tooling; no migration) | ✅ passing (see *Testing status*) | ✅ on the **installed** build at small scale (2 sources, ~250 files, real kills) | ❌ | ❌ **not performed** - real infrastructure required | ❌ |
 
 **Phase 10 (SMB / installed build / release gate), evidence track by track:**
 
 | Track | Status |
 |---|---|
-| Implemented | ✅ tooling on `feat/0.1.1-phase10-release-gate` (not merged): the packaged coordinator entry, SMB qualification, installed-build checks, the release-gate evaluator; no product semantics changed; no migration (schema 17) |
+| Implemented | ✅ tooling, merged into `main` as `da05d99`: the packaged coordinator entry, SMB qualification, installed-build checks, the release-gate evaluator; no product semantics changed; no migration (schema 17) |
 | Automated tests | ✅ passing (see *Testing status*) |
 | Synthetic source-build qualification | ✅ carried forward from phase 9 (`QUALIFIED`, `542b2af`); not re-run - phase 10 changed no correctness-critical production code |
 | SMB qualification | ❌ **not performed** - one machine only; prepared, and a local rehearsal of the procedure (never SMB evidence) passed |

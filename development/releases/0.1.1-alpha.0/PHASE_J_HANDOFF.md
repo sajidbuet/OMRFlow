@@ -36,7 +36,7 @@ tip:          the commit carrying this handoff
 commits:      14 (listed below; the last carries this handoff's final figures)
 working tree: clean
 pushed:       origin/feat/0.1.1-phase10-release-gate (813182f, then the final docs commit)
-merged:       no
+merged:       2026-10-07 into main as da05d99 (after this handoff was written, on the owner's instruction); not tagged, not released
 tagged:       no
 released:     no
 schema:       17 (no migration)
