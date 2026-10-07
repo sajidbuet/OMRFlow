@@ -40,7 +40,34 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Operational GUI for continuous multi-source scanning (`0.1.1` revised phase 8 / roadmap F, 2026-10-05 — implemented; automated and GUI tests passing; branch `feat/0.1.1-phase8-operational-gui`, not merged; no migration, schema 17)
+### Automated intake qualification (`0.1.1` revised phase 9 / roadmap G first part, 2026-10-06/07 — implemented; automated tests passing; release-scale synthetic campaign `QUALIFIED` at `542b2af`; branch `feat/0.1.1-phase9-automated-qualification`, not merged; no migration, schema 17)
+
+- **What exists:** `omr_scanner.evaluation.intake_qualification` (plan and
+  ground truth, renderer, scanner-writer processes, the coordinator under
+  test, scripted operator, independent reference, read-only inspection,
+  assertion registry / crash matrix / endurance / verdict, supervisor,
+  reports) and the CLI `python -m omr_scanner.tools.intake_qualification
+  --self-test | --release-scale | --config` (exit codes 0 / 1 / 2 / 3 / 130).
+  Documented in `docs/intake_qualification.md`.
+- **Evidence:** release-scale campaign `p9-release-20261006T151124Z` at
+  `542b2af` (clean tree): **`QUALIFIED`** - 3 writer processes, 10,189 files,
+  4 sets, 10,240 candidates; all 16 §5.2 assertions, crash cases 1–15 (1 / 25
+  / 50 / 75 / 99 % each landed on work in flight) and endurance A–E passed;
+  evaluator recorded 262,912 compared results and 201,749 compared report
+  cells, all equal to the reference; the
+  uninterrupted control and the finite control agree. Committed under
+  `docs/release/validation/0.1.1-alpha.0-phase9-intake/`. Canonical gate
+  7,184 passed / 0 failed; stress 9 / 9. Handoff
+  `development/releases/0.1.1-alpha.0/PHASE_I_HANDOFF.md`.
+- **Product fixes found by it:** a source lost between a reconciliation
+  pass's listing and its reads no longer marks files vanished (`c8c916f`); a
+  reprocessed watched sheet keeps the name it arrived with (`97320bb`).
+- **Not:** SMB / network share (the outage is a local junction), real
+  scanners, power loss, installed build, an operator, the GUI (headless),
+  production. Project Health still counts conflicts of rejected originals and
+  exceptions of replaced attendance lists after a clean close (warnings).
+
+### Operational GUI for continuous multi-source scanning (`0.1.1` revised phase 8 / roadmap F, 2026-10-05 — implemented; automated and GUI tests passing; merged to `main` as `e620e7c`; no migration, schema 17)
 
 - **What exists:** session mode on the Scan stage - `gui/scan/session_panel.py`
   (status line, three progress lines, counts, warnings, folded *Sources* table,

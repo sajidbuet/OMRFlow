@@ -1,0 +1,255 @@
+{
+  "format": "omrflow-template",
+  "format_version": 1,
+  "template_id": "0b1a5e00-c4a5-4f3e-9a51-000000000003",
+  "name": "Synthetic answer sheet",
+  "description": "",
+  "created_with": "0.1.1-alpha.0",
+  "created_at": "2026-10-05T18:48:21.353652Z",
+  "modified_at": "2026-10-05T18:48:21.353652Z",
+  "page": {
+    "width_mm": 210.0,
+    "height_mm": 297.0,
+    "canonical_width_px": 1240,
+    "canonical_height_px": 1754
+  },
+  "registration_markers": [
+    {
+      "role": "top_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.05,
+        "y": 0.035
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "top_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.95,
+        "y": 0.035
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_right",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.95,
+        "y": 0.965
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    },
+    {
+      "role": "bottom_left",
+      "shape": "filled_square",
+      "center": {
+        "x": 0.05,
+        "y": 0.965
+      },
+      "size": {
+        "width": 0.03,
+        "height": 0.021
+      },
+      "search_radius": 0.05
+    }
+  ],
+  "orientation_marker": {
+    "shape": "filled_rectangle",
+    "center": {
+      "x": 0.14,
+      "y": 0.035
+    },
+    "size": {
+      "width": 0.05,
+      "height": 0.012
+    },
+    "expected_near": "top_left",
+    "search_radius": 0.05
+  },
+  "zones": [
+    {
+      "id": "roll_number",
+      "label": "Roll number",
+      "bounds": {
+        "x": 0.085,
+        "y": 0.12825,
+        "width": 0.255,
+        "height": 0.29350000000000004
+      },
+      "field": {
+        "type": "numeric",
+        "symbols": [
+          "0",
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9"
+        ],
+        "character_count": 6,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.1,
+          "y": 0.14
+        },
+        "row_pitch": 0.03,
+        "column_pitch": 0.045,
+        "bubble_size": {
+          "width": 0.022,
+          "height": 0.0155
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "set_code",
+      "label": "Set code",
+      "bounds": {
+        "x": 0.445,
+        "y": 0.12825,
+        "width": 0.03,
+        "height": 0.11349999999999999
+      },
+      "field": {
+        "type": "set_code",
+        "symbols": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "character_count": 1,
+        "symbol_axis": "vertical"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.46,
+          "y": 0.14
+        },
+        "row_pitch": 0.03,
+        "column_pitch": 0.045,
+        "bubble_size": {
+          "width": 0.022,
+          "height": 0.0155
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "questions_0",
+      "label": "Questions 1-10",
+      "bounds": {
+        "x": 0.105,
+        "y": 0.54825,
+        "width": 0.15,
+        "height": 0.18549999999999997
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 1,
+        "question_count": 10,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.12,
+          "y": 0.56
+        },
+        "row_pitch": 0.018,
+        "column_pitch": 0.04,
+        "bubble_size": {
+          "width": 0.022,
+          "height": 0.0155
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    },
+    {
+      "id": "questions_1",
+      "label": "Questions 11-20",
+      "bounds": {
+        "x": 0.445,
+        "y": 0.54825,
+        "width": 0.15,
+        "height": 0.18549999999999997
+      },
+      "field": {
+        "type": "question_block",
+        "first_question": 11,
+        "question_count": 10,
+        "answer_labels": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "symbol_axis": "horizontal",
+        "group_id": "questions"
+      },
+      "grid": {
+        "origin": {
+          "x": 0.46,
+          "y": 0.56
+        },
+        "row_pitch": 0.018,
+        "column_pitch": 0.04,
+        "bubble_size": {
+          "width": 0.022,
+          "height": 0.0155
+        },
+        "overrides": []
+      },
+      "display_color": "#1E88E5",
+      "recognition": null
+    }
+  ],
+  "recognition": {
+    "fill_ratio_threshold": 0.55,
+    "blank_ratio_threshold": 0.25,
+    "ambiguity_margin": 0.12,
+    "min_confidence": 0.6
+  },
+  "reference_image": null,
+  "default_bubble_radius": 0.011,
+  "calibration": {
+    "validated_at": "",
+    "sample_count": 0,
+    "engine_version": "",
+    "status": "",
+    "geometry_fingerprint": "",
+    "recognition_fingerprint": ""
+  }
+}

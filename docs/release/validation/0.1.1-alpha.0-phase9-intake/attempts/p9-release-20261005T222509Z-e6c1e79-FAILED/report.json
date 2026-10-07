@@ -1,0 +1,2002 @@
+{
+ "schema_version": 1,
+ "campaign_id": "p9-release-20261005T222509Z-20261006",
+ "mode": "release",
+ "config": {
+  "mode": "release",
+  "seed": 20261006,
+  "timing_seed": 6102026,
+  "sources": 3,
+  "sets": [
+   "A",
+   "B",
+   "C",
+   "D"
+  ],
+  "candidates_per_set": 2560,
+  "duration_seconds": 2400.0,
+  "control_duration_seconds": 900.0,
+  "workers": 6,
+  "unit_size": 200,
+  "trickle_seconds": 30.0,
+  "max_in_flight": 16,
+  "claim_window": 32,
+  "max_commit_group": 25,
+  "stability": {
+   "min_observations": 2,
+   "quiet_seconds": 5.0,
+   "max_decode_attempts": 3,
+   "retry_backoff_seconds": 5.0,
+   "poll_interval_seconds": 10.0
+  },
+  "kill_percents": [
+   1,
+   25,
+   50,
+   75,
+   99
+  ],
+  "after_commit_kill_percent": 35,
+  "duplicate_sync_kill_percent": 15,
+  "operator_kill_percent": 60,
+  "clean_close_percent": 85,
+  "outage_source": "B",
+  "outage_start": 0.4,
+  "outage_end": 0.52,
+  "checkpoint_percents": [
+   1,
+   10,
+   25,
+   50,
+   75,
+   90,
+   100
+  ],
+  "run_control": true,
+  "run_finite": true,
+  "reprocess": true,
+  "restart_offline_files": 10,
+  "stage_timeout_seconds": 3600.0
+ },
+ "plan_digest": "1ceff1d6a90a9c0f9b18cb91f969f3fe37a7fe01e267c00291bfa0da0c11d884",
+ "template_fingerprint": "194495f941ee930b",
+ "environment": {
+  "commit": "e6c1e799718ae9c6cde9ef51ae0e3244a6fd1741",
+  "working_tree_clean": true,
+  "working_tree_changes": [],
+  "application_version": "0.1.1-alpha.0",
+  "schema_version": 17,
+  "python": "3.12.7 | packaged by Anaconda, Inc. | (main, Oct  4 2024, 13:17:27) [MSC v.1929 64 bit (AMD64)]",
+  "executable": "C:\\Research\\OMRflow\\.venv\\Scripts\\python.exe",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "windows": [
+   "11",
+   "10.0.26200",
+   "SP0",
+   "Multiprocessor Free"
+  ],
+  "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+  "cpu_logical": 16,
+  "cpu_physical": 8,
+  "ram_bytes": 33721307136,
+  "sqlite": "3.45.3",
+  "environment": {
+   "PYTHONPATH": "C:\\Research\\OMRflow-p9q\\src",
+   "PROCESSOR_IDENTIFIER": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD"
+  }
+ },
+ "error": {},
+ "seconds": 28593.3,
+ "render_seconds": 48.7,
+ "ground_truth": {
+  "arrivals_written": 10188,
+  "late_arrivals": 1,
+  "unique_contents": 9988,
+  "byte_copy_arrivals": 200,
+  "registered_sheets": 9989,
+  "superseded_sheets": 56,
+  "effective_sheets": 9933,
+  "effective_scripts": 9923,
+  "blank_pages": 10,
+  "candidates_on_lists": 10240,
+  "scored_candidates": 9881,
+  "per_set": {
+   "A": {
+    "candidates": 2560,
+    "absent": 89,
+    "scored": 2471
+   },
+   "B": {
+    "candidates": 2560,
+    "absent": 90,
+    "scored": 2470
+   },
+   "C": {
+    "candidates": 2560,
+    "absent": 90,
+    "scored": 2470
+   },
+   "D": {
+    "candidates": 2560,
+    "absent": 90,
+    "scored": 2470
+   }
+  },
+  "categories": {
+   "normal": 9558,
+   "absent": 308,
+   "folded": 52,
+   "wrong_id": 52,
+   "duplicate_script": 32,
+   "wrong_id_victim": 52,
+   "missing_script": 51,
+   "absent_with_script": 52,
+   "id_multiple": 40,
+   "id_blank": 40,
+   "chain": 2,
+   "late_found": 1,
+   "unknown": 10
+  }
+ },
+ "not_proven": [
+  "genuine SMB / network-share behaviour (the source outage is a local folder link removed and restored)",
+  "real scanner behaviour (images are synthetic, written by processes)",
+  "actual power-loss durability (process termination is not power removal)",
+  "real-paper quality-policy calibration (the quality policy is the unvalidated default)",
+  "installed-build behaviour (this runs from source)",
+  "recognition accuracy on real scans",
+  "production readiness"
+ ],
+ "proves": "Automated source-build behaviour under a large synthetic multi-source intake campaign with controlled failures and exact ground truth: separate scanner writer processes on local folders, real forced termination of the OMRFlow coordinator, restarts into the same project and session, a scripted operator using the production services, closure through the authoritative finish policy, and Results / report cell values compared with an independent reference.",
+ "verdict": "FAILED",
+ "scale": {
+  "release_scale": true,
+  "reasons": []
+ },
+ "workload": {
+  "sources": 3,
+  "arrivals_written": 10189,
+  "arrivals_planned": 10189,
+  "unique_contents": 9988,
+  "byte_copy_arrivals": 200,
+  "sets": 4,
+  "candidates_on_lists": 10240,
+  "partial_writes": 7082,
+  "held_open_writes": 1518,
+  "renamed_writes": 1488,
+  "long_pause_writes": 507,
+  "header_first_writes": 1006,
+  "cross_source_same_name": 3459,
+  "source_outages": 1,
+  "kills": 8,
+  "clean_closes": 1,
+  "restarts": 9,
+  "offline_arrivals": 165,
+  "duplicate_id_conflicts": 168,
+  "operator_corrections": 132,
+  "duplicate_acceptances": 64,
+  "quality_suggestions": 64,
+  "confirmed_rejections": 56,
+  "dismissed_suggestions": 10,
+  "confirmed_replacements": 56,
+  "cross_source_replacements": 34,
+  "replacement_chains": 2,
+  "superseded_batches": 1,
+  "sealed_batches": 678,
+  "operator_decisions": 386,
+  "real_images": true
+ },
+ "assertions": [
+  {
+   "name": "stable_files_discovered_exactly_once",
+   "title": "",
+   "status": "pass",
+   "checked": 10189,
+   "minimum": 10189,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "written_files": 10189,
+    "vanished_seen": 0,
+    "manual_source_rows": 1,
+    "ledger_rows": 10413,
+    "temporary_names_ignored": 223
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_incomplete_file_processed",
+   "title": "",
+   "status": "pass",
+   "checked": 9989,
+   "minimum": 9984,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "patterns": {
+     "stepped": 2563,
+     "atomic": 3107,
+     "held_open": 1518,
+     "header_first": 1006,
+     "long_pause": 507,
+     "rename": 1488
+    },
+    "partial_writes": 7082,
+    "min_seconds_completion_to_submission": 10.32,
+    "median_seconds_completion_to_submission": 40.071
+   },
+   "scale": ""
+  },
+  {
+   "name": "source_provenance_retained",
+   "title": "",
+   "status": "pass",
+   "checked": 9989,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "registered_files_checked": 9989,
+    "original_names_checked": 10189,
+    "reprocessed_sheets_traced": 1
+   },
+   "scale": ""
+  },
+  {
+   "name": "duplicate_content_identified",
+   "title": "",
+   "status": "pass",
+   "checked": 200,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "planted_copies": 200,
+    "within_source": 100,
+    "across_sources": 100,
+    "same_name_across_sources": 3,
+    "flagged": 200,
+    "false_positives": 0
+   },
+   "scale": ""
+  },
+  {
+   "name": "independent_filenames_do_not_collide",
+   "title": "",
+   "status": "pass",
+   "checked": 9726,
+   "minimum": 2,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "names_on_several_sources": 3459,
+    "files_checked": 9726,
+    "independent_registered": 9353
+   },
+   "scale": ""
+  },
+  {
+   "name": "batches_finite",
+   "title": "",
+   "status": "pass",
+   "checked": 678,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "batches": 678,
+    "sealed": 678,
+    "watched_sources_with_units": 4,
+    "digests_rechecked": 676
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_accepted_image_lost",
+   "title": "",
+   "status": "pass",
+   "checked": 9933,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "expected_effective": 9933,
+    "actual_effective": 9933,
+    "kills_checked": 9
+   },
+   "scale": ""
+  },
+  {
+   "name": "no_completed_scan_rerecognised",
+   "title": "",
+   "status": "pass",
+   "checked": 34848,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "kills": [
+     {
+      "kill": "kill@1%",
+      "committed_before": 106,
+      "resubmitted": 0
+     },
+     {
+      "kill": "kill@1%#2",
+      "committed_before": 106,
+      "resubmitted": 0
+     },
+     {
+      "kill": "syncing_duplicates@15%",
+      "committed_before": 1588,
+      "resubmitted": 0
+     },
+     {
+      "kill": "kill@25%",
+      "committed_before": 2504,
+      "resubmitted": 0
+     },
+     {
+      "kill": "after_commit@35%",
+      "committed_before": 3510,
+      "resubmitted": 0
+     },
+     {
+      "kill": "kill@50%",
+      "committed_before": 5013,
+      "resubmitted": 0
+     },
+     {
+      "kill": "operator@60%",
+      "committed_before": 6020,
+      "resubmitted": 0
+     },
+     {
+      "kill": "kill@75%",
+      "committed_before": 7511,
+      "resubmitted": 0
+     },
+     {
+      "kill": "clean_close@85%",
+      "committed_before": 8490,
+      "resubmitted": 0
+     }
+    ],
+    "claimed_twice_in_one_incarnation": 0
+   },
+   "scale": ""
+  },
+  {
+   "name": "offline_arrivals_discovered",
+   "title": "",
+   "status": "pass",
+   "checked": 267,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "written_while_coordinator_down": 165,
+    "written_while_source_unreachable": 102,
+    "down_intervals": 9,
+    "outages": [
+     {
+      "source": "B",
+      "start": 1791240133.5258305,
+      "seen_unreachable": 1791240139.0020704,
+      "reachability": "unreachable",
+      "end": 1791240421.556414
+     }
+    ]
+   },
+   "scale": ""
+  },
+  {
+   "name": "conflict_counts_correct_as_population_grows",
+   "title": "",
+   "status": "pass",
+   "checked": 298,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "checkpoints": [
+     {
+      "label": "checkpoint@1%",
+      "committed": 102,
+      "expected": 0,
+      "actual": 0,
+      "duplicate_expected": 0
+     },
+     {
+      "label": "checkpoint@10%",
+      "committed": 1000,
+      "expected": 3,
+      "actual": 3,
+      "duplicate_expected": 0
+     },
+     {
+      "label": "checkpoint@25%",
+      "committed": 2504,
+      "expected": 11,
+      "actual": 11,
+      "duplicate_expected": 0
+     },
+     {
+      "label": "checkpoint@50%",
+      "committed": 4997,
+      "expected": 35,
+      "actual": 35,
+      "duplicate_expected": 12
+     },
+     {
+      "label": "checkpoint@75%",
+      "committed": 7500,
+      "expected": 25,
+      "actual": 25,
+      "duplicate_expected": 8
+     },
+     {
+      "label": "checkpoint@90%",
+      "committed": 8995,
+      "expected": 33,
+      "actual": 33,
+      "duplicate_expected": 12
+     },
+     {
+      "label": "caught_up@100%",
+      "committed": 9988,
+      "expected": 42,
+      "actual": 42,
+      "duplicate_expected": 20
+     }
+    ]
+   },
+   "scale": ""
+  },
+  {
+   "name": "rescan_relationships_survive_restart",
+   "title": "",
+   "status": "pass",
+   "checked": 56,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "links": 56,
+    "cross_source": 34,
+    "chains": 2,
+    "restarts_checked": 9
+   },
+   "scale": ""
+  },
+  {
+   "name": "aggregate_counts_consistent",
+   "title": "",
+   "status": "pass",
+   "checked": 8,
+   "minimum": 3,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "checkpoints": 8,
+    "final": {
+     "snapshot": {
+      "stabilizing": 0,
+      "ready": 0,
+      "held": 0,
+      "vanished": 0,
+      "unreadable_pending_decision": 0,
+      "queued": 0,
+      "processing": 0,
+      "accepted": 9933,
+      "conflict": 0,
+      "rescan_required": 0,
+      "superseded": 57,
+      "duplicate": 200,
+      "excluded": 0,
+      "deferred": 0,
+      "counted_elsewhere": 0
+     },
+     "recount": {
+      "duplicate": 200,
+      "accepted": 9933,
+      "superseded": 57
+     },
+     "discovered": 10190,
+     "effective": 9933,
+     "ok": true
+    }
+   },
+   "scale": ""
+  },
+  {
+   "name": "session_results_match_ground_truth",
+   "title": "",
+   "status": "pass",
+   "checked": 262912,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "cells_compared": 201749,
+    "results_compared": 262912,
+    "summary": {
+     "arrivals_written": 10188,
+     "late_arrivals": 1,
+     "unique_contents": 9988,
+     "byte_copy_arrivals": 200,
+     "registered_sheets": 9989,
+     "superseded_sheets": 56,
+     "effective_sheets": 9933,
+     "effective_scripts": 9923,
+     "blank_pages": 10,
+     "candidates_on_lists": 10240,
+     "scored_candidates": 9881,
+     "per_set": {
+      "A": {
+       "candidates": 2560,
+       "absent": 89,
+       "scored": 2471
+      },
+      "B": {
+       "candidates": 2560,
+       "absent": 90,
+       "scored": 2470
+      },
+      "C": {
+       "candidates": 2560,
+       "absent": 90,
+       "scored": 2470
+      },
+      "D": {
+       "candidates": 2560,
+       "absent": 90,
+       "scored": 2470
+      }
+     },
+     "categories": {
+      "normal": 9558,
+      "absent": 308,
+      "folded": 52,
+      "wrong_id": 52,
+      "duplicate_script": 32,
+      "wrong_id_victim": 52,
+      "missing_script": 51,
+      "absent_with_script": 52,
+      "id_multiple": 40,
+      "id_blank": 40,
+      "chain": 2,
+      "late_found": 1,
+      "unknown": 10
+     }
+    }
+   },
+   "scale": ""
+  },
+  {
+   "name": "sqlite_integrity",
+   "title": "",
+   "status": "pass",
+   "checked": 12,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "reports": 12
+   },
+   "scale": ""
+  },
+  {
+   "name": "application_invariants",
+   "title": "",
+   "status": "pass",
+   "checked": 12,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "reports": 12,
+    "warnings": {
+     "BATCH_LEFT_RUNNING": 7,
+     "NO_BACKUPS": 12,
+     "STALE_PROCESSING_JOBS": 5,
+     "UNRESOLVED_CONFLICTS": 10,
+     "UNRESOLVED_RECONCILIATION_EXCEPTIONS": 3
+    }
+   },
+   "scale": ""
+  },
+  {
+   "name": "finite_mode_regression",
+   "title": "",
+   "status": "pass",
+   "checked": 253290,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "golden": {
+     "ok": true,
+     "differences": [],
+     "entries": 22,
+     "results": 22,
+     "cells": 530,
+     "fixture": "tests\\fixtures\\golden_one_batch\\golden.json",
+     "seconds": 3.77
+    },
+    "finite_batches": 2,
+    "finite_seconds": 1768.0
+   },
+   "scale": ""
+  }
+ ],
+ "crash_matrix": [
+  {
+   "name": "case_01_clean_close_during_scan",
+   "title": "Clean application close halfway through Scan",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "clean_close@85%": {
+     "ok": true,
+     "returned": 0
+    }
+   },
+   "scale": "8490 committed, 32 still to read (1 in a worker)"
+  },
+  {
+   "name": "case_02_forced_kill_during_scan",
+   "title": "Forced process termination halfway through Scan",
+   "status": "pass",
+   "checked": 5,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "kill@1%: 106 committed / 0 in flight; kill@1%#2: 106 committed / 12 in flight; kill@25%: 2504 committed / 11 in flight; kill@50%: 5013 committed / 4 in flight; kill@75%: 7511 committed / 13 in flight"
+  },
+  {
+   "name": "case_03_sheet_interrupted_in_processing",
+   "title": "Sheet interrupted during processing",
+   "status": "pass",
+   "checked": 40,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_04_kill_after_commit",
+   "title": "Kill after a recognition commit, before the next",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "11 sheet(s) in the committed group, 3510 committed"
+  },
+  {
+   "name": "case_05_clean_close_during_resolve",
+   "title": "Clean close halfway through Resolve",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "1431 operator events committed, 35 conflicts open"
+  },
+  {
+   "name": "case_06_forced_kill_after_resolve_corrections",
+   "title": "Forced kill after Resolve corrections",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "17 decisions in this incarnation, 1004 operator audit events"
+  },
+  {
+   "name": "case_07_restart_retains_corrections",
+   "title": "Restart retains resolved corrections",
+   "status": "pass",
+   "checked": 452,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_08_unresolved_stay_unresolved",
+   "title": "Unresolved items remain unresolved",
+   "status": "pass",
+   "checked": 9,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_09_repeated_restarts",
+   "title": "Repeated restarts create nothing twice",
+   "status": "pass",
+   "checked": 9,
+   "minimum": 3,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_10_results_after_interruption",
+   "title": "Session results after interruption = uninterrupted",
+   "status": "pass",
+   "checked": 9997,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_11_resume_percentages",
+   "title": "Resume at about 1 / 25 / 50 / 75 / 99 %",
+   "status": "fail",
+   "checked": 5,
+   "minimum": 5,
+   "failures": [
+    "resume points missing: [99]"
+   ],
+   "failure_count": 1,
+   "evidence": {
+    "kill@1%": {
+     "committed": 106,
+     "in_flight": 0,
+     "returned": 0,
+     "ok": true
+    },
+    "kill@1%#2": {
+     "committed": 106,
+     "in_flight": 12,
+     "returned": 12,
+     "ok": true
+    },
+    "kill@25%": {
+     "committed": 2504,
+     "in_flight": 11,
+     "returned": 11,
+     "ok": true
+    },
+    "kill@50%": {
+     "committed": 5013,
+     "in_flight": 4,
+     "returned": 4,
+     "ok": true
+    },
+    "kill@75%": {
+     "committed": 7511,
+     "in_flight": 13,
+     "returned": 13,
+     "ok": true
+    }
+   },
+   "scale": "kills at [1, 25, 50, 75] % of 9989 sheets"
+  },
+  {
+   "name": "case_12_integrity_after_every_case",
+   "title": "Integrity after every case",
+   "status": "pass",
+   "checked": 9,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_13_kill_before_conflict_generation",
+   "title": "Kill after recognition, before conflict generation",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "added_conflicts": [
+     [
+      24,
+      926,
+      "identifier_duplicate"
+     ],
+     [
+      25,
+      1593,
+      "identifier_duplicate"
+     ]
+    ]
+   },
+   "scale": "6 sheet(s) committed, 2 duplicate conflict(s) created by recovery"
+  },
+  {
+   "name": "case_14_sealed_batch_interrupted",
+   "title": "Sealed batch interrupted mid-processing",
+   "status": "pass",
+   "checked": 4,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  },
+  {
+   "name": "case_15_resolve_reachable_after_reopen",
+   "title": "Resolve reachable after reopen without Scan",
+   "status": "pass",
+   "checked": 9,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  }
+ ],
+ "endurance": [
+  {
+   "name": "endurance_a_many_finite_batches",
+   "title": ">= 10 sealed batches in one session, several sources",
+   "status": "pass",
+   "checked": 678,
+   "minimum": 10,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "678 sealed batches from 4 sources in one session"
+  },
+  {
+   "name": "endurance_b_continuous_random_intake",
+   "title": "Continuous random intake with operator decisions",
+   "status": "pass",
+   "checked": 10189,
+   "minimum": 10187,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {
+    "duration_seconds": 13003.3,
+    "files": 10189,
+    "max_gap_seconds": 1574.45,
+    "median_gap_seconds": 0.623,
+    "operator_decisions_during_intake": 375,
+    "max_in_flight": 16,
+    "max_writer_backlog": 0
+   },
+   "scale": "10189 files over 13003 s (0.78/s); 375 operator decisions while files were still arriving"
+  },
+  {
+   "name": "endurance_c_supersession_reprocess",
+   "title": "Reprocess All mid-session: nothing counted twice",
+   "status": "pass",
+   "checked": 1,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "Reprocess All of a 1-sheet unit while intake continued"
+  },
+  {
+   "name": "endurance_d_repeated_kill_restart",
+   "title": "Repeated real kills and restarts",
+   "status": "pass",
+   "checked": 8,
+   "minimum": 3,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": "8 real process kills, 9 restarts"
+  },
+  {
+   "name": "endurance_e_uninterrupted_control",
+   "title": "Interrupted results = uninterrupted control",
+   "status": "pass",
+   "checked": 9997,
+   "minimum": 1,
+   "failures": [],
+   "failure_count": 0,
+   "evidence": {},
+   "scale": ""
+  }
+ ],
+ "runs": {
+  "interrupted": {
+   "name": "interrupted",
+   "project": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\workspace\\Qualification interrupted",
+   "session_id": "9df8bdf60bab4cf0849c239b2d5c3a71",
+   "interrupted": true,
+   "error": "",
+   "files_written": 10189,
+   "arrival_seconds": 13003.3,
+   "arrival_rate_per_second": 0.784,
+   "sheets_claimed": 10031,
+   "sheets_committed_logged": 9990,
+   "recognition_rate_per_second": 0.768,
+   "run_seconds": 13484.6,
+   "caught_up_after_last_write_seconds": -1521.0,
+   "kills": [
+    {
+     "index": 1,
+     "kind": "forced",
+     "label": "kill@1%",
+     "incarnation": 1,
+     "trigger": {
+      "percent": 1,
+      "committed": 102,
+      "processing": 4,
+      "expected_total": 9988
+     },
+     "committed_at_kill": 106,
+     "in_flight_at_kill": 0,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 10,
+     "restart_seconds": 0.078,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 0,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 0.25
+    },
+    {
+     "index": 2,
+     "kind": "forced",
+     "label": "kill@1%#2",
+     "incarnation": 2,
+     "trigger": {
+      "percent": 1,
+      "committed": 106,
+      "processing": 12,
+      "expected_total": 9988
+     },
+     "committed_at_kill": 106,
+     "in_flight_at_kill": 12,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 10,
+     "restart_seconds": 0.109,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 12,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 0.218
+    },
+    {
+     "index": 3,
+     "kind": "syncing_duplicates",
+     "label": "syncing_duplicates@15%",
+     "incarnation": 3,
+     "trigger": {
+      "percent": 15,
+      "committed": 1499,
+      "expected_total": 9988,
+      "paused": {
+       "at": "syncing_duplicates",
+       "batch": "74d2384b3b894cfc8a170107eaa12338",
+       "scans": [
+        1592,
+        1593,
+        1594,
+        1595,
+        1596,
+        1597
+       ],
+       "shas": [
+        "9dec1ca8de6e8f2e201a97fb6c0011b83ed73a3a245cac960fc7418545d68f51"
+       ],
+       "decisions": null,
+       "in_flight_others": null
+      }
+     },
+     "committed_at_kill": 1588,
+     "in_flight_at_kill": 1,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 10,
+     "restart_seconds": 0.281,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 1,
+     "added_conflicts": 2,
+     "integrity_ok": true,
+     "integrity_seconds": 2.328
+    },
+    {
+     "index": 4,
+     "kind": "forced",
+     "label": "kill@25%",
+     "incarnation": 4,
+     "trigger": {
+      "percent": 25,
+      "committed": 2504,
+      "processing": 11,
+      "expected_total": 9988
+     },
+     "committed_at_kill": 2504,
+     "in_flight_at_kill": 11,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 10,
+     "restart_seconds": 0.297,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 11,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 3.547
+    },
+    {
+     "index": 5,
+     "kind": "after_commit",
+     "label": "after_commit@35%",
+     "incarnation": 5,
+     "trigger": {
+      "percent": 35,
+      "committed": 3499,
+      "expected_total": 9988,
+      "paused": {
+       "at": "after_commit",
+       "batch": "696109a1f0044ca1b8c00b5f8a883e7c",
+       "scans": [
+        3539,
+        3540,
+        3541,
+        3542,
+        3543,
+        3544,
+        3545,
+        3546,
+        3547,
+        3548,
+        3549
+       ],
+       "shas": null,
+       "decisions": null,
+       "in_flight_others": null
+      }
+     },
+     "committed_at_kill": 3510,
+     "in_flight_at_kill": 0,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 11,
+     "restart_seconds": 0.437,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 0,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 5.156
+    },
+    {
+     "index": 6,
+     "kind": "forced",
+     "label": "kill@50%",
+     "incarnation": 6,
+     "trigger": {
+      "percent": 50,
+      "committed": 5013,
+      "processing": 4,
+      "expected_total": 9988
+     },
+     "committed_at_kill": 5013,
+     "in_flight_at_kill": 4,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 11,
+     "restart_seconds": 0.515,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 4,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 7.203
+    },
+    {
+     "index": 7,
+     "kind": "operator",
+     "label": "operator@60%",
+     "incarnation": 7,
+     "trigger": {
+      "percent": 60,
+      "committed": 5999,
+      "expected_total": 9988,
+      "paused": {
+       "at": "operator",
+       "batch": null,
+       "scans": null,
+       "shas": null,
+       "decisions": 17,
+       "in_flight_others": null
+      }
+     },
+     "committed_at_kill": 6020,
+     "in_flight_at_kill": 0,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 20,
+     "restart_seconds": 0.344,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 0,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 9.25
+    },
+    {
+     "index": 8,
+     "kind": "forced",
+     "label": "kill@75%",
+     "incarnation": 8,
+     "trigger": {
+      "percent": 75,
+      "committed": 7512,
+      "processing": 13,
+      "expected_total": 9988
+     },
+     "committed_at_kill": 7511,
+     "in_flight_at_kill": 13,
+     "exit_code": 1,
+     "orphans": [],
+     "lock_left": true,
+     "hot_journal": false,
+     "offline_files": 21,
+     "restart_seconds": 0.485,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 13,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 15.797
+    },
+    {
+     "index": 9,
+     "kind": "clean_close",
+     "label": "clean_close@85%",
+     "incarnation": 9,
+     "trigger": {
+      "percent": 85,
+      "committed": 8490,
+      "processing": 1,
+      "expected_total": 9988
+     },
+     "committed_at_kill": 8490,
+     "in_flight_at_kill": 0,
+     "exit_code": 0,
+     "orphans": [],
+     "lock_left": false,
+     "hot_journal": false,
+     "offline_files": 14,
+     "restart_seconds": 0.531,
+     "recovery_ok": true,
+     "recovery_failures": [],
+     "returned_to_pending": 0,
+     "added_conflicts": 0,
+     "integrity_ok": true,
+     "integrity_seconds": 12.438
+    }
+   ],
+   "checkpoints": [
+    {
+     "label": "checkpoint@1%",
+     "committed": 102,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.031,
+     "population_seconds": 0.016
+    },
+    {
+     "label": "checkpoint@10%",
+     "committed": 1000,
+     "ok": true,
+     "failures": [],
+     "incarnation": 3,
+     "snapshot_seconds": 0.109,
+     "population_seconds": 0.016
+    },
+    {
+     "label": "checkpoint@25%",
+     "committed": 2504,
+     "ok": true,
+     "failures": [],
+     "incarnation": 4,
+     "snapshot_seconds": 0.125,
+     "population_seconds": 0.032
+    },
+    {
+     "label": "checkpoint@50%",
+     "committed": 4997,
+     "ok": true,
+     "failures": [],
+     "incarnation": 6,
+     "snapshot_seconds": 0.156,
+     "population_seconds": 0.187
+    },
+    {
+     "label": "checkpoint@75%",
+     "committed": 7500,
+     "ok": true,
+     "failures": [],
+     "incarnation": 8,
+     "snapshot_seconds": 0.141,
+     "population_seconds": 0.078
+    },
+    {
+     "label": "checkpoint@90%",
+     "committed": 8995,
+     "ok": true,
+     "failures": [],
+     "incarnation": 10,
+     "snapshot_seconds": 0.344,
+     "population_seconds": 0.109
+    },
+    {
+     "label": "caught_up@100%",
+     "committed": 9988,
+     "ok": true,
+     "failures": [],
+     "incarnation": 10,
+     "snapshot_seconds": 0.157,
+     "population_seconds": 0.078
+    }
+   ],
+   "outages": [
+    {
+     "source": "B",
+     "start": 1791240133.5258305,
+     "seen_unreachable": 1791240139.0020704,
+     "reachability": "unreachable",
+     "end": 1791240421.556414
+    }
+   ],
+   "vanished_seen": [],
+   "reprocess": {
+    "label": "reprocess@70%",
+    "superseded_batch": "86a31b117c8b4d539d18c30a6d720004",
+    "sheets": 1,
+    "reprocess_batch": "2d76f2e165b7465e9b7dfda9d050e3e2",
+    "requested_at": 1791246351.61991
+   },
+   "endgame": {
+    "preview_blockers": [
+     [
+      "unresolved_conflicts",
+      42
+     ],
+     [
+      "rescan_suggested",
+      10
+     ]
+    ],
+    "refused_attempt": {
+     "closed": false,
+     "blockers": [
+      [
+       "unresolved_conflicts",
+       42,
+       ""
+      ],
+      [
+       "rescan_suggested",
+       10,
+       ""
+      ]
+     ]
+    },
+    "operator_final": {
+     "decisions": 46,
+     "unexpected": [],
+     "seconds": 44.641
+    },
+    "first_close": {
+     "closed": true,
+     "blockers": [],
+     "sources": [
+      [
+       "Scanner A",
+       "online"
+      ],
+      [
+       "Scanner B",
+       "online"
+      ],
+      [
+       "Scanner C",
+       "online"
+      ]
+     ],
+     "seconds": 2.031
+    },
+    "first_close_facts": {
+     "state": "closed",
+     "batches": 677,
+     "unsealed": []
+    },
+    "first_downstream_seconds": 1468.265,
+    "held": {
+     "state": "held",
+     "in_population": false,
+     "snapshot_held": 1,
+     "session_state": "closed"
+    },
+    "reopen": {
+     "state": "open",
+     "reopen_count": 1
+    },
+    "stale_after_reopen": {
+     "A": "stale",
+     "B": "stale",
+     "C": "stale",
+     "D": "stale"
+    },
+    "released": 1,
+    "operator_final_reopen": {
+     "decisions": 0,
+     "unexpected": []
+    },
+    "second_close": {
+     "closed": true,
+     "blockers": []
+    },
+    "second_downstream_seconds": 414.719,
+    "final_export_states": {
+     "A": "current",
+     "B": "current",
+     "C": "current",
+     "D": "current"
+    },
+    "stop_exit": 0,
+    "leftover_workers": []
+   },
+   "downstream": {
+    "first_close": {
+     "A": {
+      "set_id": "0f3f92bc7a1f43fcb725da6c75a44c2d",
+      "roster_id": 5,
+      "list_version": 2,
+      "decisions": 10,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 1,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\first_close\\Qualification interrupted_SetA_Result.xlsx",
+      "warnings": []
+     },
+     "B": {
+      "set_id": "82719d5567da4cf1855325bdab194622",
+      "roster_id": 6,
+      "list_version": 2,
+      "decisions": 10,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 2,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\first_close\\Qualification interrupted_SetB_Result.xlsx",
+      "warnings": []
+     },
+     "C": {
+      "set_id": "dc118f8ddc7b4dd39543bfb713e89f14",
+      "roster_id": 7,
+      "list_version": 2,
+      "decisions": 12,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 3,
+      "stale": 0,
+      "status": "success",
+      "report_id": 3,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\first_close\\Qualification interrupted_SetC_Result.xlsx",
+      "warnings": []
+     },
+     "D": {
+      "set_id": "20821e48503b41b988908dddaab1fa2d",
+      "roster_id": 8,
+      "list_version": 2,
+      "decisions": 14,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 5,
+      "stale": 0,
+      "status": "success",
+      "report_id": 4,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\first_close\\Qualification interrupted_SetD_Result.xlsx",
+      "warnings": []
+     }
+    },
+    "reopen": {
+     "A": {
+      "set_id": "0f3f92bc7a1f43fcb725da6c75a44c2d",
+      "roster_id": 9,
+      "list_version": 3,
+      "decisions": 10,
+      "scored": 2471,
+      "absent": 89,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 5,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\reopen\\Qualification interrupted_SetA_Result.xlsx",
+      "warnings": []
+     },
+     "B": {
+      "set_id": "82719d5567da4cf1855325bdab194622",
+      "roster_id": 6,
+      "list_version": 2,
+      "decisions": 0,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 6,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\reopen\\Qualification interrupted_SetB_Result.xlsx",
+      "warnings": []
+     },
+     "C": {
+      "set_id": "dc118f8ddc7b4dd39543bfb713e89f14",
+      "roster_id": 7,
+      "list_version": 2,
+      "decisions": 0,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 3,
+      "stale": 0,
+      "status": "success",
+      "report_id": 7,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\reopen\\Qualification interrupted_SetC_Result.xlsx",
+      "warnings": []
+     },
+     "D": {
+      "set_id": "20821e48503b41b988908dddaab1fa2d",
+      "roster_id": 8,
+      "list_version": 2,
+      "decisions": 0,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 5,
+      "stale": 0,
+      "status": "success",
+      "report_id": 8,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\interrupted\\exports\\reopen\\Qualification interrupted_SetD_Result.xlsx",
+      "warnings": []
+     }
+    }
+   },
+   "resource": {
+    "peak_tree_rss_bytes": 1030725632,
+    "peak_coordinator_rss_bytes": 477192192,
+    "peak_processes": 8,
+    "max_in_flight_seen": 16,
+    "max_writer_backlog": 0,
+    "database_bytes": 131022848,
+    "down_intervals": [
+     [
+      1791239355.0756493,
+      1791239369.990704
+     ],
+     [
+      1791239372.489864,
+      1791239385.3767169
+     ],
+     [
+      1791240784.7008924,
+      1791240803.8668458
+     ],
+     [
+      1791241741.8539374,
+      1791241754.0534976
+     ],
+     [
+      1791242704.2325177,
+      1791242722.3317182
+     ],
+     [
+      1791244298.5149095,
+      1791244315.0494628
+     ],
+     [
+      1791245320.6912909,
+      1791245339.751301
+     ],
+     [
+      1791246875.3868928,
+      1791246901.5410192
+     ],
+     [
+      1791247934.7177472,
+      1791247958.8640256
+     ]
+    ]
+   },
+   "database_lock_errors_logged": 0,
+   "final_integrity": {
+    "quick_check": [
+     "ok"
+    ],
+    "integrity_check": [
+     "ok"
+    ],
+    "foreign_key_check": [],
+    "journal_mode": "delete",
+    "page_count": 31988,
+    "seconds": 11.281,
+    "health_ok": false
+   },
+   "final_snapshot": {
+    "stabilizing": 0,
+    "ready": 0,
+    "held": 0,
+    "vanished": 0,
+    "unreadable_pending_decision": 0,
+    "queued": 0,
+    "processing": 0,
+    "accepted": 9933,
+    "conflict": 0,
+    "rescan_required": 0,
+    "superseded": 57,
+    "duplicate": 200,
+    "excluded": 0,
+    "deferred": 0,
+    "counted_elsewhere": 0
+   },
+   "audit_events": 2368,
+   "conflicts": 312,
+   "batches": 678,
+   "sheets": 10189
+  },
+  "control": {
+   "name": "control",
+   "project": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\workspace\\Qualification control",
+   "session_id": "8bd49cd45acf46ed8aa19b82b7d71a45",
+   "interrupted": false,
+   "error": "",
+   "files_written": 10189,
+   "arrival_seconds": 12757.8,
+   "arrival_rate_per_second": 0.799,
+   "sheets_claimed": 9989,
+   "sheets_committed_logged": 9989,
+   "recognition_rate_per_second": 0.783,
+   "run_seconds": 13258.1,
+   "caught_up_after_last_write_seconds": -1272.5,
+   "kills": [],
+   "checkpoints": [
+    {
+     "label": "checkpoint@1%",
+     "committed": 107,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.031,
+     "population_seconds": 0.016
+    },
+    {
+     "label": "checkpoint@10%",
+     "committed": 1005,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.063,
+     "population_seconds": 0.016
+    },
+    {
+     "label": "checkpoint@25%",
+     "committed": 2500,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.062,
+     "population_seconds": 0.016
+    },
+    {
+     "label": "checkpoint@50%",
+     "committed": 5006,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.078,
+     "population_seconds": 0.031
+    },
+    {
+     "label": "checkpoint@75%",
+     "committed": 7491,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.093,
+     "population_seconds": 0.047
+    },
+    {
+     "label": "checkpoint@90%",
+     "committed": 8992,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.094,
+     "population_seconds": 0.062
+    },
+    {
+     "label": "caught_up@100%",
+     "committed": 9988,
+     "ok": true,
+     "failures": [],
+     "incarnation": 1,
+     "snapshot_seconds": 0.109,
+     "population_seconds": 0.063
+    }
+   ],
+   "outages": [],
+   "vanished_seen": [],
+   "reprocess": {},
+   "endgame": {
+    "preview_blockers": [
+     [
+      "unresolved_conflicts",
+      42
+     ],
+     [
+      "rescan_suggested",
+      10
+     ]
+    ],
+    "refused_attempt": {
+     "closed": false,
+     "blockers": [
+      [
+       "unresolved_conflicts",
+       42,
+       ""
+      ],
+      [
+       "rescan_suggested",
+       10,
+       ""
+      ]
+     ]
+    },
+    "operator_final": {
+     "decisions": 46,
+     "unexpected": [],
+     "seconds": 27.796
+    },
+    "first_close": {
+     "closed": true,
+     "blockers": [],
+     "sources": [
+      [
+       "Scanner A",
+       "online"
+      ],
+      [
+       "Scanner B",
+       "online"
+      ],
+      [
+       "Scanner C",
+       "online"
+      ]
+     ],
+     "seconds": 1.516
+    },
+    "first_close_facts": {
+     "state": "closed",
+     "batches": 765,
+     "unsealed": []
+    },
+    "first_downstream_seconds": 1238.141,
+    "held": {
+     "state": "held",
+     "in_population": false,
+     "snapshot_held": 1,
+     "session_state": "closed"
+    },
+    "reopen": {
+     "state": "open",
+     "reopen_count": 1
+    },
+    "stale_after_reopen": {
+     "A": "stale",
+     "B": "stale",
+     "C": "stale",
+     "D": "stale"
+    },
+    "released": 1,
+    "operator_final_reopen": {
+     "decisions": 0,
+     "unexpected": []
+    },
+    "second_close": {
+     "closed": true,
+     "blockers": []
+    },
+    "second_downstream_seconds": 436.5,
+    "final_export_states": {
+     "A": "current",
+     "B": "current",
+     "C": "current",
+     "D": "current"
+    },
+    "stop_exit": 0,
+    "leftover_workers": []
+   },
+   "downstream": {
+    "first_close": {
+     "A": {
+      "set_id": "dc48d0bba4ae433298f2b7fb972e9e53",
+      "roster_id": 5,
+      "list_version": 2,
+      "decisions": 10,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 1,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\first_close\\Qualification control_SetA_Result.xlsx",
+      "warnings": []
+     },
+     "B": {
+      "set_id": "298e9e0adf2d4855a6fbd12c3c036abf",
+      "roster_id": 6,
+      "list_version": 2,
+      "decisions": 10,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 2,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\first_close\\Qualification control_SetB_Result.xlsx",
+      "warnings": []
+     },
+     "C": {
+      "set_id": "5c4eed9230c8482b993389d2059b185f",
+      "roster_id": 7,
+      "list_version": 2,
+      "decisions": 12,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 3,
+      "stale": 0,
+      "status": "success",
+      "report_id": 3,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\first_close\\Qualification control_SetC_Result.xlsx",
+      "warnings": []
+     },
+     "D": {
+      "set_id": "cb3888af24864780b0c92aa301256a1c",
+      "roster_id": 8,
+      "list_version": 2,
+      "decisions": 14,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 5,
+      "stale": 0,
+      "status": "success",
+      "report_id": 4,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\first_close\\Qualification control_SetD_Result.xlsx",
+      "warnings": []
+     }
+    },
+    "reopen": {
+     "A": {
+      "set_id": "dc48d0bba4ae433298f2b7fb972e9e53",
+      "roster_id": 9,
+      "list_version": 3,
+      "decisions": 10,
+      "scored": 2471,
+      "absent": 89,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 5,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\reopen\\Qualification control_SetA_Result.xlsx",
+      "warnings": []
+     },
+     "B": {
+      "set_id": "298e9e0adf2d4855a6fbd12c3c036abf",
+      "roster_id": 6,
+      "list_version": 2,
+      "decisions": 0,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 1,
+      "stale": 0,
+      "status": "success",
+      "report_id": 6,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\reopen\\Qualification control_SetB_Result.xlsx",
+      "warnings": []
+     },
+     "C": {
+      "set_id": "5c4eed9230c8482b993389d2059b185f",
+      "roster_id": 7,
+      "list_version": 2,
+      "decisions": 0,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 3,
+      "stale": 0,
+      "status": "success",
+      "report_id": 7,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\reopen\\Qualification control_SetC_Result.xlsx",
+      "warnings": []
+     },
+     "D": {
+      "set_id": "cb3888af24864780b0c92aa301256a1c",
+      "roster_id": 8,
+      "list_version": 2,
+      "decisions": 0,
+      "scored": 2470,
+      "absent": 90,
+      "blocked": 5,
+      "stale": 0,
+      "status": "success",
+      "report_id": 8,
+      "report": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\control\\exports\\reopen\\Qualification control_SetD_Result.xlsx",
+      "warnings": []
+     }
+    }
+   },
+   "resource": {
+    "peak_tree_rss_bytes": 1098555392,
+    "peak_coordinator_rss_bytes": 488775680,
+    "peak_processes": 8,
+    "max_in_flight_seen": 16,
+    "max_writer_backlog": 0,
+    "database_bytes": 131051520,
+    "down_intervals": []
+   },
+   "database_lock_errors_logged": 0,
+   "final_integrity": {
+    "quick_check": [
+     "ok"
+    ],
+    "integrity_check": [
+     "ok"
+    ],
+    "foreign_key_check": [],
+    "journal_mode": "delete",
+    "page_count": 31995,
+    "seconds": 11.609,
+    "health_ok": false
+   },
+   "final_snapshot": {
+    "stabilizing": 0,
+    "ready": 0,
+    "held": 0,
+    "vanished": 0,
+    "unreadable_pending_decision": 0,
+    "queued": 0,
+    "processing": 0,
+    "accepted": 9933,
+    "conflict": 0,
+    "rescan_required": 0,
+    "superseded": 56,
+    "duplicate": 200,
+    "excluded": 0,
+    "deferred": 0,
+    "counted_elsewhere": 0
+   },
+   "audit_events": 2543,
+   "conflicts": 312,
+   "batches": 766,
+   "sheets": 10188
+  }
+ },
+ "finite": {
+  "project": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261005T222509Z-20261006\\finite\\workspace\\Qualification finite",
+  "batches": [
+   "23c26521532a404f98b1ab94e4e7f8db",
+   "115449f7ef0d4f57b5f8d0b1efab40d2"
+  ],
+  "seconds": 1768.0,
+  "recognition_seconds": 221.0,
+  "endgame": {
+   "operator_final": 328,
+   "first_close": {
+    "closed": true,
+    "blockers": []
+   },
+   "operator_final_reopen": 0,
+   "second_close": {
+    "closed": true,
+    "blockers": []
+   },
+   "unexpected": []
+  },
+  "error": ""
+ },
+ "golden": {
+  "ok": true,
+  "differences": [],
+  "entries": 22,
+  "results": 22,
+  "cells": 530,
+  "fixture": "tests\\fixtures\\golden_one_batch\\golden.json",
+  "seconds": 3.77
+ },
+ "final_checkpoint": {
+  "ok": true,
+  "failures": [],
+  "committed": 9989,
+  "conflicts": {
+   "expected": 0,
+   "actual": 0,
+   "duplicate_expected": 0,
+   "missing": [],
+   "unexpected": [],
+   "ok": true
+  },
+  "aggregate": {
+   "snapshot": {
+    "stabilizing": 0,
+    "ready": 0,
+    "held": 0,
+    "vanished": 0,
+    "unreadable_pending_decision": 0,
+    "queued": 0,
+    "processing": 0,
+    "accepted": 9933,
+    "conflict": 0,
+    "rescan_required": 0,
+    "superseded": 57,
+    "duplicate": 200,
+    "excluded": 0,
+    "deferred": 0,
+    "counted_elsewhere": 0
+   },
+   "recount": {
+    "duplicate": 200,
+    "accepted": 9933,
+    "superseded": 57
+   },
+   "discovered": 10190,
+   "effective": 9933,
+   "ok": true
+  },
+  "batches": {
+   "session": 678,
+   "sealed": 678,
+   "ok": true
+  },
+  "label": "final"
+ },
+ "control_comparison": {
+  "compared": 9997,
+  "failures": []
+ }
+}

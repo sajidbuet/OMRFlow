@@ -468,7 +468,35 @@ def _is_replacement() -> Any:
 def _original_name(with_intake: bool) -> Any:
     if not with_intake:
         return BatchScan.filename
-    return func.coalesce(func.nullif(IntakeFile.file_name, ""), BatchScan.filename)
+    return func.coalesce(
+        _arrived_as(), func.nullif(IntakeFile.file_name, ""), BatchScan.filename
+    )
+
+
+def _arrived_as() -> Any:
+    """The name a watched file arrived with, when this sheet read the project's copy of it.
+
+    *Reprocess All* of a watched unit re-reads the project's content-addressed
+    copies; the manual source records each under the copy's own name, so the
+    ledger row this sheet points to says ``<sha256>.png``. That row is the copy
+    of a watched file: same content, and its path ends with the watched row's
+    ``ingest_path``. ``NULL`` for every other sheet (a watched sheet's own row
+    is at the scanner's path, never at a copy's). Indexed by content hash.
+    (Revised phase 9 finding.)
+    """
+    origin = aliased(IntakeFile)
+    return (
+        select(origin.file_name)
+        .where(origin.content_sha256 == IntakeFile.content_sha256)
+        .where(origin.intake_file_id != IntakeFile.intake_file_id)
+        .where(origin.ingest_path != "")
+        .where(origin.file_name != "")
+        .where(func.replace(IntakeFile.absolute_path, "\\", "/").endswith(origin.ingest_path))
+        .order_by(origin.intake_file_id)
+        .limit(1)
+        .correlate(IntakeFile)
+        .scalar_subquery()
+    )
 
 
 def _needs(query: SheetQuery, *, with_intake: bool, sorting: bool) -> frozenset[str]:

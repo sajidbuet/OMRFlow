@@ -144,6 +144,55 @@ class TestListing:
             )
         assert raised.value.reachability is Reachability.UNREACHABLE
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows folder junctions")
+    def test_a_folder_link_removed_mid_pass_vanishes_nothing(
+        self, project_session, answer_sheet_template, tmp_path
+    ):
+        """A folder junction removed after the listing and before the reads.
+
+        That is how the phase 9 campaign takes a scanner offline: the reads fail
+        as *file not found*, yet nothing is marked vanished and the source is
+        unreachable; reconnected, the same rows become ready.
+        """
+        import _winapi
+
+        from omr_scanner.domain.intake import Reachability
+        from omr_scanner.services.intake_fs import ReadSnapshot
+
+        target = tmp_path / "disk"
+        link = tmp_path / "share"
+        for seed in range(3):
+            write(target / f"00000{seed}.png", png(seed))
+        _winapi.CreateJunction(str(target), str(link))
+
+        class DropsOnFirstRead(OsFileSystem):
+            armed = False
+
+            def read_snapshot(self, path: str) -> ReadSnapshot:
+                if self.armed:
+                    self.armed = False
+                    link.rmdir()  # removes the junction, not the files
+                return super().read_snapshot(path)
+
+        real = Real(project_session, answer_sheet_template, tmp_path)
+        fs = DropsOnFirstRead()
+        real.service = IntakeService(real.database, real.project.root, fs=fs, clock=real.clock)
+        info = intake_service.create_source(real.database, label="Linked", root_path=str(link),
+                                            clock=real.clock, policy=POLICY)
+        intake_service.attach_source(real.database, info.source_id, real.session_id)
+        real.service.reconcile(info.source_id)
+        real.clock.advance(POLICY.quiet_seconds + 0.1)
+        fs.armed = True
+        report = real.service.reconcile(info.source_id)
+        assert not fs.armed, "the pass read nothing"
+        assert report.reachability is Reachability.UNREACHABLE
+        assert IntakeState.VANISHED not in set(real.states(info.source_id).values())
+        _winapi.CreateJunction(str(target), str(link))
+        real.settle(info.source_id)
+        assert set(real.states(info.source_id).values()) == {IntakeState.READY}
+        assert len(intake_service.ledger(real.database, source_id=info.source_id)) == 3
+        link.rmdir()
+
     @pytest.mark.skipif(sys.platform != "win32", reason="Windows path forms")
     def test_extended_path_forms(self):
         long_local = "C:\\" + "\\".join(["d" * 50] * 6) + "\\x.jpg"

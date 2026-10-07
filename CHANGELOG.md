@@ -183,8 +183,47 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
     screenshots and a scripted local three-folder run with the production
     worker pool. **Not used by an operator; not tested on a network share or
     with a real scanner.**
+- **Automated intake qualification harness (`0.1.1` revised phase 9; no
+  migration, schema 17).** `python -m omr_scanner.tools.intake_qualification
+  --self-test | --release-scale` (package
+  `omr_scanner.evaluation.intake_qualification`, documented in
+  `docs/intake_qualification.md`): a supervisor plans a deterministic
+  multi-set cohort with exact ground truth, renders it with the synthetic
+  sheet generator, and drives three separate scanner-writer processes
+  (partial writes, the same file names at every source, byte copies within
+  and across sources, a source outage by removing a folder junction) against
+  a separate OMRFlow coordinator process (continuous engine, real worker
+  processes, scripted operator through production services) that it kills
+  with `TerminateProcess` at state-chosen points and restarts into the same
+  project and session. The 16 release-blocking assertions of
+  `ACCEPTANCE_CRITERIA.md` §5.2, crash cases 1–15 and endurance cases A–E are
+  evaluated from evidence logged outside the killed process; the verdict
+  (`QUALIFIED` / `ALL RUNS PASSED — NOT THE RELEASE QUALIFICATION` /
+  `FAILED`) is generated, never typed. An uninterrupted control run, a finite
+  Scan-stage control and the golden one-batch regression run in the same
+  campaign. The Phase 10 finite harness is unchanged. Synthetic, local-disk,
+  source-build only: **not** SMB, real-scanner, power-loss or installed-build
+  evidence. The release-scale campaign (3 scanner processes, 10,189 files,
+  8 real kills and a clean close, 4 sets) ended **`QUALIFIED`** at
+  `542b2af`; compact evidence in
+  `docs/release/validation/0.1.1-alpha.0-phase9-intake/`, details in
+  `PHASE_I_HANDOFF.md`.
 
 ### Fixed (`0.1.1` line)
+
+- **A scanner source lost in the middle of a reconciliation pass marked its
+  files vanished** (found by the revised phase 9 release campaign). When the
+  source's folder went away between a pass's listing and its file reads (the
+  campaign removes a folder junction; a dropped share can read the same way),
+  the files read after it were marked *vanished* and the source *online* for
+  that pass; they reappeared on reconnection, so nothing was lost. A read that
+  finds a file gone now checks whether the source still lists: if not, the
+  source is recorded unreachable and its files are left as they were (and left
+  ready by registration). A file deleted from a reachable source still
+  vanishes.
+- **A watched-source sheet re-read by *Reprocess All* was listed under its
+  content-addressed copy name** instead of the name it arrived with (found
+  while building the revised phase 9 harness).
 
 - **Resolve showed no sheet image for a live session it anchored itself to**
   (revised phase 8, before merge): no template came with the snapshot, so the

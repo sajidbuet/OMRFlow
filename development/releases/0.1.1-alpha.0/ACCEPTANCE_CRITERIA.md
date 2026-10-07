@@ -474,6 +474,32 @@ recognised · 4 failed (retryable) · 359 pending* and *47 / 120 conflicts
 resolved* — before Resume is pressed, from committed rows, never from a stored
 progress value.
 
+> **Evidence for §5 (revised phase 9, branch
+> `feat/0.1.1-phase9-automated-qualification`, commit `542b2af`, clean tree;
+> synthetic, local disk, source build - not SMB, real-scanner, power-loss or
+> installed-build evidence).** Harness `omr_scanner.evaluation.intake_qualification`
+> ([docs](../../../docs/intake_qualification.md)); release-scale campaign
+> `p9-release-20261006T151124Z`, verdict **`QUALIFIED`** (generated):
+> §5.1 - 3 separate scanner-writer processes, 10,189 files written (7,082
+> partially: stepped, header first, held open, a pause beyond the quiet
+> period, `.part` + rename), 3,459 names written at more than one scanner,
+> 200 byte copies (100 across scanners), one source outage (a junction
+> removed for 288 s), 8 real kills and 1 clean close while the writers kept
+> writing (9 restarts into the same project and session), 168 duplicate-ID
+> conflicts arising during intake while a scripted operator resolved
+> earlier ones (375 decisions during intake), 64 `RESCAN_REQUIRED`
+> suggestions (56 confirmed, 10 dismissed), 56 replacements (34 from another
+> scanner, 2 chains), closure through the finish policy, Results and report
+> cells compared with an independent reference; §5.2 - all 16 assertions
+> `PASS`; §5.3 - A 712 sealed batches from 4 sources, B 13,069 s of random
+> intake, C *Reprocess All* of a finished unit while intake continued, D 8
+> kills / 9 restarts, E interrupted = uninterrupted control (9,997 values
+> compared); §5.4 - cases 1–15 `PASS`, case 11 kills at 1 / 25 / 50 / 75 /
+> 99 % (101 / 2,501 / 4,995 / 7,506 / 9,899 committed, 15 / 10 / 16 / 9 / 12
+> sheets in flight), integrity and health (no error) after every kill.
+> Reports: `docs/release/validation/0.1.1-alpha.0-phase9-intake/`. Details:
+> `PHASE_I_HANDOFF.md`.
+
 ---
 
 ## 6. Network-share (SMB) qualification
