@@ -33,9 +33,9 @@ branch:       feat/0.1.1-phase10-release-gate
 baseline:     main acad683 (docs: record revised phase 9 as merged (459c65b))
 candidate:    73e364b (the installer was built from it; clean tree)
 tip:          the commit carrying this handoff
-commits:      <<COMMITS>>
+commits:      14 (listed below; the last carries this handoff's final figures)
 working tree: clean
-pushed:       <<PUSHED>>
+pushed:       origin/feat/0.1.1-phase10-release-gate (813182f, then the final docs commit)
 merged:       no
 tagged:       no
 released:     no
@@ -51,7 +51,11 @@ ef8961b feat(release-validation): computed release-gate verdict; set-collision r
 54e549a docs(release): SMB qualification procedure - not performed, real infrastructure required
 a5713cd docs(release): installed-build evidence for the 0.1.1-alpha.0 candidate
 cd79270 docs: revised phase 10 status - release gate not met (SMB not performed)
-<<LATER>>
+57449d6 fix(qualification): read the packaged-coordinator command defensively
+6e3c7a7 docs(release): computed release-gate matrix - NOT READY (gates 3 and 9)
+5c9d501 docs(phase10): stress 10/10, SMB rehearsal evidence (NOT SMB), handoff figures
+813182f fix(tests,evidence): small campaign kill no longer races the writers; commit the *.log evidence
+(tip) docs(phase10): final canonical gate PASS - figures in the handoff, README, ROADMAP
 ```
 
 Product code changed: `src/omr_scanner/main.py` only - a hidden first argument
@@ -331,7 +335,7 @@ Full matrix: `docs/release/validation/0.1.1-alpha.0-release-gate/release-gate.md
 | Gate | Required for alpha.0 | Status | Evidence |
 |---|---|---|---|
 | Phase 9 synthetic qualification | Yes | PASS (`QUALIFIED`) | phase 9 report |
-| Canonical source gate | Yes | <<CANON>> | §19 |
+| Canonical source gate | Yes | PASS at `813182f` (7,263 passed, 0 failed; ruff, mypy clean) after three failed attempts, each diagnosed and fixed | §19 |
 | SMB real infrastructure | Yes | **NOT PERFORMED** | `SMB_QUALIFICATION.md` |
 | Phase 10 harness self-test | Yes | PASS (`test_qualification.py` in the gate; `test_stress_*` 10/10 stress) | §19 |
 | Phase 9 endurance/crash evidence | Yes | PASS | phase 9 report |
@@ -379,7 +383,12 @@ targeted:                 tests/unit/test_main_entry.py, test_intake_qualificati
                           test_smb_qualification.py (46), test_installed_checks.py,
                           test_release_validation_config.py, test_release_gate.py,
                           test_architecture.py, test_version.py, test_release_automation.py - passed
-full pytest:              <<GATE>>
+full pytest:              PASS - canonical gate at 813182f (code of the tip), clean worktree, branch gate/phase10-813182f,
+                          2026-10-07 20:30-22:21: 7,263 passed, 29 skipped, 0 failed, 10 stress deselected
+                          (1 h 51 min); OVERALL RESULT: PASS; git state unchanged during testing. Skips are
+                          environmental: the real-sheet fixtures absent from a worktree, LibreOffice, a
+                          symlink privilege, the schema-12 checkout variable, window size
+                          (canonical-gate-813182f-PASS.log)
                           earlier canonical gates on this branch (clean worktree C:\Research\OMRflow-p10g,
                           PowerShell 7.6.6, PYTHONPATH = its src):
                           - ef8961b: 7,259 passed, 30 skipped, 2 FAILED (1 h 50 min) - the phase 9
@@ -400,14 +409,14 @@ stress:                   10 passed, 0 failed (1 h 00 min) at 57449d6 in the cle
                           endurance campaign, intake soak, full-size multi-set reports, the SMB rehearsal,
                           10,000-sheet kill/resume, 10,000-sheet reconciliation and reports
                           (docs/release/validation/0.1.1-alpha.0-release-gate/stress-57449d6.log)
-ruff:                     <<RUFF>>
+ruff:                     All checks passed (src, tests, tools, scripts) - every gate
 fresh-cache mypy:         clean - 269 source files, empty cache directory, at 57449d6 (the code of the tip)
 packaging tests:          Test-PackagedApp 16/16; audit_dependencies 0 unresolved; verify_frozen_imports ok;
                           Test-SelfContained 14/14
 release-automation tests: Test-InstallerRoundTrip 15/15; Invoke-ReleaseVerification 14/14;
                           validate_release --build --packaged --installer: 78 passed, 0 failed, 3 skipped;
                           tests/unit/test_release_automation.py in the suite
-native crash:             <<NATIVE>>
+native crash:             none in any gate, stress run or campaign of this phase
 ```
 
 ## 20. Candidate artifacts
