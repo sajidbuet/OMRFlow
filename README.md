@@ -275,9 +275,8 @@ ten revised phases.
   name. The GUI renders and drives the phase 7 services and decides nothing
   itself. Evidence tracks below; **not used by an operator; not tested on a
   network share or with a real scanner.**
-- **Implemented, tests passing, synthetic intake qualification passed, on
-  branch `feat/0.1.1-phase9-automated-qualification` (not merged; no
-  migration):** phase 9, the automated qualification harness
+- **Implemented, tests passing, synthetic intake qualification passed, merged as
+  `459c65b` (no migration):** phase 9, the automated qualification harness
   (`python -m omr_scanner.tools.intake_qualification`, see
   [docs/intake_qualification.md](docs/intake_qualification.md)). The
   release-scale campaign - three separate scanner-writer processes, 10,189
@@ -305,7 +304,7 @@ ten revised phases.
 | 6 — Continuous-processing engine | ✅ merged (`141d703`; no migration; headless) | ✅ passing, incl. a deterministic kill-boundary matrix, real process kills at six boundaries, 1/25/50/75/99 % restart series, finite-path equivalence and a 3,000-file endurance run | 🟠 local and fake-filesystem scenarios only - not the phase 9 intake campaign | ❌ | ❌ not performed | ❌ |
 | 7 — Quality / rescan / session controls | ✅ merged (`9169933`; migration 17; headless) | ✅ passing, incl. real process kills at every new durable transition, concurrent operator / snapshot contention (local disk, rollback journal), a schema-16 upgrade fixture, and Reports / Scan closes driven through the finish policy | 🟠 a 341-sheet three-scanner scenario on a fake filesystem - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 8 — Operational GUI | ✅ merged (`e620e7c`; no migration) | ✅ passing, incl. GUI tests over the engine rig (10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen) | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
-| 9 — Automated qualification | ✅ on a branch, not merged (no migration) | ✅ passing, incl. harness failure paths, a small real-kill campaign, the self-test and an endurance campaign | ✅ **`QUALIFIED`** - the 10,189-file three-scanner intake campaign (synthetic, local disk, source build) | ❌ | ❌ not performed (phase 10) | ❌ |
+| 9 — Automated qualification | ✅ merged (`459c65b`; no migration) | ✅ passing, incl. harness failure paths, a small real-kill campaign, the self-test and an endurance campaign | ✅ **`QUALIFIED`** - the 10,189-file three-scanner intake campaign (synthetic, local disk, source build) | ❌ | ❌ not performed (phase 10) | ❌ |
 | 10 — SMB / installed build / Alpha release gate | ⚪ pending | — | — | — | — | — |
 
 **Phase 8 (operational GUI), evidence track by track:**
@@ -326,7 +325,7 @@ ten revised phases.
 
 | Track | Status |
 |---|---|
-| Implemented | ✅ on branch `feat/0.1.1-phase9-automated-qualification`, not merged; no migration (schema 17) |
+| Implemented | ✅ merged into `main` as `459c65b`; no migration (schema 17) |
 | Automated tests | ✅ passing (see *Testing status*); stress suite 9 / 9 |
 | Synthetic intake qualification | ✅ **`QUALIFIED`** at `542b2af` (source build): 3 scanner processes, 10,189 files, 4 sets, all 16 §5.2 assertions |
 | Crash / process-kill qualification | ✅ crash cases 1–15 and the 1 / 25 / 50 / 75 / 99 % series with real `TerminateProcess` kills - **process-kill crash safety: tested; power-loss durability: not tested** |

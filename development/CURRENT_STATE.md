@@ -40,7 +40,7 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
-### Automated intake qualification (`0.1.1` revised phase 9 / roadmap G first part, 2026-10-06/07 — implemented; automated tests passing; release-scale synthetic campaign `QUALIFIED` at `542b2af`; branch `feat/0.1.1-phase9-automated-qualification`, not merged; no migration, schema 17)
+### Automated intake qualification (`0.1.1` revised phase 9 / roadmap G first part, 2026-10-06/07 — implemented; automated tests passing; release-scale synthetic campaign `QUALIFIED` at `542b2af`; merged to `main` as `459c65b`; no migration, schema 17)
 
 - **What exists:** `omr_scanner.evaluation.intake_qualification` (plan and
   ground truth, renderer, scanner-writer processes, the coordinator under

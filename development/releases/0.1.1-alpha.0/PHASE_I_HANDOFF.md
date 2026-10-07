@@ -42,8 +42,8 @@ qualified commit: 542b2afef85888094a8497ba83147a41db80aef6
 tip:              the commit carrying this handoff (docs and evidence only after 542b2af)
 commits:          16 (15 below + the documentation / evidence commit carrying this handoff) (listed below)
 working tree:     clean (rendered images and campaign folders live under the git-ignored Scratch/)
-pushed:           origin/feat/0.1.1-phase9-automated-qualification (see the final report)
-merged:           no - not merged, not tagged, not released
+pushed:           origin/feat/0.1.1-phase9-automated-qualification at 2734132
+merged:           2026-10-07 into main as 459c65b (after this handoff was written, on the owner's instruction); not tagged, not released
 schema:           17 (no migration)
 ```
 
@@ -516,7 +516,7 @@ folders, and the gate logs under `C:\Research\OMRflow-p9\Scratch\Log\`
   release runs detached and hidden.
 * **Windows only** for the release run; one machine; the gates ran while a
   campaign shared the machine.
-* **Branch only**: not merged, tagged or released.
+* **Not tagged or released** (merged into `main` as `459c65b` on 2026-10-07).
 
 ## 23. Phase 10 readiness
 
