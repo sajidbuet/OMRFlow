@@ -1,0 +1,106 @@
+{
+ "campaign_id": "p9-release-20261006T151124Z-20261006",
+ "mode": "release",
+ "commit": "542b2afef85888094a8497ba83147a41db80aef6",
+ "working_tree_clean": true,
+ "verdict": "QUALIFIED",
+ "plan_digest": "1ceff1d6a90a9c0f9b18cb91f969f3fe37a7fe01e267c00291bfa0da0c11d884",
+ "template_fingerprint": "194495f941ee930b",
+ "seeds": {
+  "cohort": 20261006,
+  "timing": 6102026
+ },
+ "manifest": {
+  "file": "manifest.json (not committed; regenerated from the seeds)",
+  "bytes": 8273755,
+  "sha256": "c33ff4f6b15a5578829da5f20efa0ddd26a9bcd74eec951302c560f14d375a8e"
+ },
+ "golden": {
+  "file": "golden.json (not committed)",
+  "sha256": "b3ae67c9fe936c67cec4da963951bd3cf52c1f1107a5b3ff4790b721d06068e8"
+ },
+ "ground_truth": {
+  "arrivals_written": 10188,
+  "late_arrivals": 1,
+  "unique_contents": 9988,
+  "byte_copy_arrivals": 200,
+  "registered_sheets": 9989,
+  "superseded_sheets": 56,
+  "effective_sheets": 9933,
+  "effective_scripts": 9923,
+  "blank_pages": 10,
+  "candidates_on_lists": 10240,
+  "scored_candidates": 9881,
+  "per_set": {
+   "A": {
+    "candidates": 2560,
+    "absent": 89,
+    "scored": 2471
+   },
+   "B": {
+    "candidates": 2560,
+    "absent": 90,
+    "scored": 2470
+   },
+   "C": {
+    "candidates": 2560,
+    "absent": 90,
+    "scored": 2470
+   },
+   "D": {
+    "candidates": 2560,
+    "absent": 90,
+    "scored": 2470
+   }
+  },
+  "categories": {
+   "normal": 9558,
+   "absent": 308,
+   "folded": 52,
+   "wrong_id": 52,
+   "duplicate_script": 32,
+   "wrong_id_victim": 52,
+   "missing_script": 51,
+   "absent_with_script": 52,
+   "id_multiple": 40,
+   "id_blank": 40,
+   "chain": 2,
+   "late_found": 1,
+   "unknown": 10
+  }
+ },
+ "workload": {
+  "sources": 3,
+  "arrivals_written": 10189,
+  "arrivals_planned": 10189,
+  "unique_contents": 9988,
+  "byte_copy_arrivals": 200,
+  "sets": 4,
+  "candidates_on_lists": 10240,
+  "partial_writes": 7082,
+  "held_open_writes": 1518,
+  "renamed_writes": 1488,
+  "long_pause_writes": 507,
+  "header_first_writes": 1006,
+  "cross_source_same_name": 3459,
+  "source_outages": 1,
+  "kills": 8,
+  "clean_closes": 1,
+  "restarts": 9,
+  "offline_arrivals": 146,
+  "duplicate_id_conflicts": 168,
+  "operator_corrections": 132,
+  "duplicate_acceptances": 64,
+  "quality_suggestions": 64,
+  "confirmed_rejections": 56,
+  "dismissed_suggestions": 10,
+  "confirmed_replacements": 56,
+  "cross_source_replacements": 34,
+  "replacement_chains": 2,
+  "superseded_batches": 1,
+  "sealed_batches": 712,
+  "operator_decisions": 386,
+  "real_images": true
+ },
+ "local_evidence_folder": "C:\\Research\\OMRflow-p9q\\Scratch\\Qualification\\phase9\\p9-release-20261006T151124Z-20261006"
+}

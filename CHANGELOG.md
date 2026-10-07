@@ -203,7 +203,11 @@ tagged; the last release is `v0.1.0-alpha.2`. The plan is
   Scan-stage control and the golden one-batch regression run in the same
   campaign. The Phase 10 finite harness is unchanged. Synthetic, local-disk,
   source-build only: **not** SMB, real-scanner, power-loss or installed-build
-  evidence. Results: see the phase 9 handoff.
+  evidence. The release-scale campaign (3 scanner processes, 10,189 files,
+  8 real kills and a clean close, 4 sets) ended **`QUALIFIED`** at
+  `542b2af`; compact evidence in
+  `docs/release/validation/0.1.1-alpha.0-phase9-intake/`, details in
+  `PHASE_I_HANDOFF.md`.
 
 ### Fixed (`0.1.1` line)
 
