@@ -84,7 +84,12 @@ A cell beginning `=` cannot be made to execute when the workbook is opened.
 ## Status of this area
 
 🟡 **Set-aware reporting is implemented and tested against synthetic data
-only.** No real institutional result template has been used. Check a
+only.** No real institutional result template has been used. For
+`0.1.1-alpha.0`, results and final reports of a closed two-scanner session
+were also generated inside the **installed** application after forced kills
+and compared cell by cell with an independent reference, and stored results of
+projects from `v0.1.0-alpha.2` and the schema-12 build kept every value after
+upgrading (revised phase 10) - synthetic data still. Check a
 generated workbook against your own expectations before distributing it —
 particularly the merit ordering and the exclusion of absentees. See
 [Known Limitations](Known-Limitations).

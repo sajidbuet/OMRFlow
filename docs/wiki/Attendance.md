@@ -123,6 +123,11 @@ which paper a mark came from. See [Examination Sets](Examination-Sets).
 tested against synthetic rosters and synthetic scans only.** Real
 institutional workbooks, and real sheets filled in by real candidates, vary in
 ways synthetic ones do not.
+For `0.1.1-alpha.0` (revised phase 10) attendance was also reconciled inside
+the **installed** application - from a two-scanner session after forced kills,
+and on projects written by `v0.1.0-alpha.2` and the schema-12 build after
+upgrading (their stored reconciliation unchanged, the Attendance stage showing
+the same counts the older build did) - still with synthetic rosters only.
 Check the reconciliation summary carefully on your first real import, and
 please [report](https://github.com/sajidbuet/OMRFlow/issues/new/choose) a
 workbook that does not import — with names and roll numbers replaced. See

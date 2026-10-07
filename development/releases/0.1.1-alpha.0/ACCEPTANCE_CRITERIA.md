@@ -521,6 +521,19 @@ Result committed under `docs/release/validation/` with machine descriptions and
 OS/SMB versions. **Required for `0.1.1-alpha.0`.** A simulated share is never
 reported as SMB.
 
+> **Status after revised phase 10 (2026-10-07): NOT PERFORMED — real
+> infrastructure required.** The only machine available was a single laptop
+> (no second Windows machine, no share). Prepared instead, completely:
+> `python -m omr_scanner.tools.smb_qualification prepare | run | rehearse`,
+> the scanner-PC writer `scripts/smb/Invoke-OmrflowScannerWriter.ps1`
+> (PowerShell 5.1, no Python), the procedure
+> [`docs/release/SMB_QUALIFICATION.md`](../../../docs/release/SMB_QUALIFICATION.md)
+> and 15 assertions that judge genuineness from facts (UNC host not this
+> machine, the writer's own host not this machine, database on a fixed local
+> disk). A local **rehearsal** of the whole procedure passed every assertion
+> that can run on one machine and ended `NOT SMB QUALIFICATION`, as it must;
+> it is tooling evidence only. This gate stays open.
+
 ---
 
 ## 7. Real scanning-room qualification
@@ -569,6 +582,23 @@ All of:
 
 Not required for `0.1.1-alpha.0`: §7, Phase 11B's Beta criteria, code signing,
 a fresh 100,000-sheet run.
+
+> **Evaluated in revised phase 10 (2026-10-07; branch
+> `feat/0.1.1-phase10-release-gate`; candidate `73e364b`).** Matrix and
+> computed verdict:
+> [`docs/release/validation/0.1.1-alpha.0-release-gate/`](../../../docs/release/validation/0.1.1-alpha.0-release-gate/release-gate.md)
+> (`python -m tools.release_validation.release_gate`). 1 PASS (phase
+> handoffs, X1–X12 suites); 2 PASS (phase 9 `QUALIFIED`); **3 NOT PERFORMED**
+> (real SMB); 4 PASS (Phase 10 harness self-test, §5.3 / §5.4 evidence; a fresh
+> 100k run not performed - optional, stated in the release notes); 4a PASS (S1,
+> S2, S3, R1 on the **installed** build: crash case 13 and the post-kill GUI
+> check); 5 PASS (packaging smoke, installer checks, installed live intake with
+> two local sources, ~250 files, 5 kills + 1 clean close); 6 PASS (installed:
+> schema-12 fixtures and a `v0.1.0-alpha.2` project; forward-only consequence
+> in the release notes); 7 PASS; 8 PASS (draft release notes); 9 **NOT
+> PERFORMED** (the checklist's clean-machine, manual and SMB items open; no
+> publication). **Verdict: NOT READY FOR RELEASE — BLOCKERS REMAIN** (gates 3
+> and 9). Nothing tagged or published.
 
 ---
 

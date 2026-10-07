@@ -249,3 +249,57 @@ never reach it.
 
 > Do not tick a box that was not actually done. An honest "not performed"
 > is useful; a false tick is worse than no checklist.
+
+---
+
+## Recorded: `0.1.1-alpha.0` candidate (revised phase 10, 2026-10-07)
+
+**Not a release.** This is the checklist worked through for the local
+candidate built from `73e364b` on `feat/0.1.1-phase10-release-gate`, to see
+what remains. Nothing was tagged or published. Evidence:
+`docs/release/validation/0.1.1-alpha.0-installed/`; handoff:
+`development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md`.
+
+| § | Item | Status |
+|---|---|---|
+| 1 | Working tree clean, commit recorded, version in `_version.py` only | Done for the candidate build (`73e364b`, no dirty-tree warning). The `main`-only / tag checks are the release script's, at release time - **not run** |
+| 1 | `CHANGELOG.md` section for this version, dated | **Not done** - kept under `[Unreleased]` until the owner releases (no date may be invented); release-notes draft at `docs/release/RELEASE_NOTES_0.1.1-alpha.0.md` |
+| 1 | Documentation updated (README, wiki, roadmap) | Done (revised phase 10) |
+| 1 | No real candidate data / credentials in the tree | Checked: the committed evidence is synthetic |
+| 2 | `ruff`, `mypy`, full `pytest` | See the handoff §19 (canonical gate on the candidate's code) |
+| 2 | Synthetic end-to-end run **by hand** (Quick Start) | **Not performed** by a person; the installed build ran the workflow headlessly and its GUI was walked by UI Automation |
+| 2 | Real-data qualification; golden verification; 100,000-sheet run | Not performed - not blocking for Alpha (stated in the release notes) |
+| 3 | `Build-App.ps1 -Clean`; commit reported; no dirty warning | Done |
+| 3 | `Test-PackagedApp.ps1` | Done - 16/16 |
+| 3 | `Build-Installer.ps1`; filename carries the version; metadata version | Done - `OMRFlow-0.1.1-alpha.0-Setup-x64.exe`, `0.1.1-alpha.0` |
+| 3 | Icon correct in Explorer / Start menu / title bar | **Not performed** (needs a person to look) |
+| 3 | `Test-InstallerRoundTrip.ps1` (user data preserved) | Done - 15/15 |
+| 3 | `New-Checksums.ps1` | Done |
+| 3 | `Invoke-ReleaseVerification.ps1` | Done - 14/14 |
+| 3 | **Clean-machine test** (Windows Sandbox) | **Not performed** - Windows Sandbox is not available on the build machine (the feature is not installed; enabling it needs elevation and a restart). Must be stated in the release notes |
+| 3 | Clean-machine steps needing a person | **Not performed** |
+| 3 | `audit_dependencies.py`, `verify_frozen_imports.py`, `Test-SelfContained.ps1` | Done - 0 unresolved; every dependency frozen; 14/14 |
+| 3 | `New-ValidationReport.ps1` | **Not run** - it records a clean-machine result, and there is none for this build |
+| 3 | Code signing | Not signed - not blocking for Alpha |
+| 3 | Accessibility checklist | Initial (unchanged from the previous review) |
+| 4 | Upgrade over the previous release, in place | Done - over an installed `v0.1.0-alpha.2` |
+| 4 | A project created by the previous release opens, migrates, results look right | Done - a `v0.1.0-alpha.2` project, every stored value kept |
+| 4 | Schema version recorded in the release notes; Upgrade Compatibility reflects reality | Done - schema 17; Upgrade Compatibility corrected (the released `v0.1.0-alpha.2`'s actual refusal message) |
+| 5 | Documentation items | Done, except *Release History* (only once released) and screenshots (no interface change in this phase) |
+| 6–7 | Tag, release workflow, publication, post-release | **Not performed - owner's decision; blocked by the release gate** |
+| — | `ACCEPTANCE_CRITERIA.md` §6 real SMB qualification (required for this Alpha) | **Not performed - real infrastructure required** |
+
+Sign-off for the candidate:
+
+| | |
+|---|---|
+| Version | `0.1.1-alpha.0` (candidate, unreleased) |
+| Channel | Alpha |
+| Release commit | none - candidate built from `73e364b` |
+| Date | not released |
+| Full suite | see `PHASE_J_HANDOFF.md` §19 |
+| Clean-machine test — automated portion | **not performed** for this build |
+| Clean-machine test — steps needing a person | **not performed** |
+| Real-data qualification | **not performed** |
+| Known release-blocking defects | none known in the product; **release-blocking gate open: real SMB qualification** |
+| Released by | — |

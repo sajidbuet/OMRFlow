@@ -110,8 +110,12 @@ exact source revision.
 | What | Where | Removed by uninstall? |
 |---|---|---|
 | The application | `%LOCALAPPDATA%\Programs\OMRFlow` (per-user default) | Yes |
-| Your settings | `%LOCALAPPDATA%\OMRFlow\` | **No** |
+| Your settings | `%APPDATA%\OMRFlow\omrflow.config.json` (the roaming profile) | **No** |
 | Application logs | `%LOCALAPPDATA%\OMRFlow\logs\` | **No** |
+
+(Settings were listed under `%LOCALAPPDATA%` until 2026-10-07; the
+application has always used `%APPDATA%` - `config/paths.py` - corrected in
+revised phase 10.)
 | Your projects | Wherever you chose to create them | **No** |
 
 OMRFlow deliberately keeps no examination data inside its installation
@@ -123,6 +127,15 @@ See [Backup & Data Retention](Backup-and-Data-Retention).
 See [Upgrading OMRFlow](Upgrading-OMRFlow). In short: **back up any project
 you care about first.** Prerelease versions make no compatibility promises to
 each other.
+
+**`0.1.1-alpha.0` (not yet released).** Its candidate installer was installed
+in place over an installed `v0.1.0-alpha.2` - silently, per-user, without
+uninstalling first: one *Installed apps* entry afterwards, now
+`0.1.1-alpha.0`, settings and logs kept. A project written by
+`v0.1.0-alpha.2` then migrated on opening and kept every stored value. Opening
+a project in `0.1.1-alpha.0` is one-way - **copy the project folder first** if
+you may need `v0.1.0-alpha.2` again. Details:
+[Upgrade Compatibility](Upgrade-Compatibility).
 
 ## Uninstalling
 

@@ -34,6 +34,25 @@ Closing this is the whole purpose of
 
 ---
 
+## `0.1.1-alpha.0` (candidate - not released): what is not qualified
+
+Recorded by revised phase 10 (2026-10-07). Each line is a separate evidence
+track; none of them follows from another.
+
+| | Track | Status |
+|---|---|---|
+| 🟠 | **Genuine SMB / network-share intake** | **Not performed** - needs two Windows machines; prepared ([procedure](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/SMB_QUALIFICATION.md)). **Required for this Alpha: it is not releasable until this passes** |
+| 🟠 | Real scanning-room qualification (real scanners, operators, paper) | Not performed; not required for this Alpha |
+| 🟠 | Scan-quality decision defaults (when a rescan is suggested) | **Unvalidated** against real scanner or paper evidence |
+| 🟠 | A fresh 100,000-sheet run on the new session architecture | Not performed; required before the first Beta, not for this Alpha. The Phase 9 10,189-file campaign is not a substitute |
+| 🔴 | Version ordering for a Beta (finding F8) | `numeric_version` sorts `0.1.1-beta.1` *below* `0.1.1-alpha.3` and gives stable `0.1.1` the same four numbers as `0.1.1-alpha.0`. Harmless for this Alpha (it sorts above `0.1.0-alpha.2`); **no Beta may be tagged until fixed** |
+| 🟠 | Power loss | Not tested - process termination is not power removal |
+| 🟠 | Clean machine (Windows Sandbox) for this build | Not performed - Sandbox is not available on the build machine; the sanitised-environment substitutes passed |
+| 🟠 | The installed GUI driven by a person | Not performed - UI Automation walked it; nobody operated it |
+| ⚪ | Code signing | None - SmartScreen warns; not required for an Alpha |
+
+---
+
 ## By area
 
 ### Project and configuration
@@ -71,7 +90,8 @@ Closing this is the whole purpose of
 | ✅ | Durable batches: an interrupted run resumes without reprocessing completed sheets |
 | ✅ | Worker processes die with the coordinator (no orphans) |
 | 🟠 | **The 100,000-sheet qualification campaign has not been run.** The harness is complete and validated at 250–2,000 sheets, including real forced kills, a real orchestrator crash and recovery. The full-scale run — roughly a day of machine time — has not been executed |
-| 🟠 | **Continuous multi-scanner scanning (in development, `0.1.1`)** — automated GUI tests, scripted local runs and a headless synthetic qualification campaign (three simulated scanners, 10,189 files, real process kills: `QUALIFIED`, merged into `main`). Not used by an operator; not tested on a network share, with a real scanner, through a power loss or as an installed build. The quality policy that suggests rescans and the registration-failure warning are uncalibrated defaults |
+| 🟠 | **Continuous multi-scanner scanning (in development, `0.1.1`)** — automated GUI tests, scripted local runs and a headless synthetic qualification campaign (three simulated scanners, 10,189 files, real process kills: `QUALIFIED`, merged into `main`). Revised phase 10 ran the same continuous engine **inside the installed `0.1.1-alpha.0` candidate** on two local folders (about 250 files, real kills) and checked the installed GUI after a kill. Not used by an operator; **not tested on a network share** (SMB qualification not performed - no second machine was available), with a real scanner, or through a power loss. The quality policy that suggests rescans and the registration-failure warning are uncalibrated defaults |
+| 🟠 | **Network-share (UNC) sources are unqualified.** The network stability defaults (quiet 15 s, poll 30 s) have never been measured on a real share; the SMB qualification that would settle them is prepared ([procedure](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/SMB_QUALIFICATION.md)) but has not been run. Keep the project itself on a local disk |
 | 🟠 | After a scan session is closed, *Project Health* still warns about identification conflicts of rejected-and-replaced sheets and about reconciliation exceptions that were already decided (e.g. a dismissed unknown ID) or were recorded against attendance lists that were later replaced - it counts the project's history, not the closed session's effective state. Warnings only; closing and Final Export are not affected |
 | 🟠 | While continuous scanning writes heavily, a review action can pause the window for up to about a second (SQLite rollback-journal waits; measured worst ≈ 1.2 s at 10,000 sheets in tests). Switching Resolve views on a 10,000-sheet session can take 0.5–3 s |
 | 🟠 | At 200 % interface zoom on a 1366×768 window the session panel's *Finish Scan Session…* is reached by scrolling the page (or *Session → Close Session*) |
@@ -139,7 +159,7 @@ Closing this is the whole purpose of
 | ✅ | Windows installer; install, launch and uninstall verified, with user data preserved |
 | ✅ | No Python needed on the target machine |
 | 🟠 | **Clean-machine installation verified for `0.1.0-alpha.1`, not re-run for `0.1.0-alpha.2`.** On a pristine Windows 11 image with no Python, Qt or build tools: checksum verified there, per-user install with no elevation, first launch with no missing DLL or Qt plugin, clean exit, uninstall with user data intact, and reinstall — 56 checks, none failed. That record describes the previous build. [Full record](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/validation/0.1.0-alpha.1-clean-machine.md) |
-| 🟠 | **The installed build has never been driven through a recognition run.** Recognition, Excel reporting and the parallel worker path are covered by the automated suite, but from source — not from the installer. Nothing suggests they differ; nobody has checked. The remaining steps are in [the procedure](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/CLEAN_MACHINE_TEST.md) |
+| 🟡 | **The installed build's recognition, reporting and worker pool are exercised headlessly, not by a person.** Revised phase 10 ran the continuous engine, the frozen recognition workers, attendance, scoring and report generation inside the installed `0.1.1-alpha.0` candidate (real kills, results compared with an independent reference), and walked the installed GUI's nine stages through UI Automation on upgraded projects. **Nobody has driven the installed GUI through *Create Project* → recognition → a generated report by hand**, and the clean-machine (Windows Sandbox) run was not repeated for this build - Sandbox is not available on the build machine. The steps are in [the procedure](https://github.com/sajidbuet/OMRFlow/blob/main/docs/release/CLEAN_MACHINE_TEST.md) |
 | 🟠 | **Windows 10 has not been tested.** Built and tested on Windows 11; Windows 10 1809 is the floor the bundled runtime supports |
 | ⚪ | **The installer is unsigned**, so SmartScreen warns. Signing is a Phase 11C item |
 | ⚪ | Windows only. No macOS or Linux package |
@@ -150,7 +170,9 @@ Closing this is the whole purpose of
 | | Area |
 |---|---|
 | ✅ | Database migrations are append-only and refuse to open a newer schema |
-| 🟠 | **Upgrading between released versions is untested** — `0.1.0-alpha.2` is the first release with a predecessor, and the `0.1.0-alpha.1` → `0.1.0-alpha.2` upgrade has not been exercised. **Back up projects before installing a later Alpha.** See [Upgrading OMRFlow](Upgrading-OMRFlow) |
+| 🟡 | **`v0.1.0-alpha.2` → `0.1.1-alpha.0` is tested once, on one machine:** the `0.1.1-alpha.0` candidate installed in place over the released `v0.1.0-alpha.2`, and a project written by `v0.1.0-alpha.2` migrated (schema 9 → 17) with every stored value kept; the committed schema-12 fixtures likewise. The `0.1.0-alpha.1` → `0.1.0-alpha.2` upgrade has not been exercised. See [Upgrade Compatibility](Upgrade-Compatibility) |
+| 🟠 | **Opening a project in `0.1.1-alpha.0` is one-way, and the automatic backup is not enough to go back.** The database is migrated (backed up first) *and* `project.json` gains a key the released `v0.1.0-alpha.2` rejects - it then refuses the project as *"not valid"*, even read-only, and even after the database backup is restored. **Copy the whole project folder before opening it in `0.1.1-alpha.0`** if you may need the older build |
+| ⚪ | Installing `0.1.1-alpha.0` over `v0.1.0-alpha.2` leaves three runtime DLLs the old build shipped (`libcrypto-3`, `libssl-3`, `libffi-8`) in the installation folder; unused by `0.1.1-alpha.0`, removed by its uninstaller |
 
 ---
 

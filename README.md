@@ -292,7 +292,22 @@ ten revised phases.
   [docs/release/validation/0.1.1-alpha.0-phase9-intake/](docs/release/validation/0.1.1-alpha.0-phase9-intake/README.md).
   **Synthetic, local-disk, source-build only: not SMB, real-scanner,
   power-loss or installed-build evidence; not production qualified.**
-- **Pending:** phase 10 - SMB / installed build / Alpha release gate.
+- **Implemented and run on branch `feat/0.1.1-phase10-release-gate` (not
+  merged; no migration):** phase 10, the SMB / installed-build / Alpha release
+  gate. On the **installed** `0.1.1-alpha.0` candidate (built from `73e364b`,
+  installed in place over the released `v0.1.0-alpha.2`): a two-scanner
+  live-intake campaign with the continuous engine running inside the
+  installed executable and five real kills of it (best small-run verdict, all
+  16 assertions and crash cases 1–15), the crash-safe defects S1/S2/S3/R1 in
+  the installed GUI after a kill, upgrades of a project written by
+  `v0.1.0-alpha.2` and of the schema-12 fixtures with every stored value kept,
+  and every packaging and installer check. **Real SMB network-share
+  qualification: not performed** - it needs a second Windows machine; the
+  tooling and procedure are ready
+  ([SMB qualification](docs/release/SMB_QUALIFICATION.md)). **The
+  `0.1.1-alpha.0` release gate is therefore not met; nothing is tagged or
+  released.** Evidence:
+  [docs/release/validation/0.1.1-alpha.0-installed/](docs/release/validation/0.1.1-alpha.0-installed/README.md).
 
 | `0.1.1` revised phase | Implemented | Automated tests | Synthetically validated | Real-scan validated | Network-share validated | Production qualified |
 |---|---|---|---|---|---|---|
@@ -305,7 +320,22 @@ ten revised phases.
 | 7 — Quality / rescan / session controls | ✅ merged (`9169933`; migration 17; headless) | ✅ passing, incl. real process kills at every new durable transition, concurrent operator / snapshot contention (local disk, rollback journal), a schema-16 upgrade fixture, and Reports / Scan closes driven through the finish policy | 🟠 a 341-sheet three-scanner scenario on a fake filesystem - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 8 — Operational GUI | ✅ merged (`e620e7c`; no migration) | ✅ passing, incl. GUI tests over the engine rig (10,000-sheet responsiveness with arrivals, 100,000-row paging, a real-kill reopen) | 🟠 scripted native screenshots and one scripted local three-folder run with the production worker pool - not the phase 9 campaign | ❌ | ❌ not performed | ❌ |
 | 9 — Automated qualification | ✅ merged (`459c65b`; no migration) | ✅ passing, incl. harness failure paths, a small real-kill campaign, the self-test and an endurance campaign | ✅ **`QUALIFIED`** - the 10,189-file three-scanner intake campaign (synthetic, local disk, source build) | ❌ | ❌ not performed (phase 10) | ❌ |
-| 10 — SMB / installed build / Alpha release gate | ⚪ pending | — | — | — | — | — |
+| 10 — SMB / installed build / Alpha release gate | ✅ branch (tooling; no migration; not merged) | ✅ passing (see *Testing status*) | ✅ on the **installed** build at small scale (2 sources, ~250 files, real kills) | ❌ | ❌ **not performed** - real infrastructure required | ❌ |
+
+**Phase 10 (SMB / installed build / release gate), evidence track by track:**
+
+| Track | Status |
+|---|---|
+| Implemented | ✅ tooling on `feat/0.1.1-phase10-release-gate` (not merged): the packaged coordinator entry, SMB qualification, installed-build checks, the release-gate evaluator; no product semantics changed; no migration (schema 17) |
+| Automated tests | ✅ passing (see *Testing status*) |
+| Synthetic source-build qualification | ✅ carried forward from phase 9 (`QUALIFIED`, `542b2af`); not re-run - phase 10 changed no correctness-critical production code |
+| SMB qualification | ❌ **not performed** - one machine only; prepared, and a local rehearsal of the procedure (never SMB evidence) passed |
+| Installed-build qualification | ✅ live intake inside the installed executable (16/16 assertions, crash cases 1–15, endurance A–E at small scale), S1/S2/S3/R1 in the installed GUI, packaging smoke, installer round trip, sanitised launch; 🟠 clean machine (Windows Sandbox) not repeated for this build; 🟠 no person operated the installed GUI |
+| Upgrade qualification | ✅ on the installed build: in place over installed `v0.1.0-alpha.2`; a `v0.1.0-alpha.2` project (schema 9) and the schema-12 fixtures migrated with every stored value kept; forward-only consequence documented |
+| Real-scanner qualification | ⚪ not performed (not required for `0.1.1-alpha.0`) |
+| Power-loss qualification | ⚪ not performed |
+| Production qualification | ❌ not qualified |
+| Released | ❌ no - not tagged, not published; release gate not met (SMB) |
 
 **Phase 8 (operational GUI), evidence track by track:**
 
@@ -359,9 +389,9 @@ synthetically tested" to a qualified stable release.
 | Synthetic qualification data | ✅ Template-driven scans **and** set-specific attendance workbooks with deliberate reconciliation conflicts and exact ground truth — see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md) |
 | Synthetic marks on real paper | 🟠 **Implemented — automated tests passing, validated once on a genuine blank scan.** Marks drawn onto a scan of a real blank form, registered through the production alignment pipeline, in colour / grayscale / black-and-white; attendance and reconciliation generation are unaffected by the choice of mode. Automated coverage passes, including registration measured against known homographies (worst case 0.33 px at the bubble centres). On a real 2526×3417 scan of a 100-question form: registration reprojection error 0.0 px with no warnings, one mark changed 0.0057 % of the page with all five printed marks byte-identical, and 5 sheets / 500 answers read back with **0 wrong** (2 correctly flagged). One form, one operator, one scanner — a smoke test, not a corpus. The marks themselves remain synthetic in both modes |
 | Physical corner folds | 🟠 **Implemented — full suite passing.** Micro / small / moderate / severe folds at any of the four corners, in both rendering modes, applied to the composed sheet so paper, printing and marks fold together. Marker interaction is computed from the template's actual marker polygons — per-marker overlap fractions, including the orientation mark — and an interaction the geometry cannot produce is reported as not applicable rather than faked. Off by default, and a disabled policy is byte-identical to a run from before folds existed. 236 new automated tests; see [Synthetic datasets](docs/testing/SYNTHETIC_DATA.md). Exercised once on a real blank scan, where the predicted outcome held at every interaction level: folds reaching no marker read 100/100, a quarter-covered marker registered with a warning, and both fully covered markers were refused exactly as their `expect_failure` said. **The fold itself is still drawn — no photograph of genuinely folded paper has been through it** |
-| Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation |
-| Installer | ✅ Install → launch → uninstall → **user data preserved** → reinstall |
-| Clean machine | ✅ 56/56 automated checks on a pristine Windows image; its manual steps outstanding |
+| Packaged application | ✅ Launches, navigates and closes cleanly under UI Automation. `0.1.1-alpha.0` candidate (`73e364b`, revised phase 10): smoke 16/16, 0 unresolved imports, every dependency frozen; the continuous engine and its frozen worker pool run inside it (real kills, results equal an independent reference) |
+| Installer | ✅ Install → launch → uninstall → **user data preserved** → reinstall. `0.1.1-alpha.0` candidate: round trip 15/15, sanitised launch 14/14, release verification 14/14, release-validation stages 78/0 failed; **installed in place over `v0.1.0-alpha.2`**; unsigned |
+| Clean machine | ✅ 56/56 automated checks on a pristine Windows image for `0.1.0-alpha.1`; its manual steps outstanding. **Not repeated for `0.1.1-alpha.0`** (Windows Sandbox not available on the build machine) |
 | Accessibility | 🟠 Automated checks pass; 8 controls have no accessible name (recorded, non-blocking at Alpha) |
 | Real examination data | ❌ **Not started** — this is Phase 11B |
 | 100,000-sheet qualification | ⚪ Harness ready, not run |

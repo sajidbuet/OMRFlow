@@ -40,6 +40,39 @@ Update this file at the end of every phase.
   committed as it is made. Duplicate and blank codes are refused with a message
   naming the conflict; an existing set is never overwritten.
 
+### SMB / installed build / Alpha release gate (`0.1.1` revised phase 10 / roadmap G second part, 2026-10-07 — branch `feat/0.1.1-phase10-release-gate`, not merged; no migration, schema 17; **release gate not met: real SMB not performed**)
+
+- **What exists:** `OMRFlow.exe --intake-qualification-coordinator` (hidden;
+  the packaged executable runs the intake-qualification coordinator, so the
+  installed build can be the application under test); `intake_qualification
+  --coordinator-exe`; the SMB qualification (`omr_scanner.evaluation.smb_qualification`,
+  `python -m omr_scanner.tools.smb_qualification prepare | run | rehearse`,
+  `scripts/smb/Invoke-OmrflowScannerWriter.ps1`); `tools/release_validation/installed_checks.py`
+  (installed upgrade and post-kill GUI checks via UI Automation) and
+  `tools/release_validation/release_gate.py` (computed §8 verdict). No
+  product semantics changed.
+- **Run, on the installed `0.1.1-alpha.0` candidate (`73e364b`, installed in
+  place over `v0.1.0-alpha.2`):** packaging smoke, installer round trip,
+  sanitised launch, release verification, the release-validation framework's
+  build / packaged / installer stages - all passed; a two-source live-intake
+  campaign with the engine inside the installed executable, 5 real kills and a
+  clean close (`ALL RUNS PASSED — NOT THE RELEASE QUALIFICATION`, 16/16, crash
+  cases 1–15, endurance A–E; a first attempt `FAILED` only because crash case
+  13 was not exercised - harness configuration, rerun); S2/S3/R1 in the
+  installed GUI after a kill; upgrades of a `v0.1.0-alpha.2` project (schema
+  9) and the schema-12 fixtures with every stored value kept.
+- **Not performed:** real SMB qualification (one machine; prepared and
+  rehearsed locally - never SMB evidence), clean-machine test for this build
+  (no Windows Sandbox), a person operating the installed GUI, real scanners,
+  power loss, a fresh 100k run (pre-Beta), F8 (pre-Beta).
+- **Found:** the released `v0.1.0-alpha.2` refuses a project `0.1.1` opened as
+  *"not valid"* (`project.json` gains `active_template`); the database-only
+  pre-migration backup does not undo it - documentation corrected, not a code
+  change. Settings live under `%APPDATA%` (docs said `%LOCALAPPDATA%`). Three
+  stale DLLs remain after installing over `v0.1.0-alpha.2`.
+- Details: `development/releases/0.1.1-alpha.0/PHASE_J_HANDOFF.md`; evidence
+  `docs/release/validation/0.1.1-alpha.0-installed/`.
+
 ### Automated intake qualification (`0.1.1` revised phase 9 / roadmap G first part, 2026-10-06/07 — implemented; automated tests passing; release-scale synthetic campaign `QUALIFIED` at `542b2af`; merged to `main` as `459c65b`; no migration, schema 17)
 
 - **What exists:** `omr_scanner.evaluation.intake_qualification` (plan and
