@@ -1,0 +1,59 @@
+# Excerpt of the Inno Setup log (6728 lines in full): first 20 and last 30 lines, and every line naming the uninstall key or a previous install.
+2026-10-07 10:53:28.090   Log opened. (Time zone: UTC+06:00)
+2026-10-07 10:53:28.091   Setup version: Inno Setup version 6.7.3
+2026-10-07 10:53:28.091   Original Setup EXE: C:\Research\OMRflow-p10\dist\installer\OMRFlow-0.1.1-alpha.0-Setup-x64.exe
+2026-10-07 10:53:28.091   Setup command line: /SL5="$F0C50,84608353,858624,C:\Research\OMRflow-p10\dist\installer\OMRFlow-0.1.1-alpha.0-Setup-x64.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CURRENTUSER /LOG="C:\Research\OMRflow-p10\Scratch\phase10\install-candidate-over-alpha2.log"
+2026-10-07 10:53:28.091   Windows version: 10.0.26200
+2026-10-07 10:53:28.091   Windows architecture: x64 (64-bit)
+2026-10-07 10:53:28.091   Machine types supported by system: x86 x64
+2026-10-07 10:53:28.091   User privileges: None
+2026-10-07 10:53:28.100   Administrative install mode: No
+2026-10-07 10:53:28.100   Install mode root key: HKEY_CURRENT_USER
+2026-10-07 10:53:28.100   64-bit install mode: Yes
+2026-10-07 10:53:28.100   RedirectionGuard status for current process: Enabled in enforcing mode
+2026-10-07 10:53:28.106   Created temporary directory: C:\Users\Sajid\AppData\Local\Temp\is-71T4ROLD0D.tmp
+2026-10-07 10:53:28.307   Found 109 files to register with RestartManager.
+2026-10-07 10:53:28.307   Calling RestartManager's RmGetList.
+2026-10-07 10:53:28.884   RmGetList finished successfully.
+2026-10-07 10:53:28.884   RestartManager found no applications using one of our files.
+2026-10-07 10:53:28.891   Starting the installation process.
+2026-10-07 10:53:28.894   Directory for uninstall files: C:\Users\Sajid\AppData\Local\Programs\OMRFlow
+2026-10-07 10:53:28.898   Will append to existing uninstall log: C:\Users\Sajid\AppData\Local\Programs\OMRFlow\unins000.dat
+...
+2026-10-07 10:53:28.898   Will append to existing uninstall log: C:\Users\Sajid\AppData\Local\Programs\OMRFlow\unins000.dat
+2026-10-07 10:53:42.352   Deleting uninstall key left over from previous non administrative install.
+2026-10-07 10:53:42.353   Creating new uninstall key: HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F3A2C41-9B7D-4E58-8C2A-0D5E1B9F47A3}_is1
+2026-10-07 10:53:42.353   Writing uninstall key values.
+2026-10-07 10:53:42.354   Detected previous administrative 64-bit install? No
+2026-10-07 10:53:42.354   Detected previous administrative 32-bit install? No
+...
+2026-10-07 10:53:42.160   Successfully installed the file.
+2026-10-07 10:53:42.160   -- File entry --
+2026-10-07 10:53:42.160   Dest filename: C:\Users\Sajid\AppData\Local\Programs\OMRFlow\_internal\yaml\_yaml.cp312-win_amd64.pyd
+2026-10-07 10:53:42.160   Time stamp of our file: 2026-10-07 10:45:32.000
+2026-10-07 10:53:42.160   Dest file exists.
+2026-10-07 10:53:42.160   Time stamp of existing file: 2026-09-24 15:45:38.000
+2026-10-07 10:53:42.161   Installing the file.
+2026-10-07 10:53:42.172   Successfully installed the file.
+2026-10-07 10:53:42.172   -- File entry --
+2026-10-07 10:53:42.173   Dest filename: C:\Users\Sajid\AppData\Local\Programs\OMRFlow\LICENSE.txt
+2026-10-07 10:53:42.173   Time stamp of our file: 2026-10-07 09:56:54.000
+2026-10-07 10:53:42.173   Dest file exists.
+2026-10-07 10:53:42.173   Time stamp of existing file: 2026-09-24 15:41:28.000
+2026-10-07 10:53:42.173   Installing the file.
+2026-10-07 10:53:42.180   Successfully installed the file.
+2026-10-07 10:53:42.181   -- Icon entry --
+2026-10-07 10:53:42.181   Dest filename: C:\Users\Sajid\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\OMRFlow.lnk
+2026-10-07 10:53:42.182   Creating the icon.
+2026-10-07 10:53:42.339   Successfully created the icon.
+2026-10-07 10:53:42.350   Saving uninstall information.
+2026-10-07 10:53:42.350   Renaming uninstaller.
+2026-10-07 10:53:42.352   Deleting uninstall key left over from previous non administrative install.
+2026-10-07 10:53:42.353   Creating new uninstall key: HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F3A2C41-9B7D-4E58-8C2A-0D5E1B9F47A3}_is1
+2026-10-07 10:53:42.353   Writing uninstall key values.
+2026-10-07 10:53:42.354   Detected previous administrative 64-bit install? No
+2026-10-07 10:53:42.354   Detected previous administrative 32-bit install? No
+2026-10-07 10:53:42.365   Installation process succeeded.
+2026-10-07 10:53:42.365   Need to restart Windows? No
+2026-10-07 10:53:42.369   Deinitializing Setup.
+2026-10-07 10:53:42.379   Log closed.

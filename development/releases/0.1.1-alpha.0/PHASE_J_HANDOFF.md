@@ -363,6 +363,8 @@ Full matrix: `docs/release/validation/0.1.1-alpha.0-release-gate/release-gate.md
 | 7 | test / harness (configuration) | installed campaign attempt 1: crash case 13 not exercised (pause deferral expired) | rerun with the kill at 45 % | unaffected |
 | 7a | test / harness | the supervisor read `campaign.coordinator_command` directly; two pre-existing failure-path tests use a stand-in campaign without it (canonical gate at `ef8961b`: 2 failed) | `57449d6` reads it defensively; the pre-existing tests unchanged | unaffected (harness only; the packaged app does not contain the supervisor's launch path) |
 | 7b | test / harness (my matrix) | the committed release-gate matrix cited evidence a later gate was to produce; the matrix test refused it (gate at `57449d6`: 1 failed) | `6e3c7a7` cites only existing evidence | unaffected |
+| 7c | test / harness (pre-existing, phase 9) | `test_a_small_campaign_with_one_real_kill` (default suite) put its only kill at 50 % of a 36 s timeline; in the gate at `5c9d501` every writer had finished 0.5 s before the kill landed (recognition lagged writing), so no file arrived while the coordinator was down and `offline_arrivals_discovered` rightly failed. Passed in the two earlier gates - a machine-pace race in the test's configuration, not a product defect | timeline 54 s, kill at 30 % (comment in the test); passed twice alone | unaffected |
+| 7d | evidence / repository | the evidence files named `*.log` were never committed - `.gitignore` ignores `*.log` - so a clean checkout lacked `packaging-checks.log` etc. and the matrix test failed there (gate at `5c9d501`), while it passed in the working tree | force-added the seven evidence logs; `release_gate.py` now also refuses evidence git does not track, with a test | - |
 | 8 | environment / process | my first UI Automation exploration launched the app without a redirected profile and added a scratch project to the operator's *Recent Projects* (and moved `default_projects_root`) | both restored by hand (the previous root inferred from the most recent project, as the application sets it); every later launch redirected | - |
 | 9 | environment / process | the canonical gate script needs a branch name; a detached-HEAD worktree made it stop at once | gate worktree given a local branch at the same commit, relaunched | - |
 | - | **product** | **none found** | - | **Phase 9 qualification retained**: no correctness-critical production code changed |
@@ -386,8 +388,13 @@ full pytest:              <<GATE>>
                           - 57449d6: 7,261 passed, 29 skipped, 1 FAILED (2 h 18 min) - the new
                             release-gate matrix test refused the committed matrix, which cited evidence
                             files that gate was to produce; matrix defect, fixed 6e3c7a7
+                          - 5c9d501: 7,260 passed, 29 skipped, 2 FAILED (2 h 05 min) - defects 7c
+                            (a timing race in a pre-existing phase 9 campaign test) and 7d (evidence
+                            *.log files ignored by git, so absent from the clean checkout)
                           (summaries: docs/release/validation/0.1.1-alpha.0-release-gate/
-                          canonical-gate-attempt*.log). Ruff and mypy clean in both.
+                          canonical-gate-attempt*.log). Ruff and mypy clean in all three. No failure
+                          was "rerun until green": each was diagnosed and fixed, then the whole gate
+                          rerun.
 stress:                   10 passed, 0 failed (1 h 00 min) at 57449d6 in the clean worktree: the 1,000-sheet
                           crash series, 10k lazy model, engine endurance, the phase 9 harness self-test and
                           endurance campaign, intake soak, full-size multi-set reports, the SMB rehearsal,

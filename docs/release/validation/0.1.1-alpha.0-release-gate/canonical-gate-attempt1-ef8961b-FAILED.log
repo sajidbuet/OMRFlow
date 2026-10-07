@@ -1,0 +1,21 @@
+OMRFlow pytest / Ruff / Mypy quality-gate summary
+================================================
+
+Started repository : C:\Research\OMRflow-p10g
+Branch             : gate/phase10-ef8961b
+Commit             : ef8961ba6aa466405ae1ffe555cb9af4759718f2
+Log directory      : C:\Research\OMRflow-p10g\Scratch\Log\2026-10-07_113404
+
+Checks:
+
+PYTEST - Full test suite            FAIL   Exit=1   01:50:00
+RUFF - Lint and static checks       PASS   Exit=0   00:00:00
+MYPY - Static type checking         PASS   Exit=0   00:00:33
+
+--- pytest result
+FAILED tests/integration/test_intake_qualification_failure_paths.py::TestTheSupervisorStopsHonestly::test_a_coordinator_that_fails_to_start_fails_the_run
+FAILED tests/integration/test_intake_qualification_failure_paths.py::TestTheSupervisorStopsHonestly::test_a_hung_stage_times_out_with_diagnostics
+=== 2 failed, 7259 passed, 30 skipped, 10 deselected in 6591.01s (1:49:51) ====
+
+--- cause
+AttributeError: the supervisor read campaign.coordinator_command (added in d75c760); the two pre-existing failure-path tests drive it with a stand-in campaign without that field. Harness defect; fixed by reading it defensively. Not the packaged application.

@@ -55,6 +55,19 @@ def test_a_defective_matrix_is_refused(tmp_path, change):
         release_gate.load(_matrix(tmp_path, g4a=change))
 
 
+def test_evidence_that_exists_but_is_not_committed_is_refused(tmp_path, monkeypatch):
+    """Found in revised phase 10: ignored ``*.log`` evidence passed here, failed in a clean tree."""
+    untracked = release_gate.REPOSITORY_ROOT / "Scratch" / f"untracked-{tmp_path.name}.log"
+    untracked.parent.mkdir(exist_ok=True)
+    untracked.write_text("not committed", encoding="utf-8")
+    try:
+        path = _matrix(tmp_path, g5={"evidence": [f"Scratch/{untracked.name}"]})
+        with pytest.raises(release_gate.MatrixError, match="not committed"):
+            release_gate.load(path)
+    finally:
+        untracked.unlink()
+
+
 def test_a_missing_gate_is_refused(tmp_path):
     path = _matrix(tmp_path)
     data = json.loads(path.read_text("utf-8"))

@@ -80,11 +80,37 @@ def load(path: Path = MATRIX) -> tuple[dict[str, Any], list[Gate]]:
         if gate.status == "PASS" and not gate.evidence:
             raise MatrixError(f"gate {gate.gate} passes with no evidence cited")
         for reference in gate.evidence:
-            target = REPOSITORY_ROOT / reference.split("#", 1)[0]
+            relative = reference.split("#", 1)[0]
+            target = REPOSITORY_ROOT / relative
             if not target.exists():
                 raise MatrixError(f"gate {gate.gate}: evidence {reference!r} is not in the "
                                   "repository")
+            if not _tracked(relative):
+                raise MatrixError(f"gate {gate.gate}: evidence {reference!r} exists here but is "
+                                  "not committed (ignored or untracked)")
     return data, gates
+
+
+def _tracked(relative: str) -> bool:
+    """Whether git tracks ``relative`` - a file on disk that is not committed is no evidence.
+
+    Found in revised phase 10: ``*.log`` evidence files were ignored by
+    ``.gitignore``, present in the working tree and absent from a clean
+    checkout. Outside a Git checkout (an exported tree) existence is all
+    there is to check.
+    """
+    import subprocess
+
+    if not (REPOSITORY_ROOT / ".git").exists():
+        return True
+    try:
+        done = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", relative], cwd=REPOSITORY_ROOT,
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True  # no git available: cannot tell, existence was checked
+    return done.returncode == 0
 
 
 def verdict(gates: list[Gate]) -> tuple[str, list[Gate]]:
