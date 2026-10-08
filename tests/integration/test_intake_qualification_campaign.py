@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -92,7 +93,10 @@ def test_a_small_campaign_with_one_real_kill(tmp_path: Path) -> None:
     kills = [item for item in run["kills"] if item["kind"] == "forced"]
     assert any(k["committed_at_kill"] > 0 and k["in_flight_at_kill"] > 0 for k in kills), kills
     for kill in kills:
-        assert kill["recovery_ok"] and kill["integrity_ok"] and not kill["orphans"], kill
+        assert kill["recovery_ok"] and kill["integrity_ok"], kill
+        # Workers dying with the coordinator is the Windows Job Object
+        # guarantee (process_containment; POSIX deliberately not implemented).
+        assert sys.platform != "win32" or not kill["orphans"], kill
     # Skipping cases is never a pass: the finite control was not run and the
     # pause-point crash cases were not exercised.
     assert results["finite_mode_regression"]["status"] != "pass"
