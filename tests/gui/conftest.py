@@ -52,12 +52,24 @@ def _discard_windows_since(before: set[int]) -> None:
 
     Hidden and deleted rather than closed: a window's ``closeEvent`` may ask
     a question, and a modal prompt here would hang the suite.
+
+    Only *parentless* windows. A popup - a combo box's list, a menu, a
+    toolbar's overflow menu - is a top-level widget too, but it belongs to
+    its parent, which keeps a plain pointer to it and deletes it itself.
+    Deleting one separately left that pointer dangling: when the page's
+    actions were then destroyed, `QToolBar::actionEvent` called
+    `removeAction` on the deleted overflow menu - the segmentation fault
+    that stopped every Ubuntu CI run in ``tests/gui`` from 2026-10-03 (the
+    offscreen fallback font is wide enough for the toolbars to overflow;
+    natively they do not, so Windows never crashed).
     """
     import shiboken6
     from PySide6.QtCore import QCoreApplication, QEvent
 
     for address, widget in _top_level_windows().items():
         if address not in before and shiboken6.isValid(widget):
+            if widget.parentWidget() is not None:  # type: ignore[attr-defined]
+                continue  # deleted by its owner - see above
             widget.hide()  # type: ignore[attr-defined]
             widget.deleteLater()  # type: ignore[attr-defined]
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
