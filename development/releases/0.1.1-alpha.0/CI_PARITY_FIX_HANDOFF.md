@@ -1,7 +1,8 @@
 # CI portability correction — handoff
 
-Branch `fix/ci-platform-parity`, from `main` `9f5d7d4`, 2026-10-08. Not merged,
-not tagged, not released. The brief named `main` `acad683`; the local and
+Branch `fix/ci-platform-parity`, from `main` `9f5d7d4`, 2026-10-08. Merged into
+`main` as `eb6d6dd` (2026-10-08, on the owner's instruction). Not
+tagged, not released. The brief named `main` `acad683`; the local and
 remote `main` were both `9f5d7d4` (docs-only commits on top of `acad683`), and
 the branch starts there.
 
@@ -171,9 +172,10 @@ run before the branch was 37656566479 (`9f5d7d4`).
 
 **Real SMB qualification remains NOT PERFORMED.** None of this work touches
 SMB tooling, the workload, network policy, the 15-second quiet period or the
-30-second poll interval. CI is green on `fix/ci-platform-parity`. Once the
-owner merges it, `main` will be a green commit for Saturday's two-machine SMB
-qualification. The branch has not been merged.
+30-second poll interval. CI is green on `fix/ci-platform-parity`, which was
+merged into `main` as `eb6d6dd`. That merge commit's tree is the branch tip's
+(`main` had not moved). Once the push-triggered run on `main` is green, run
+Saturday's two-machine SMB qualification from that commit.
 
 ## How CI was mirrored locally (for next time)
 
