@@ -169,7 +169,9 @@ class TestLongProvenanceLayout:
         # The stored copy's name is never the name shown.
         assert STORED not in label.text() and STORED[:12] not in label.text()
 
-    @pytest.mark.parametrize("found", [long_provenance(), short_provenance()], ids=["long", "short"])
+    @pytest.mark.parametrize(
+        "found", [long_provenance(), short_provenance()], ids=["long", "short"]
+    )
     def test_in_the_window_it_shows_what_its_room_allows(
         self, qtbot, window, monkeypatch, found
     ):
