@@ -764,9 +764,14 @@ class WorkflowRibbon(QWidget):
         self._activate_layout()
 
         by_key = {placement.key: placement for placement in plan.placements}
-        for step in self._steps:
+        for index, step in enumerate(self._steps):
             placement = by_key.get(step.key)
             if placement is None:
+                # Still re-measured at the current zoom and density: the
+                # chevron it becomes when a wider layout shows it again.
+                # Otherwise a zoom or density change made while the narrow
+                # layout is up leaves it reporting the previous scale.
+                step.apply_geometry(self._chevron(first_in_row=index == 0))
                 step.setVisible(False)
                 continue
             step.apply_geometry(placement.geometry)

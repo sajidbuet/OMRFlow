@@ -93,7 +93,7 @@ def test_a_real_kill_then_reopen_shows_committed_counts_before_start(qtbot, tmp_
         force_lock=False,
     )
     wait_for(child, paused, timeout=300, what="inside the commit of a3")
-    assert kill(child).orphans == ()
+    assert kill(child).uncontained == ()
     done_before = committed(root)
     shape_before = structure(root)
     assert 0 < done_before < 10

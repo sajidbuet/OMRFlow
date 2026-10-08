@@ -46,7 +46,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from omr_scanner.gui.pages.catalog import WORKFLOW_PAGES
-from omr_scanner.gui.theme import Density
+from omr_scanner.gui.theme import Density, UiScale
 from omr_scanner.gui.theme import Navigator as NavMetrics
 from omr_scanner.gui.widgets.workflow_ribbon import (
     MIN_SCROLL_STEPS,
@@ -281,6 +281,30 @@ class TestDNarrowLayout:
         for key in ("scan", "attendance", "reports"):
             ribbon.set_current_key(key)
             assert visible_steps(ribbon) == [key]
+
+    def test_the_hidden_stages_follow_a_zoom_and_density_change(
+        self, ribbon: WorkflowRibbon
+    ):
+        """Regression: a change made while narrow left the hidden steps stale.
+
+        Only the steps a plan places were given the new geometry, so after
+        200% -> 190% at 1366x768 (narrow at both) the eight hidden steps still
+        reported 200%. Found when the offscreen platform's wider font put
+        1366x768 into the narrow layout already at 150%.
+        """
+        apply_width(ribbon, width_for_mode(ribbon, RibbonMode.CURRENT_ONLY))
+        assert ribbon.mode is RibbonMode.CURRENT_ONLY
+        for percent in (150, 200, 190):
+            ribbon.apply_ui_scale(UiScale.of(percent))
+            assert ribbon.mode is RibbonMode.CURRENT_ONLY
+            assert {step.step_geometry.scale for step in ribbon.steps} == {UiScale.of(percent)}
+        ribbon.set_density(Density.MAXIMUM)
+        assert ribbon.mode is RibbonMode.CURRENT_ONLY
+        assert {step.step_geometry.density for step in ribbon.steps} == {Density.MAXIMUM}
+        # Each hidden step is the chevron it becomes when shown again.
+        hidden = [step for step in ribbon.steps if not step.isVisibleTo(ribbon)]
+        assert len(hidden) == 8
+        assert {step.step_geometry.shape for step in hidden} == {StepShape.CHEVRON}
 
 
 # ----------------------------------------------------------------------

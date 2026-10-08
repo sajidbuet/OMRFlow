@@ -169,6 +169,31 @@ class TestLongProvenanceLayout:
         # The stored copy's name is never the name shown.
         assert STORED not in label.text() and STORED[:12] not in label.text()
 
+    @pytest.mark.parametrize(
+        "found", [long_provenance(), short_provenance()], ids=["long", "short"]
+    )
+    def test_in_the_window_it_shows_what_its_room_allows(
+        self, qtbot, window, monkeypatch, found
+    ):
+        """Portable: the line in the real window is the shortening rule applied to its room.
+
+        Which fields survive at 1366x768 depends on the font (the two tests
+        below, native only); that the label hands its actual width to
+        :meth:`ProvenanceLabel.fitted_text` - whose order `TestShorteningOrder`
+        pins down at explicit widths - does not.
+        """
+        page = resolve_page(window)
+        window.resize(1366, 768)
+        window.show()
+        qtbot.waitExposed(window)
+        label = show(page, monkeypatch, found)
+        width = label.contentsRect().width()
+        assert 0 < width <= label.room()
+        assert label.text() == label.fitted_text(width)
+
+    @pytest.mark.native_qt_layout(
+        reason="Portable: test_in_the_window_it_shows_what_its_room_allows, TestShorteningOrder."
+    )
     def test_at_1366_at_100_percent_the_file_name_stays_recognisable(
         self, qtbot, window, monkeypatch
     ):
@@ -184,6 +209,10 @@ class TestLongProvenanceLayout:
         shown_name = next(part for part in visible_names(label) if part.endswith(".png"))
         assert shown_name.startswith("2026")
 
+    @pytest.mark.native_qt_layout(
+        reason="Portable: test_in_the_window_it_shows_what_its_room_allows, "
+        "TestShorteningOrder::test_a_short_line_with_room_is_shown_whole."
+    )
     def test_a_short_line_is_shown_whole(self, qtbot, window, monkeypatch):
         page = resolve_page(window)
         window.resize(1366, 768)
@@ -221,6 +250,15 @@ class TestShorteningOrder:
             [SOURCE, "Batch 2", ORIGINAL, f"arrived {ARRIVED.astimezone():%H:%M}"]
         )
         assert label.fitted_text(self.width_of(label, full)) == full
+
+    def test_a_short_line_with_room_is_shown_whole(self, qtbot, manager):
+        widget = ProvenanceLabel()
+        qtbot.addWidget(widget)
+        widget.set_provenance(short_provenance())
+        full = widget.full_text
+        assert full.startswith("Scanner A · Batch 2 · a.png · arrived ")
+        for spare in (0, 1, 200):
+            assert widget.fitted_text(self.width_of(widget, full) + spare) == full
 
     def test_the_scanner_name_gives_way_first(self, label):
         without_source = SEPARATOR.join(label.full_text.split(SEPARATOR)[1:])

@@ -27,6 +27,11 @@
 # Scratch\Log\pytest-durations.json keeps per-test durations across runs,
 # for the time estimate.
 #
+# This is the native Windows gate: Qt runs on its windows platform with the
+# desktop's fonts, and mypy analyses win32. GitHub CI differs on both counts
+# (offscreen Qt, Linux mypy); reproduce that with scripts\test-ci-parity.ps1.
+# Do not set QT_QPA_PLATFORM=offscreen here - native geometry is the point.
+#
 # The script continues through all checks even if one fails.
 #
 # Progress is shown while it runs, refreshed twice a second: a bar for the

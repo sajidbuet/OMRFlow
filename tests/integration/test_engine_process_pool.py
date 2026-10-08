@@ -28,13 +28,26 @@ from omr_scanner.services.recognition_pool import ProcessRecogniser
 SHEETS = 12
 
 
+def _is_worker(process: psutil.Process) -> bool:
+    """A pool worker: a ``spawn``-started Python child.
+
+    Not every Python child is one. On POSIX, ``spawn`` also starts
+    multiprocessing's ``resource_tracker``, which lives as long as this
+    process; counting it made Linux report a worker that outlived the engine,
+    and the kill test killed the tracker instead of a worker, so no pool ever
+    broke. Windows starts no such helper.
+    """
+    try:
+        return "python" in process.name().lower() and any(
+            "spawn_main" in part for part in process.cmdline()
+        )
+    except psutil.Error:
+        return False
+
+
 def _workers() -> list[psutil.Process]:
     try:
-        return [
-            child
-            for child in psutil.Process().children(recursive=True)
-            if "python" in child.name().lower()
-        ]
+        return [child for child in psutil.Process().children(recursive=True) if _is_worker(child)]
     except psutil.Error:
         return []
 

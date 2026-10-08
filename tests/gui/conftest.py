@@ -3,6 +3,10 @@
 Qt needs a platform plugin. On a developer machine the native plugin is used; on
 a headless CI runner there is none, so the offscreen plugin is selected
 automatically. Tests never depend on a visible window.
+
+The few tests that assert final window geometry in the desktop's own fonts
+are marked ``native_qt_layout`` and skip offscreen, where a portable test
+covers the same contract (see ``_native_qt_layout_only`` and docs/TESTING.md).
 """
 
 from __future__ import annotations
@@ -48,12 +52,24 @@ def _discard_windows_since(before: set[int]) -> None:
 
     Hidden and deleted rather than closed: a window's ``closeEvent`` may ask
     a question, and a modal prompt here would hang the suite.
+
+    Only *parentless* windows. A popup - a combo box's list, a menu, a
+    toolbar's overflow menu - is a top-level widget too, but it belongs to
+    its parent, which keeps a plain pointer to it and deletes it itself.
+    Deleting one separately left that pointer dangling: when the page's
+    actions were then destroyed, `QToolBar::actionEvent` called
+    `removeAction` on the deleted overflow menu - the segmentation fault
+    that stopped every Ubuntu CI run in ``tests/gui`` from 2026-10-03 (the
+    offscreen fallback font is wide enough for the toolbars to overflow;
+    natively they do not, so Windows never crashed).
     """
     import shiboken6
     from PySide6.QtCore import QCoreApplication, QEvent
 
     for address, widget in _top_level_windows().items():
         if address not in before and shiboken6.isValid(widget):
+            if widget.parentWidget() is not None:  # type: ignore[attr-defined]
+                continue  # deleted by its owner - see above
             widget.hide()  # type: ignore[attr-defined]
             widget.deleteLater()  # type: ignore[attr-defined]
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
@@ -95,6 +111,41 @@ def pytest_runtest_teardown(item):
 
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     return result
+
+
+@pytest.fixture(autouse=True)
+def _native_qt_layout_only(request: pytest.FixtureRequest) -> None:
+    """Skip a ``native_qt_layout`` test on the offscreen platform.
+
+    Such a test asserts final geometry inside a real window at a supported
+    size - "the reason combo is not squeezed at 1366x768" - which depends on
+    the fonts and style the application really runs with. Offscreen has
+    neither: on Windows it finds no fonts at all ("Qt no longer ships
+    fonts") and falls back to one about twice as wide as Segoe UI, and on
+    Linux it gets a fontconfig default, so 1366 pixels genuinely do not fit
+    there what they fit natively. The portable contract each one stands on is tested separately
+    (see the marker's ``reason``) and runs everywhere.
+
+    Measured on Windows: one provenance line is 895 px in Segoe UI and 1968 px
+    offscreen; the Resolve reason combo's minimum width 278 px and 534 px.
+    The Linux CI runner's font was not measured, only seen to fail the same
+    five assertions.
+
+    At run time, not collection time: `platformName()` is empty until the
+    `QApplication` exists. Autouse, so it skips before any window is built.
+    """
+    marker = request.node.get_closest_marker("native_qt_layout")
+    if marker is None:
+        return
+    request.getfixturevalue("qapp")
+    from PySide6.QtGui import QGuiApplication
+
+    if QGuiApplication.platformName() == "offscreen":
+        reason = marker.kwargs.get("reason", "")
+        pytest.skip(
+            "native Qt layout only: offscreen lays out with a fallback font, not the "
+            f"desktop's, so its final window geometry is not the product's. {reason}".rstrip()
+        )
 
 
 @pytest.fixture(autouse=True)

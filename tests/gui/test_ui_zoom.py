@@ -43,10 +43,11 @@ from omr_scanner.gui.theme import (
     FontSize,
     IconSize,
     Navigator,
+    Spacing,
     UiScale,
     application_stylesheet,
 )
-from omr_scanner.gui.ui_scale import UiScaleManager, current_scale
+from omr_scanner.gui.ui_scale import UiScaleManager, current_scale, scale_layout
 from omr_scanner.gui.widgets import Card, EmptyState, PageHeader
 from omr_scanner.gui.widgets.status_chips import StatusChip
 from omr_scanner.gui.widgets.workflow_ribbon import RibbonMode
@@ -575,6 +576,9 @@ class TestEFitting:
 
 
 class TestEWrappedRows:
+    @pytest.mark.native_qt_layout(
+        reason="Portable: test_a_row_given_its_height_for_width_shows_every_line."
+    )
     @pytest.mark.parametrize("percent", [100, 150, 200])
     def test_an_action_row_is_tall_enough_for_its_wrapped_detail(
         self, window: MainWindow, percent: int
@@ -595,3 +599,95 @@ class TestEWrappedRows:
             layout = row.layout()
             assert layout is not None
             assert row.height() >= layout.totalHeightForWidth(row.width()), row.objectName()
+
+    @pytest.mark.parametrize("percent", [100, 150, 200])
+    def test_a_row_given_its_height_for_width_shows_every_line(
+        self, qtbot, manager: UiScaleManager, percent: int
+    ):
+        """Portable: the contract the page's layout relies on, at explicit widths.
+
+        The test above measures the real project page, which only means
+        something in the desktop font: offscreen, the getting-started card's
+        minimum width exceeds its 400 px column, so Qt asks the card for its
+        height at that minimum width rather than the one it gets, and the rows
+        come out short. What rules the regression out in any font is this:
+        the row asks for enough height for every wrapped detail line, and
+        given that height lays heading and detail out without overlap.
+        """
+        from omr_scanner.gui.widgets import ActionRow
+
+        manager.set_percent(percent)
+        holder = QWidget()
+        qtbot.addWidget(holder)
+        holder.resize(3000, 2000)
+        row = ActionRow(
+            "info",
+            "Project information",
+            "Open a project first - this manages the open project's details.",
+            parent=holder,
+        )
+        holder.show()
+        floor = row.minimumSizeHint().width()
+        detail_heights = set()
+        for width in (floor, floor + 60, floor + 160, floor + 600):
+            height = row.heightForWidth(width)
+            row.setGeometry(0, 0, width, height)
+            layout = row.layout()
+            assert layout is not None
+            layout.activate()
+            heading, detail = row.heading_label, row.detail_label
+            needed = detail.heightForWidth(detail.width())
+            assert detail.height() >= needed, (width, detail.height(), needed)
+            assert heading.geometry().bottom() < detail.geometry().top(), width
+            assert detail.geometry().bottom() < row.height(), width
+            detail_heights.add(needed)
+        # The widths really did change how the detail wraps.
+        assert len(detail_heights) > 1
+
+
+# ----------------------------------------------------------------------
+# F - nested layouts
+# ----------------------------------------------------------------------
+class TestFNestedLayouts:
+    def test_a_declared_layout_nested_inside_another_follows_the_zoom(
+        self, qtbot, manager: UiScaleManager
+    ):
+        """The zoom pass reaches nested layouts through QObject children."""
+        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
+
+        holder = QWidget()
+        qtbot.addWidget(holder)
+        outer = QVBoxLayout(holder)
+        middle = QVBoxLayout()
+        outer.addLayout(middle)
+        inner = QHBoxLayout()
+        middle.addLayout(inner)
+        scale_layout(inner, spacing=Spacing.MD)
+        inner.addWidget(QLabel("a"))
+        inner.addWidget(QLabel("b"))
+
+        manager.set_percent(150)
+        assert inner.spacing() == UiScale.of(150).px(Spacing.MD)
+        manager.set_percent(100)
+        assert inner.spacing() == Spacing.MD
+
+    def test_a_status_bar_rebuilding_its_layouts_between_zoom_passes_is_safe(
+        self, window: MainWindow
+    ):
+        """Regression: a segmentation fault on Linux CI.
+
+        `QStatusBar` deletes and recreates its nested layouts each time it
+        reformats. The zoom pass used to reach nested layouts as
+        `itemAt(i).layout()`, whose PySide wrapper is never invalidated, so a
+        later pass could be handed a stale wrapper for a reused address.
+        Survives natively either way; on Linux it crashed without the fix.
+        """
+        import gc
+
+        bar = window.statusBar()
+        for index in range(25):
+            bar.addWidget(QLabel(f"extra {index}"))  # reformat: new layouts
+            gc.collect()
+            window.set_interface_zoom(150)
+            window.set_interface_zoom(100)
+        assert window.interface_zoom == 100

@@ -85,9 +85,13 @@ jobs:
 
       - name: Tests
         # The GUI suite needs a Qt platform plugin. `tests/gui/conftest.py`
-        # selects offscreen automatically on a headless runner; setting it
-        # explicitly means a Windows runner - which has a desktop and would
-        # otherwise open real windows - behaves the same way.
+        # selects offscreen automatically on a headless runner; it is set
+        # explicitly so the Windows runner is headless too. CI therefore
+        # tests GUI *logic* - state, behaviour, size contracts - not native
+        # desktop geometry: offscreen lays out with a fallback font, not
+        # Segoe UI. The few `native_qt_layout` tests skip here; they run in
+        # the native Windows gate (pytest-ruff-mypy.ps1) and the installed-
+        # build qualification. See docs/TESTING.md.
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest -q

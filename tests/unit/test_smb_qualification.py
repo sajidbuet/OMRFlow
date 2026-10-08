@@ -77,6 +77,11 @@ class TestGenuineSmb:
         assert location["drive_type"] == "fixed" and location["local"] is True
         assert location["path"].endswith("database.sqlite")
 
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="UNC paths exist only on Windows; on POSIX Path(r'\\\\host\\share') is a "
+        "relative file name, and the SMB qualification runs on Windows",
+    )
     def test_a_unc_database_is_not_local(self):
         assert topology.drive_type(Path(r"\\scanner-pc-b.invalid\scans")) == "remote"
 

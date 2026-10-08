@@ -1990,7 +1990,16 @@ class TestSpaceDistribution:
         assert machine < decision
 
     @pytest.mark.parametrize(
-        ("width", "height"), [(1366, 768), (1920, 1080)]
+        ("width", "height"),
+        [
+            # Natively the reason row needs 426 px and gets 574; offscreen's
+            # fallback font makes the combo alone ask 534 of a 608 px row.
+            pytest.param(1366, 768, marks=pytest.mark.native_qt_layout(
+                reason="Portable: the 1920x1080 case, and "
+                "test_every_choice_is_reachable_and_the_queue_never_scrolls_sideways."
+            )),
+            (1920, 1080),
+        ],
     )
     def test_nothing_is_clipped_at_a_supported_size(
         self, qtbot, page: ResolvePage, width: int, height: int
@@ -2003,6 +2012,19 @@ class TestSpaceDistribution:
         for widget in (page.confirm_button, page.defer_button, page.reason_combo):
             assert widget.width() >= widget.minimumSizeHint().width(), widget
             assert widget.height() >= widget.minimumSizeHint().height(), widget
+
+    @pytest.mark.parametrize(
+        ("width", "height"), [(1366, 768), (1920, 1080)]
+    )
+    def test_every_choice_is_reachable_and_the_queue_never_scrolls_sideways(
+        self, qtbot, page: ResolvePage, width: int, height: int
+    ):
+        """The part of "nothing is clipped" that holds in any font."""
+        page.resize(width, height)
+        page.show()
+        qtbot.waitExposed(page)
+        select_first(qtbot, page, ConflictType.IDENTIFIER_MULTIPLE)
+
         # Every value button is reachable, not squeezed to nothing.
         for button in page._choice_buttons:
             assert button.width() >= CHOICE_BUTTON_MIN_WIDTH - 1
