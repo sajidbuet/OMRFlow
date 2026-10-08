@@ -57,6 +57,13 @@ The suite is large and slow because it is mostly real: it processes images,
 opens databases and drives Qt. Run the fast subset while working and the
 whole thing before pushing.
 
+The canonical gate is `pwsh -File .\pytest-ruff-mypy.ps1` on native Windows
+Qt. GitHub CI instead type-checks as Linux and runs the GUI tests offscreen,
+which neither the gate nor a plain `pytest` reproduces; run
+`.\scripts\test-ci-parity.ps1` too when you touch a `sys.platform` branch or
+a GUI layout. See "Native Windows gate vs GitHub's offscreen gate" in
+`docs/TESTING.md`.
+
 ### Writing tests
 
 - **Every change needs a test.** A bug fix needs one that fails without it.

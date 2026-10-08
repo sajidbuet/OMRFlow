@@ -166,6 +166,47 @@ component where each layout begins, and every width in that module is derived
 from it. The same tests then keep working when a label is reworded, which a
 hard-coded threshold would not.
 
+### Native Windows gate vs GitHub's offscreen gate
+
+Two gates, testing different things; neither replaces the other.
+
+| | Native Windows gate | GitHub Actions |
+|---|---|---|
+| Command | `pwsh -File .\pytest-ruff-mypy.ps1` | `.github/workflows/ci.yml` |
+| Qt platform | `windows`: Segoe UI, Windows style, real window manager | `offscreen` on Windows **and** Ubuntu: a fallback font, no window manager |
+| Mypy | analyses `sys.platform == "win32"` | analyses Linux (Ubuntu job) |
+| Establishes | the product's real desktop geometry at supported sizes | GUI logic and contracts, portability, Linux type-check |
+
+Offscreen on Windows finds no fonts at all ("Qt no longer ships fonts") and
+lays out with a fallback about twice as wide as Segoe UI. So a test that
+asserts *final geometry inside a real window at 1366x768* - "the reason combo
+is not squeezed", "the file name survives in the provenance line" - is only
+meaningful natively. Those tests carry
+`@pytest.mark.native_qt_layout(reason="Portable: <the test that covers the contract>")`
+and skip offscreen at run time (`tests/gui/conftest.py`). Keep the category
+small: each one needs a portable test of the underlying contract - the
+shortening rule at explicit widths, `heightForWidth` at explicit widths, the
+same assertion at a size that fits any font - and a skip that names it. A
+state assertion (zoom, mode, enabled, stored values) is never
+`native_qt_layout`: when one fails only offscreen, look for a real bug - the
+ribbon's hidden steps keeping the previous zoom was one.
+
+Reproduce GitHub's conditions on Windows before pushing:
+
+```powershell
+.\scripts\test-ci-parity.ps1          # both checks below
+# or by hand:
+.venv\Scripts\python.exe -m mypy --platform linux src/omr_scanner
+$env:QT_QPA_PLATFORM = "offscreen"
+.venv\Scripts\python.exe -m pytest -q tests/gui/test_resolve_page.py `
+    tests/gui/test_resolve_provenance_gui.py tests/gui/test_ui_zoom.py `
+    tests/gui/test_workflow_ribbon.py
+$env:QT_QPA_PLATFORM = $null
+```
+
+A module that branches on `sys.platform` goes in the `warn_unreachable = false`
+override in `pyproject.toml`; that is the only strict check relaxed for it.
+
 ## Fixture policy
 
 `tests/fixtures/` is reserved and currently almost empty. Three categories, kept
