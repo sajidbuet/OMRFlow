@@ -163,6 +163,7 @@ pythonpath = ["."]
 addopts = "-ra --strict-markers --strict-config -m \"not stress\""
 markers = [
     "gui: tests that instantiate Qt widgets (require a usable Qt platform plugin)",
+    "native_qt_layout(reason): final window geometry measured with the real desktop fonts and style; skipped on the offscreen platform (tests/gui/conftest.py), where a portable test covers the contract named in reason",
     "stress: large-scale (thousands of sheets) production-hardening runs; excluded from the default test run by addopts, run explicitly with `-m stress`",
 ]
 filterwarnings = ["error::DeprecationWarning:omr_scanner.*"]
