@@ -541,10 +541,15 @@ def _rescale_layout_tree(layout: QLayout, scale: UiScale) -> None:
                     0, length, QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
                 )
         layout.invalidate()
-    for index in range(layout.count()):
-        item = layout.itemAt(index)
-        child = item.layout() if item is not None else None
-        if child is not None:
+    # Nested layouts through QObject children, never `itemAt(i).layout()`:
+    # a layout reached as a `QLayoutItem*` gets a PySide wrapper that is not
+    # invalidated when Qt deletes the layout. QStatusBar deletes and rebuilds
+    # its nested layouts whenever it reformats, so a later pass could be handed
+    # that stale wrapper for whatever reused the address - a segmentation
+    # fault on Linux CI, latent on Windows. `addLayout` parents the nested
+    # layout to this one, so `children()` reaches the same layouts.
+    for child in layout.children():
+        if isinstance(child, QLayout):
             _rescale_layout_tree(child, scale)
 
 

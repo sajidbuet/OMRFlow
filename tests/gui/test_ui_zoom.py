@@ -43,10 +43,11 @@ from omr_scanner.gui.theme import (
     FontSize,
     IconSize,
     Navigator,
+    Spacing,
     UiScale,
     application_stylesheet,
 )
-from omr_scanner.gui.ui_scale import UiScaleManager, current_scale
+from omr_scanner.gui.ui_scale import UiScaleManager, current_scale, scale_layout
 from omr_scanner.gui.widgets import Card, EmptyState, PageHeader
 from omr_scanner.gui.widgets.status_chips import StatusChip
 from omr_scanner.gui.widgets.workflow_ribbon import RibbonMode
@@ -642,3 +643,51 @@ class TestEWrappedRows:
             detail_heights.add(needed)
         # The widths really did change how the detail wraps.
         assert len(detail_heights) > 1
+
+
+# ----------------------------------------------------------------------
+# F - nested layouts
+# ----------------------------------------------------------------------
+class TestFNestedLayouts:
+    def test_a_declared_layout_nested_inside_another_follows_the_zoom(
+        self, qtbot, manager: UiScaleManager
+    ):
+        """The zoom pass reaches nested layouts through QObject children."""
+        from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout
+
+        holder = QWidget()
+        qtbot.addWidget(holder)
+        outer = QVBoxLayout(holder)
+        middle = QVBoxLayout()
+        outer.addLayout(middle)
+        inner = QHBoxLayout()
+        middle.addLayout(inner)
+        scale_layout(inner, spacing=Spacing.MD)
+        inner.addWidget(QLabel("a"))
+        inner.addWidget(QLabel("b"))
+
+        manager.set_percent(150)
+        assert inner.spacing() == UiScale.of(150).px(Spacing.MD)
+        manager.set_percent(100)
+        assert inner.spacing() == Spacing.MD
+
+    def test_a_status_bar_rebuilding_its_layouts_between_zoom_passes_is_safe(
+        self, window: MainWindow
+    ):
+        """Regression: a segmentation fault on Linux CI.
+
+        `QStatusBar` deletes and recreates its nested layouts each time it
+        reformats. The zoom pass used to reach nested layouts as
+        `itemAt(i).layout()`, whose PySide wrapper is never invalidated, so a
+        later pass could be handed a stale wrapper for a reused address.
+        Survives natively either way; on Linux it crashed without the fix.
+        """
+        import gc
+
+        bar = window.statusBar()
+        for index in range(25):
+            bar.addWidget(QLabel(f"extra {index}"))  # reformat: new layouts
+            gc.collect()
+            window.set_interface_zoom(150)
+            window.set_interface_zoom(100)
+        assert window.interface_zoom == 100
