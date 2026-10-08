@@ -207,6 +207,25 @@ $env:QT_QPA_PLATFORM = $null
 A module that branches on `sys.platform` goes in the `warn_unreachable = false`
 override in `pyproject.toml`; that is the only strict check relaxed for it.
 
+Neither command reproduces the Ubuntu *test* job; for that, run `pytest -q`
+with `QT_QPA_PLATFORM=offscreen` on Linux under the Python CI uses (WSL with a
+`uv`-managed CPython 3.12.15 was used for the 2026-10-08 correction - the
+distribution's 3.12.3 closes nested generators differently and fails a test
+CI does not). Three Linux facts the suite must respect:
+
+* Workers dying with an abruptly killed coordinator is a **Windows** Job
+  Object guarantee. Assert it through `tests/crash/harness.py`'s
+  `Killed.uncontained` (empty off Windows), never `orphans == ()`.
+* `spawn` on POSIX also starts multiprocessing's `resource_tracker`, a
+  Python child that outlives every pool. A "worker" is a `spawn_main` child.
+* The GUI cleanup deletes only parentless windows. Popups (combo lists,
+  menus, toolbar overflow menus) belong to their owners; deleting one
+  separately crashed Qt when its toolbar was destroyed later.
+* Never reach a layout as `itemAt(i).layout()` in code that runs more than
+  once: that PySide wrapper is not invalidated when Qt deletes the layout
+  (`QStatusBar` rebuilds its own), and glibc's prompt address reuse turned
+  the stale wrapper into a segfault. Walk `layout.children()` instead.
+
 ## Fixture policy
 
 `tests/fixtures/` is reserved and currently almost empty. Three categories, kept
