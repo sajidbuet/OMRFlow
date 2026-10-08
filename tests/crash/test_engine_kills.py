@@ -194,7 +194,7 @@ def kill_and_resume(workspace: Path, sources: Path, expected: dict, name: str, *
     first = launch(project, log, session_id, **child)
     seen = wait_for(first, predicate, timeout=300, what=what)
     killed = kill(first)
-    assert killed.orphans == (), "worker processes outlived the coordinator"
+    assert killed.uncontained == (), "worker processes outlived the coordinator"
     at_kill = facts(project, session_id)
     events = run_to_exit(launch(project, log, session_id, force_lock=True), timeout=300)
     assert_resumed(project, session_id, expected, at_kill, events, interpreter_pid(seen))
@@ -259,7 +259,7 @@ def test_repeated_kills_converge(tmp_path, sources, expected):
         child = launch(project, log, session_id, workers=2, unit=5, force_lock=bool(snapshots))
         seen = wait_for(child, committed_at_least(target), timeout=300, what=f"{target} committed")
         killed = kill(child)
-        assert killed.orphans == ()
+        assert killed.uncontained == ()
         snapshots.append((facts(project, session_id), interpreter_pid(seen)))
     events = run_to_exit(launch(project, log, session_id, unit=5, force_lock=True), timeout=300)
     for at_kill, pid in snapshots:

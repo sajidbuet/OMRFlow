@@ -289,7 +289,7 @@ def kill_at_commits(
         what=f"{count} committed sheets",
     )
     killed = h.kill(child)
-    assert killed.orphans == (), "worker processes outlived the coordinator"
+    assert killed.uncontained == (), "worker processes outlived the coordinator"
     assert killed.lock_left, "a real kill releases nothing"
     committed = committed_now(project)
     logged = set(h.committed_names(killed.events))

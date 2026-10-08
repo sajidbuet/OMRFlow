@@ -272,6 +272,21 @@ class Killed:
     hot_journal: bool = False
     """The kill landed inside a commit: SQLite rolled that transaction back."""
 
+    @property
+    def uncontained(self) -> tuple[int, ...]:
+        """Workers that outlived the coordinator where the product promises they do not.
+
+        That promise is Windows-only: a Job Object
+        (:mod:`omr_scanner.services.process_containment`, whose docstring
+        records POSIX as deliberately not implemented) takes the pool down
+        with an abruptly killed coordinator. On Linux a ``SIGKILL`` of the
+        parent alone does not reach its children, so this is empty there -
+        the same rule as ``tests/integration/test_stress_kill_resume.py``.
+        Either way :func:`kill_run_abruptly` has already killed every
+        survivor, so nothing races the resume that follows.
+        """
+        return self.orphans if sys.platform == "win32" else ()
+
 
 def kill(child: Child) -> Killed:
     """Kill the coordinator only, as Phase 10 does, and check its workers died with it."""

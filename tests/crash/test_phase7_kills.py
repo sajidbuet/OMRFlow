@@ -205,7 +205,7 @@ def test_kill_inside_the_work_unit_of_a_suggested_rescan(tmp_path):
                    expect=3, force_lock=False)
     seen = wait_for(child, paused, timeout=300, what="inside the blank page's work unit")
     killed = kill(child)
-    assert killed.orphans == ()
+    assert killed.uncontained == ()
     assert not read(root, select(ScanQualityDecision.scan_id).join(
         BatchScan, BatchScan.scan_id == ScanQualityDecision.scan_id
     ).where(BatchScan.content_sha256 == blank)), "no half-written decision"
@@ -238,7 +238,7 @@ def test_kill_between_a_commit_and_its_duplicate_pass(tmp_path):
     child = launch(root, log, "engine", session=session_id, pause="syncing_duplicates",
                    sheet=second, expect=4, force_lock=False)
     seen = wait_for(child, paused, timeout=300, what="after the commit, before the pass")
-    assert kill(child).orphans == ()
+    assert kill(child).uncontained == ()
     target = scan_with(root, SHEETS[18])
     assert read(root, select(BatchScan.status).where(BatchScan.scan_id == target))[0][0] in (
         "completed", "warning"
@@ -307,7 +307,7 @@ def test_kill_inside_a_lifecycle_confirmation(tmp_path, op):
         options["replacement"] = replacement
     child = launch(root, log, op, pause="in_txn", force_lock=False, **options)
     wait_for(child, paused, timeout=120, what=f"inside the {op} transaction")
-    assert kill(child).orphans == ()
+    assert kill(child).uncontained == ()
     # All or nothing: the change and its audit events rolled back together.
     assert events_of(root, str(original)) == before
     state = read(root, select(ScanRejection.state).where(ScanRejection.scan_id == original))
@@ -354,7 +354,7 @@ def test_kill_inside_close_or_reopen_is_never_half_done(tmp_path, op):
     log = tmp_path / f"{op}.jsonl"
     child = launch(root, log, op, session=session_id, pause="in_txn", force_lock=False)
     wait_for(child, paused, timeout=120, what=f"inside the {op} transaction")
-    assert kill(child).orphans == ()
+    assert kill(child).uncontained == ()
     assert facts() == before, "a killed transition leaves the session exactly as it was"
     assert events_of(root, session_id) == before_events
     run_to_exit(launch(root, log, op, session=session_id), timeout=120)
@@ -375,7 +375,7 @@ def test_a_persisted_pause_survives_a_kill_and_running_intent_resumes(tmp_path):
     log = tmp_path / "pause.jsonl"
     child = launch(root, log, "pause", session=session_id, force_lock=False)
     wait_for(child, paused, timeout=120, what="paused with the engine started")
-    assert kill(child).orphans == ()
+    assert kill(child).uncontained == ()
     events = run_to_exit(launch(root, log, "engine", session=session_id, expect=6), timeout=300)
     restarted = [item for item in events if item["event"] == "started"][-1]
     assert restarted["intent"] == "paused"
@@ -393,7 +393,7 @@ def test_a_persisted_pause_survives_a_kill_and_running_intent_resumes(tmp_path):
     wait_for(child, lambda items: any(i["event"] == "committed" for i in items
                                       if i["pid"] != restarted["pid"]),
              timeout=300, what="a commit after resuming")
-    assert kill(child).orphans == ()
+    assert kill(child).uncontained == ()
     # No coordinator ownership outlives the killed process: this one starts.
     events = run_to_exit(launch(root, log, "engine", session=session_id, expect=6), timeout=300)
     last = [item for item in events if item["event"] == "started"][-1]
