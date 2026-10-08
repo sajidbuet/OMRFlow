@@ -301,8 +301,17 @@ module = ["psutil.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# This module intentionally branches on sys.platform. mypy analyses one platform
-# at a time and therefore reports the branches for the other platforms as
-# unreachable; the code is correct and must stay cross-platform.
-module = ["omr_scanner.config.paths"]
+# These modules intentionally branch on sys.platform. mypy constant-folds
+# `sys.platform` for the platform it analyses (the host, or `--platform`), so
+# the branch for the other operating system is reported unreachable: CI's
+# Ubuntu type-check job flags the Windows-only ctypes / CreateFileW /
+# GetDriveTypeW / Get-SmbConnection / long-path code that a Windows run passes.
+# Only `warn_unreachable` is relaxed, and only here; every other strict check
+# still applies to these modules. Reproduce CI's view on Windows with
+# `mypy --platform linux src/omr_scanner` (docs/TESTING.md).
+module = [
+    "omr_scanner.config.paths",
+    "omr_scanner.evaluation.smb_qualification.topology",
+    "omr_scanner.services.intake_fs",
+]
 warn_unreachable = false
